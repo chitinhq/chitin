@@ -1,8 +1,10 @@
-import { replayRun } from '@chitin/telemetry';
+import { replaySessionAsTree } from '@chitin/telemetry';
+import { join } from 'node:path';
 
-export function replayCommand(runId: string, opts: { workspace?: string }): void {
+export function replayCommand(sessionId: string, opts: { workspace?: string }): void {
   const workspace = opts.workspace ?? process.cwd();
-  for (const ev of replayRun(workspace, runId)) {
+  const dbPath = join(workspace, '.chitin', 'events.db');
+  for (const ev of replaySessionAsTree(dbPath, sessionId)) {
     process.stdout.write(JSON.stringify(ev) + '\n');
   }
 }

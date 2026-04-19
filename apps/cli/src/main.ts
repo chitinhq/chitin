@@ -21,7 +21,6 @@ events.command('list')
   .option('--workspace <dir>', 'workspace dir (default: cwd)')
   .option('--surface <s>', 'filter by surface')
   .option('--run <id>', 'filter by run_id')
-  .option('--action <t>', 'filter by action_type')
   .option('--limit <n>', 'max rows', (v) => parseInt(v, 10))
   .action((opts) => eventsListCommand(opts));
 
@@ -30,9 +29,9 @@ events.command('tail')
   .option('--surface <s>', 'filter by surface')
   .action((opts) => eventsTailCommand(opts));
 
-program.command('replay <run_id>')
+program.command('replay <session_id>')
   .option('--workspace <dir>', 'workspace dir (default: cwd)')
-  .action((runId, opts) => replayCommand(runId, opts));
+  .action((sessionId, opts) => replayCommand(sessionId, opts));
 
 registerRun(program);
 registerEventsTree(program);
