@@ -1,5 +1,6 @@
 packages:
   - 'packages/*'
+  - 'libs/*'
 allowBuilds:
   '3': true
   '"': true
@@ -15,7 +16,7 @@ allowBuilds:
   e: true
   i: true
   l: true
-  n: true
+  'n': true
   o: true
   q: true
   r: true
