@@ -1,5 +1,6 @@
 import BetterSqlite3 from 'better-sqlite3';
 import { join } from 'node:path';
+import { ensureIndexed } from '@chitin/telemetry';
 
 export interface ListOpts {
   workspace?: string;
@@ -10,7 +11,9 @@ export interface ListOpts {
 
 export function eventsListCommand(opts: ListOpts): void {
   const workspace = opts.workspace ?? process.cwd();
-  const dbPath = join(workspace, '.chitin', 'events.db');
+  const chitinDir = join(workspace, '.chitin');
+  ensureIndexed(chitinDir);
+  const dbPath = join(chitinDir, 'events.db');
   const db = new BetterSqlite3(dbPath, { readonly: true });
   const clauses: string[] = [];
   const params: unknown[] = [];
