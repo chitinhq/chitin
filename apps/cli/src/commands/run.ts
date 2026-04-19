@@ -70,9 +70,24 @@ function runKernel(
 }
 
 function launchClaudeCode(ctx: ReturnType<typeof buildAdapterContext>, args: string[]): void {
-  runKernel(ctx.kernelBinary, ['install-hook', '--dir', ctx.chitinDir, '--session-id', ctx.sessionID], { fatal: true });
+  const adapterBin = process.env.CHITIN_ADAPTER_BINARY;
+  if (!adapterBin) {
+    console.error(
+      `chitin run claude-code requires CHITIN_ADAPTER_BINARY to point at the Claude Code adapter executable.\n` +
+        `Set it to the built adapter binary before invoking (see libs/adapters/claude-code).`,
+    );
+    process.exit(2);
+  }
+  runKernel(
+    ctx.kernelBinary,
+    ['install-hook', '--dir', ctx.chitinDir, '--session-id', ctx.sessionID, '--adapter', adapterBin],
+    { fatal: true },
+  );
   try {
-    const res = spawnSync('claude', args, { stdio: 'inherit', env: { ...process.env, CLAUDE_CODE_SETTINGS: join(ctx.chitinDir, 'sessions', ctx.sessionID, 'settings.json') } });
+    const res = spawnSync('claude', args, {
+      stdio: 'inherit',
+      env: { ...process.env, CLAUDE_CODE_SETTINGS: join(ctx.chitinDir, 'sessions', ctx.sessionID, 'settings.json') },
+    });
     process.exit(res.status ?? 0);
   } finally {
     runKernel(ctx.kernelBinary, ['uninstall-hook', '--dir', ctx.chitinDir, '--session-id', ctx.sessionID], { fatal: false });

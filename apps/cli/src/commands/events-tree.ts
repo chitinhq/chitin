@@ -61,9 +61,9 @@ function renderChain(chain: ChainNode, depth: number, out: string[]): void {
   for (const child of chain.children) renderChain(child, depth + 1, out);
 }
 
-export function registerEventsTree(program: Command): void {
-  program
-    .command('events:tree')
+export function registerEventsTree(events: Command): void {
+  events
+    .command('tree')
     .description('Render a session as a nested chain tree')
     .argument('<session_id>', 'session id to render')
     .option('--chitin-dir <path>', 'chitin state dir', './.chitin')

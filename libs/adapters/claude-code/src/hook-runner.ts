@@ -125,7 +125,7 @@ function buildPayload(eventType: string, input: HookInput): Record<string, unkno
 }
 
 function minimalPayloadFor(eventType: string): Record<string, unknown> {
-  if (eventType === 'session_end' || eventType === 'compaction') {
+  if (eventType === 'session_end') {
     return {
       reason: 'hook-default',
       totals: {
@@ -136,6 +136,9 @@ function minimalPayloadFor(eventType: string): Record<string, unknown> {
         total_duration_ms: 0,
       },
     };
+  }
+  if (eventType === 'compaction') {
+    return { reason: 'hook-default' };
   }
   if (eventType === 'session_start') {
     return {
