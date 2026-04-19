@@ -26,11 +26,14 @@ func TestResolve_FindsExistingChitinDirInParent(t *testing.T) {
 }
 
 func TestResolve_OrphanFallbackWhenNoChitinDirFound(t *testing.T) {
-	cwd := t.TempDir()
+	// Sandbox the walk-up inside the test's temp dir so a stray /tmp/.chitin
+	// on the host cannot be found. Passing boundary=sandbox stops the walk
+	// at the sandbox, exercising the orphan-fallback path.
+	sandbox := t.TempDir()
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
-	got, err := Resolve(cwd, "")
+	got, err := Resolve(sandbox, sandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
