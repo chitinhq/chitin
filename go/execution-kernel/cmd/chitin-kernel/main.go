@@ -82,6 +82,13 @@ func cmdEmit(args []string) {
 		exitErr("open_index", err.Error())
 	}
 	defer idx.Close()
+	// Reconcile the index against all JSONL files before every emit. This
+	// guarantees that a crash between JSONL append and Upsert (or a deleted
+	// chain_index.sqlite) cannot cause a silent seq=0 fork. O(JSONL) per emit
+	// is acceptable at Phase 1.5 volumes; Phase 2 can add incremental reconcile.
+	if err := idx.RebuildFromJSONL(absDir); err != nil {
+		exitErr("rebuild_index", err.Error())
+	}
 	em := emit.Emitter{
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", ev.RunID)),
 		Index:   idx,
@@ -111,6 +118,10 @@ func cmdChainInfo(args []string) {
 		exitErr("open_index", err.Error())
 	}
 	defer idx.Close()
+	// Reconcile before serving chain state so callers always see consistent data.
+	if err := idx.RebuildFromJSONL(absDir); err != nil {
+		exitErr("rebuild_index", err.Error())
+	}
 	info, err := idx.Get(*chainID)
 	if err != nil {
 		exitErr("lookup", err.Error())
