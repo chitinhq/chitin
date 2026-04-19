@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "deny",
+    "suspicious": "warn",
+    "pedantic": "off",
+    "style": "warn"
+  },
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    ".nx",
+    "go",
+    "python",
+    "**/*.d.ts"
+  ]
+}
