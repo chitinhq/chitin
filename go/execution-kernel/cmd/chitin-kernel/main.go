@@ -138,11 +138,31 @@ func cmdChainInfo(args []string) {
 	fmt.Println(string(out))
 }
 
+// cmdIngestTranscript reads a Claude Code session JSONL transcript and operates
+// in one of two modes:
+//
+// Parse-only mode (no --envelope-template):
+//   Parses the transcript, saves a checkpoint recording the byte offset, and
+//   prints {"ok":true,"turns":[...]} to stdout.  Useful for external callers
+//   that want the parsed turn data without emitting to a chain.
+//
+// Emit mode (--envelope-template <file>):
+//   In addition to parsing and checkpointing, emits one assistant_turn event
+//   per parsed turn into .chitin/events-<run_id>.jsonl using the transactional
+//   Emitter.  The template JSON must contain all required envelope fields
+//   (schema_version, run_id, session_id, surface, chain_id, chain_type="session");
+//   missing fields cause a loud failure before any emission.  On success prints
+//   {"ok":true,"emitted":N,"turns":N}.
 func cmdIngestTranscript(args []string) {
 	fs := flag.NewFlagSet("ingest-transcript", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: chitin-kernel ingest-transcript --session-id <id> --transcript-path <file> [--dir <dir>] [--envelope-template <file>]")
+		fs.PrintDefaults()
+	}
 	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
 	sessionID := fs.String("session-id", "", "session_id of the transcript to ingest")
 	transcriptPath := fs.String("transcript-path", "", "path to Claude Code session JSONL transcript")
+	envelopeTemplateFile := fs.String("envelope-template", "", "path to JSON envelope template; if set, emits assistant_turn events per parsed turn")
 	fs.Parse(args)
 	if *sessionID == "" || *transcriptPath == "" {
 		exitErr("missing_args", "--session-id and --transcript-path required")
@@ -184,6 +204,45 @@ func cmdIngestTranscript(args []string) {
 	if err := ingest.SaveCheckpoint(cpPath, cp); err != nil {
 		exitErr("save_checkpoint", err.Error())
 	}
+
+	// Emit mode: when --envelope-template is provided, emit one assistant_turn
+	// event per parsed turn using the transactional Emitter.
+	if *envelopeTemplateFile != "" {
+		rawTmpl, err := os.ReadFile(*envelopeTemplateFile)
+		if err != nil {
+			exitErr("read_envelope_template", err.Error())
+		}
+		var tmpl event.Event
+		if err := json.Unmarshal(rawTmpl, &tmpl); err != nil {
+			exitErr("parse_envelope_template", err.Error())
+		}
+		// Validate before touching the chain index — illegal states caught here.
+		if err := ingest.ValidateEnvelopeTemplate(&tmpl); err != nil {
+			exitErr("invalid_envelope_template", err.Error())
+		}
+		idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
+		if err != nil {
+			exitErr("open_index", err.Error())
+		}
+		defer idx.Close()
+		// Reconcile index from JSONL for parity with cmdEmit (Blocker 1 path).
+		if err := idx.RebuildFromJSONL(absDir); err != nil {
+			exitErr("rebuild_index", err.Error())
+		}
+		em := emit.Emitter{
+			LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
+			Index:   idx,
+		}
+		n, err := ingest.EmitTurns(&em, &tmpl, turns)
+		if err != nil {
+			exitErr("emit", err.Error())
+		}
+		out, _ := json.Marshal(map[string]any{"ok": true, "emitted": n, "turns": n})
+		fmt.Println(string(out))
+		return
+	}
+
+	// Parse-only mode: print parsed turns as JSON (original behavior).
 	out, _ := json.Marshal(map[string]any{"ok": true, "turns": turns})
 	fmt.Println(string(out))
 }
