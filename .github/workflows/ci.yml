@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache: true
           cache-dependency-path: go/execution-kernel/go.sum
 
@@ -42,8 +42,11 @@ jobs:
           fi
           find node_modules -name 'better_sqlite3.node' | head
 
-      - name: Generate Go types from contracts
-        run: pnpm exec tsx libs/contracts/tools/generate-go-types.ts
+      # Go type generator is v1-shaped; v2 Event struct is hand-maintained in
+      # go/execution-kernel/internal/event/event.go during Phase 1.5.
+      # Re-enable once the generator emits v2 (envelope + discriminated payload).
+      # - name: Generate Go types from contracts
+      #   run: pnpm exec tsx libs/contracts/tools/generate-go-types.ts
 
       - name: Go vet
         run: go vet ./...
