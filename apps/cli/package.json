@@ -1,0 +1,38 @@
+{
+  "name": "@chitin/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "bin": {
+    "chitin": "./src/main.ts"
+  },
+  "scripts": {
+    "test": "vitest run tests"
+  },
+  "nx": {
+    "tags": ["layer:cli"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run apps/cli/tests",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "run": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx apps/cli/src/main.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@chitin/contracts": "workspace:*",
+    "@chitin/telemetry": "workspace:*",
+    "commander": "*",
+    "chokidar": "*"
+  }
+}
