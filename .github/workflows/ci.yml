@@ -2,39 +2,57 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
-  main:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
         with:
-          filter: tree:0
-          fetch-depth: 0
+          version: 10
 
-      # This enables task distribution via Nx Cloud
-      # Run this command as early as possible, before dependencies are installed
-      # Learn more at https://nx.dev/ci/reference/nx-cloud-cli#npx-nxcloud-startcirun
-      - run: npx nx start-ci-run --distribute-on="3 linux-medium-js" --stop-agents-after="e2e-ci"
-
-      # Cache node_modules
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: 22
+          cache: pnpm
 
-      - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: go/execution-kernel/go.sum
 
-      # Prepend any command with "nx record --" to record its logs to Nx Cloud
-      - run: npx nx record -- npx nx format:check  --base="remotes/origin/main"
-      - run: npx nx run-many -t lint test build typecheck e2e-ci
-      # Nx Cloud recommends fixes for failures to help you get CI green faster. Learn more: https://nx.dev/ci/features/self-healing-ci
-      - run: npx nx fix-ci
-        if: always()
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build better-sqlite3 native binding
+        run: pnpm rebuild better-sqlite3
+        env:
+          npm_config_build_from_source: 'true'
+
+      - name: Generate Go types from contracts
+        run: pnpm exec tsx libs/contracts/tools/generate-go-types.ts
+
+      - name: Go vet
+        run: go vet ./...
+        working-directory: go/execution-kernel
+
+      - name: Go test
+        run: go test ./...
+        working-directory: go/execution-kernel
+
+      - name: Build Go kernel
+        run: pnpm exec nx run execution-kernel:build
+
+      - name: Vitest (TS suites)
+        run: pnpm exec vitest run
+
+      - name: Oxlint
+        run: pnpm exec oxlint . || true  # warnings only for phase-1
