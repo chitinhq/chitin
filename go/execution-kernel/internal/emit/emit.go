@@ -1,42 +1,68 @@
-// Package emit writes canonical events to the local JSONL ground truth.
-// Path convention: <workspace>/.chitin/events-<run_id>.jsonl — append-only.
+// Package emit appends Events to the canonical JSONL log and updates the chain index.
+// This is the sole write path for .chitin/events-<run_id>.jsonl.
 package emit
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/hash"
 )
 
-// AppendEvent serializes ev to a single JSONL line and appends it to
-// <workspace>/.chitin/events-<run_id>.jsonl. The .chitin directory is
-// created if it does not exist. The write uses O_APPEND so concurrent
-// invocations from different agent subprocesses interleave safely at
-// the OS level.
-func AppendEvent(workspace string, ev event.Event) error {
-	dir := filepath.Join(workspace, ".chitin")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("emit: mkdir .chitin: %w", err)
-	}
-	path := filepath.Join(dir, "events-"+ev.RunID+".jsonl")
+// Emitter appends events to a JSONL log and updates the chain index.
+type Emitter struct {
+	LogPath string
+	Index   *chain.Index
+}
 
-	data, err := json.Marshal(ev)
+// Emit appends ev to the log. Recomputes Seq, PrevHash, ThisHash using the chain index.
+// On return, ev's Seq/PrevHash/ThisHash fields reflect what was written.
+func (e *Emitter) Emit(ev *event.Event) error {
+	info, err := e.Index.Get(ev.ChainID)
 	if err != nil {
-		return fmt.Errorf("emit: marshal: %w", err)
+		return fmt.Errorf("chain index lookup: %w", err)
 	}
-	data = append(data, '\n')
+	if info == nil {
+		ev.Seq = 0
+		ev.PrevHash = nil
+	} else {
+		ev.Seq = info.LastSeq + 1
+		prev := info.LastHash
+		ev.PrevHash = &prev
+	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	m, err := ev.ToMap()
 	if err != nil {
-		return fmt.Errorf("emit: open %s: %w", path, err)
+		return fmt.Errorf("event to map: %w", err)
+	}
+	delete(m, "this_hash")
+
+	h, err := hash.HashEvent(m)
+	if err != nil {
+		return fmt.Errorf("hash event: %w", err)
+	}
+	ev.ThisHash = h
+	m["this_hash"] = h
+
+	line, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	f, err := os.OpenFile(e.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
 	}
 	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
 
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("emit: write %s: %w", path, err)
+	if err := e.Index.Upsert(ev.ChainID, ev.Seq, ev.ThisHash); err != nil {
+		return fmt.Errorf("chain index upsert: %w", err)
 	}
 	return nil
 }
