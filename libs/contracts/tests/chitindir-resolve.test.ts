@@ -1,8 +1,8 @@
 import { mkdtempSync, mkdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolveChitinDir } from './chitindir-resolve';
+import { describe, it, expect, afterEach } from 'vitest';
+import { resolveChitinDir } from '../src/chitindir-resolve';
 
 describe('resolveChitinDir', () => {
   const originalHome = process.env.HOME;
