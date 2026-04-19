@@ -1,5 +1,5 @@
-import { openDb, indexEvent, tailJsonlOnce } from '@chitin/telemetry';
-import { readdirSync, existsSync, statSync, watch } from 'node:fs';
+import { readdirSync, existsSync, statSync, watch, createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 
 export interface TailOpts {
@@ -7,10 +7,6 @@ export interface TailOpts {
   surface?: string;
 }
 
-/**
- * Watch .chitin/events-*.jsonl; for each new line, index into SQLite and
- * print a human-readable row. Blocks until SIGINT.
- */
 export function eventsTailCommand(opts: TailOpts): void {
   const workspace = opts.workspace ?? process.cwd();
   const chitinDir = join(workspace, '.chitin');
@@ -19,33 +15,53 @@ export function eventsTailCommand(opts: TailOpts): void {
     return;
   }
 
-  const db = openDb(join(chitinDir, 'events.db'));
   const offsets = new Map<string, number>();
+  const draining = new Set<string>();
 
-  function drain(filename: string): void {
-    const full = join(chitinDir, filename);
-    const lastOffset = offsets.get(full) ?? 0;
-    const size = statSync(full).size;
-    if (size <= lastOffset) return;
-
-    tailJsonlOnce(full, (ev) => {
-      if (opts.surface && ev.surface !== opts.surface) return;
-      indexEvent(db, ev);
-      process.stdout.write(
-        `${ev.ts}  ${ev.surface.padEnd(14)} ${ev.action_type.padEnd(10)} ${ev.tool_name.padEnd(12)} ${ev.run_id}\n`,
-      );
-    });
-    offsets.set(full, size);
+  async function drain(filename: string): Promise<void> {
+    if (draining.has(filename)) return;
+    draining.add(filename);
+    try {
+      const full = join(chitinDir, filename);
+      const size = statSync(full).size;
+      const start = offsets.get(filename) ?? 0;
+      if (size <= start) return;
+      const rl = createInterface({
+        input: createReadStream(full, { start, encoding: 'utf8' }),
+        crlfDelay: Infinity,
+      });
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line) as {
+            ts: string;
+            surface: string;
+            event_type: string;
+            chain_id: string;
+          };
+          if (opts.surface && ev.surface !== opts.surface) continue;
+          process.stdout.write(
+            `${ev.ts}  ${ev.surface.padEnd(14)} ${ev.event_type.padEnd(16)} ${ev.chain_id.slice(0, 12)}\n`,
+          );
+        } catch {
+          // Malformed line — skip.
+        }
+      }
+      offsets.set(filename, size);
+    } finally {
+      draining.delete(filename);
+    }
   }
 
   for (const f of readdirSync(chitinDir)) {
-    if (f.startsWith('events-') && f.endsWith('.jsonl')) drain(f);
+    if (f.startsWith('events-') && f.endsWith('.jsonl')) void drain(f);
   }
 
   watch(chitinDir, { persistent: true }, (_event, filename) => {
     if (!filename) return;
-    if (!filename.startsWith('events-') || !filename.endsWith('.jsonl')) return;
-    drain(filename);
+    const name = String(filename);
+    if (!name.startsWith('events-') || !name.endsWith('.jsonl')) return;
+    void drain(name);
   });
 
   process.stdout.write(`tailing ${chitinDir}/events-*.jsonl (Ctrl-C to stop)\n`);

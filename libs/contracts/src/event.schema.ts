@@ -1,29 +1,32 @@
 import { z } from 'zod';
+import { EnvelopeSchema } from './envelope.schema';
+import {
+  SessionStartPayloadSchema,
+  UserPromptPayloadSchema,
+  AssistantTurnPayloadSchema,
+  CompactionPayloadSchema,
+  SessionEndPayloadSchema,
+  IntendedPayloadSchema,
+  ExecutedPayloadSchema,
+  FailedPayloadSchema,
+} from './payloads.schema';
 
-export const ActionTypeSchema = z.enum([
-  'read',
-  'write',
-  'exec',
-  'git',
-  'net',
-  'dangerous',
+const envShape = EnvelopeSchema.shape;
+
+export const EventSchema = z.discriminatedUnion('event_type', [
+  z.object({ ...envShape, event_type: z.literal('session_start'), payload: SessionStartPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('user_prompt'), payload: UserPromptPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('assistant_turn'), payload: AssistantTurnPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('compaction'), payload: CompactionPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('session_end'), payload: SessionEndPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('intended'), payload: IntendedPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('executed'), payload: ExecutedPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('failed'), payload: FailedPayloadSchema }),
 ]);
 
-export const ResultSchema = z.enum(['success', 'error', 'denied']);
+export type Event = z.infer<typeof EventSchema>;
 
-export const EventSchema = z.object({
-  run_id: z.string().uuid(),
-  session_id: z.string().uuid(),
-  surface: z.string().min(1),
-  driver: z.string().min(1),
-  agent_id: z.string(),
-  tool_name: z.string(),
-  raw_input: z.record(z.string(), z.any()),
-  canonical_form: z.record(z.string(), z.any()),
-  action_type: ActionTypeSchema,
-  result: ResultSchema,
-  duration_ms: z.number().int().nonnegative(),
-  error: z.string().nullable(),
-  ts: z.string().datetime({ offset: true }),
-  metadata: z.record(z.string(), z.any()),
-});
+// Reserved for Phase 2 (documented, not emitted):
+// - policy_decided
+// - rewritten
+// - denied
