@@ -20,18 +20,31 @@ type Emitter struct {
 
 // Emit appends ev to the log. Recomputes Seq, PrevHash, ThisHash using the chain index.
 // On return, ev's Seq/PrevHash/ThisHash fields reflect what was written.
+//
+// Crash-safety ordering:
+//   - The BEGIN IMMEDIATE transaction is acquired first, serializing all
+//     concurrent writers sharing the same chain_index.sqlite.
+//   - JSONL append occurs inside the critical section (after tx acquired,
+//     before tx.Commit). No other writer can observe an intermediate state.
+//   - If the process dies after JSONL append but before tx.Commit, the DB
+//     transaction rolls back — the index does not reflect the appended line.
+//   - The next cmdEmit invocation calls RebuildFromJSONL first (Blocker 1),
+//     which scans JSONL and advances the index to match. That is the intended
+//     recovery path: the orphaned line is reconciled before the next emit.
 func (e *Emitter) Emit(ev *event.Event) error {
-	info, err := e.Index.Get(ev.ChainID)
+	tx, err := e.Index.BeginEmit(ev.ChainID)
 	if err != nil {
-		return fmt.Errorf("chain index lookup: %w", err)
+		return fmt.Errorf("begin emit: %w", err)
 	}
-	if info == nil {
+	defer tx.Rollback() // no-op if Commit was called
+
+	if tx.Current != nil {
+		ev.Seq = tx.Current.LastSeq + 1
+		prev := tx.Current.LastHash
+		ev.PrevHash = &prev
+	} else {
 		ev.Seq = 0
 		ev.PrevHash = nil
-	} else {
-		ev.Seq = info.LastSeq + 1
-		prev := info.LastHash
-		ev.PrevHash = &prev
 	}
 
 	m, err := ev.ToMap()
@@ -56,13 +69,13 @@ func (e *Emitter) Emit(ev *event.Event) error {
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("write: %w", err)
+	if _, werr := f.Write(append(line, '\n')); werr != nil {
+		f.Close()
+		return fmt.Errorf("write: %w", werr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		return fmt.Errorf("close log: %w", cerr)
 	}
 
-	if err := e.Index.Upsert(ev.ChainID, ev.Seq, ev.ThisHash); err != nil {
-		return fmt.Errorf("chain index upsert: %w", err)
-	}
-	return nil
+	return tx.Commit(ev.Seq, ev.ThisHash)
 }
