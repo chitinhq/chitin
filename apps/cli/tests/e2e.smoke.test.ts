@@ -1,11 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const kernelBinary = process.env.CHITIN_KERNEL_BINARY
   ?? join(process.cwd(), 'go/execution-kernel/chitin-kernel');
+
+beforeAll(() => {
+  if (existsSync(kernelBinary)) return;
+  const build = spawnSync(
+    'go',
+    ['build', '-o', kernelBinary, './cmd/chitin-kernel'],
+    { cwd: join(process.cwd(), 'go/execution-kernel'), encoding: 'utf8' },
+  );
+  if (build.status !== 0) {
+    throw new Error(`failed to build kernel binary: ${build.stderr}`);
+  }
+});
 
 function runKernel(args: string[], opts: { cwd?: string } = {}): string {
   const res = spawnSync(kernelBinary, args, { encoding: 'utf8', cwd: opts.cwd });

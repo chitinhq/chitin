@@ -137,6 +137,9 @@ func cmdIngestTranscript(args []string) {
 		exitErr("missing_args", "--session-id and --transcript-path required")
 	}
 	absDir, _ := filepath.Abs(*dir)
+	if err := kstate.Init(absDir, false); err != nil {
+		exitErr("init", err.Error())
+	}
 	cpPath := filepath.Join(absDir, "transcript_checkpoint.json")
 	cp, err := ingest.LoadCheckpoint(cpPath)
 	if err != nil {

@@ -34,7 +34,7 @@ program.command('replay <session_id>')
   .action((sessionId, opts) => replayCommand(sessionId, opts));
 
 registerRun(program);
-registerEventsTree(program);
+registerEventsTree(events);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
