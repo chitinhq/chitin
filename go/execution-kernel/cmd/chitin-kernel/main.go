@@ -182,6 +182,22 @@ func cmdIngestTranscript(args []string) {
 		exitErr("open_transcript", err.Error())
 	}
 	defer f.Close()
+	finfo, err := f.Stat()
+	if err != nil {
+		exitErr("stat_transcript", err.Error())
+	}
+	// Clamp a stale checkpoint: if the recorded offset exceeds the current file
+	// size, the file was truncated / rotated (or the checkpoint was tampered
+	// with). Clamp to size and warn, so we neither seek past EOF silently nor
+	// skip newly-appended content. See adversarial review Probe 7.
+	if prev.LastIngestOffset > finfo.Size() {
+		fmt.Fprintf(
+			os.Stderr,
+			`{"warning":"checkpoint_ahead_of_file","session_id":%q,"checkpoint_offset":%d,"file_size":%d}`+"\n",
+			*sessionID, prev.LastIngestOffset, finfo.Size(),
+		)
+		prev.LastIngestOffset = finfo.Size()
+	}
 	if prev.LastIngestOffset > 0 {
 		if _, err := f.Seek(prev.LastIngestOffset, 0); err != nil {
 			exitErr("seek", err.Error())
@@ -195,7 +211,6 @@ func cmdIngestTranscript(args []string) {
 	if err != nil {
 		exitErr("parse", err.Error())
 	}
-	finfo, _ := f.Stat()
 	cp[*sessionID] = ingest.CheckpointEntry{
 		TranscriptPath:   *transcriptPath,
 		LastIngestOffset: finfo.Size(),

@@ -8,8 +8,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	_ "modernc.org/sqlite"
 )
@@ -182,32 +184,46 @@ func (i *Index) BeginEmit(chainID string) (*EmitTx, error) {
 }
 
 // jsonlEventRow holds the fields we need when scanning JSONL event lines.
+// PrevHash is a pointer so we can distinguish "not present" (unusual) from
+// "explicitly null" (chain head).
 type jsonlEventRow struct {
-	ChainID  string `json:"chain_id"`
-	Seq      int64  `json:"seq"`
-	ThisHash string `json:"this_hash"`
+	ChainID  string  `json:"chain_id"`
+	Seq      int64   `json:"seq"`
+	ThisHash string  `json:"this_hash"`
+	PrevHash *string `json:"prev_hash"`
 }
 
 // RebuildFromJSONL brings the index into agreement with the ground-truth JSONL
-// files found in chitinDir.
+// files found in chitinDir, refusing to reconcile any chain whose linkage is
+// broken.
 //
 // Precondition:  chitinDir contains zero or more files whose names match
 //                events-*.jsonl; each line is either valid JSON containing
-//                chain_id/seq/this_hash or is malformed and must be tolerated.
+//                chain_id/seq/this_hash/prev_hash or is malformed and must
+//                be tolerated.
 //
-// Postcondition: For every chain_id that appears in any JSONL file,
-//                idx.Get(chain_id) returns (last_seq, last_hash) where
-//                last_seq is the maximum seq seen for that chain across all
-//                files, and last_hash is the this_hash of that highest-seq
-//                event.  Chains not present in any JSONL file are untouched.
+// Postcondition: For every chain_id that appears in any JSONL file, if the
+//                chain's events form a valid linked list (seqs 0..N-1,
+//                prev_hash at seq 0 is null, prev_hash at seq k matches
+//                this_hash at seq k-1), idx.Get(chain_id) returns
+//                (N-1, this_hash at seq N-1). Chains not present in any
+//                JSONL file are untouched.
+//
+// On any broken linkage detected — gap in seq, wrong prev_hash, non-null
+// prev_hash at head, duplicate seq with conflicting this_hash — returns an
+// error identifying the chain and the specific inconsistency; the DB is left
+// unchanged.  Rationale: a chain whose JSONL linkage is broken is either
+// corrupted or forged; continuing to emit on top of it would produce a
+// divergent fork, so the correct response is to refuse rather than to guess.
 //
 // Invariant:     JSONL files are never modified.  The DB is monotonically
-//                brought up to match JSONL: an existing row is only
-//                overwritten when the JSONL evidence has a strictly higher seq.
-//                Calling RebuildFromJSONL twice in a row produces the same DB
-//                state (idempotent).  Concurrent invocations are safe because
-//                SQLite serialises writers and the UPSERT guard (WHERE
-//                excluded.last_seq > last_seq) is a monotone advance.
+//                brought up to match validated JSONL: an existing row is
+//                only overwritten when the JSONL evidence has a strictly
+//                higher seq.  Calling RebuildFromJSONL twice in a row
+//                produces the same DB state (idempotent).  Concurrent
+//                invocations are safe because SQLite serialises writers and
+//                the UPSERT guard (WHERE excluded.last_seq > last_seq) is a
+//                monotone advance.
 //
 // Phase 2 note:  This scans all JSONL on every emit.  At Phase 1.5 volumes
 //                this is acceptable.  Phase 2 can replace this with a
@@ -226,46 +242,93 @@ func (i *Index) RebuildFromJSONL(chitinDir string) error {
 		return nil
 	}
 
-	// Build an in-memory map of chain_id → best (seq, hash) from all JSONL files.
-	best := make(map[string]jsonlEventRow)
-
+	// Collect all rows per chain — not just the max — so we can validate linkage.
+	rowsByChain := make(map[string][]jsonlEventRow)
 	for _, fpath := range files {
 		f, err := os.Open(fpath)
 		if err != nil {
 			// Non-fatal: skip unreadable file.
 			continue
 		}
-
 		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for scanner.Scan() {
-			line := scanner.Bytes()
 			var row jsonlEventRow
-			if err := json.Unmarshal(line, &row); err != nil {
-				// Tolerate malformed lines.
-				continue
+			if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+				continue // tolerate malformed lines
 			}
 			if row.ChainID == "" || row.ThisHash == "" {
 				continue
 			}
-			if prev, ok := best[row.ChainID]; !ok || row.Seq > prev.Seq {
-				best[row.ChainID] = row
-			}
+			rowsByChain[row.ChainID] = append(rowsByChain[row.ChainID], row)
 		}
 		f.Close()
 	}
 
-	// Upsert into the DB, but only advance (never retreat).
-	for chainID, row := range best {
-		_, err := i.db.Exec(
+	// Sort, dedup exact duplicates, validate linkage, and upsert per chain.
+	for chainID, rows := range rowsByChain {
+		sort.Slice(rows, func(a, b int) bool { return rows[a].Seq < rows[b].Seq })
+
+		// Collapse exact duplicates (same seq + same this_hash); refuse conflicts.
+		deduped := rows[:0]
+		for k, row := range rows {
+			if k > 0 && rows[k-1].Seq == row.Seq {
+				if rows[k-1].ThisHash != row.ThisHash {
+					return fmt.Errorf(
+						"chain %s: seq %d has conflicting this_hash: %s vs %s",
+						chainID, row.Seq, rows[k-1].ThisHash, row.ThisHash,
+					)
+				}
+				continue
+			}
+			deduped = append(deduped, row)
+		}
+		rows = deduped
+
+		// Seqs must be 0..N-1 contiguous; linkage must hold at every step.
+		for k, row := range rows {
+			if row.Seq != int64(k) {
+				return fmt.Errorf(
+					"chain %s: expected seq %d at position %d, got %d (gap or out-of-range head)",
+					chainID, k, k, row.Seq,
+				)
+			}
+			if k == 0 {
+				if row.PrevHash != nil {
+					return fmt.Errorf(
+						"chain %s: seq 0 must have prev_hash=null, got %q",
+						chainID, *row.PrevHash,
+					)
+				}
+				continue
+			}
+			if row.PrevHash == nil {
+				return fmt.Errorf(
+					"chain %s: seq %d has prev_hash=null (must link to seq %d)",
+					chainID, row.Seq, row.Seq-1,
+				)
+			}
+			if *row.PrevHash != rows[k-1].ThisHash {
+				return fmt.Errorf(
+					"chain %s: seq %d prev_hash %s does not match seq %d this_hash %s",
+					chainID, row.Seq, *row.PrevHash, rows[k-1].Seq, rows[k-1].ThisHash,
+				)
+			}
+		}
+
+		if len(rows) == 0 {
+			continue
+		}
+		last := rows[len(rows)-1]
+		if _, err := i.db.Exec(
 			`INSERT INTO chains (chain_id, last_seq, last_hash)
 			 VALUES (?, ?, ?)
 			 ON CONFLICT(chain_id) DO UPDATE
 			   SET last_seq  = excluded.last_seq,
 			       last_hash = excluded.last_hash
 			   WHERE excluded.last_seq > last_seq`,
-			chainID, row.Seq, row.ThisHash,
-		)
-		if err != nil {
+			chainID, last.Seq, last.ThisHash,
+		); err != nil {
 			return err
 		}
 	}
