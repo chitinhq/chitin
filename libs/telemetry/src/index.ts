@@ -1,6 +1,7 @@
 export * from './sqlite-indexer.js';
 export * from './jsonl-tailer.js';
 export * from './replay.js';
+export * from './ensure-indexed.js';
 
 import BetterSqlite3 from 'better-sqlite3';
 import { join } from 'node:path';

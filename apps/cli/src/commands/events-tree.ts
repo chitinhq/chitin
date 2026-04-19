@@ -68,7 +68,8 @@ export function registerEventsTree(events: Command): void {
     .argument('<session_id>', 'session id to render')
     .option('--chitin-dir <path>', 'chitin state dir', './.chitin')
     .action(async (sessionID: string, opts: { chitinDir: string }) => {
-      const { getEventsBySession } = await import('@chitin/telemetry');
+      const { ensureIndexed, getEventsBySession } = await import('@chitin/telemetry');
+      ensureIndexed(opts.chitinDir);
       const rows = await getEventsBySession(opts.chitinDir, sessionID);
       const tree = buildTree(rows as EventRow[]);
       process.stdout.write(renderTree(tree) + '\n');
