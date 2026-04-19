@@ -10,7 +10,8 @@
 import { readFileSync } from 'node:fs';
 import { runHook } from '../src/hook-runner.js';
 import type { AdapterContext } from '../src/hook-runner.js';
-import { buildAdapterContext, resolveChitinDir } from '../src/adapter-context.js';
+import { buildAdapterContext } from '../src/adapter-context.js';
+import { resolveChitinDir } from '@chitin/contracts';
 
 function readStdinSync(): string {
   // process.stdin.fd is 0; reading synchronously is acceptable for hook entry.

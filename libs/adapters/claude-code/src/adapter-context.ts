@@ -3,41 +3,9 @@
  *
  * Inlined from apps/cli/src/ctx.ts to avoid a cross-boundary import from
  * a lib into an app. The logic must stay in sync manually if ctx.ts changes.
- *
- * resolveChitinDir is also inlined here to avoid an @chitin/contracts
- * dependency that the adapter package does not declare.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, statSync, mkdirSync } from 'node:fs';
-import { join, dirname, resolve as resolvePath } from 'node:path';
-import { hostname, homedir, userInfo } from 'node:os';
-
-/**
- * Walk up from cwd looking for an existing .chitin/ dir. Falls back to
- * $HOME/.chitin/ (created on demand).
- */
-export function resolveChitinDir(cwd: string, workspaceBoundary: string): string {
-  const absCwd = resolvePath(cwd);
-  const absBoundary = workspaceBoundary ? resolvePath(workspaceBoundary) : '';
-
-  let dir = absCwd;
-  while (true) {
-    const candidate = join(dir, '.chitin');
-    if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-      return candidate;
-    }
-    if (absBoundary && dir === absBoundary) break;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  const orphan = join(homedir(), '.chitin');
-  if (!existsSync(orphan)) {
-    mkdirSync(orphan, { recursive: true });
-  }
-  return orphan;
-}
+import { hostname, userInfo } from 'node:os';
 
 export interface AdapterContextInput {
   surface: string;
