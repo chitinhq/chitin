@@ -1,10 +1,12 @@
 import { mkdtempSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { describe, it, expect, afterEach } from 'vitest';
 
-// Workspace root — temp dirs must live here so pnpm exec can resolve the
-// workspace and find tsx.
+// Spawn from workspace root so `pnpm exec tsx` can resolve the tsx binary.
+// The hook's cwd (inside the hook input JSON) is a separate /tmp dir —
+// the resolver walks up from there.
 const WORKSPACE_ROOT = resolve(__dirname, '../../../../');
 
 const tempDirs: string[] = [];
@@ -22,8 +24,7 @@ function adapterEntry(): string {
 
 describe('claude-code adapter CLI bin', () => {
   it('resolves chitinDir from cwd via walk-up, emits an event', () => {
-    // Create temp workspace inside the monorepo so pnpm exec can find tsx.
-    const workspace = mkdtempSync(join(WORKSPACE_ROOT, 'adp-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'adp-'));
     tempDirs.push(workspace);
     mkdirSync(join(workspace, '.chitin'));
     const cwd = join(workspace, 'a', 'b');
@@ -40,7 +41,7 @@ describe('claude-code adapter CLI bin', () => {
       ['exec', 'tsx', adapterEntry()],
       {
         input: hookInput,
-        cwd,
+        cwd: WORKSPACE_ROOT,
         encoding: 'utf8',
         env: {
           ...process.env,
