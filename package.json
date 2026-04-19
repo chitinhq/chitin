@@ -4,6 +4,14 @@
   "license": "MIT",
   "scripts": {},
   "private": true,
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "@swc/core",
+      "esbuild",
+      "nx"
+    ]
+  },
   "devDependencies": {
     "@nx/eslint": "^22.6.5",
     "@nx/eslint-plugin": "^22.6.5",
