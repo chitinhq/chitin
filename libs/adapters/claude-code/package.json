@@ -18,5 +18,8 @@
       "layer:adapter"
     ]
   },
+  "bin": {
+    "chitin-claude-code-adapter": "./bin/cli.ts"
+  },
   "dependencies": {}
 }
