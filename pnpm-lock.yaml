@@ -84,6 +84,8 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
 
+  libs/contracts: {}
+
 packages:
 
   '@babel/code-frame@7.29.0':
