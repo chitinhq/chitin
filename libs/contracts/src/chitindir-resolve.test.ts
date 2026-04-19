@@ -23,11 +23,14 @@ describe('resolveChitinDir', () => {
   });
 
   it('falls back to $HOME/.chitin when none found, creating on-demand', () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'cd-cwd-'));
+    // Sandbox the walk-up inside a fresh temp dir so stray /tmp/.chitin on the
+    // host (from earlier runs) cannot be found. Passing boundary=sandbox makes
+    // the walk stop at the sandbox, exercising the orphan-fallback path.
+    const sandbox = mkdtempSync(join(tmpdir(), 'cd-cwd-'));
     const fakeHome = mkdtempSync(join(tmpdir(), 'cd-home-'));
     process.env.HOME = fakeHome;
 
-    const got = resolveChitinDir(cwd, '');
+    const got = resolveChitinDir(sandbox, sandbox);
     const want = join(fakeHome, '.chitin');
     expect(got).toBe(want);
     expect(statSync(want).isDirectory()).toBe(true);
