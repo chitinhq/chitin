@@ -1,69 +1,89 @@
-import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { Event } from '@chitin/contracts';
+import BetterSqlite3 from 'better-sqlite3';
 
-const SCHEMA_PATH = join(dirname(fileURLToPath(import.meta.url)), 'schema.sql');
-
-export function openDb(path: string): Database.Database {
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
-  db.exec(readFileSync(SCHEMA_PATH, 'utf8'));
-  return db;
+export interface V2Event {
+  schema_version: string;
+  run_id: string;
+  session_id: string;
+  surface: string;
+  driver_identity: { user: string; machine_id: string; machine_fingerprint: string };
+  agent_instance_id: string;
+  parent_agent_id: string | null;
+  agent_fingerprint: string;
+  event_type: string;
+  chain_id: string;
+  chain_type: string;
+  parent_chain_id: string | null;
+  seq: number;
+  prev_hash: string | null;
+  this_hash: string;
+  ts: string;
+  labels: Record<string, string>;
+  payload: Record<string, unknown>;
 }
 
-export function indexEvent(db: Database.Database, ev: Event): void {
+const CREATE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS events (
+  this_hash          TEXT PRIMARY KEY,
+  schema_version     TEXT NOT NULL,
+  run_id             TEXT NOT NULL,
+  session_id         TEXT NOT NULL,
+  surface            TEXT NOT NULL,
+  driver_identity    TEXT NOT NULL,
+  agent_instance_id  TEXT NOT NULL,
+  parent_agent_id    TEXT,
+  agent_fingerprint  TEXT NOT NULL,
+  event_type         TEXT NOT NULL,
+  chain_id           TEXT NOT NULL,
+  chain_type         TEXT NOT NULL,
+  parent_chain_id    TEXT,
+  seq                INTEGER NOT NULL,
+  prev_hash          TEXT,
+  ts                 TEXT NOT NULL,
+  labels             TEXT NOT NULL,
+  payload            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_chain ON events(chain_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_parent_chain ON events(parent_chain_id);
+CREATE INDEX IF NOT EXISTS idx_events_surface ON events(surface);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+`;
+
+export function indexEvents(dbPath: string, events: V2Event[]): void {
+  const db = new BetterSqlite3(dbPath);
+  db.exec(CREATE_SCHEMA);
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO events
-      (run_id, session_id, ts, surface, driver, agent_id, tool_name,
-       action_type, result, duration_ms, error,
-       raw_input, canonical_form, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO events (
+      this_hash, schema_version, run_id, session_id, surface,
+      driver_identity, agent_instance_id, parent_agent_id, agent_fingerprint,
+      event_type, chain_id, chain_type, parent_chain_id, seq, prev_hash,
+      ts, labels, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(
-    ev.run_id,
-    ev.session_id,
-    ev.ts,
-    ev.surface,
-    ev.driver,
-    ev.agent_id,
-    ev.tool_name,
-    ev.action_type,
-    ev.result,
-    ev.duration_ms,
-    ev.error,
-    JSON.stringify(ev.raw_input),
-    JSON.stringify(ev.canonical_form),
-    JSON.stringify(ev.metadata),
-  );
-}
-
-export interface ListFilter {
-  surface?: string;
-  run_id?: string;
-  action_type?: string;
-  limit?: number;
-}
-
-export function listEvents(db: Database.Database, f: ListFilter): Event[] {
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (f.surface) { where.push('surface = ?'); params.push(f.surface); }
-  if (f.run_id) { where.push('run_id = ?'); params.push(f.run_id); }
-  if (f.action_type) { where.push('action_type = ?'); params.push(f.action_type); }
-
-  const sql = `
-    SELECT * FROM events
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY ts DESC
-    LIMIT ${f.limit ?? 200}
-  `;
-  const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    ...r,
-    raw_input: JSON.parse(r['raw_input'] as string),
-    canonical_form: JSON.parse(r['canonical_form'] as string),
-    metadata: JSON.parse(r['metadata'] as string),
-  })) as Event[];
+  const tx = db.transaction((rows: V2Event[]) => {
+    for (const e of rows) {
+      stmt.run(
+        e.this_hash,
+        e.schema_version,
+        e.run_id,
+        e.session_id,
+        e.surface,
+        JSON.stringify(e.driver_identity),
+        e.agent_instance_id,
+        e.parent_agent_id,
+        e.agent_fingerprint,
+        e.event_type,
+        e.chain_id,
+        e.chain_type,
+        e.parent_chain_id,
+        e.seq,
+        e.prev_hash,
+        e.ts,
+        JSON.stringify(e.labels),
+        JSON.stringify(e.payload),
+      );
+    }
+  });
+  tx(events);
+  db.close();
 }

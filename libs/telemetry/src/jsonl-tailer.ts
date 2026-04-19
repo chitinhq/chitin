@@ -1,22 +1,18 @@
-import { readFileSync } from 'node:fs';
-import type { Event } from '@chitin/contracts';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import type { V2Event } from './sqlite-indexer';
 
-export type EventHandler = (ev: Event) => void;
-
-/**
- * Read every line of a JSONL file once and pass each parsed Event to `handler`.
- * Malformed lines are logged to stderr and skipped.
- */
-export function tailJsonlOnce(path: string, handler: EventHandler): void {
-  const data = readFileSync(path, 'utf8');
-  for (const line of data.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+export async function* tailJSONL(path: string): AsyncGenerator<V2Event> {
+  const rl = createInterface({
+    input: createReadStream(path, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
     try {
-      const ev = JSON.parse(trimmed) as Event;
-      handler(ev);
-    } catch (err) {
-      console.error(`[telemetry] skipping malformed line in ${path}: ${(err as Error).message}`);
+      yield JSON.parse(line) as V2Event;
+    } catch {
+      // Malformed line tolerance — skip.
     }
   }
 }

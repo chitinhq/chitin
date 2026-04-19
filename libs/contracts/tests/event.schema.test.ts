@@ -1,52 +1,73 @@
-import { describe, it, expect } from 'vitest';
-import { EventSchema } from '../src/event.schema.js';
-import type { ActionType } from '../src/event.types.js';
+import { describe, expect, it } from 'vitest';
+import { EventSchema } from '../src/event.schema';
 
-const VALID = {
+const baseEnvelope = {
+  schema_version: '2' as const,
   run_id: '550e8400-e29b-41d4-a716-446655440000',
   session_id: '550e8400-e29b-41d4-a716-446655440001',
   surface: 'claude-code',
-  driver: 'claude',
-  agent_id: 'agent-xyz',
-  tool_name: 'Bash',
-  raw_input: { command: 'git status' },
-  canonical_form: { tool: 'git', action: 'status' },
-  action_type: 'git' as ActionType,
-  result: 'success' as const,
-  duration_ms: 12,
-  error: null,
-  ts: '2026-04-19T12:00:00Z',
-  metadata: {},
+  driver_identity: {
+    user: 'jared@readybench.io',
+    machine_id: '3090-box',
+    machine_fingerprint: 'a'.repeat(64),
+  },
+  agent_instance_id: '550e8400-e29b-41d4-a716-446655440002',
+  parent_agent_id: null,
+  agent_fingerprint: 'b'.repeat(64),
+  chain_id: '550e8400-e29b-41d4-a716-446655440003',
+  chain_type: 'session' as const,
+  parent_chain_id: null,
+  seq: 0,
+  prev_hash: null,
+  this_hash: 'c'.repeat(64),
+  ts: '2026-04-19T12:00:00.000Z',
+  labels: {},
 };
 
-describe('EventSchema', () => {
-  it('accepts a fully-populated valid event', () => {
-    const parsed = EventSchema.parse(VALID);
-    expect(parsed.run_id).toBe(VALID.run_id);
-    expect(parsed.action_type).toBe('git');
+describe('EventSchema (discriminated by event_type)', () => {
+  it('validates a session_start event', () => {
+    const e = {
+      ...baseEnvelope,
+      event_type: 'session_start' as const,
+      payload: {
+        cwd: '/tmp',
+        client_info: { name: 'claude-code', version: '1.0.0' },
+        model: { name: 'claude-opus-4-7', provider: 'anthropic' },
+        system_prompt_hash: 'd'.repeat(64),
+        tool_allowlist_hash: 'e'.repeat(64),
+        agent_version: '1.0.0',
+      },
+    };
+    expect(() => EventSchema.parse(e)).not.toThrow();
   });
 
-  it('rejects an event with an invalid action_type', () => {
-    const bad = { ...VALID, action_type: 'magic' };
-    expect(() => EventSchema.parse(bad)).toThrow();
+  it('validates an intended event on a tool_call chain', () => {
+    const e = {
+      ...baseEnvelope,
+      chain_type: 'tool_call' as const,
+      chain_id: 'toolu_01ABC',
+      parent_chain_id: '550e8400-e29b-41d4-a716-446655440003',
+      event_type: 'intended' as const,
+      payload: {
+        tool_name: 'Read',
+        raw_input: { path: '/tmp/x' },
+        action_type: 'read' as const,
+      },
+    };
+    expect(() => EventSchema.parse(e)).not.toThrow();
   });
 
-  it('rejects an event with a non-UUID run_id', () => {
-    const bad = { ...VALID, run_id: 'not-a-uuid' };
-    expect(() => EventSchema.parse(bad)).toThrow();
+  it('rejects a session_start with intended payload', () => {
+    const e = {
+      ...baseEnvelope,
+      event_type: 'session_start' as const,
+      payload: { tool_name: 'Read', raw_input: {}, action_type: 'read' as const },
+    };
+    expect(() => EventSchema.parse(e)).toThrow();
   });
 
-  it('accepts any surface string (open enum)', () => {
-    expect(() => EventSchema.parse({ ...VALID, surface: 'openclaw', driver: 'openclaw' })).not.toThrow();
-    expect(() => EventSchema.parse({ ...VALID, surface: 'some-future-surface', driver: 'xyz' })).not.toThrow();
-  });
-
-  it('allows error to be null or a string', () => {
-    expect(() => EventSchema.parse({ ...VALID, error: null })).not.toThrow();
-    expect(() => EventSchema.parse({ ...VALID, error: 'boom', result: 'error' })).not.toThrow();
-  });
-
-  it('rejects negative duration_ms', () => {
-    expect(() => EventSchema.parse({ ...VALID, duration_ms: -1 })).toThrow();
+  it('rejects unknown event_type', () => {
+    const e = { ...baseEnvelope, event_type: 'bogus', payload: {} };
+    expect(() => EventSchema.parse(e)).toThrow();
   });
 });

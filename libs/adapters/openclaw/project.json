@@ -1,0 +1,7 @@
+{
+  "name": "@chitin/adapter-openclaw",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/adapters/openclaw/src",
+  "projectType": "library",
+  "tags": ["layer:adapter"]
+}

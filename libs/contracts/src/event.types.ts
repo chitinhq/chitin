@@ -1,6 +1,19 @@
-import type { z } from 'zod';
-import type { EventSchema, ActionTypeSchema, ResultSchema } from './event.schema.js';
+export type {
+  Envelope,
+  DriverIdentity,
+  ChainType,
+} from './envelope.schema';
 
-export type Event = z.infer<typeof EventSchema>;
-export type ActionType = z.infer<typeof ActionTypeSchema>;
-export type Result = z.infer<typeof ResultSchema>;
+export type {
+  SessionStartPayload,
+  UserPromptPayload,
+  AssistantTurnPayload,
+  CompactionPayload,
+  SessionEndPayload,
+  IntendedPayload,
+  ExecutedPayload,
+  FailedPayload,
+  ActionType,
+} from './payloads.schema';
+
+export type { Event } from './event.schema';

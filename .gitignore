@@ -49,3 +49,6 @@ Thumbs.db
 
 # Chitin runtime state (captured events, session state, init marker)
 .chitin/
+
+# Go kernel build artifacts
+/go/execution-kernel/chitin-kernel
