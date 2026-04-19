@@ -83,15 +83,20 @@ function launchClaudeCode(ctx: ReturnType<typeof buildAdapterContext>, args: str
     ['install-hook', '--dir', ctx.chitinDir, '--session-id', ctx.sessionID, '--adapter', adapterBin],
     { fatal: true },
   );
+  // Exit code captured inside try, process.exit deferred until AFTER the
+  // finally runs — otherwise uninstall-hook is skipped and session overlays
+  // leak under .chitin/sessions/. (Copilot finding, PR #1 review 3.)
+  let exitCode = 0;
   try {
     const res = spawnSync('claude', args, {
       stdio: 'inherit',
       env: { ...process.env, CLAUDE_CODE_SETTINGS: join(ctx.chitinDir, 'sessions', ctx.sessionID, 'settings.json') },
     });
-    process.exit(res.status ?? 0);
+    exitCode = res.status ?? 0;
   } finally {
     runKernel(ctx.kernelBinary, ['uninstall-hook', '--dir', ctx.chitinDir, '--session-id', ctx.sessionID], { fatal: false });
   }
+  process.exit(exitCode);
 }
 
 function launchOllama(ctx: ReturnType<typeof buildAdapterContext>, args: string[]): void {
