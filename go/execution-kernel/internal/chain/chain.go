@@ -4,6 +4,7 @@ package chain
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,17 @@ func OpenIndex(path string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Serialize all in-process writers through a single connection. This
+	// ensures that concurrent goroutines queue at the pool level rather than
+	// racing on BEGIN IMMEDIATE. For cross-process callers (separate kernel
+	// subshells sharing the same DB file), the busy_timeout PRAGMA below
+	// makes the SQLite driver spin-wait up to 5 s instead of returning
+	// SQLITE_BUSY immediately.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -69,6 +81,104 @@ func (i *Index) Upsert(chainID string, seq int64, hash string) error {
 		chainID, seq, hash,
 	)
 	return err
+}
+
+// EmitTx holds the state of an in-progress BEGIN IMMEDIATE transaction for a
+// single chain emit. Callers must call Commit or Rollback exactly once.
+//
+// Precondition:  The Index is open; chain_id is non-empty.
+// Postcondition on Commit(seq, hash): the chains table for chain_id has
+//   (last_seq = seq, last_hash = hash) and the IMMEDIATE lock is released.
+// Postcondition on Rollback(): the chains table is unchanged from its state
+//   at BeginEmit and the lock is released.
+// Invariant: at most one BeginEmit across all OS processes sharing the same
+//   DB file can be in the "acquired but not yet Commit/Rollback" state at any
+//   moment — SQLite's RESERVED lock (acquired by BEGIN IMMEDIATE) enforces this.
+type EmitTx struct {
+	// Current is the last-known state of the chain at the time BeginEmit was
+	// called. Nil if the chain has no prior events.
+	Current *ChainInfo
+
+	chainID string
+	conn    *sql.Conn
+	done    bool
+}
+
+// Commit upserts (chainID, seq, hash) and commits + releases the IMMEDIATE lock.
+func (tx *EmitTx) Commit(seq int64, hash string) error {
+	if tx.done {
+		return nil
+	}
+	tx.done = true
+	ctx := context.Background()
+	_, err := tx.conn.ExecContext(ctx,
+		`INSERT INTO chains (chain_id, last_seq, last_hash)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(chain_id) DO UPDATE SET last_seq = excluded.last_seq, last_hash = excluded.last_hash`,
+		tx.chainID, seq, hash,
+	)
+	if err != nil {
+		// Best-effort rollback before releasing the conn.
+		_, _ = tx.conn.ExecContext(ctx, "ROLLBACK")
+		tx.conn.Close()
+		return err
+	}
+	if _, err := tx.conn.ExecContext(ctx, "COMMIT"); err != nil {
+		tx.conn.Close()
+		return err
+	}
+	return tx.conn.Close()
+}
+
+// Rollback aborts the transaction and releases the lock. Safe to call after a
+// successful Commit (no-op).
+func (tx *EmitTx) Rollback() error {
+	if tx.done {
+		return nil
+	}
+	tx.done = true
+	ctx := context.Background()
+	_, _ = tx.conn.ExecContext(ctx, "ROLLBACK")
+	return tx.conn.Close()
+}
+
+// BeginEmit acquires a writer lock on the index for the given chain and returns
+// the current (LastSeq, LastHash) plus a transaction handle. Callers must call
+// Commit(newSeq, newHash) on success or Rollback() on any error path. Multiple
+// concurrent kernel subshells will serialize at BeginEmit — the second caller
+// blocks until the first calls Commit or Rollback.
+//
+// Precondition:  a valid Index; chainID is non-empty.
+// Postcondition on Commit(seq, hash): see EmitTx.Commit.
+// Postcondition on Rollback(): see EmitTx.Rollback.
+// Invariant: at most one BeginEmit across all processes holding the same DB
+//   file can be in the "acquired but not yet Commit/Rollback" state at any moment.
+func (i *Index) BeginEmit(chainID string) (*EmitTx, error) {
+	ctx := context.Background()
+	conn, err := i.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// Read current chain state inside the transaction.
+	row := conn.QueryRowContext(ctx,
+		`SELECT chain_id, last_seq, last_hash FROM chains WHERE chain_id = ?`, chainID)
+	var info ChainInfo
+	var current *ChainInfo
+	if err := row.Scan(&info.ChainID, &info.LastSeq, &info.LastHash); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			conn.Close()
+			return nil, err
+		}
+		// New chain — current stays nil.
+	} else {
+		current = &info
+	}
+	return &EmitTx{Current: current, chainID: chainID, conn: conn}, nil
 }
 
 // jsonlEventRow holds the fields we need when scanning JSONL event lines.
