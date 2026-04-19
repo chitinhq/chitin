@@ -103,6 +103,14 @@ importers:
 
   libs/adapters/claude-code: {}
 
+  libs/adapters/ollama-local:
+    dependencies:
+      '@chitin/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+
+  libs/adapters/openclaw: {}
+
   libs/contracts: {}
 
   libs/telemetry:
