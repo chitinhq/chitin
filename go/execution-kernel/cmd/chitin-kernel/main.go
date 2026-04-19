@@ -11,6 +11,7 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/hookinstall"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/ingest"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/kstate"
 )
@@ -32,6 +33,10 @@ func main() {
 		cmdIngestTranscript(args)
 	case "sweep-transcripts":
 		cmdSweepTranscripts(args)
+	case "install-hook":
+		cmdInstallHook(args)
+	case "uninstall-hook":
+		cmdUninstallHook(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}
@@ -173,6 +178,40 @@ func cmdSweepTranscripts(args []string) {
 	// Phase 1.5 sweep stub: no-op. Future impl will discover orphaned transcripts.
 	_ = args
 	fmt.Println(`{"ok":true,"swept":0}`)
+}
+
+func cmdInstallHook(args []string) {
+	fs := flag.NewFlagSet("install-hook", flag.ExitOnError)
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	sessionID := fs.String("session-id", "", "session id")
+	adapter := fs.String("adapter", os.Getenv("CHITIN_ADAPTER_BINARY"), "adapter binary path")
+	fs.Parse(args)
+	if *sessionID == "" {
+		exitErr("missing_session_id", "--session-id required")
+	}
+	if *adapter == "" {
+		exitErr("missing_adapter", "--adapter or CHITIN_ADAPTER_BINARY required")
+	}
+	absDir, _ := filepath.Abs(*dir)
+	if err := hookinstall.Install(absDir, *sessionID, *adapter); err != nil {
+		exitErr("install", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func cmdUninstallHook(args []string) {
+	fs := flag.NewFlagSet("uninstall-hook", flag.ExitOnError)
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	sessionID := fs.String("session-id", "", "session id")
+	fs.Parse(args)
+	if *sessionID == "" {
+		exitErr("missing_session_id", "--session-id required")
+	}
+	absDir, _ := filepath.Abs(*dir)
+	if err := hookinstall.Uninstall(absDir, *sessionID); err != nil {
+		exitErr("uninstall", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
 }
 
 func exitErr(kind, msg string) {
