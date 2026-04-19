@@ -1,20 +1,15 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { Event } from '@chitin/contracts';
+import BetterSqlite3 from 'better-sqlite3';
 
-/**
- * Stream events for a given run_id from the JSONL ground truth, in file order.
- * Reads the immutable log directly rather than SQLite — replay is forensic.
- */
-export function* replayRun(workspace: string, runId: string): Generator<Event> {
-  const path = join(workspace, '.chitin', `events-${runId}.jsonl`);
-  if (!existsSync(path)) {
-    throw new Error(`no JSONL for run_id=${runId} (expected at ${path})`);
-  }
-  const data = readFileSync(path, 'utf8');
-  for (const line of data.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    yield JSON.parse(trimmed) as Event;
-  }
+export function replaySessionAsTree(dbPath: string, sessionID: string): Array<Record<string, unknown>> {
+  const db = new BetterSqlite3(dbPath, { readonly: true });
+  const rows = db
+    .prepare(`SELECT * FROM events WHERE session_id = ? ORDER BY ts ASC, seq ASC`)
+    .all(sessionID) as any[];
+  db.close();
+  return rows.map((r) => ({
+    ...r,
+    driver_identity: JSON.parse(r.driver_identity),
+    labels: JSON.parse(r.labels),
+    payload: JSON.parse(r.payload),
+  }));
 }
