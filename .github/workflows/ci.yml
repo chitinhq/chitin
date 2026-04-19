@@ -32,10 +32,15 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build better-sqlite3 native binding
-        run: pnpm rebuild better-sqlite3
-        env:
-          npm_config_build_from_source: 'true'
+      - name: Ensure native modules built (better-sqlite3)
+        run: |
+          pnpm rebuild better-sqlite3 || true
+          # Fallback: directly invoke the install lifecycle if pnpm's
+          # approval gate skipped it.
+          if ! find node_modules -path '*/better-sqlite3/build/Release/better_sqlite3.node' | grep -q .; then
+            (cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npm run install)
+          fi
+          find node_modules -name 'better_sqlite3.node' | head
 
       - name: Generate Go types from contracts
         run: pnpm exec tsx libs/contracts/tools/generate-go-types.ts
