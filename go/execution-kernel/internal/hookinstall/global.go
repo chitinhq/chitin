@@ -111,9 +111,45 @@ func writeSettings(path string, s map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	// Preserve existing file mode if the file exists; otherwise default to 0o600
+	// (settings.json may contain env vars with secrets).
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	// Atomic write: temp file in same dir, then rename.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".settings.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// Defer cleanup that only runs if rename fails.
+	defer func() {
+		if _, statErr := os.Stat(tmpPath); statErr == nil {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpPath, path, err)
+	}
+	return nil
 }
 
+// ensureHooksMap returns settings["hooks"] as a map[string]any, or a fresh
+// empty map if the key is missing or malformed. Silently drops a non-map
+// hooks value to avoid blocking installs on quirky user configs.
 func ensureHooksMap(settings map[string]any) map[string]any {
 	h, ok := settings["hooks"].(map[string]any)
 	if !ok {
@@ -122,6 +158,9 @@ func ensureHooksMap(settings map[string]any) map[string]any {
 	return h
 }
 
+// toAnySlice normalizes v to a []any. Nil or non-slice values become nil,
+// allowing callers to append without type-gymnastics. Silently drops a
+// malformed hooks[name] value rather than erroring.
 func toAnySlice(v any) []any {
 	if v == nil {
 		return nil
