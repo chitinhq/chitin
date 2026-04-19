@@ -5,6 +5,7 @@ import { eventsTailCommand } from './commands/events-tail.js';
 import { replayCommand } from './commands/replay.js';
 import { initClaudeCodeCommand } from './commands/init-claude-code.js';
 import { registerRun } from './commands/run.js';
+import { registerEventsTree } from './commands/events-tree.js';
 
 const program = new Command();
 program.name('chitin').description('Observability-first substrate for AI coding agents');
@@ -34,6 +35,7 @@ program.command('replay <run_id>')
   .action((runId, opts) => replayCommand(runId, opts));
 
 registerRun(program);
+registerEventsTree(program);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
