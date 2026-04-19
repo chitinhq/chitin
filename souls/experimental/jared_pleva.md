@@ -1,5 +1,6 @@
 ---
-soul: jared_pleva
+archetype: jared_pleva
+status: provisional
 version: 1.1
 type: systems_builder
 inspired_by: Jared Pleva (self)
