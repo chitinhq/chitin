@@ -69,6 +69,40 @@ func TestInstallGlobal_MergesIntoExistingSettings(t *testing.T) {
 	}
 }
 
+func TestInstallGlobal_IsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	adapterPath := "/usr/local/bin/chitin-claude-code-adapter"
+
+	if err := InstallGlobal(adapterPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallGlobal(adapterPath); err != nil {
+		t.Fatal(err)
+	}
+
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	raw, _ := os.ReadFile(settingsPath)
+	var s map[string]any
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	hooks := s["hooks"].(map[string]any)
+	for _, h := range SubscribedHooks {
+		list, _ := hooks[h].([]any)
+		chitinCount := 0
+		for _, e := range list {
+			m := e.(map[string]any)
+			if m["command"] == adapterPath {
+				chitinCount++
+			}
+		}
+		if chitinCount != 1 {
+			t.Errorf("hook %s has %d chitin entries, want 1", h, chitinCount)
+		}
+	}
+}
+
 func TestUninstallGlobal_RemovesOnlyChitinEntries(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
