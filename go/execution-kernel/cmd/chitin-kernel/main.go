@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/ingest"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/kstate"
 )
 
@@ -26,6 +28,10 @@ func main() {
 		cmdEmit(args)
 	case "chain-info":
 		cmdChainInfo(args)
+	case "ingest-transcript":
+		cmdIngestTranscript(args)
+	case "sweep-transcripts":
+		cmdSweepTranscripts(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}
@@ -114,6 +120,59 @@ func cmdChainInfo(args []string) {
 		"last_hash": info.LastHash,
 	})
 	fmt.Println(string(out))
+}
+
+func cmdIngestTranscript(args []string) {
+	fs := flag.NewFlagSet("ingest-transcript", flag.ExitOnError)
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	sessionID := fs.String("session-id", "", "session_id of the transcript to ingest")
+	transcriptPath := fs.String("transcript-path", "", "path to Claude Code session JSONL transcript")
+	fs.Parse(args)
+	if *sessionID == "" || *transcriptPath == "" {
+		exitErr("missing_args", "--session-id and --transcript-path required")
+	}
+	absDir, _ := filepath.Abs(*dir)
+	cpPath := filepath.Join(absDir, "transcript_checkpoint.json")
+	cp, err := ingest.LoadCheckpoint(cpPath)
+	if err != nil {
+		exitErr("load_checkpoint", err.Error())
+	}
+	prev := cp[*sessionID]
+	f, err := os.Open(*transcriptPath)
+	if err != nil {
+		exitErr("open_transcript", err.Error())
+	}
+	defer f.Close()
+	if prev.LastIngestOffset > 0 {
+		if _, err := f.Seek(prev.LastIngestOffset, 0); err != nil {
+			exitErr("seek", err.Error())
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		exitErr("read", err.Error())
+	}
+	turns, err := ingest.ParseAssistantTurns(data)
+	if err != nil {
+		exitErr("parse", err.Error())
+	}
+	finfo, _ := f.Stat()
+	cp[*sessionID] = ingest.CheckpointEntry{
+		TranscriptPath:   *transcriptPath,
+		LastIngestOffset: finfo.Size(),
+		Status:           "complete",
+	}
+	if err := ingest.SaveCheckpoint(cpPath, cp); err != nil {
+		exitErr("save_checkpoint", err.Error())
+	}
+	out, _ := json.Marshal(map[string]any{"ok": true, "turns": turns})
+	fmt.Println(string(out))
+}
+
+func cmdSweepTranscripts(args []string) {
+	// Phase 1.5 sweep stub: no-op. Future impl will discover orphaned transcripts.
+	_ = args
+	fmt.Println(`{"ok":true,"swept":0}`)
 }
 
 func exitErr(kind, msg string) {
