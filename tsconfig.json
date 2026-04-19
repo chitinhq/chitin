@@ -5,6 +5,12 @@
   "references": [
     {
       "path": "./libs/contracts"
+    },
+    {
+      "path": "./libs/telemetry"
+    },
+    {
+      "path": "./libs/adapters/claude-code"
     }
   ]
 }
