@@ -13,10 +13,29 @@
     },
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "test": "vitest run tests",
+    "generate-go-types": "tsx tools/generate-go-types.ts"
+  },
   "nx": {
-    "tags": [
-      "layer:contracts"
-    ]
+    "tags": ["layer:contracts"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run libs/contracts/tests",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "generate-go-types": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx libs/contracts/tools/generate-go-types.ts",
+          "cwd": "{workspaceRoot}"
+        },
+        "outputs": ["{workspaceRoot}/go/execution-kernel/internal/event/event.go"]
+      }
+    }
   },
   "dependencies": {}
 }
