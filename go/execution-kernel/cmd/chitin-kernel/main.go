@@ -37,6 +37,10 @@ func main() {
 		cmdInstallHook(args)
 	case "uninstall-hook":
 		cmdUninstallHook(args)
+	case "install":
+		cmdInstall(args)
+	case "uninstall":
+		cmdUninstall(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}
@@ -298,6 +302,58 @@ func cmdUninstallHook(args []string) {
 	absDir, _ := filepath.Abs(*dir)
 	if err := hookinstall.Uninstall(absDir, *sessionID); err != nil {
 		exitErr("uninstall", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func cmdInstall(args []string) {
+	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	surface := fs.String("surface", "", "surface to install (claude-code)")
+	global := fs.Bool("global", false, "install into user-level settings (always-on)")
+	adapter := fs.String("adapter", os.Getenv("CHITIN_ADAPTER_BINARY"), "adapter binary path")
+	fs.Parse(args)
+	if *surface == "" {
+		exitErr("missing_surface", "--surface required")
+	}
+	if !*global {
+		exitErr("not_implemented", "non-global install is not yet supported via `install`; use `install-hook` for session-scoped")
+	}
+	if *adapter == "" {
+		exitErr("missing_adapter", "--adapter or CHITIN_ADAPTER_BINARY required")
+	}
+	switch *surface {
+	case "claude-code":
+		if err := hookinstall.InstallGlobal(*adapter); err != nil {
+			exitErr("install_global", err.Error())
+		}
+	default:
+		exitErr("unknown_surface", *surface)
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func cmdUninstall(args []string) {
+	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	surface := fs.String("surface", "", "surface to uninstall (claude-code)")
+	global := fs.Bool("global", false, "uninstall from user-level settings")
+	adapter := fs.String("adapter", os.Getenv("CHITIN_ADAPTER_BINARY"), "adapter binary path")
+	fs.Parse(args)
+	if *surface == "" {
+		exitErr("missing_surface", "--surface required")
+	}
+	if !*global {
+		exitErr("not_implemented", "non-global uninstall not supported via `uninstall`")
+	}
+	if *adapter == "" {
+		exitErr("missing_adapter", "--adapter or CHITIN_ADAPTER_BINARY required")
+	}
+	switch *surface {
+	case "claude-code":
+		if err := hookinstall.UninstallGlobal(*adapter); err != nil {
+			exitErr("uninstall_global", err.Error())
+		}
+	default:
+		exitErr("unknown_surface", *surface)
 	}
 	fmt.Println(`{"ok":true}`)
 }
