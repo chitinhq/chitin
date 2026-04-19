@@ -1,55 +1,47 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { tailJsonlOnce } from '../src/jsonl-tailer.js';
-import type { Event } from '@chitin/contracts';
+import { tailJSONL } from '../src/jsonl-tailer';
 
-function ev(ts: string, tool: string): Event {
-  return {
-    run_id: '550e8400-e29b-41d4-a716-446655440000',
-    session_id: '550e8400-e29b-41d4-a716-446655440001',
-    surface: 'claude-code',
-    driver: 'claude',
-    agent_id: 'a',
-    tool_name: tool,
-    raw_input: {},
-    canonical_form: {},
-    action_type: 'exec',
-    result: 'success',
-    duration_ms: 1,
-    error: null,
-    ts,
-    metadata: {},
-  };
-}
+const sampleLine = JSON.stringify({
+  schema_version: '2',
+  run_id: 'r-1',
+  session_id: 's-1',
+  surface: 'claude-code',
+  driver_identity: { user: 'u', machine_id: 'm', machine_fingerprint: 'a'.repeat(64) },
+  agent_instance_id: 'ai-1',
+  parent_agent_id: null,
+  agent_fingerprint: 'b'.repeat(64),
+  event_type: 'session_start',
+  chain_id: 'c-1',
+  chain_type: 'session',
+  parent_chain_id: null,
+  seq: 0,
+  prev_hash: null,
+  this_hash: 'c'.repeat(64),
+  ts: '2026-04-19T12:00:00Z',
+  labels: {},
+  payload: {},
+});
 
-describe('tailJsonlOnce', () => {
-  it('reads every JSONL line and passes to the handler', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tail-'));
-    const path = join(dir, 'events-abc.jsonl');
-    writeFileSync(path, '');
-    appendFileSync(path, JSON.stringify(ev('2026-04-19T12:00:00Z', 'Read')) + '\n');
-    appendFileSync(path, JSON.stringify(ev('2026-04-19T12:00:01Z', 'Bash')) + '\n');
-
-    const seen: string[] = [];
-    tailJsonlOnce(path, (e) => { seen.push(e.tool_name); });
-    expect(seen).toEqual(['Read', 'Bash']);
-
-    rmSync(dir, { recursive: true, force: true });
+describe('tailJSONL', () => {
+  it('yields parsed v2 events from a JSONL file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const path = join(dir, 'events.jsonl');
+    writeFileSync(path, sampleLine + '\n' + sampleLine + '\n');
+    const out: unknown[] = [];
+    for await (const e of tailJSONL(path)) out.push(e);
+    expect(out.length).toBe(2);
+    expect((out[0] as any).event_type).toBe('session_start');
   });
 
-  it('ignores malformed JSON lines (logs, does not throw)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tail-'));
-    const path = join(dir, 'events-abc.jsonl');
-    writeFileSync(path, '');
-    appendFileSync(path, 'not-json\n');
-    appendFileSync(path, JSON.stringify(ev('2026-04-19T12:00:00Z', 'Read')) + '\n');
-
-    const seen: string[] = [];
-    expect(() => tailJsonlOnce(path, (e) => { seen.push(e.tool_name); })).not.toThrow();
-    expect(seen).toEqual(['Read']);
-
-    rmSync(dir, { recursive: true, force: true });
+  it('tolerates malformed lines by skipping them', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const path = join(dir, 'events.jsonl');
+    writeFileSync(path, sampleLine + '\n{bad\n' + sampleLine + '\n');
+    const out: unknown[] = [];
+    for await (const e of tailJSONL(path)) out.push(e);
+    expect(out.length).toBe(2);
   });
 });
