@@ -139,7 +139,19 @@ function emitEvent(
   }
 }
 
-function launchOpenClaw(_ctx: ReturnType<typeof buildAdapterContext>, _args: string[]): void {
-  console.error(`openclaw adapter not yet wired (Task 15)`);
-  process.exit(2);
+function launchOpenClaw(ctx: ReturnType<typeof buildAdapterContext>, args: string[]): void {
+  emitEvent(ctx, 'session_start', ctx.sessionID, 'session', null, {
+    cwd: process.cwd(),
+    client_info: { name: 'openclaw', version: 'unknown' },
+    model: { name: 'unknown', provider: 'openclaw' },
+    system_prompt_hash: '0'.repeat(64),
+    tool_allowlist_hash: '0'.repeat(64),
+    agent_version: 'unknown',
+  });
+  const res = spawnSync('openclaw', args, { stdio: 'inherit' });
+  emitEvent(ctx, 'session_end', ctx.sessionID, 'session', null, {
+    reason: res.status === 0 ? 'clean' : 'exit_nonzero',
+    totals: { turn_count: 0, tool_call_count: 0, total_input_tokens: 0, total_output_tokens: 0, total_duration_ms: 0 },
+  });
+  process.exit(res.status ?? 0);
 }
