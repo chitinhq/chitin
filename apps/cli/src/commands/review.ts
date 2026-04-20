@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { resolveChitinDir } from '@chitin/contracts';
+import { ensureIndexed } from '@chitin/telemetry';
 import type { Command } from 'commander';
 import { eventsListCommand } from './events-list.js';
 import type { HealthReport } from './health.js';
@@ -44,6 +45,7 @@ export function registerReview(program: Command): void {
       console.log('');
 
       console.log('## Recent sessions');
+      ensureIndexed(chitinDir);
       const dbPath = join(chitinDir, 'events.db');
       if (!existsSync(dbPath)) {
         console.log('(no events captured yet)');

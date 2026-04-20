@@ -40,13 +40,13 @@ export function registerLedger(program: Command): void {
     .option('--surface <s>', 'surface (e.g. claude-code)', 'claude-code')
     .option('--repo <name>', 'repo name (e.g. chitin)', 'chitin')
     .option('--soul <id>', 'active soul id', 'davinci')
-    .option('--ledger <path>', 'ledger path (default: repo-root)', LEDGER_REL)
+    .option('--ledger <path>', 'ledger path — resolved relative to cwd unless absolute', LEDGER_REL)
     .action(handleNew);
 
   ledger
     .command('lint')
     .description('Validate ledger entry integrity')
-    .option('--ledger <path>', 'ledger path', LEDGER_REL)
+    .option('--ledger <path>', 'ledger path — resolved relative to cwd unless absolute', LEDGER_REL)
     .option('--db <path>', 'events.db path for trace_ref resolution')
     .option('--strict', 'fail on unresolved trace refs', false)
     .action(handleLint);
@@ -198,10 +198,10 @@ export function lintTraceRefs(
   try {
     let stmt: Database.Statement;
     try {
-      stmt = db.prepare('SELECT 1 FROM chain_index WHERE chain_id = ? LIMIT 1');
+      stmt = db.prepare('SELECT 1 FROM events WHERE chain_id = ? LIMIT 1');
     } catch (err) {
       return [
-        { level: 'warn', gdl: '*', msg: `events.db has no chain_index table: ${String(err)}` },
+        { level: 'warn', gdl: '*', msg: `events.db has no events table: ${String(err)}` },
       ];
     }
     for (const b of blocks) {
