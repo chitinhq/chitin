@@ -7,13 +7,29 @@ import (
 	"path/filepath"
 )
 
-var subscribedHooks = []string{
+// SubscribedHooks is the canonical list of Claude Code hook event names
+// that chitin forwards to the kernel. Shared between session-scoped and
+// global installs.
+//
+// Narrowed 2026-04-20 under the invariant "every subscribed hook produces
+// exactly one chain entry on the correct chain." PreCompact and
+// SubagentStop are intentionally excluded because their chain routing is
+// unsafe against the empirical payload shape (see
+// docs/observations/2026-04-19-hook-payload-capture.md):
+//
+//   - SubagentStop's session_end would close the *parent* session chain
+//     instead of the subagent's own chain keyed on agent_id. Tracked:
+//     chitinhq/chitin#21.
+//   - PreCompact fires n=2 per /compact (forced-trial observation);
+//     emitting two compaction events on the same chain corrupts it.
+//     Tracked: chitinhq/chitin#22.
+//
+// Both are re-subscribed once the dispatch side routes them correctly.
+var SubscribedHooks = []string{
 	"SessionStart",
 	"UserPromptSubmit",
 	"PreToolUse",
 	"PostToolUse",
-	"PreCompact",
-	"SubagentStop",
 	"SessionEnd",
 }
 
@@ -23,8 +39,8 @@ func Install(chitinDir, sessionID, adapterBinary string) error {
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		return err
 	}
-	hooks := make(map[string]any, len(subscribedHooks))
-	for _, h := range subscribedHooks {
+	hooks := make(map[string]any, len(SubscribedHooks))
+	for _, h := range SubscribedHooks {
 		hooks[h] = []any{
 			map[string]any{
 				"type":    "command",
