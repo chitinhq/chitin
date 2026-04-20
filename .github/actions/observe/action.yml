@@ -1,0 +1,46 @@
+name: chitin observe
+description: Wrap a workflow job with chitin session_start / session_end events.
+
+# Stub emission — raw JSONL, no hash linkage, no full v2 envelope. Events
+# written here will not parse through the kernel's sqlite indexer until
+# the composite is upgraded to invoke a chitin-kernel binary for emit.
+# Stamping session boundaries now so that future CI-aware tooling
+# (chitin review, ledger trace-refs) has something to point at.
+
+inputs:
+  run-id:
+    description: Unique run identifier (defaults to the GH run id)
+    required: false
+    default: ${{ github.run_id }}
+  workspace:
+    description: Workspace dir (defaults to GITHUB_WORKSPACE)
+    required: false
+    default: ${{ github.workspace }}
+
+runs:
+  using: composite
+  steps:
+    - name: chitin — session_start
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "${{ inputs.workspace }}/.chitin"
+        SESSION_ID="gh-${{ inputs.run-id }}-${{ github.job }}"
+        TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        LOG="${{ inputs.workspace }}/.chitin/events-${{ inputs.run-id }}.jsonl"
+        cat >> "$LOG" <<EOF
+        {"schema_version":"2","ts":"$TS","event_type":"session_start","surface":"gh-actions","session_id":"$SESSION_ID","chain_id":"$SESSION_ID","chain_type":"session","seq":0,"prev_hash":null,"this_hash":"","payload":{"cwd":"${{ inputs.workspace }}","client_info":{"name":"gh-actions","version":"${{ github.action_ref || 'unknown' }}"}}}
+        EOF
+        echo "CHITIN_SESSION_ID=$SESSION_ID" >> "$GITHUB_ENV"
+        echo "CHITIN_RUN_ID=${{ inputs.run-id }}" >> "$GITHUB_ENV"
+
+    - name: chitin — session_end (always)
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        LOG="${{ inputs.workspace }}/.chitin/events-${CHITIN_RUN_ID:-${{ inputs.run-id }}}.jsonl"
+        cat >> "$LOG" <<EOF
+        {"schema_version":"2","ts":"$TS","event_type":"session_end","surface":"gh-actions","session_id":"${CHITIN_SESSION_ID:-unknown}","chain_id":"${CHITIN_SESSION_ID:-unknown}","chain_type":"session","seq":0,"prev_hash":null,"this_hash":"","payload":{"reason":"gh-actions workflow end","job_status":"${{ job.status }}"}}
+        EOF
