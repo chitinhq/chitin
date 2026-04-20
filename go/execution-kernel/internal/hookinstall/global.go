@@ -138,12 +138,49 @@ func loadSettings(path string) (map[string]any, error) {
 	return s, nil
 }
 
+// writeSettings marshals settings to JSON and writes them to path atomically
+// via temp-file-and-rename (rename is atomic on POSIX). Mode is preserved
+// from the existing file, defaulting to 0o600 for new files — settings.json
+// may contain sensitive credentials, so it should not be world-readable.
 func writeSettings(path string, s map[string]any) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, statErr)
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".settings.json.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp to %s: %w", path, err)
+	}
+	cleanup = false
+	return nil
 }
 
 func ensureHooksMap(settings map[string]any) map[string]any {

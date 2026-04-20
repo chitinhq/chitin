@@ -359,3 +359,62 @@ func TestInvariant_UninstallOfInstallRestoresOriginal(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteSettings_NewFileDefaultsTo0o600(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude", "settings.json")
+
+	if err := InstallGlobal(testAdapter); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("new settings.json mode = %o, want 0o600", got)
+	}
+}
+
+func TestWriteSettings_PreservesExistingMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := settingsPathFor(t)
+	writeJSON(t, path, map[string]any{"theme": "dark"})
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallGlobal(testAdapter); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Errorf("mode changed after install: got %o, want 0o640", got)
+	}
+}
+
+func TestWriteSettings_LeavesNoTempFileOnSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := InstallGlobal(testAdapter); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".claude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == "" && e.Name() != "settings.json" {
+			// unexpected residual file
+			t.Errorf("unexpected file left behind: %s", e.Name())
+		}
+		if len(e.Name()) > 14 && e.Name()[:14] == ".settings.json" {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}

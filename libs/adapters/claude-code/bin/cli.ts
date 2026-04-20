@@ -8,6 +8,14 @@
  *
  * Hook failure is non-fatal to Claude Code — chitin must never break the
  * user's session.
+ *
+ * Wiring. This file is not a `bin` entry in package.json because `.ts`
+ * cannot be executed under plain `node` without a loader. To wire this
+ * into `~/.claude/settings.json`, pass a full shell command to
+ * `chitin install --surface claude-code --global --adapter "<cmd>"`.
+ * Examples:
+ *   - dev (this repo):  `tsx /abs/path/to/libs/adapters/claude-code/bin/cli.ts`
+ *   - compiled (future): `/usr/local/bin/chitin-claude-code-adapter`
  */
 import { readFileSync } from 'node:fs';
 import { resolveChitinDir } from '@chitin/contracts';
