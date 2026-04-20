@@ -124,4 +124,62 @@ func TestGather_SilencesMissingJSONL(t *testing.T) {
 	if rep.EventsTotal != 0 {
 		t.Errorf("want 0 events, got %d", rep.EventsTotal)
 	}
+	if !rep.DirExists {
+		t.Errorf("want DirExists=true for extant tempdir")
+	}
+}
+
+// When the .chitin dir itself doesn't exist, DirExists must be false and no
+// error returned — the caller decides how to surface the missing dir.
+func TestGather_AbsentDirSetsDirExistsFalse(t *testing.T) {
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "nope")
+	rep, err := Gather(missing, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("want no error on missing dir, got %v", err)
+	}
+	if rep.DirExists {
+		t.Errorf("want DirExists=false for nonexistent dir")
+	}
+	if rep.EventsTotal != 0 {
+		t.Errorf("want 0 events, got %d", rep.EventsTotal)
+	}
+}
+
+// Clock-skew detection: an event stamped more than 1h in the future flags
+// ClockSkewSuspected. Events without skew do not.
+func TestGather_DetectsClockSkewFromFutureTs(t *testing.T) {
+	dir := t.TempDir()
+	future := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
+	jsonl := filepath.Join(dir, "events.jsonl")
+	line := `{"schema_version":"2","ts":"` + future + `","event_type":"session_start","surface":"claude-code"}`
+	if err := os.WriteFile(jsonl, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	rep, err := Gather(dir, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.ClockSkewSuspected {
+		t.Errorf("want ClockSkewSuspected=true for future-stamped event")
+	}
+}
+
+func TestGather_NoClockSkewOnRecentEvents(t *testing.T) {
+	dir := t.TempDir()
+	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	jsonl := filepath.Join(dir, "events.jsonl")
+	line := `{"schema_version":"2","ts":"` + recent + `","event_type":"session_start","surface":"claude-code"}`
+	if err := os.WriteFile(jsonl, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	rep, err := Gather(dir, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ClockSkewSuspected {
+		t.Errorf("want ClockSkewSuspected=false for recent event")
+	}
 }

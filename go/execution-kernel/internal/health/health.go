@@ -15,26 +15,41 @@ import (
 
 // Report is the shape `chitin health` presents.
 type Report struct {
-	WindowStart      time.Time      `json:"window_start"`
-	EventsByWindow   map[string]int `json:"events_by_window"`
-	EventsTotal      int            `json:"events_total"`
-	HookFailureCount int            `json:"hook_failure_count"`
-	SchemaDriftCount int            `json:"schema_drift_count"`
-	OrphanedChains   int            `json:"orphaned_chains"`
+	WindowStart         time.Time      `json:"window_start"`
+	DirExists           bool           `json:"dir_exists"`
+	EventsByWindow      map[string]int `json:"events_by_window"`
+	EventsTotal         int            `json:"events_total"`
+	HookFailureCount    int            `json:"hook_failure_count"`
+	SchemaDriftCount    int            `json:"schema_drift_count"`
+	OrphanedChains      int            `json:"orphaned_chains"`
+	LatestEventTs       time.Time      `json:"latest_event_ts,omitempty"`
+	ClockSkewSuspected  bool           `json:"clock_skew_suspected"`
 }
+
+// clockSkewFutureTolerance bounds how far ahead of wall-clock an event ts may
+// be before we flag it. 1h absorbs NTP jitter + cross-box clock drift without
+// swallowing real skew (NTP resync across DST, resumed laptop, container
+// with bad epoch).
+const clockSkewFutureTolerance = 1 * time.Hour
 
 // Gather scans a single .chitin directory and produces a Report for the
 // window ending now and lasting `window` duration.
 func Gather(chitinDir string, window time.Duration) (Report, error) {
+	now := time.Now().UTC()
 	r := Report{
-		WindowStart:    time.Now().Add(-window).UTC(),
+		WindowStart:    now.Add(-window),
 		EventsByWindow: map[string]int{},
 	}
 
 	entries, err := os.ReadDir(chitinDir)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return r, nil
+		}
 		return r, fmt.Errorf("read .chitin dir: %w", err)
 	}
+	r.DirExists = true
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -92,6 +107,12 @@ func scanJSONL(path string, r *Report) error {
 		if err != nil {
 			r.SchemaDriftCount++
 			continue
+		}
+		if t.After(r.LatestEventTs) {
+			r.LatestEventTs = t
+		}
+		if t.After(time.Now().UTC().Add(clockSkewFutureTolerance)) {
+			r.ClockSkewSuspected = true
 		}
 		if t.Before(r.WindowStart) {
 			continue
