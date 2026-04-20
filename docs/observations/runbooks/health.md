@@ -50,7 +50,7 @@ The kernel emits events to `.chitin/events-<run_id>.jsonl` (one file per run). `
 **Do:**
 
 1. Most common cause: legacy events from a pre-v2 kernel. Find candidates with `ls -1 .chitin/events-*.jsonl` and check one: `head -1 .chitin/events-<run_id>.jsonl | jq .`. If `schema_version` is null or `"1"`, archive that run file: `mv .chitin/events-<run_id>.jsonl .chitin/events-<run_id>.jsonl.legacy-$(date +%s)` and let newer runs accumulate cleanly.
-2. Less common: a corrupted line (truncated mid-write, partial UTF-8). Walk the files: `for f in .chitin/events-*.jsonl; do jq -c . "$f" > /dev/null || echo "bad: $f"; done`.
+2. Less common: a corrupted line (truncated mid-write, partial UTF-8). Walk the files: `for f in .chitin/events-*.jsonl; do [ -e "$f" ] || continue; jq -c . "$f" > /dev/null || echo "bad: $f"; done`. The `[ -e "$f" ]` guard handles the case where no run files exist yet (bash would otherwise iterate once with the literal glob pattern).
 3. If the drift persists after archiving legacy data, the adapter is emitting malformed envelopes — file a ledger entry.
 
 ### `orphaned chains > 0` — [WARN]

@@ -94,22 +94,42 @@ func TestGather_SchemaDriftRules(t *testing.T) {
 	}
 }
 
-// Open-error propagation: a non-ErrNotExist error on a *.jsonl file must not
-// be silenced into a zero report. Simulate by making the file unreadable.
-func TestGather_PropagatesNonErrNotExistOnJSONL(t *testing.T) {
+// File-level errors accumulate in FailedFiles; scanning continues for other
+// files and the overall Gather call still returns nil error. One bad file
+// must not black-box the health signal for every other file.
+func TestGather_FailedFileDoesNotBlockOthers(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file mode permission checks")
 	}
 	dir := t.TempDir()
-	jsonl := filepath.Join(dir, "events-testrun.jsonl")
-	if err := os.WriteFile(jsonl, []byte("{}\n"), 0o000); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(jsonl, 0o644) })
+	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
 
-	_, err := Gather(dir, 24*time.Hour)
-	if err == nil {
-		t.Errorf("want permission error, got nil")
+	// File A: unreadable — should land in FailedFiles.
+	bad := filepath.Join(dir, "events-bad.jsonl")
+	if err := os.WriteFile(bad, []byte("{}\n"), 0o000); err != nil {
+		t.Fatalf("write bad fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bad, 0o644) })
+
+	// File B: valid event — should still be counted.
+	good := filepath.Join(dir, "events-good.jsonl")
+	line := `{"schema_version":"2","ts":"` + recent + `","event_type":"session_start","surface":"claude-code"}`
+	if err := os.WriteFile(good, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("write good fixture: %v", err)
+	}
+
+	rep, err := Gather(dir, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("want nil err (accumulated, not bailed), got %v", err)
+	}
+	if rep.EventsTotal != 1 {
+		t.Errorf("want 1 event from good file, got %d", rep.EventsTotal)
+	}
+	if len(rep.FailedFiles) != 1 {
+		t.Errorf("want 1 failed file, got %d (entries: %v)", len(rep.FailedFiles), rep.FailedFiles)
+	}
+	if len(rep.FailedFiles) == 1 && !strings.Contains(rep.FailedFiles[0], "events-bad.jsonl") {
+		t.Errorf("failed file entry should name the bad path, got: %q", rep.FailedFiles[0])
 	}
 }
 
@@ -184,10 +204,12 @@ func TestGather_NoClockSkewOnRecentEvents(t *testing.T) {
 	}
 }
 
-// Window is [WindowStart, now]. Events stamped AFTER now must not count
-// toward EventsByWindow — they flag ClockSkewSuspected but are excluded
-// from metrics. Otherwise a future-stamped event silently inflates the
-// window count across clock corrections.
+// Window is [WindowStart, now]. Events stamped AFTER now are excluded from
+// EventsByWindow regardless of magnitude. The ClockSkewSuspected flag is
+// separate — only events past now + 1h (clockSkewFutureTolerance) set it.
+// Events in the narrow band (now, now+1h] are silently excluded without
+// flagging, treated as NTP jitter. This test uses a 48h future event, which
+// satisfies both rules: excluded from counts AND flagged as skew.
 func TestGather_ExcludesFutureEventsFromCounts(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()

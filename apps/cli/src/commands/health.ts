@@ -11,6 +11,7 @@ export interface HealthReport {
   dir_exists: boolean;
   clock_skew_suspected: boolean;
   latest_event_ts?: string;
+  failed_files?: string[];
 }
 
 export function registerHealth(program: Command): void {
@@ -71,6 +72,12 @@ export function renderReport(r: HealthReport, chitinDir: string): string[] {
   add('orphaned chains', r.orphaned_chains, r.orphaned_chains === 0 ? 'pass' : 'warn');
   if (r.clock_skew_suspected) {
     add('clock skew', 'suspected', 'warn');
+  }
+  if (r.failed_files && r.failed_files.length > 0) {
+    add('failed files', r.failed_files.length, 'warn');
+    for (const entry of r.failed_files) {
+      lines.push(`        ${entry}`);
+    }
   }
   return lines;
 }
