@@ -32,7 +32,7 @@ Dogfooding quantifies the debt as it accumulates. Phase 2 pays it down.
 ## Scope
 
 **In scope:**
-- User-level Claude Code capture on this box (`chitinhq/chitin` + the work repo work + orphan sessions).
+- User-level Claude Code capture on this box (`chitinhq/chitin` + private work repos + orphan sessions).
 - Debt ledger artifact + entry format + three-lane triage model.
 - Weekly review cadence and protocol.
 - Trip-wires and soul-handoff mechanics.
@@ -113,8 +113,8 @@ removes the symlink.
 ### 2. Events landing
 
 - **Repo-local default:** walk up from cwd looking for existing `.chitin/`;
-  use it if found. Covers chitin repo, private-work-repo once cloned, any
-  future chitin-aware repo.
+  use it if found. Covers chitin repo, any private work repo once cloned,
+  any future chitin-aware repo.
 - **Orphan fallback:** `~/.chitin/events.jsonl` when cwd has no enclosing
   `.chitin/` inside a workspace boundary.
 - **Chain integrity:** same `chain_id` / `prev_hash` / `seq` contract as
@@ -123,16 +123,16 @@ removes the symlink.
 
 ### 3. Privacy / redaction
 
-- No client secrets on this box. the work repo repo is user's own; chitin is
-  open-source. Defer redaction.
+- No client secrets on this box. Private work repos stay in their own
+  remotes; chitin is open-source. Defer redaction.
 - Flag: if/when a repo with real third-party secrets lands here, redesign
   redaction before the first session in that repo.
 - Never-commit list for chitin's `.gitignore`: no additions. Chitin's own
   `.chitin/events.jsonl` stays committed (dogfood-eating-itself is the
   demo).
-- Never-commit list for private-work-repo's `.gitignore`: `.chitin/`
+- Never-commit list for any private work repo's `.gitignore`: `.chitin/`
   added on first session. Events capture locally, ledger entries flow to
-  chitin's repo, zero artifacts in the work repo's git history.
+  chitin's repo, zero artifacts in the private repo's git history.
 
 ### 4. openclaw workstream (parallel to Claude Code install)
 
@@ -172,8 +172,8 @@ re-fighting the vote):**
 ### Location
 
 `chitin/docs/observations/governance-debt-ledger.md` — chitin repo only.
-the work repo never sees it, even when entries reference traces from work
-done inside private-work-repo.
+The private work repo never sees it, even when entries reference traces
+from work done inside it.
 
 ### Entry shape
 
@@ -181,7 +181,7 @@ done inside private-work-repo.
 ### GDL-NNN — <one-line what the platform should have caught>
 
 - **Observed:** YYYY-MM-DD, chain `<chain_id>`, seq `<n>`, hash `<this_hash[:12]>`
-- **Surface / repo:** claude-code / chitin  |  claude-code / private-work-repo  |  openclaw / chitin  |  ...
+- **Surface / repo:** claude-code / chitin  |  claude-code / <private-work-repo>  |  openclaw / chitin  |  ...
 - **Finding:** what happened, one paragraph.
 - **Lane:** ① FIX | ② DETERMINISM | ③ SOUL ROUTING
 - **Severity:** low / medium / high (impact if this recurs at scale)
@@ -192,11 +192,11 @@ done inside private-work-repo.
 ### Cross-repo trace refs
 
 - Prefer stable refs: `chain_id:seq` or content-addressed `this_hash`.
-- File-path refs (`private-work-repo/.chitin/events.jsonl#L42`) are
+- File-path refs (`<private-work-repo>/.chitin/events.jsonl#L42`) are
   fallback only — machine-local.
 - Quoting trace content: paraphrase if content could identify internal
-  the work repo logic. Most entries will be chitin-on-chitin; cross-repo
-  entries are the minority.
+  logic in any private codebase. Most entries will be chitin-on-chitin;
+  cross-repo entries are the minority.
 
 ### Invariants
 
@@ -224,7 +224,7 @@ minutes; if it bloats, the tooling needs work.
    - Chain-depth distribution
    - Orphaned chains (`session_start` with no `session_end`)
 2. **Narrative replay** (10–15 min) — pick 2–3 recent sessions across
-   available repos (chitin always available; private-work-repo once
+   available repos (chitin always available; private work repos once
    cloned here; orphan sessions from `~/.chitin/` are valid picks too).
    Run `chitin replay <session_id>`. Ask:
    - Did the trace tell the session's story accurately?
@@ -236,7 +236,7 @@ minutes; if it bloats, the tooling needs work.
 ### Trigger events (interrupt cadence)
 
 - Hook silently dropped an event → immediate Knuth session.
-- the work repo session had a near-miss (almost committed a secret, ran
+- A private work session had a near-miss (almost committed a secret, ran
   something destructive) → immediate write-up.
 - A lane crosses its saturation threshold → graduate that lane.
 
