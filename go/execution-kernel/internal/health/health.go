@@ -55,14 +55,21 @@ func Gather(chitinDir string, window time.Duration) (Report, error) {
 	return r, nil
 }
 
+// Invariant: an event counts toward EventsTotal/EventsByWindow iff it parses,
+// has schema_version == "2", has a non-empty surface, and has ts inside the
+// window. Any other shape is schema drift (bumped exactly once per line) and
+// does not count as a real event.
 func scanJSONL(path string, r *Report) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil // missing jsonl is fine
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open jsonl %q: %w", path, err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<24) // allow long lines
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
 	for sc.Scan() {
 		var ev struct {
 			TS      string `json:"ts"`
@@ -73,11 +80,17 @@ func scanJSONL(path string, r *Report) error {
 			r.SchemaDriftCount++
 			continue
 		}
-		if ev.Schema != "" && ev.Schema != "2" {
+		if ev.Schema != "2" {
 			r.SchemaDriftCount++
+			continue
+		}
+		if ev.Surface == "" {
+			r.SchemaDriftCount++
+			continue
 		}
 		t, err := time.Parse(time.RFC3339, ev.TS)
 		if err != nil {
+			r.SchemaDriftCount++
 			continue
 		}
 		if t.Before(r.WindowStart) {
@@ -92,7 +105,10 @@ func scanJSONL(path string, r *Report) error {
 func scanErrorLog(path string, r *Report) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil // missing is fine
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open error log: %w", err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)

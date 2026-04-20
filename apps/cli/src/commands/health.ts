@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { resolveChitinDir } from '@chitin/contracts';
 import type { Command } from 'commander';
 
-interface HealthReport {
+export interface HealthReport {
   events_total: number;
   events_by_window: Record<string, number>;
   hook_failure_count: number;
@@ -34,23 +34,29 @@ export function registerHealth(program: Command): void {
     });
 }
 
-function printReport(r: HealthReport, chitinDir: string): void {
-  const line = (label: string, value: string | number, status: 'pass' | 'warn' | 'fail') => {
+export function renderReport(r: HealthReport, chitinDir: string): string[] {
+  const lines: string[] = [];
+  const add = (label: string, value: string | number, status: 'pass' | 'warn' | 'fail') => {
     const tag = status === 'pass' ? '[PASS]' : status === 'warn' ? '[WARN]' : '[FAIL]';
-    console.log(`${tag}  ${label.padEnd(28)} ${value}`);
+    lines.push(`${tag}  ${label.padEnd(28)} ${value}`);
   };
 
-  console.log(`chitin health — ${chitinDir}`);
-  line('events total', r.events_total, r.events_total > 0 ? 'pass' : 'warn');
+  lines.push(`chitin health — ${chitinDir}`);
+  add('events total', r.events_total, r.events_total > 0 ? 'pass' : 'warn');
   for (const [surface, count] of Object.entries(r.events_by_window)) {
-    line(`  events / ${surface}`, count, count > 0 ? 'pass' : 'warn');
+    add(`  events / ${surface}`, count, count > 0 ? 'pass' : 'warn');
   }
-  line('hook failures', r.hook_failure_count, r.hook_failure_count === 0 ? 'pass' : 'fail');
-  line('schema drift', r.schema_drift_count, r.schema_drift_count === 0 ? 'pass' : 'fail');
-  line('orphaned chains', r.orphaned_chains, r.orphaned_chains === 0 ? 'pass' : 'warn');
+  add('hook failures', r.hook_failure_count, r.hook_failure_count === 0 ? 'pass' : 'fail');
+  add('schema drift', r.schema_drift_count, r.schema_drift_count === 0 ? 'pass' : 'fail');
+  add('orphaned chains', r.orphaned_chains, r.orphaned_chains === 0 ? 'pass' : 'warn');
+  return lines;
 }
 
-function exitCode(r: HealthReport): number {
+function printReport(r: HealthReport, chitinDir: string): void {
+  for (const line of renderReport(r, chitinDir)) console.log(line);
+}
+
+export function exitCode(r: HealthReport): number {
   if (r.hook_failure_count > 0 || r.schema_drift_count > 0) return 1;
   return 0;
 }

@@ -363,12 +363,21 @@ func cmdHealth(args []string) {
 	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
 	windowHours := fs.Int("window-hours", 24, "window size in hours")
 	fs.Parse(args)
-	absDir, _ := filepath.Abs(*dir)
+	if *windowHours <= 0 {
+		exitErr("invalid_window_hours", "--window-hours must be > 0")
+	}
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		exitErr("health_abs", err.Error())
+	}
 	rep, err := health.Gather(absDir, time.Duration(*windowHours)*time.Hour)
 	if err != nil {
 		exitErr("health", err.Error())
 	}
-	out, _ := json.Marshal(rep)
+	out, err := json.Marshal(rep)
+	if err != nil {
+		exitErr("health_marshal", err.Error())
+	}
 	fmt.Println(string(out))
 }
 
