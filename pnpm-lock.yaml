@@ -101,7 +101,11 @@ importers:
 
   go/execution-kernel: {}
 
-  libs/adapters/claude-code: {}
+  libs/adapters/claude-code:
+    dependencies:
+      '@chitin/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
 
   libs/adapters/ollama-local:
     dependencies:

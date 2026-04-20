@@ -18,5 +18,7 @@
       "layer:adapter"
     ]
   },
-  "dependencies": {}
+  "dependencies": {
+    "@chitin/contracts": "workspace:*"
+  }
 }
