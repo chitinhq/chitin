@@ -8,6 +8,11 @@ export interface AdapterContextInput {
   machineID?: string;
   labelsCli?: Record<string, string>;
   labelsProject?: Record<string, string>;
+  // When set, use this value as sessionID instead of minting a new UUID.
+  // Required for the stdin-hook adapter, where Claude Code provides a
+  // stable session_id per session; minting a fresh UUID per hook would
+  // orphan every event into its own chain (PR #19 strike).
+  sessionIDOverride?: string;
 }
 
 export interface AdapterContext {
@@ -39,7 +44,7 @@ export function buildAdapterContext(input: AdapterContextInput): AdapterContext 
   );
   return {
     runID: randomUUID(),
-    sessionID: randomUUID(),
+    sessionID: input.sessionIDOverride ?? randomUUID(),
     agentInstanceID: randomUUID(),
     surface: input.surface,
     driverIdentity: { user, machine_id: machineID, machine_fingerprint: machineFingerprint },
