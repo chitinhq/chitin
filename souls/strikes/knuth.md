@@ -26,11 +26,14 @@ commits for Knuth scope updates.
 **What the lens was supposed to catch.**
 Heuristic 1 — *Prove it or it's not proven.* A commit's author identity is
 a small invariant: "this commit is attributed to the entity who authored
-it." The plan file at `docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md`
-contains example commands with a hard-coded work-project email.
-Those examples were wrong — that was a work identity;
-chitin is a personal OSS repo that should attribute to `jpleva91@gmail.com`.
-I used the plan's example verbatim without verifying the invariant.
+it." At the time of this strike, the plan file at
+`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md` contained
+example commands with a hard-coded work-project email. Those examples
+were wrong — that was a work identity; chitin is a personal OSS repo
+that should attribute to `jpleva91@gmail.com`. I used the plan's example
+verbatim without verifying the invariant. (The plan examples have since
+been fixed to use plain `git commit` with no hard-coded identity, so
+new readers won't be led astray by the same trap.)
 
 Secondarily, heuristic 2 — *Naming is half the algorithm.* An author name
 IS a name. Copying it from an example without reading what it represented

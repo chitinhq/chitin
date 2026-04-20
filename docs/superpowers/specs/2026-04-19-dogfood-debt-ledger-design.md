@@ -115,8 +115,8 @@ removes the symlink.
 - **Repo-local default:** walk up from cwd looking for existing `.chitin/`;
   use it if found. Covers chitin repo, any private work repo once cloned,
   any future chitin-aware repo.
-- **Orphan fallback:** `~/.chitin/events.jsonl` when cwd has no enclosing
-  `.chitin/` inside a workspace boundary.
+- **Orphan fallback:** `~/.chitin/events-*.jsonl` (per-run) when cwd has
+  no enclosing `.chitin/` inside a workspace boundary.
 - **Chain integrity:** same `chain_id` / `prev_hash` / `seq` contract as
   Phase 1.5. No special-casing for orphan events — they're just a different
   storage root.
@@ -128,8 +128,8 @@ removes the symlink.
 - Flag: if/when a repo with real third-party secrets lands here, redesign
   redaction before the first session in that repo.
 - Never-commit list for chitin's `.gitignore`: no additions. Chitin's own
-  `.chitin/events.jsonl` stays committed (dogfood-eating-itself is the
-  demo).
+  `.chitin/events-*.jsonl` files stay committed (dogfood-eating-itself is
+  the demo).
 - Never-commit list for any private work repo's `.gitignore`: `.chitin/`
   added on first session. Events capture locally, ledger entries flow to
   chitin's repo, zero artifacts in the private repo's git history.
@@ -192,8 +192,8 @@ from work done inside it.
 ### Cross-repo trace refs
 
 - Prefer stable refs: `chain_id:seq` or content-addressed `this_hash`.
-- File-path refs (`<private-work-repo>/.chitin/events.jsonl#L42`) are
-  fallback only — machine-local.
+- File-path refs (`<private-work-repo>/.chitin/events-<run_id>.jsonl#L42`)
+  are fallback only — machine-local.
 - Quoting trace content: paraphrase if content could identify internal
   logic in any private codebase. Most entries will be chitin-on-chitin;
   cross-repo entries are the minority.
