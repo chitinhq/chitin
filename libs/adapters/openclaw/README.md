@@ -70,11 +70,12 @@ adapter (we do not need to wire auth to capture events).
 ## Adapter strategy (Q1: hook-API vs process-level wrap)
 
 **Finding — openclaw has a rich plugin/hook system, but none of its
-hook events are session-lifecycle events.** The adapter strategy for
-chitin's envelope (session_start/session_end) must therefore be
-**process-level wrap for v1**, with **gateway-log tail as an optional
-v1.5 upgrade** and **an in-process openclaw plugin as the v2 high-fidelity
-option**. See the F3 addendum for the costed recommendation.
+hook events are session-lifecycle events. Sessions are however observable
+from outside the gateway process via the on-disk session store and the
+`openclaw sessions --json` CLI surface over that store, so the adapter
+strategy is not forced onto log-tailing or a plugin — a session-store
+poll is a first-class v1 option alongside process-wrap.** See the F3
+addendum for the costed recommendation and the v1a/v1b choice.
 
 Evidence observed 2026-04-20:
 
@@ -111,42 +112,98 @@ Evidence observed 2026-04-20:
 
 Strategy comparison (filled in in the F3 addendum; summary here):
 
-| Strategy           | Fidelity | Coupling | v1 effort   | Covers non-CLI sessions? |
-| ------------------ | -------- | -------- | ----------- | ------------------------ |
-| Process-level wrap | Low      | None     | Trivial     | No (CLI-invoked only)    |
-| Gateway-log tail   | Medium   | Log-schema | Moderate  | Yes                      |
-| In-process plugin  | High     | Hard to openclaw internals | High | Yes                      |
+| Strategy                              | Fidelity | Coupling             | v1 effort | Covers daemon / channel sessions? |
+| ------------------------------------- | -------- | -------------------- | --------- | --------------------------------- |
+| Process-level wrap                    | Low      | None                 | Small     | No (CLI-invoked only)             |
+| Session-store poll (`sessions --json`)| Medium   | Session JSON schema  | Medium    | Yes                               |
+| Session-store file watch (inotify)    | Medium   | Store file layout    | Medium    | Yes                               |
+| Gateway-log tail (`logs --follow`)    | Medium   | tslog log schema     | Medium    | Yes (needs logging.level ≥ info)  |
+| In-process openclaw plugin            | High     | openclaw internals   | High      | Yes (plus turn- and tool-level)   |
 
 ## Observable streams (Q2: what is produced during a session)
 
-**Finding — the structured, tailable surface is the gateway file log
-(JSONL, one entry per line, rolling daily). No session-scoped event
-bus exists outside that log.**
+**Finding — openclaw exposes multiple structured observability surfaces.
+The most session-relevant ones are (1) the on-disk session store,
+(2) `openclaw sessions --json` over that store, (3) the gateway JSONL
+log, and (4) the config-audit JSONL. None of these are a
+session-lifecycle *event* stream in the subscribe-and-get-pushed sense,
+but (1) and (2) are an authoritative session-*state* stream that a
+poller or file-watcher can diff to derive lifecycle events.**
 
-Evidence observed 2026-04-20:
+### (1) On-disk session store — authoritative
 
-- `openclaw logs` is documented as "Tail gateway file logs via RPC".
-  The gateway log lives at `/tmp/openclaw/openclaw-YYYY-MM-DD.log` by
-  default and rolls daily on the gateway host's timezone. Path and
-  level are configurable via `logging.file` and `logging.level` in
+Verified on this box by reading the file directly:
+
+- Path: `~/.openclaw/agents/<agent>/sessions/sessions.json`
+  (for the default agent `main`:
+  `/home/red/.openclaw/agents/main/sessions/sessions.json`).
+- Format: JSON object keyed by session key
+  (e.g. `"agent:main:main"`) whose value is the full session record —
+  `sessionId`, `updatedAt` (unix ms), `skillsSnapshot` (prompt +
+  resolved skill list), and more fields below the cutoff.
+- Writes are atomic (openclaw rotates via `rename(2)`; this is
+  observable in `config-audit.jsonl` entries with `result: "rename"`).
+- Lifetime: sessions are persisted until the user or `sessions cleanup`
+  prunes them; a session can sit idle for days
+  (`ageMs` on this box read `290286414` ≈ 3.4 days on a stored
+  session).
+
+### (2) `openclaw sessions --json` — CLI surface over the store
+
+- Returns a JSON document with `{path, stores, allAgents, count,
+  activeMinutes, sessions[]}` where each session has `key`,
+  `sessionId`, `updatedAt`, `ageMs`, `systemSent`, `abortedLastRun`,
+  `inputTokens`, `outputTokens`, `totalTokens`, `totalTokensFresh`,
+  `model`, `modelProvider`, `contextTokens`, `agentId`, `kind`.
+- `--all-agents` aggregates across agents; `--active <minutes>`
+  filters to recently-updated sessions.
+- Works while a gateway is running on this box (the pre-existing
+  daemon at port 18789). Whether it works with no gateway is not yet
+  characterised; the addendum treats that as a risk to verify during
+  F5 implementation.
+
+### (3) Gateway JSONL log
+
+- `openclaw logs` is "Tail gateway file logs via RPC". The log file
+  lives at `/tmp/openclaw/openclaw-YYYY-MM-DD.log` by default and
+  rolls daily on the gateway host's timezone; path and level are
+  configurable via `logging.file` and `logging.level` in
   `openclaw.json`.
+- Format is `tslog`-style JSONL:
+  `{"0": <message string>, "_meta": {runtime, runtimeVersion,
+  hostname, name, parentNames, date, logLevelId, logLevelName,
+  path.{fullFilePath, fileName, fileLine, fileColumn, filePath,
+  method}}, "time": <ISO-8601 with tz offset>}`. The message field
+  is the positional `"0"` key, not `"msg"` — unusual, but stable.
+- `openclaw logs --follow --json --timeout <ms>` streams the log
+  over RPC and emits one JSON object per line. `--expect-final`
+  blocks until a final-response log entry from the agent is seen,
+  which implies the log does contain turn-level markers at some
+  level — but a 38-line sample from today's log (before any agent
+  turn) is all subsystem / bonjour / hook-readiness entries, so
+  turn-level markers were not observed directly.
 - The Control UI tails the same file via the gateway RPC method
   `logs.tail`. No separate event bus is documented.
-- A second JSONL stream lives at `~/.openclaw/logs/config-audit.jsonl`
-  (7 entries on this box, from prior installs). Its schema is rich —
-  fields include `ts`, `source`, `event`, `pid`, `argv`, `cwd`,
+
+### (4) Config-audit JSONL
+
+- Path: `~/.openclaw/logs/config-audit.jsonl`. 7 entries on this
+  box from prior installs. Schema:
+  `ts`, `source`, `event`, `pid`, `ppid`, `cwd`, `argv`, `execArgv`,
+  `watchMode`, `watchSession`, `watchCommand`, `existsBefore`,
   `previousHash`, `nextHash`, `gatewayModeBefore`, `gatewayModeAfter`,
-  and so on — but its events are **config-write events**, not session
-  events. Example event types: `config.write`. Not a session-lifecycle
-  source, but confirms openclaw's logging idiom is structured JSONL
-  with PID/argv, which is useful for v1.5 log-tail strategy if the
-  gateway log follows the same shape.
-- State directories under `~/.openclaw/`: `agents/`, `canvas/`,
-  `credentials/`, `devices/`, `flows/`, `identity/`, `logs/`,
-  `matrix/`, `memory/`, `qqbot/`, `tasks/`, `workspace/`. Session
-  transcript files are documented at `~/.openclaw/sessions/` but that
-  directory only materialises after the first session runs on this
-  box.
+  `result`, `previous{Dev,Ino,Mode,Nlink,Uid,Gid}`,
+  `next{Dev,Ino,Mode,Nlink,Uid,Gid}`. Events are config-write events
+  (e.g. `event: "config.write"`), not session events — useful for
+  confirming openclaw's logging idiom (structured JSONL with PID and
+  argv), not for session capture.
+
+### (5) Other state directories
+
+- Under `~/.openclaw/`: `agents/`, `canvas/`, `credentials/`,
+  `devices/`, `flows/`, `identity/`, `logs/`, `matrix/`, `memory/`,
+  `qqbot/`, `tasks/`, `workspace/`. `flows/` and `tasks/` are
+  plausible durable-operation stores but were not characterised.
 - stdout of a CLI invocation is human-oriented TTY output (emoji,
   tables, ANSI), not a structured event stream. `--no-color` strips
   ANSI but does not switch to a structured format.
@@ -180,12 +237,20 @@ Evidence observed 2026-04-20:
   `/new`" rather than as "session X started". Translating requires
   correlating the command event against session state before vs after.
 
-**Consequence for process-wrap v1:** `chitin run openclaw [args]`
-captures the CLI-process lifecycle, which does NOT cleanly map to
-session lifecycle. We therefore redefine v1 event semantics:
-`session_start` = `cli_invocation_start`, `session_end` =
-`cli_invocation_end`. This is explicit in the F3 addendum's
-invariant statement.
+**Consequence for the adapter:** there are two honest paths:
+
+- *Process-wrap v1 (v1a):* `chitin run openclaw [args]` captures the
+  CLI-process lifecycle, which does NOT cleanly map to session
+  lifecycle. v1a redefines event semantics: `session_start` =
+  `cli_invocation_start`, `session_end` = `cli_invocation_end`. Cheap;
+  misses daemon/channel sessions.
+- *Session-store poll v1 (v1b):* chitin polls `openclaw sessions
+  --json` (or watches the underlying `sessions.json` with inotify)
+  and emits `session_start` when a new `sessionId` appears in the
+  store and `session_end` when a `sessionId` disappears (or
+  `ageMs > idleThreshold` in the soft variant). Captures
+  daemon/channel sessions; higher fidelity; more implementation
+  cost. Addendum quantifies the trade-off.
 
 ## Tool-call surface (Q4: where is the decision/execution boundary observable)
 
