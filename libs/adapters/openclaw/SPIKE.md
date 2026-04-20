@@ -1,6 +1,14 @@
 # OpenClaw Adapter — Spike Notes (Phase 1.5)
 
-**Status:** Placeholder — OpenClaw's launch model not yet verified.
+> **Superseded in progress by [README.md](./README.md)** as of 2026-04-20
+> (Phase F Task F1 — install verified; Task F2 answers the 4 questions
+> below by observation, at which point this file is removed). This file
+> is retained only so the 4 open questions remain link-resolvable until
+> the README's Adapter strategy / Observable streams / Session semantics
+> / Tool-call surface sections move past "TBD".
+
+**Status:** Installed and smoke-verified (2026-04-20); SPIKE questions
+still open — see README.md.
 
 **Open questions:**
 1. Does OpenClaw expose a hook/plugin API, or do we wrap its CLI at the process level?
