@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/health"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/hookinstall"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/ingest"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/kstate"
@@ -41,6 +43,8 @@ func main() {
 		cmdInstall(args)
 	case "uninstall":
 		cmdUninstall(args)
+	case "health":
+		cmdHealth(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}
@@ -352,6 +356,20 @@ func cmdUninstall(args []string) {
 		exitErr("unknown_surface", *surface)
 	}
 	fmt.Println(`{"ok":true}`)
+}
+
+func cmdHealth(args []string) {
+	fs := flag.NewFlagSet("health", flag.ExitOnError)
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	windowHours := fs.Int("window-hours", 24, "window size in hours")
+	fs.Parse(args)
+	absDir, _ := filepath.Abs(*dir)
+	rep, err := health.Gather(absDir, time.Duration(*windowHours)*time.Hour)
+	if err != nil {
+		exitErr("health", err.Error())
+	}
+	out, _ := json.Marshal(rep)
+	fmt.Println(string(out))
 }
 
 func exitErr(kind, msg string) {
