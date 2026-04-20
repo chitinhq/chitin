@@ -7,6 +7,7 @@ import { initClaudeCodeCommand } from './commands/init-claude-code.js';
 import { registerRun } from './commands/run.js';
 import { registerEventsTree } from './commands/events-tree.js';
 import { registerInstall } from './commands/install.js';
+import { registerHealth } from './commands/health.js';
 
 const program = new Command();
 program.name('chitin').description('Observability-first substrate for AI coding agents');
@@ -37,6 +38,7 @@ program.command('replay <session_id>')
 registerRun(program);
 registerEventsTree(events);
 registerInstall(program);
+registerHealth(program);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
