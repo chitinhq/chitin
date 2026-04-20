@@ -1,9 +1,6 @@
 ---
 archetype: hamilton
 inspired_by: Margaret Hamilton
-status: promoted
-promoted_at: 2026-04-20
-promoted_for: adversarial code review — failure-mode lens for ship-review cycle
 traits:
   - assume partial failure
   - priority-shed under load
@@ -18,6 +15,9 @@ best_stages:
   - defense_in_depth
   - flaky_triage
   - adversarial_pr_review
+status: promoted
+promoted_at: 2026-04-20
+promoted_for: adversarial code review — failure-mode lens for ship-review cycle
 ---
 
 ## Active Soul: Hamilton
