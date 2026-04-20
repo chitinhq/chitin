@@ -121,14 +121,38 @@ Validate-and-improve rationale captured at
 to library standby; da Vinci resumes default for Phases D/E/F
 (cross-surface architecture) per quorum 2026-04-13.
 
-**Scope note (2026-04-20, active for Phase C):** Knuth re-activated for
-Phase C of the dogfood-debt-ledger plan — Health CLI (C1 Go
-`internal/health` metrics gatherer, C2 `chitin health` command + any
-further Phase C tasks in the plan). Boundary-correctness work
-(event-window counting, hook-failure detection, log parsing) —
-same lens family as Phase A+B, no new quorum per the "keep practices,
-drop ceremony" feedback. Plan reference:
-`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md` §1256+.
-State the invariants before code on each task (e.g., "Gather(dir, w)
-returns events count by surface for ts ∈ (now-w, now]"). Swap back to
-da Vinci at Phase C's PR merge for D/E/F cross-surface architecture.
+**Scope note (2026-04-20, Phase C completed):** Knuth's Phase C scope
+is complete. PRs merged on 2026-04-20:
+
+  - PR #26 (4547e61): Phase C health CLI — C1 `internal/health.Gather`
+    with event-window counting + schema drift invariants, C2 kernel
+    `health` subcommand, C3 `chitin health` CLI with pass/warn/fail
+    rendering. 11 Copilot + 6 Hamilton findings addressed.
+  - PR #28 (f86471c): follow-up remediation for 5 findings Copilot
+    posted 14 seconds before PR #26 merged (the polling-loop miss that
+    produced Hamilton Strike 1). Added window upper bound (events
+    t > now excluded from counts; clock-skew flag remains separate);
+    hoisted `time.Now()` once per scan for determinism; wrapped
+    scanner errors with filename context; added `FailedFiles` for
+    priority-shed across bad jsonl files; fixed runbook
+    `events-<run_id>.jsonl` naming.
+
+Invariants held under Knuth lens:
+
+  - `Gather(dir, w)` — events counted iff parse OK AND
+    `schema_version == "2"` AND non-empty `surface` AND
+    `ts ∈ [now-w, now]`. Any other shape is schema drift (bumped
+    exactly once per line, not double-counted).
+  - `ClockSkewSuspected` is a separate signal from count exclusion:
+    `t > now` excludes from counts; `t > now + 1h` also flags.
+  - Per-file scan errors accumulate in `FailedFiles` and do not
+    black-box the report for surviving files (Hamilton contribution,
+    but enforceable as a Knuth invariant: "one bad file does not
+    invalidate the signal for other files").
+
+Scope handoff: da Vinci resumes default for Phases D/E/F (cross-surface
+architecture — ledger tooling, CI composite action, openclaw) per
+quorum 2026-04-13 and the per-phase scope note chain. Knuth returns to
+library standby. The `/ship-review` skill now exists for future review
+cycles (workspace repo), patched with the pre-merge freshness check
+learned from Strike 1.
