@@ -228,6 +228,15 @@ export function lintGraduationMarkers(blocks: LedgerEntry[]): LintFinding[] {
   if (!hasGraduated) return [];
 
   const auth = spawnSync('gh', ['auth', 'status'], { encoding: 'utf8' });
+  if (auth.error && (auth.error as NodeJS.ErrnoException).code === 'ENOENT') {
+    return [
+      {
+        level: 'warn',
+        gdl: '*',
+        msg: 'skipping graduation-marker resolution (`gh` CLI not installed)',
+      },
+    ];
+  }
   if (auth.status !== 0) {
     return [
       {
