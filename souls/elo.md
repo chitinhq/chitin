@@ -24,7 +24,7 @@ trainer's note, not a benchmark.
 |---|---|---|---|
 | Curie | 1503 | canonical | +3 |
 | Shannon | 1500 | canonical | — |
-| Knuth | 1500 | canonical | — |
+| Knuth | 1499 | canonical | −1 |
 | Lovelace | 1500 | canonical | — |
 | Socrates | 1500 | canonical | — |
 | Sun Tzu | 1500 | canonical | — |
@@ -41,6 +41,18 @@ trainer's note, not a benchmark.
 ## Event log
 
 ### 2026-04-20
+
+- **Knuth −1 → 1499.** Strike 1. Used `user@example.com` (work email)
+  for every direct commit in the Phase C session, copying the plan
+  file's example verbatim without verifying. the work repo is the WORK
+  repo; chitin is personal and should attribute to `jpleva91@gmail.com`.
+  Squash-merges on main were correctly attributed via GitHub's PR-author
+  logic, but three direct-to-main scope-note commits carry the wrong
+  identity. Knuth's heuristic 1 ("prove it or it's not proven")
+  explicitly fails here — an unverified invariant inherited from an
+  example. Remediated via `.mailmap`; memory
+  `project_git_identity.md` saved to prevent recurrence. See
+  `souls/strikes/knuth.md` for full record.
 
 - **Hamilton: promoted to canonical** (not an elo delta — tier change).
   First operational trial of `/ship-review` skill used Hamilton as the
