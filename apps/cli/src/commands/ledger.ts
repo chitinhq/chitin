@@ -224,9 +224,23 @@ export function lintTraceRefs(
 }
 
 export function lintGraduationMarkers(blocks: LedgerEntry[]): LintFinding[] {
+  const hasGraduated = blocks.some((b) => /\*\*Graduated:\*\*.*?#\d+/i.test(b.body));
+  if (!hasGraduated) return [];
+
+  const auth = spawnSync('gh', ['auth', 'status'], { encoding: 'utf8' });
+  if (auth.status !== 0) {
+    return [
+      {
+        level: 'warn',
+        gdl: '*',
+        msg: 'skipping graduation-marker resolution (gh not authenticated — run `gh auth login`)',
+      },
+    ];
+  }
+
   const findings: LintFinding[] = [];
   for (const b of blocks) {
-    const m = /\*\*Graduated:\*\*.*?(issue|PR|souls PR)\s*#(\d+)/i.exec(b.body);
+    const m = /\*\*Graduated:\*\*.*?(souls PR|issue|PR)\s*#(\d+)/i.exec(b.body);
     if (!m) continue;
     const num = m[2];
     const issue = spawnSync('gh', ['issue', 'view', num, '--json', 'number'], { encoding: 'utf8' });

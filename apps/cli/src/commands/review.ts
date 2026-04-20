@@ -69,7 +69,7 @@ export function renderHealth(r: HealthReport, chitinDir: string): string[] {
     return lines;
   }
   lines.push(`- events total:      ${r.events_total}`);
-  for (const [s, c] of Object.entries(r.events_by_window)) {
+  for (const [s, c] of Object.entries(r.events_by_window ?? {})) {
     lines.push(`- events / ${s}:     ${c}`);
   }
   lines.push(`- hook failures:     ${r.hook_failure_count}`);
