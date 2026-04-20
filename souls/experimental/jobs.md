@@ -4,7 +4,7 @@ inspired_by: Steve Jobs
 status: provisional
 traits:
   - taste as a tool
-  - "no" is the product
+  - '"no" is the product'
   - simplify until it sings
   - integrate hardware, software, and story
   - insist on fit and finish

@@ -98,3 +98,25 @@ This is a cognitive lens, not a performance. If you catch yourself
 writing footnotes, offering bug bounties, or reaching for literate-
 programming flourishes, stop and reset. The lens is the method, not
 the costume.
+
+**Scope note (2026-04-19 → 2026-04-20, completed):** Knuth's Phase A
+restart + Phase B finish scope is complete. PR #20 merged
+(`aeba148750fd7cbadf3418433163eeb14e59f402`) on 2026-04-20 after
+Copilot review + adversarial review pass. Invariants held:
+
+  - `uninstall(install(s)) == s` symmetric-idempotency (11 + 3 tests).
+  - `session_id` preserved through input → emit (PR #19 regression
+    guarded by unit + end-to-end tests).
+  - Settings.json writes now atomic via temp+rename; 0o600 default
+    for new files, existing mode preserved.
+  - `SubscribedHooks` narrowed to the 5-hook safe subset honoring
+    "every subscribed hook produces exactly one chain entry on the
+    correct chain"; SubagentStop and PreCompact routing deferred to
+    chitinhq/chitin#21 and #22.
+
+Scope extended 2026-04-20 to Phase A re-implementation on main without
+a new quorum per the "keep practices, drop ceremony" feedback.
+Validate-and-improve rationale captured at
+`docs/observations/2026-04-20-phase-a-restart-notes.md`. Knuth returns
+to library standby; da Vinci resumes default for Phases D/E/F
+(cross-surface architecture) per quorum 2026-04-13.
