@@ -98,4 +98,20 @@ describe('renderReport', () => {
     const lines = renderReport(mkReport({ clock_skew_suspected: false }), '/tmp/x');
     expect(lines.some((l) => l.includes('clock skew'))).toBe(false);
   });
+
+  it('renders a WARN row and per-entry lines when failed_files is non-empty', () => {
+    const lines = renderReport(
+      mkReport({ failed_files: ['/foo/events-bad.jsonl: permission denied'] }),
+      '/tmp/x',
+    );
+    expect(lines.some((l) => l.startsWith('[WARN]') && l.includes('failed files'))).toBe(true);
+    expect(lines.some((l) => l.includes('events-bad.jsonl: permission denied'))).toBe(true);
+  });
+
+  it('omits failed_files section when undefined or empty', () => {
+    const linesEmpty = renderReport(mkReport({ failed_files: [] }), '/tmp/x');
+    const linesUndef = renderReport(mkReport(), '/tmp/x');
+    expect(linesEmpty.some((l) => l.includes('failed files'))).toBe(false);
+    expect(linesUndef.some((l) => l.includes('failed files'))).toBe(false);
+  });
 });

@@ -30,15 +30,33 @@ trainer's note, not a benchmark.
 | Sun Tzu | 1500 | canonical | — |
 | Turing | 1500 | canonical | — |
 | da Vinci | 1499 | canonical | −1 |
+| Hamilton | 1499 | canonical | −1 |
 | Dijkstra | 1500 | experimental | — |
 | Feynman | 1500 | experimental | — |
-| Hamilton | 1500 | experimental | — |
 | Hopper | 1500 | experimental | — |
 | Jared Pleva | 1500 | experimental | — |
 | Jobs | 1500 | experimental | — |
 | Jokić | 1500 | experimental | — |
 
 ## Event log
+
+### 2026-04-20
+
+- **Hamilton: promoted to canonical** (not an elo delta — tier change).
+  First operational trial of `/ship-review` skill used Hamilton as the
+  adversarial lens on PR #26. Promotion recorded in
+  `souls/canonical/hamilton.md` (previously `experimental/`).
+
+- **Hamilton −1 → 1499.** Strike 1. First operational use of
+  `/ship-review` skill: merged PR #26 at 16:00:18 UTC, 14 seconds after
+  Copilot submitted a third review with 7 real findings (including a
+  documented runbook path that doesn't exist — `.chitin/events.jsonl`
+  when the kernel actually emits `events-<run_id>.jsonl`). Hamilton's
+  own heuristics 1 ("the system will fail in ways you didn't design
+  for") and 3 ("'trained users won't make that mistake' is the bug
+  report") applied to the polling loop I'd written and trusted. PR #28
+  filed to remediate; skill patched with pre-merge freshness check.
+  See `souls/strikes/hamilton.md` for full record.
 
 ### 2026-04-19
 
