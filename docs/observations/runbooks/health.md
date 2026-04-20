@@ -45,10 +45,12 @@ No events in the window. Either nothing has run through the hook in the last 24h
 
 Events that violate the v2 contract (parse fail, missing `schema_version`, `schema_version != "2"`, empty `surface`, unparseable `ts`).
 
+The kernel emits events to `.chitin/events-<run_id>.jsonl` (one file per run). `chitin health` scans every `*.jsonl` under the dir, so a drift count reflects events across all run files.
+
 **Do:**
 
-1. Most common cause: legacy events from a pre-v2 kernel still in `events.jsonl`. Confirm with `head -1 .chitin/events.jsonl | jq .`. If `schema_version` is null or `"1"`, archive the file (`mv .chitin/events.jsonl .chitin/events.jsonl.legacy-$(date +%s)`) and let the kernel start fresh.
-2. Less common: a corrupted line (truncated mid-write, partial UTF-8). Use `jq -c . .chitin/events.jsonl > /dev/null` to find the bad line.
+1. Most common cause: legacy events from a pre-v2 kernel. Find candidates with `ls -1 .chitin/events-*.jsonl` and check one: `head -1 .chitin/events-<run_id>.jsonl | jq .`. If `schema_version` is null or `"1"`, archive that run file: `mv .chitin/events-<run_id>.jsonl .chitin/events-<run_id>.jsonl.legacy-$(date +%s)` and let newer runs accumulate cleanly.
+2. Less common: a corrupted line (truncated mid-write, partial UTF-8). Walk the files: `for f in .chitin/events-*.jsonl; do jq -c . "$f" > /dev/null || echo "bad: $f"; done`.
 3. If the drift persists after archiving legacy data, the adapter is emitting malformed envelopes — file a ledger entry.
 
 ### `orphaned chains > 0` — [WARN]
@@ -67,5 +69,5 @@ An event has a `ts` > 1h in the future.
 
 ## Known limitations (tracked for Phase D ledger)
 
-- **Large JSONL scans are O(n) with no timeout.** A 1GB `events.jsonl` can take minutes; no progress indicator. Future: cap scan duration, return partial with `truncated: true`.
+- **Large JSONL scans are O(n) with no timeout.** A 1GB total across `events-*.jsonl` files can take minutes; no progress indicator. Future: cap scan duration, return partial with `truncated: true`.
 - **Silent `$HOME/.chitin` fallback.** If cwd has no `.chitin/`, the resolver quietly uses `$HOME/.chitin/`. The output header labels the resolved dir, but operators skim. Future: render a `[WARN]` when resolved dir ≠ cwd-local `.chitin/`.

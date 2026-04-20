@@ -50,6 +50,7 @@ func Gather(chitinDir string, window time.Duration) (Report, error) {
 	}
 	r.DirExists = true
 
+	skewThreshold := now.Add(clockSkewFutureTolerance)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -58,7 +59,7 @@ func Gather(chitinDir string, window time.Duration) (Report, error) {
 		if !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
-		if err := scanJSONL(filepath.Join(chitinDir, name), &r); err != nil {
+		if err := scanJSONL(filepath.Join(chitinDir, name), &r, now, skewThreshold); err != nil {
 			return r, err
 		}
 	}
@@ -72,9 +73,15 @@ func Gather(chitinDir string, window time.Duration) (Report, error) {
 
 // Invariant: an event counts toward EventsTotal/EventsByWindow iff it parses,
 // has schema_version == "2", has a non-empty surface, and has ts inside the
-// window. Any other shape is schema drift (bumped exactly once per line) and
-// does not count as a real event.
-func scanJSONL(path string, r *Report) error {
+// window [WindowStart, now]. Any other shape is schema drift (bumped exactly
+// once per line) and does not count as a real event. Events past
+// skewThreshold (now + clockSkewFutureTolerance) set ClockSkewSuspected but
+// are not counted — future events would otherwise silently inflate the
+// window metrics across clock corrections.
+//
+// now and skewThreshold are pinned per Gather call so behavior is
+// deterministic within a single scan.
+func scanJSONL(path string, r *Report, now, skewThreshold time.Time) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -111,16 +118,19 @@ func scanJSONL(path string, r *Report) error {
 		if t.After(r.LatestEventTs) {
 			r.LatestEventTs = t
 		}
-		if t.After(time.Now().UTC().Add(clockSkewFutureTolerance)) {
+		if t.After(skewThreshold) {
 			r.ClockSkewSuspected = true
 		}
-		if t.Before(r.WindowStart) {
+		if t.Before(r.WindowStart) || t.After(now) {
 			continue
 		}
 		r.EventsTotal++
 		r.EventsByWindow[ev.Surface]++
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("scan jsonl %q: %w", path, err)
+	}
+	return nil
 }
 
 func scanErrorLog(path string, r *Report) error {
@@ -129,7 +139,7 @@ func scanErrorLog(path string, r *Report) error {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("open error log: %w", err)
+		return fmt.Errorf("open error log %q: %w", path, err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -140,5 +150,8 @@ func scanErrorLog(path string, r *Report) error {
 		}
 		r.HookFailureCount++
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("scan error log %q: %w", path, err)
+	}
+	return nil
 }

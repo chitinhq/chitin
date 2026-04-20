@@ -10,7 +10,7 @@ import (
 
 func TestGather_CountsEventsInLastWindow(t *testing.T) {
 	dir := t.TempDir()
-	jsonl := filepath.Join(dir, "events.jsonl")
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
 	now := time.Now().UTC()
 	old := now.Add(-48 * time.Hour).Format(time.RFC3339)
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
@@ -77,7 +77,7 @@ func TestGather_SchemaDriftRules(t *testing.T) {
 		// Drift: unparseable ts
 		`{"schema_version":"2","ts":"not-a-date","surface":"claude-code"}`,
 	}
-	jsonl := filepath.Join(dir, "events.jsonl")
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
 	if err := os.WriteFile(jsonl, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestGather_PropagatesNonErrNotExistOnJSONL(t *testing.T) {
 		t.Skip("root bypasses file mode permission checks")
 	}
 	dir := t.TempDir()
-	jsonl := filepath.Join(dir, "events.jsonl")
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
 	if err := os.WriteFile(jsonl, []byte("{}\n"), 0o000); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestGather_AbsentDirSetsDirExistsFalse(t *testing.T) {
 func TestGather_DetectsClockSkewFromFutureTs(t *testing.T) {
 	dir := t.TempDir()
 	future := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
-	jsonl := filepath.Join(dir, "events.jsonl")
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
 	line := `{"schema_version":"2","ts":"` + future + `","event_type":"session_start","surface":"claude-code"}`
 	if err := os.WriteFile(jsonl, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -169,7 +169,7 @@ func TestGather_DetectsClockSkewFromFutureTs(t *testing.T) {
 func TestGather_NoClockSkewOnRecentEvents(t *testing.T) {
 	dir := t.TempDir()
 	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
-	jsonl := filepath.Join(dir, "events.jsonl")
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
 	line := `{"schema_version":"2","ts":"` + recent + `","event_type":"session_start","surface":"claude-code"}`
 	if err := os.WriteFile(jsonl, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -181,5 +181,38 @@ func TestGather_NoClockSkewOnRecentEvents(t *testing.T) {
 	}
 	if rep.ClockSkewSuspected {
 		t.Errorf("want ClockSkewSuspected=false for recent event")
+	}
+}
+
+// Window is [WindowStart, now]. Events stamped AFTER now must not count
+// toward EventsByWindow — they flag ClockSkewSuspected but are excluded
+// from metrics. Otherwise a future-stamped event silently inflates the
+// window count across clock corrections.
+func TestGather_ExcludesFutureEventsFromCounts(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	future := now.Add(48 * time.Hour).Format(time.RFC3339)
+	lines := []string{
+		`{"schema_version":"2","ts":"` + past + `","event_type":"session_start","surface":"claude-code"}`,
+		`{"schema_version":"2","ts":"` + future + `","event_type":"session_start","surface":"claude-code"}`,
+	}
+	jsonl := filepath.Join(dir, "events-testrun.jsonl")
+	if err := os.WriteFile(jsonl, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	rep, err := Gather(dir, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.EventsTotal != 1 {
+		t.Errorf("want 1 in-window event, got %d (future event must not count)", rep.EventsTotal)
+	}
+	if rep.EventsByWindow["claude-code"] != 1 {
+		t.Errorf("want 1 claude-code event in window, got %d", rep.EventsByWindow["claude-code"])
+	}
+	if !rep.ClockSkewSuspected {
+		t.Errorf("want ClockSkewSuspected=true when a future event is present")
 	}
 }
