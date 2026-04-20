@@ -3,3 +3,4 @@ export * from './payloads.schema';
 export * from './event.schema';
 export * from './event.types';
 export * from './hash';
+export { resolveChitinDir } from './chitindir-resolve';
