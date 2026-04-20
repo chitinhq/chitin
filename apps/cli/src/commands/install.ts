@@ -69,7 +69,16 @@ function verifyClaudeCodeInstall(adapterCommand: string): void {
     hooks?: Record<string, Array<{ _tag?: string; hooks?: Array<{ command?: string }> }>>;
   };
   const hooks = settings.hooks ?? {};
-  const expected = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SessionEnd'];
+  // Must match SubscribedHooks in
+  // go/execution-kernel/internal/hookinstall/install.go. Drift here would
+  // let the verifier say OK while hooks are silently missing.
+  const expected = [
+    'SessionStart',
+    'UserPromptSubmit',
+    'PreToolUse',
+    'PostToolUse',
+    'SessionEnd',
+  ];
   for (const h of expected) {
     const list = hooks[h] ?? [];
     const hit = list.some((w) => {

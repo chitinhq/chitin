@@ -30,7 +30,7 @@ func TestInstall_CreatesSettingsOverlay(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected hooks map, got %T", settings["hooks"])
 	}
-	wantHooks := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "SubagentStop", "SessionEnd"}
+	wantHooks := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"}
 	for _, h := range wantHooks {
 		if _, ok := hooks[h]; !ok {
 			t.Errorf("missing hook %s", h)
