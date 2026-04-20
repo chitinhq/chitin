@@ -42,10 +42,10 @@ trainer's note, not a benchmark.
 
 ### 2026-04-20
 
-- **Knuth −1 → 1499.** Strike 1. Used `user@example.com` (work email)
-  for every direct commit in the Phase C session, copying the plan
-  file's example verbatim without verifying. the work repo is the WORK
-  repo; chitin is personal and should attribute to `jpleva91@gmail.com`.
+- **Knuth −1 → 1499.** Strike 1. Used a work-project email for every
+  direct commit in the Phase C session, copying the plan file's
+  example verbatim without verifying. chitin is personal OSS and
+  should attribute to `jpleva91@gmail.com`, not any work identity.
   Squash-merges on main were correctly attributed via GitHub's PR-author
   logic, but three direct-to-main scope-note commits carry the wrong
   identity. Knuth's heuristic 1 ("prove it or it's not proven")
