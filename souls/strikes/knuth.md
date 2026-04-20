@@ -26,11 +26,14 @@ commits for Knuth scope updates.
 **What the lens was supposed to catch.**
 Heuristic 1 — *Prove it or it's not proven.* A commit's author identity is
 a small invariant: "this commit is attributed to the entity who authored
-it." The plan file at `docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md`
-contains example commands with `-c user.email=user@example.com` hard-coded.
-Those examples were wrong — the the work repo email is the WORK identity;
-chitin is a personal OSS repo that should attribute to `jpleva91@gmail.com`.
-I used the plan's example verbatim without verifying the invariant.
+it." At the time of this strike, the plan file at
+`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md` contained
+example commands with a hard-coded work-project email. Those examples
+were wrong — that was a work identity; chitin is a personal OSS repo
+that should attribute to `jpleva91@gmail.com`. I used the plan's example
+verbatim without verifying the invariant. (The plan examples have since
+been fixed to use plain `git commit` with no hard-coded identity, so
+new readers won't be led astray by the same trap.)
 
 Secondarily, heuristic 2 — *Naming is half the algorithm.* An author name
 IS a name. Copying it from an example without reading what it represented
@@ -38,8 +41,8 @@ is exactly the "vague noun hiding logic" pattern Knuth's heuristic 2
 warns against.
 
 **What actually happened.**
-Every direct commit I authored in the session used
-`user@example.com`. The PR squash-merges on `main` attributed correctly
+Every direct commit I authored in the session used the work
+identity. The PR squash-merges on `main` attributed correctly
 to `jpleva91@gmail.com` because GitHub uses the PR author for squash
 commits — but three direct-to-main scope-note commits bypass that and
 carry the wrong identity (`6afc3de`, `bf5295b`, and earlier Phase B notes).
@@ -59,12 +62,12 @@ Secondary: heuristic 2 (naming is half the algorithm). An email is a
 name; copying one without reading what it represents is unnamed logic.
 
 **Remediation.**
-- `.mailmap` added at repo root translating `user@example.com` →
+- `.mailmap` added at repo root translating the work email →
   `jpleva91@gmail.com` for historical commits. Non-destructive;
   `git log --use-mailmap` and GitHub's UI will now show the correct
   attribution without rewriting main's history.
 - Memory saved: `project_git_identity.md` — explicit rule that chitin
-  commits use `jpleva91@gmail.com`; the work repo email is work-only.
+  commits use `jpleva91@gmail.com`; the work email stays on work repos only.
 - ELO: Knuth −1 → 1499. Event logged in `souls/elo.md`.
 - Plan file will be corrected in a future commit (examples should show
   the right email), but not in this remediation PR — it's a separate

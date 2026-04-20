@@ -4,7 +4,7 @@
 
 **Goal:** Make chitin always-on observability on this RTX 3090 Linux box, add the CLI tooling needed for a weekly governance-debt-ledger review, ship a GH Actions composite stub, and complete the openclaw-adapter investigation up to a design-addendum spec (implementation deferred to a follow-up plan per Socrates/Knuth gates).
 
-**Architecture:** Generic `install --surface <name>` subcommand in the Go kernel (claude-code surface implemented; pattern documented for future surfaces). User-level install writes into `~/.claude/settings.json` pointing at a stable binary path (`~/.local/bin/chitin-kernel`). Orphan sessions (no enclosing `.chitin/`) land in `~/.chitin/`. Ledger lives at `chitin/docs/observations/governance-debt-ledger.md`; tooling (`chitin health`, `chitin review`, `chitin ledger new|lint`) supports the weekly review protocol. the work repo repo gets `.chitin/` gitignored on first clone.
+**Architecture:** Generic `install --surface <name>` subcommand in the Go kernel (claude-code surface implemented; pattern documented for future surfaces). User-level install writes into `~/.claude/settings.json` pointing at a stable binary path (`~/.local/bin/chitin-kernel`). Orphan sessions (no enclosing `.chitin/`) land in `~/.chitin/`. Ledger lives at `chitin/docs/observations/governance-debt-ledger.md`; tooling (`chitin health`, `chitin review`, `chitin ledger new|lint`) supports the weekly review protocol. Private work repos that the user clones onto the same box add `.chitin/` to their gitignore on first session (onboarding note for any specific private target is tracked in a private workspace, not in this OSS repo).
 
 **Tech Stack:** Go 1.25 (kernel), TypeScript + Node (CLI and adapter), pnpm + Nx workspace, Vitest (TS tests), `go test` (Go tests), `commander` (CLI), `better-sqlite3` (ledger lint trace resolution).
 
@@ -41,7 +41,6 @@
 **Docs and meta:**
 - `docs/observations/governance-debt-ledger.md` — seeded ledger (empty table of entries)
 - `docs/observations/retrospectives/.gitkeep`
-- `docs/observations/private-work-repo-onboarding.md` — one-page note about `.chitin/` gitignore rule
 - `.github/actions/observe/action.yml` — composite action stub
 - `scripts/install-kernel-symlink.sh` — symlink `dist/.../chitin-kernel` to `~/.local/bin/chitin-kernel`
 
@@ -119,7 +118,7 @@ Verify: `ls -l ~/.local/bin/chitin-kernel` shows the symlink; `chitin-kernel` on
 
 ```bash
 git add scripts/install-kernel-symlink.sh package.json
-git -c user.email=user@example.com -c user.name=Jared commit -m "build: install-kernel symlink to ~/.local/bin for stable path"
+git commit -m "build: install-kernel symlink to ~/.local/bin for stable path"
 ```
 
 ---
@@ -290,7 +289,7 @@ Expected: `--- PASS: TestResolve_FindsExistingChitinDirInParent`, `--- PASS: Tes
 
 ```bash
 git add go/execution-kernel/internal/chitindir/
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(kernel): chitindir resolver with walk-up and orphan fallback"
+git commit -m "feat(kernel): chitindir resolver with walk-up and orphan fallback"
 ```
 
 ---
@@ -420,7 +419,7 @@ Expected: 3 tests pass.
 
 ```bash
 git add libs/contracts/src/chitindir-resolve.ts libs/contracts/src/chitindir-resolve.test.ts libs/contracts/src/index.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(contracts): resolveChitinDir TS helper mirrors Go resolver"
+git commit -m "feat(contracts): resolveChitinDir TS helper mirrors Go resolver"
 ```
 
 ---
@@ -476,7 +475,7 @@ Expected: existing 2 tests still pass.
 
 ```bash
 git add go/execution-kernel/internal/hookinstall/install.go
-git -c user.email=user@example.com -c user.name=Jared commit -m "refactor(kernel): export SubscribedHooks for reuse by global install"
+git commit -m "refactor(kernel): export SubscribedHooks for reuse by global install"
 ```
 
 ---
@@ -772,7 +771,7 @@ Expected: all 5 tests pass (2 original + 3 new).
 
 ```bash
 git add go/execution-kernel/internal/hookinstall/global.go go/execution-kernel/internal/hookinstall/global_test.go
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(kernel): InstallGlobal / UninstallGlobal with merge semantics"
+git commit -m "feat(kernel): InstallGlobal / UninstallGlobal with merge semantics"
 ```
 
 ---
@@ -868,7 +867,7 @@ Verify: `cat "$HOME/.claude/settings.json"` shows hooks wired for `/usr/local/bi
 
 ```bash
 git add go/execution-kernel/cmd/chitin-kernel/main.go
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(kernel): install / uninstall subcommands with --surface dispatch"
+git commit -m "feat(kernel): install / uninstall subcommands with --surface dispatch"
 ```
 
 ---
@@ -1031,7 +1030,7 @@ Expected: the smoke test passes (status 0, `.chitin/` exists).
 
 ```bash
 git add libs/adapters/claude-code/bin/ libs/adapters/claude-code/package.json libs/adapters/claude-code/src/adapter-context.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(adapter-cc): stdin-based CLI entry for user-level hook install"
+git commit -m "feat(adapter-cc): stdin-based CLI entry for user-level hook install"
 ```
 
 ---
@@ -1169,7 +1168,7 @@ Expected: `{"ok":true}` from kernel, then `verify: OK — chitin adapter wired f
 
 ```bash
 git add apps/cli/src/commands/install.ts apps/cli/src/main.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chitin install / uninstall --surface commands"
+git commit -m "feat(cli): chitin install / uninstall --surface commands"
 ```
 
 ---
@@ -1248,7 +1247,7 @@ Expected: test passes.
 
 ```bash
 git add apps/cli/tests/install-e2e.test.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "test(cli): e2e install/uninstall against throwaway HOME"
+git commit -m "test(cli): e2e install/uninstall against throwaway HOME"
 ```
 
 ---
@@ -1444,7 +1443,7 @@ Expected: both tests pass.
 
 ```bash
 git add go/execution-kernel/internal/health/
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(kernel): health.Gather — events, hook failures, schema drift"
+git commit -m "feat(kernel): health.Gather — events, hook failures, schema drift"
 ```
 
 ---
@@ -1510,7 +1509,7 @@ Expected: JSON line containing `"events_total":1`, `"events_by_window":{"claude-
 
 ```bash
 git add go/execution-kernel/cmd/chitin-kernel/main.go
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(kernel): health subcommand over .chitin JSONL + error log"
+git commit -m "feat(kernel): health subcommand over .chitin JSONL + error log"
 ```
 
 ---
@@ -1607,7 +1606,7 @@ Expected: a `[PASS]` / `[WARN]` / `[FAIL]` table; exit code 0 or 1 depending on 
 
 ```bash
 git add apps/cli/src/commands/health.ts apps/cli/src/main.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chitin health with pass/warn/fail output"
+git commit -m "feat(cli): chitin health with pass/warn/fail output"
 ```
 
 ---
@@ -1619,7 +1618,6 @@ git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chit
 **Files:**
 - Create: `docs/observations/governance-debt-ledger.md`
 - Create: `docs/observations/retrospectives/.gitkeep`
-- Create: `docs/observations/private-work-repo-onboarding.md`
 
 - [ ] **Step 1: Create the ledger stub**
 
@@ -1653,32 +1651,21 @@ mkdir -p docs/observations/retrospectives
 touch docs/observations/retrospectives/.gitkeep
 ```
 
-- [ ] **Step 3: Write the the work repo onboarding note**
+- [ ] **Step 3: Write an onboarding note for any private integration target — in a private workspace, not in this repo**
 
-Create `docs/observations/private-work-repo-onboarding.md`:
+The originally-planned repo-specific onboarding note was removed from this repo per the chitin-is-OSS boundary rule (no private-company-specific content on any branch). For each private repo the user clones onto this box that will capture chitin events, an onboarding note belongs in the user's own private workspace (not in `chitinhq/chitin`). The note should cover:
 
-```markdown
-# private-work-repo Onboarding (chitin side)
+1. Add `.chitin/` to the private repo's `.gitignore` before the first session.
+2. Verify after first session: `git status -s .chitin` should report nothing staged.
+3. Ledger entries referencing private sessions use stable refs (`chain_id:seq` or `this_hash`); do not paste verbatim trace content that could identify internal logic. Paraphrase.
 
-When cloning `github.com/REDACTED/REDACTED` onto this box:
-
-1. **Add `.chitin/` to its `.gitignore`** before the first session there.
-   Chitin captures locally; events never commit to the work repo's repo.
-2. **Verify** after first session: `git status -s .chitin` should report
-   nothing staged.
-3. **Ledger entries** referencing the work repo sessions use stable refs
-   (`chain_id:seq` or `this_hash`); do not paste verbatim trace content
-   that could identify internal logic. Paraphrase.
-
-No chitin-side install is needed in the private-work-repo repo — the
-Claude Code hook is user-level, so capture happens automatically.
-```
+No chitin-side install is needed in the private repo — the Claude Code hook is user-level, so capture happens automatically.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add docs/observations/
-git -c user.email=user@example.com -c user.name=Jared commit -m "docs(observations): seed ledger file and the work repo onboarding note"
+git commit -m "docs(observations): seed ledger file"
 ```
 
 ---
@@ -1804,7 +1791,7 @@ git checkout docs/observations/governance-debt-ledger.md
 
 ```bash
 git add apps/cli/src/commands/ledger-new.ts apps/cli/src/main.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chitin ledger new — stub entry scaffolder"
+git commit -m "feat(cli): chitin ledger new — stub entry scaffolder"
 ```
 
 ---
@@ -2041,7 +2028,7 @@ Expected: lint reports structural warnings for the stub (placeholder values), ex
 ```bash
 git add apps/cli/src/commands/ledger.ts apps/cli/src/main.ts
 git rm apps/cli/src/commands/ledger-new.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chitin ledger lint — uniqueness, field presence, trace resolution, gh graduation check"
+git commit -m "feat(cli): chitin ledger lint — uniqueness, field presence, trace resolution, gh graduation check"
 ```
 
 ---
@@ -2143,7 +2130,7 @@ Expected: markdown-style report with Health section and Recent sessions section.
 
 ```bash
 git add apps/cli/src/commands/review.ts apps/cli/src/main.ts
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(cli): chitin review — weekly skim aggregator"
+git commit -m "feat(cli): chitin review — weekly skim aggregator"
 ```
 
 ---
@@ -2202,7 +2189,7 @@ This is intentionally minimal: it emits raw JSONL without the Go kernel's hash-c
 
 ```bash
 git add .github/actions/observe/action.yml
-git -c user.email=user@example.com -c user.name=Jared commit -m "feat(ci): gh-actions composite stub emits session_start/end to .chitin"
+git commit -m "feat(ci): gh-actions composite stub emits session_start/end to .chitin"
 ```
 
 ---
@@ -2239,7 +2226,7 @@ Expected: test job runs, `.chitin/events.jsonl` appears in the workflow workspac
 
 ```bash
 git add .github/workflows/ci.yml
-git -c user.email=user@example.com -c user.name=Jared commit -m "ci: wire chitin's own CI through observe composite action"
+git commit -m "ci: wire chitin's own CI through observe composite action"
 ```
 
 ---
@@ -2273,7 +2260,7 @@ Run: `openclaw --help` (or equivalent). Capture stdout for the README.
 
 ```bash
 git add libs/adapters/openclaw/README.md libs/adapters/openclaw/SPIKE.md
-git -c user.email=user@example.com -c user.name=Jared commit -m "docs(openclaw): install path documented; smoke-verified locally"
+git commit -m "docs(openclaw): install path documented; smoke-verified locally"
 ```
 
 ---
@@ -2321,7 +2308,7 @@ Document in README under "Tool-call surface".
 
 ```bash
 git add libs/adapters/openclaw/README.md
-git -c user.email=user@example.com -c user.name=Jared commit -m "docs(openclaw): answer the 4 SPIKE questions from observation"
+git commit -m "docs(openclaw): answer the 4 SPIKE questions from observation"
 ```
 
 ---
@@ -2380,7 +2367,7 @@ event at entry and one session_end event at exit, linked by chain_id.">
 
 ```bash
 git add docs/superpowers/specs/YYYY-MM-DD-openclaw-adapter-implementation-design.md
-git -c user.email=user@example.com -c user.name=Jared commit -m "spec: openclaw adapter implementation design addendum"
+git commit -m "spec: openclaw adapter implementation design addendum"
 ```
 
 ---
@@ -2464,7 +2451,7 @@ Expected: exits 0 with no errors (warnings OK for soul_hash placeholder).
 
 ```bash
 git add docs/observations/governance-debt-ledger.md
-git -c user.email=user@example.com -c user.name=Jared commit -m "observations: GDL-001 — first live ledger entry (dogfooding proof-of-life)"
+git commit -m "observations: GDL-001 — first live ledger entry (dogfooding proof-of-life)"
 ```
 
 ---
@@ -2477,7 +2464,7 @@ git -c user.email=user@example.com -c user.name=Jared commit -m "observations: G
 |---|---|
 | Capture architecture: install mechanism (claude-code) | Phase B |
 | Capture architecture: events landing (walk-up + orphan) | Phase A2, A3 |
-| Capture architecture: privacy (defer redaction, `.chitin/` gitignore in private-work-repo) | Phase D1 (onboarding note), no code needed |
+| Capture architecture: privacy (defer redaction, `.chitin/` gitignore in any private work repo) | Phase D1 (onboarding note tracked in a private workspace, not in this repo), no code needed |
 | Capture architecture: openclaw workstream | Phase F |
 | Capture architecture: Copilot CLI | Out of scope (documented extension path; no tasks) |
 | Capture architecture: GH Actions composite | Phase E |
