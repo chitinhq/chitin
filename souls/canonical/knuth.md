@@ -120,3 +120,15 @@ Validate-and-improve rationale captured at
 `docs/observations/2026-04-20-phase-a-restart-notes.md`. Knuth returns
 to library standby; da Vinci resumes default for Phases D/E/F
 (cross-surface architecture) per quorum 2026-04-13.
+
+**Scope note (2026-04-20, active for Phase C):** Knuth re-activated for
+Phase C of the dogfood-debt-ledger plan — Health CLI (C1 Go
+`internal/health` metrics gatherer, C2 `chitin health` command + any
+further Phase C tasks in the plan). Boundary-correctness work
+(event-window counting, hook-failure detection, log parsing) —
+same lens family as Phase A+B, no new quorum per the "keep practices,
+drop ceremony" feedback. Plan reference:
+`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md` §1256+.
+State the invariants before code on each task (e.g., "Gather(dir, w)
+returns events count by surface for ts ∈ (now-w, now]"). Swap back to
+da Vinci at Phase C's PR merge for D/E/F cross-surface architecture.
