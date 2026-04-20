@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,7 +45,13 @@ describe('chitin install --surface claude-code --global (e2e)', () => {
         Array<{ _tag?: string; hooks?: Array<{ command?: string }> }>
       >;
     };
-    for (const h of ['SessionStart', 'PreToolUse', 'PostToolUse', 'SessionEnd']) {
+    for (const h of [
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
+      'SessionEnd',
+    ]) {
       const list = s.hooks?.[h] ?? [];
       const hit = list.some(
         (w) =>
@@ -73,7 +85,6 @@ describe('chitin install --surface claude-code --global (e2e)', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'chitin-e2e-preserve-'));
     const settingsDir = join(fakeHome, '.claude');
     const settingsPath = join(settingsDir, 'settings.json');
-    const { mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
     mkdirSync(settingsDir);
     writeFileSync(
       settingsPath,
