@@ -164,7 +164,9 @@ kept proposed scope):**
    - How does it identify session boundaries?
    - Where's the tool-call decision/execution boundary, if any?
    Answers replace `libs/adapters/openclaw/SPIKE.md` with a real
-   `README.md`.
+   `README.md`. *(Completed — SPIKE.md was deleted in the Phase F
+   investigation PR; see `libs/adapters/openclaw/README.md` for the
+   current artifact.)*
 3. **Implement minimum viable capture** — pick adapter strategy based on
    what observation reveals; ship at least `session_start` / `session_end`
    firing on real openclaw use; one inner event type only if investigation

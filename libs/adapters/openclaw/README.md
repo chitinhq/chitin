@@ -37,8 +37,13 @@ Node 24.15.0 installed via the user's `vite-plus` Node runtime at
 `/home/red/.vite-plus/js_runtime/node/24.15.0`, so no sudo required).
 
 ```bash
-npm install -g openclaw@latest
+npm install -g openclaw@2026.4.15
 ```
+
+The version is pinned here because the observations below (hook listings,
+plugin counts, JSON schemas, gateway log shape) are version-specific.
+A future reader installing `@latest` may see a different tool; rerun the
+observations before trusting the findings against that version.
 
 - Adds ~794 transitive packages; install wall time ~2 minutes on this box.
 - Binary is linked into the npm prefix `bin/` (here: `/home/red/.vite-plus/bin/openclaw`).
@@ -92,8 +97,9 @@ Evidence observed 2026-04-20:
 - `openclaw plugins list` reports **58 of 98 plugins loaded** on a bare
   install (stock plugins under
   `/home/red/.vite-plus/js_runtime/node/24.15.0/lib/node_modules/openclaw/dist/extensions`).
-- The documented plugin architecture (docs.openclaw.ai/plugins/architecture)
-  describes a **44-hook provider runtime**: `normalizeModelId`,
+- The documented plugin architecture
+  (<https://docs.openclaw.ai/plugins/architecture>) describes a
+  **44-hook provider runtime**: `normalizeModelId`,
   `resolveDynamicModel`, `wrapStreamFn`, `capabilities`,
   `fetchUsageSnapshot`, etc. These are inference-pipeline hooks for
   model providers — useful for extending inference, not for
@@ -218,11 +224,12 @@ by manual `openclaw sessions cleanup`.**
 
 Evidence observed 2026-04-20:
 
-- Documented at docs.openclaw.ai/concepts/session,
-  /concepts/session-pruning, and
-  /reference/session-management-compaction: sessions persist across
-  CLI invocations and span multiple turns. Sessions store transcripts
-  plus agent assignment and channel binding.
+- Documented at <https://docs.openclaw.ai/concepts/session>,
+  <https://docs.openclaw.ai/concepts/session-pruning>, and
+  <https://docs.openclaw.ai/reference/session-management-compaction>:
+  sessions persist across CLI invocations and span multiple turns.
+  Sessions store transcripts plus agent assignment and channel
+  binding.
 - `openclaw sessions` is documented as "List stored conversation
   sessions". Subcommand `sessions cleanup` removes expired or
   orphaned entries — session lifetime has an explicit

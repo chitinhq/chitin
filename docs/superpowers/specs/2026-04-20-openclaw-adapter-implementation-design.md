@@ -238,9 +238,16 @@ governance and observability landscape established that:
   redaction; log-transport integration; disabled-by-default,
   opt-in via `openclaw plugins enable diagnostics-otel`).
 - The AI-agent observability ecosystem has standardised on the
-  OpenTelemetry GenAI semantic conventions. Langfuse, Arize,
-  LangWatch, Orq.ai, Grafana, and others ingest openclaw traces off
-  its OTLP endpoint today with zero custom adapter code.
+  OpenTelemetry GenAI semantic conventions. The landscape research
+  surfaced Langfuse, Arize, LangWatch, Orq.ai, and Grafana as
+  backends that accept OpenTelemetry GenAI input (and that a
+  correctly-configured openclaw OTLP endpoint could therefore
+  export to); **these specific vendor integrations were not
+  independently verified in this session**, and belong with the
+  other pending-verification items in the bullet list below. The
+  verified core claim is narrower: openclaw itself exports via
+  `@openclaw/diagnostics-otel`, so *any* OTLP-compatible consumer
+  can in principle receive the traces without a bespoke adapter.
 - Chitin's differentiation isn't single-surface observability (the
   market solves that); it's cross-surface drift detection + audit
   aggregation + soul routing. That requires chitin ingesting a
