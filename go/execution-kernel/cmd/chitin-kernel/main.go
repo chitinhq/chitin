@@ -33,6 +33,8 @@ func main() {
 		cmdChainInfo(args)
 	case "ingest-transcript":
 		cmdIngestTranscript(args)
+	case "ingest-otel":
+		cmdIngestOTEL(args)
 	case "sweep-transcripts":
 		cmdSweepTranscripts(args)
 	case "install-hook":
@@ -268,6 +270,107 @@ func cmdIngestTranscript(args []string) {
 	// Parse-only mode: print parsed turns as JSON (original behavior).
 	out, _ := json.Marshal(map[string]any{"ok": true, "turns": turns})
 	fmt.Println(string(out))
+}
+
+// cmdIngestOTEL reads an OTLP/protobuf file and, in emit mode, produces
+// one model_turn envelope event per successfully translated
+// openclaw.model.usage span. Quarantined spans go to
+// <dir>/otel-quarantine/.
+//
+// Parse-only mode (no --envelope-template): prints JSON
+// {"ok":true,"turns":[...],"quarantined":[...]}. Useful for debugging.
+//
+// Emit mode (--envelope-template <file>): emits events via the
+// transactional Emitter. Exit codes:
+//
+//	0 — all mappable spans emitted, zero quarantined.
+//	2 — some spans quarantined; non-quarantined spans emitted durably.
+//	non-zero-other — fatal station failure.
+func cmdIngestOTEL(args []string) {
+	fs := flag.NewFlagSet("ingest-otel", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: chitin-kernel ingest-otel --from <file.pb> --dialect openclaw --envelope-template <file> [--dir <dir>]")
+		fs.PrintDefaults()
+	}
+	from := fs.String("from", "", "path to OTLP/protobuf file")
+	dialect := fs.String("dialect", "", "dialect (only 'openclaw' supported in v1)")
+	envelopeTemplateFile := fs.String("envelope-template", "", "path to JSON envelope template; if set, emits events")
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	fs.Parse(args)
+
+	if *from == "" || *dialect == "" {
+		exitErr("missing_args", "--from and --dialect are required")
+	}
+	if *dialect != "openclaw" {
+		exitErr("unsupported_dialect", fmt.Sprintf("only 'openclaw' is supported in v1, got %q", *dialect))
+	}
+	data, err := os.ReadFile(*from)
+	if err != nil {
+		exitErr("read_from", err.Error())
+	}
+	rs, err := ingest.DecodeTraces(data)
+	if err != nil {
+		exitErr("otlp_decode_failed", err.Error())
+	}
+	turns, quarantined, err := ingest.ParseOpenClawSpans(rs)
+	if err != nil {
+		exitErr("parse", err.Error())
+	}
+
+	absDir, _ := filepath.Abs(*dir)
+
+	if *envelopeTemplateFile == "" {
+		// Parse-only mode.
+		out, _ := json.Marshal(map[string]any{
+			"ok":          true,
+			"turns":       turns,
+			"quarantined": quarantined,
+		})
+		fmt.Println(string(out))
+		return
+	}
+
+	// Emit mode.
+	if err := kstate.Init(absDir, false); err != nil {
+		exitErr("init", err.Error())
+	}
+	rawTmpl, err := os.ReadFile(*envelopeTemplateFile)
+	if err != nil {
+		exitErr("read_envelope_template", err.Error())
+	}
+	var tmpl event.Event
+	if err := json.Unmarshal(rawTmpl, &tmpl); err != nil {
+		exitErr("parse_envelope_template", err.Error())
+	}
+	if err := ingest.ValidateEnvelopeTemplate(&tmpl); err != nil {
+		exitErr("invalid_envelope_template", err.Error())
+	}
+	idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
+	if err != nil {
+		exitErr("open_index", err.Error())
+	}
+	defer idx.Close()
+	if err := idx.RebuildFromJSONL(absDir); err != nil {
+		exitErr("rebuild_index", err.Error())
+	}
+	em := emit.Emitter{
+		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
+		Index:   idx,
+	}
+	n, err := ingest.EmitModelTurns(&em, absDir, &tmpl, turns, quarantined)
+	if err != nil {
+		exitErr("emit", err.Error())
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok":          true,
+		"emitted":     n,
+		"quarantined": len(quarantined),
+	})
+	fmt.Println(string(out))
+
+	if len(quarantined) > 0 {
+		os.Exit(2)
+	}
 }
 
 func cmdSweepTranscripts(args []string) {
