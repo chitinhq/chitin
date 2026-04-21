@@ -344,6 +344,16 @@ func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
 	}
 }
 
+func TestWebhookReceived_ImplementsTranslatedSpan(t *testing.T) {
+	var _ TranslatedSpan = WebhookReceived{}
+}
+func TestWebhookFailed_ImplementsTranslatedSpan(t *testing.T) {
+	var _ TranslatedSpan = WebhookFailed{}
+}
+func TestSessionStuck_ImplementsTranslatedSpan(t *testing.T) {
+	var _ TranslatedSpan = SessionStuck{}
+}
+
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 	cases := []struct {
 		name   string
