@@ -38,7 +38,11 @@ The brainstorming decisions (2026-04-21) that shape this design:
    `model_turn` migrates from SP-1's `"otel:" + trace_id` scheme. The
    migration is paper-only (no production data — SP-1's dogfood gate
    deferred), and the uniform rule eliminates the multi-span-per-trace
-   collision SP-1's TODO flagged.
+   collision SP-1's TODO flagged. `schema_version` stays at `"2"`: the
+   envelope *shape* is unchanged, only the chain-id *value format* for
+   OTEL-sourced events widens. Bumping the envelope schema version
+   would force a breaking change across the Zod literal, the Go
+   validator, and the health-check drift rule for no real benefit.
 4. **Fixtures:** synthesized from static plugin-source inspection
    (same pattern SP-0 → SP-1 validated). No real-capture blocker.
    Real captures for webhook/stuck paths belong outside SP-2 — they
@@ -54,13 +58,13 @@ The brainstorming decisions (2026-04-21) that shape this design:
 ## One-sentence invariant
 
 Every span in an OTLP/protobuf payload whose name is in the openclaw
-dialect's v2 mapping table (`openclaw.model.usage`,
+dialect's SP-2 mapping table (`openclaw.model.usage`,
 `openclaw.webhook.processed`, `openclaw.webhook.error`,
 `openclaw.session.stuck`) produces exactly one chitin event with
 `chain_id = "otel:" + hex(trace_id) + ":" + hex(span_id)` and
-`schema_version = "v2.1"`; every other span, and every span that fails
-a required-attr check, produces exactly one quarantine side-car with a
-typed reason, written before any event is emitted.
+`schema_version = "2"` (unchanged); every other span, and every span
+that fails a required-attr check, produces exactly one quarantine
+side-car with a typed reason, written before any event is emitted.
 
 ## Architecture
 
@@ -105,15 +109,19 @@ EmitEvents (openclaw.go): quarantine side-cars first, then events in determinist
    new events and zero duplicate quarantine files (quarantine
    filenames include `trace_id`+`span_id`; overwrite is byte-identical).
 
-### Schema migration
+### Chain-id migration (no schema_version bump)
 
 `model_turn` events written by SP-1 (if any existed) would have
-`chain_id = "otel:" + trace_id` and `schema_version = "v2"`. SP-2 bumps
-`schema_version` to `"v2.1"` and applies the uniform chain-id rule to
-`model_turn`. Because SP-1's dogfood gate deferred on an environmental
+`chain_id = "otel:" + trace_id`. SP-2 updates the `model_turn`
+translator to use the uniform `"otel:<trace>:<span>"` rule.
+`schema_version` stays at `"2"` — the envelope *shape* is unchanged,
+so the Zod literal (`envelope.schema.ts:14`), Go validator
+(`emit.go:62`), and health-check drift rule (`health.go:82`) all keep
+working. Because SP-1's dogfood gate deferred on an environmental
 blocker (documented at `docs/observations/2026-04-20-sp1-dogfood-gate.md`),
-no `v2` `model_turn` events exist in any ledger. The migration is paper
-only — no reader code needs dual-version handling.
+no production `model_turn` events with the old chain-id format exist
+in any ledger — the migration is paper-only, and no reader code needs
+dual-format handling.
 
 ## Components
 
@@ -187,7 +195,7 @@ over `[]TranslatedSpan` without branching on concrete type.
 
 | Envelope field | Source | Rule |
 |---|---|---|
-| `schema_version` | constant | `"v2.1"` |
+| `schema_version` | constant | `"2"` (unchanged — chain-id format widens within the same envelope schema) |
 | `chain_id` | `buildChainID(trace, span)` | `"otel:" + hex(trace_id) + ":" + hex(span_id)` |
 | `ts` | `span.StartTimeUnixNano` | RFC3339 UTC |
 | `surface` | resource `service.name` | required; missing → quarantine |
@@ -274,13 +282,15 @@ inspection in the plan phase.
 - **Idempotent re-ingest:** same payload twice → same event set, same
   quarantine files (byte-identical overwrite).
 
-### No backward-compat shims for v2
+### No backward-compat shims for the old chain-id format
 
 Per the "no defensive code for scenarios that can't happen" rule
-(CLAUDE.md), readers do not handle both `v2` and `v2.1` chain-id
-shapes. SP-1's dogfood gate deferred; zero `v2` events exist anywhere.
-If the dogfood retry produces `v2` events *before* SP-2 lands, that
-retry's fixture is already synthesized and migrates with the codebase.
+(CLAUDE.md), readers do not handle both the old (`"otel:" + trace_id`)
+and new (`"otel:" + trace_id + ":" + span_id`) chain-id shapes. SP-1's
+dogfood gate deferred; zero events with the old format exist anywhere.
+If the dogfood retry lands *before* SP-2, that retry's single
+synthesized fixture migrates with the codebase — no backfill step
+required.
 
 ### One explicit non-goal
 
@@ -335,8 +345,8 @@ golden output, verify the quarantine directory matches golden.
 - `grep -n '"otel:"' go/execution-kernel/internal/ingest/*.go`
   returns exactly one match — inside `buildChainID`. (Knuth: one
   source of truth, mechanically verified.)
-- Every event emitted by any translator has `schema_version == "v2.1"`
-  (per-translator unit-level assertion).
+- Every event emitted by any translator has `schema_version == "2"`
+  (unchanged from SP-1; per-translator unit-level assertion).
 
 ### Out of scope for SP-2 tests
 
