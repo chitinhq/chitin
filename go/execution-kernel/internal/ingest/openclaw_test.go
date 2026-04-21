@@ -433,6 +433,28 @@ func TestValidateOpenClawEnvelope_RejectsInvalidSpans(t *testing.T) {
 	}
 }
 
+func TestGetSpanIntOrDoubleAsIntAttr(t *testing.T) {
+	span := &tracepb.Span{
+		Attributes: []*commonpb.KeyValue{
+			{Key: "int_attr", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 42}}},
+			{Key: "double_attr", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 42.0}}},
+			{Key: "fractional", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 42.5}}},
+		},
+	}
+	if v, ok := getSpanIntOrDoubleAsIntAttr(span, "int_attr"); !ok || v != 42 {
+		t.Fatalf("int_attr: got (%d,%v)", v, ok)
+	}
+	if v, ok := getSpanIntOrDoubleAsIntAttr(span, "double_attr"); !ok || v != 42 {
+		t.Fatalf("double_attr: got (%d,%v)", v, ok)
+	}
+	if _, ok := getSpanIntOrDoubleAsIntAttr(span, "fractional"); ok {
+		t.Fatalf("fractional: want !ok (fractional values rejected)")
+	}
+	if _, ok := getSpanIntOrDoubleAsIntAttr(span, "missing"); ok {
+		t.Fatalf("missing: want !ok")
+	}
+}
+
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 	cases := []struct {
 		name   string

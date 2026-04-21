@@ -180,6 +180,38 @@ func getSpanIntAttr(s *tracepb.Span, key string) (int64, bool) {
 	return last, found
 }
 
+// getSpanIntOrDoubleAsIntAttr returns the attribute value as int64.
+// Accepts IntValue or DoubleValue (if the double has no fractional part).
+// Returns (0, false) for missing, wrong-type, or fractional doubles.
+// Duplicate-key handling: last write wins (matches getSpanIntAttr).
+//
+// OTEL JS SDK can emit numeric attributes as either IntValue or
+// DoubleValue depending on whether the JS number has a fractional part.
+// openclaw uses JS, so ageMs/queueDepth may arrive either way; this
+// helper unifies the read path.
+func getSpanIntOrDoubleAsIntAttr(s *tracepb.Span, key string) (int64, bool) {
+	var found bool
+	var last int64
+	for _, kv := range s.Attributes {
+		if kv.Key != key || kv.Value == nil {
+			continue
+		}
+		switch v := kv.Value.GetValue().(type) {
+		case *commonpb.AnyValue_IntValue:
+			last = v.IntValue
+			found = true
+		case *commonpb.AnyValue_DoubleValue:
+			if v.DoubleValue == float64(int64(v.DoubleValue)) {
+				last = int64(v.DoubleValue)
+				found = true
+			} else {
+				found = false
+			}
+		}
+	}
+	return last, found
+}
+
 func getStringAttr(attrs []*commonpb.KeyValue, key string) string {
 	// Duplicate-key handling: last write wins.
 	var last string
