@@ -142,6 +142,28 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 	return mt, ""
 }
 
+// --- TranslatedSpan implementation ---
+
+func (m ModelTurn) EventType() string { return "model_turn" }
+
+func (m ModelTurn) ChainID() string {
+	return buildChainID(m.TraceIDBytes, m.SpanIDBytes)
+}
+
+func (m ModelTurn) Ts() string      { return m.TsStr }
+func (m ModelTurn) Surface() string { return m.SurfaceStr }
+func (m ModelTurn) SpanID() string  { return m.SpanIDHex }
+
+func (m ModelTurn) Payload() (json.RawMessage, error) {
+	return buildModelTurnPayload(m)
+}
+
+func (m ModelTurn) Labels() map[string]string {
+	return buildOtelLabels(m.TraceID, m.SpanIDHex, m.ParentSpanIDHex)
+}
+
+var _ TranslatedSpan = ModelTurn{}
+
 // buildModelTurnPayload marshals the typed payload struct for the
 // event envelope. Returns an error only on JSON encoding failure.
 func buildModelTurnPayload(mt ModelTurn) (json.RawMessage, error) {

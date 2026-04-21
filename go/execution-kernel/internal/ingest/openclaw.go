@@ -61,11 +61,28 @@ func buildOtelLabels(traceIDHex, spanIDHex, parentSpanIDHex string) map[string]s
 	return m
 }
 
-// ParseOpenClawSpans classifies every span into either turns (mappable
-// openclaw.model.usage spans) or quarantined (everything else). Never
+// TranslatedSpan is the polymorphic output of every per-span translator.
+// EmitEvents walks []TranslatedSpan without branching on concrete type.
+// The interface is deliberately narrow: envelope fields + payload bytes
+// + labels. Chain-id is always built via buildChainID; the interface
+// hides the trace_id/span_id bytes behind ChainID().
+type TranslatedSpan interface {
+	EventType() string // "model_turn" | "webhook_received" | "webhook_failed" | "session_stuck"
+	ChainID() string
+	Ts() string
+	Surface() string
+	SpanID() string // hex, used for the deterministic sort tie-breaker
+	Payload() (json.RawMessage, error)
+	Labels() map[string]string
+}
+
+// ParseOpenClawSpans classifies every span into either translated
+// (mappable openclaw spans) or quarantined (everything else). Never
 // errors mid-walk; a returned error is reserved for structural failures.
-func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]ModelTurn, []Quarantine, error) {
-	var turns []ModelTurn
+// The returned slice is unsorted; EmitEvents is responsible for the
+// deterministic (ts asc, span_id asc) ordering before emission.
+func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]TranslatedSpan, []Quarantine, error) {
+	var translated []TranslatedSpan
 	var quarantined []Quarantine
 
 	IterSpans(rs, func(resource *resourcepb.Resource, span *tracepb.Span) {
@@ -80,18 +97,10 @@ func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]ModelTurn, []Quarantine,
 			quarantined = append(quarantined, makeQuarantine(reason, span))
 			return
 		}
-		turns = append(turns, mt)
+		translated = append(translated, mt)
 	})
 
-	// Deterministic order: timestamp ascending, span_id tie-break.
-	sort.SliceStable(turns, func(i, j int) bool {
-		if turns[i].TsStr != turns[j].TsStr {
-			return turns[i].TsStr < turns[j].TsStr
-		}
-		return turns[i].SpanIDHex < turns[j].SpanIDHex
-	})
-
-	return turns, quarantined, nil
+	return translated, quarantined, nil
 }
 
 // --- attribute helpers ---
@@ -162,74 +171,68 @@ func makeQuarantine(reason string, span *tracepb.Span) Quarantine {
 	}
 }
 
-// EmitModelTurns validates the envelope template, writes every quarantine
-// side-car first (crash-safety: quarantine complete before any event is
-// emitted), then emits one model_turn event per ModelTurn through the
-// transactional Emitter. Returns the number of NEW events emitted.
+// EmitEvents validates the envelope template, writes every quarantine
+// side-car first (crash-safety), then emits one chitin event per
+// TranslatedSpan in deterministic order.
 //
-// Invariant: ValidateEnvelopeTemplate is called before any side-effects.
-// Invariant: quarantine files are written before the first Emit call.
-// Invariant: a turn whose chain_id already exists in the index is skipped
+// Invariants: ValidateEnvelopeTemplate called first; quarantine written
+// before the first Emit call; events sorted by (ts asc, span_id asc)
+// before emit; a chain_id already present in the index is skipped
+// (idempotent replay).
 //
-//	(idempotent replay — re-emitting the same trace produces no new events).
-//
-// Chain-id scheme: every turn's chain_id is built by buildChainID, which
-// produces "otel:<trace_id_hex>:<span_id_hex>". Because span_id is unique
-// within a trace, multiple openclaw.model.usage spans sharing a trace_id
-// (e.g. a retry or a batch-of-model-calls in one trace) each get their
-// own chain_id and are emitted independently. Collisions only occur on
-// true replay of the same (trace_id, span_id), which is exactly what the
-// idempotency check catches.
-//
-// Not safe for concurrent invocation: the em.Index.Get / em.Emit pair is
-// not atomic, so overlapping calls with the same chain_id may race. SP-1
-// uses single-process, sequential invocation only; concurrency safety is
-// deferred to a follow-up if SP-3's push receiver requires it.
-func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []ModelTurn, quarantined []Quarantine) (int, error) {
+// Not safe for concurrent invocation: the em.Index.Get / em.Emit pair
+// is not atomic. SP-2 preserves SP-1's single-process sequential
+// assumption; push-mode concurrency is SP-3's problem.
+func EmitEvents(em *emit.Emitter, dir string, tmpl *event.Event, spans []TranslatedSpan, quarantined []Quarantine) (int, error) {
 	if err := ValidateEnvelopeTemplate(tmpl); err != nil {
 		return 0, fmt.Errorf("invalid_envelope_template: %w", err)
 	}
-	// Write quarantine side-cars BEFORE any event is emitted — crash-safety.
+
 	for _, q := range quarantined {
 		if err := WriteQuarantine(dir, q); err != nil {
 			return 0, fmt.Errorf("write_quarantine: %w", err)
 		}
 	}
 
-	emitted := 0
-	for i, turn := range turns {
-		chainID := buildChainID(turn.TraceIDBytes, turn.SpanIDBytes)
+	sort.SliceStable(spans, func(i, j int) bool {
+		if spans[i].Ts() != spans[j].Ts() {
+			return spans[i].Ts() < spans[j].Ts()
+		}
+		return spans[i].SpanID() < spans[j].SpanID()
+	})
 
-		// Idempotency: if this chain already has any event, skip it.
+	emitted := 0
+	for i, span := range spans {
+		chainID := span.ChainID()
+
 		existing, err := em.Index.Get(chainID)
 		if err != nil {
-			return emitted, fmt.Errorf("index lookup for turn %d: %w", i, err)
+			return emitted, fmt.Errorf("index lookup for span %d: %w", i, err)
 		}
 		if existing != nil {
-			// Chain already populated — this turn was already emitted.
 			continue
 		}
 
 		ev := cloneTemplate(tmpl)
-		ev.EventType = "model_turn"
-		ev.Ts = turn.TsStr
-		ev.Surface = turn.SurfaceStr
+		ev.EventType = span.EventType()
+		ev.Ts = span.Ts()
+		ev.Surface = span.Surface()
 		ev.ChainID = chainID
 		if ev.Labels == nil {
 			ev.Labels = map[string]string{}
 		}
-		for k, v := range buildOtelLabels(turn.TraceID, turn.SpanIDHex, turn.ParentSpanIDHex) {
+		for k, v := range span.Labels() {
 			ev.Labels[k] = v
 		}
 
-		raw, err := buildModelTurnPayload(turn)
+		raw, err := span.Payload()
 		if err != nil {
-			return emitted, fmt.Errorf("marshal payload for turn %d: %w", i, err)
+			return emitted, fmt.Errorf("payload for span %d: %w", i, err)
 		}
 		ev.Payload = raw
 
 		if err := em.Emit(&ev); err != nil {
-			return emitted, fmt.Errorf("emit turn %d: %w", i, err)
+			return emitted, fmt.Errorf("emit span %d: %w", i, err)
 		}
 		emitted++
 	}

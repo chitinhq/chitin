@@ -35,7 +35,10 @@ func TestParseOpenClawSpans_HappyPath(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("want 1 turn, got %d", len(turns))
 	}
-	mt := turns[0]
+	mt, ok := turns[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", turns[0])
+	}
 	if mt.TraceID != "0102030405060708090a0b0c0d0e0f10" {
 		t.Errorf("TraceID: got %q", mt.TraceID)
 	}
@@ -210,7 +213,10 @@ func TestParseOpenClawSpans_OptionalAbsent(t *testing.T) {
 	if len(q) != 0 || len(turns) != 1 {
 		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
 	}
-	mt := turns[0]
+	mt, ok := turns[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", turns[0])
+	}
 	if mt.SessionIDExternal != "" || mt.DurationMs != 0 ||
 		mt.CacheReadTokens != 0 || mt.CacheWriteTokens != 0 {
 		t.Errorf("optional fields should be zero, got %+v", mt)
@@ -229,8 +235,8 @@ func TestParseOpenClawSpans_MultipleSpansOrderedByTime(t *testing.T) {
 	if len(q) != 0 || len(turns) != 2 {
 		t.Fatalf("want 2 turns, got turns=%d q=%d", len(turns), len(q))
 	}
-	if turns[0].TsStr > turns[1].TsStr {
-		t.Errorf("ordering wrong: %q before %q", turns[0].TsStr, turns[1].TsStr)
+	if turns[0].Ts() > turns[1].Ts() {
+		t.Errorf("ordering wrong: %q before %q", turns[0].Ts(), turns[1].Ts())
 	}
 }
 
@@ -245,9 +251,9 @@ func TestParseOpenClawSpans_TieBreakerSpanID(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("want 2, got %d", len(turns))
 	}
-	if turns[0].SpanIDHex >= turns[1].SpanIDHex {
-		t.Errorf("tie-breaker: turn[0].SpanIDHex %q should be < turn[1].SpanIDHex %q",
-			turns[0].SpanIDHex, turns[1].SpanIDHex)
+	if turns[0].SpanID() >= turns[1].SpanID() {
+		t.Errorf("tie-breaker: turn[0].SpanID %q should be < turn[1].SpanID %q",
+			turns[0].SpanID(), turns[1].SpanID())
 	}
 }
 
@@ -264,8 +270,12 @@ func TestParseOpenClawSpans_DuplicateAttrKeyLastWins(t *testing.T) {
 	if len(q) != 0 || len(turns) != 1 {
 		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
 	}
-	if turns[0].ModelName != "surprise:7b" {
-		t.Errorf("last-write-wins failed; got %q", turns[0].ModelName)
+	mt, ok := turns[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", turns[0])
+	}
+	if mt.ModelName != "surprise:7b" {
+		t.Errorf("last-write-wins failed; got %q", mt.ModelName)
 	}
 }
 
@@ -332,6 +342,10 @@ func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
 	if got["otel_parent_span_id"] != "parent-hex" {
 		t.Fatalf("parent label missing: %+v", got)
 	}
+}
+
+func TestModelTurn_ImplementsTranslatedSpan(t *testing.T) {
+	var _ TranslatedSpan = ModelTurn{}
 }
 
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {

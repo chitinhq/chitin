@@ -29,7 +29,7 @@ func openclawEnvelopeTemplate() *event.Event {
 	}
 }
 
-func TestEmitModelTurns_SynthesizedFixtureEndToEnd(t *testing.T) {
+func TestEmitEvents_SynthesizedFixtureEndToEnd(t *testing.T) {
 	em, logPath := newTestEmitter(t)
 	dir := filepath.Dir(logPath)
 	rs := loadFixture(t)
@@ -41,9 +41,9 @@ func TestEmitModelTurns_SynthesizedFixtureEndToEnd(t *testing.T) {
 		t.Fatalf("want 0 quarantined, got %d", len(quarantined))
 	}
 	tmpl := openclawEnvelopeTemplate()
-	n, err := EmitModelTurns(em, dir, tmpl, turns, quarantined)
+	n, err := EmitEvents(em, dir, tmpl, turns, quarantined)
 	if err != nil {
-		t.Fatalf("EmitModelTurns: %v", err)
+		t.Fatalf("EmitEvents: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("want 1 emitted, got %d", n)
@@ -88,17 +88,17 @@ func TestEmitModelTurns_SynthesizedFixtureEndToEnd(t *testing.T) {
 	}
 }
 
-func TestEmitModelTurns_Idempotent(t *testing.T) {
+func TestEmitEvents_Idempotent(t *testing.T) {
 	em, logPath := newTestEmitter(t)
 	dir := filepath.Dir(logPath)
 	rs := loadFixture(t)
 	turns, q, _ := ParseOpenClawSpans(rs)
 	tmpl := openclawEnvelopeTemplate()
-	if _, err := EmitModelTurns(em, dir, tmpl, turns, q); err != nil {
+	if _, err := EmitEvents(em, dir, tmpl, turns, q); err != nil {
 		t.Fatal(err)
 	}
-	// Second call, same inputs — EmitModelTurns detects chain already exists and skips.
-	n, err := EmitModelTurns(em, dir, tmpl, turns, q)
+	// Second call, same inputs — EmitEvents detects chain already exists and skips.
+	n, err := EmitEvents(em, dir, tmpl, turns, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,14 +111,14 @@ func TestEmitModelTurns_Idempotent(t *testing.T) {
 	}
 }
 
-func TestEmitModelTurns_BadTemplateMissingRunID(t *testing.T) {
+func TestEmitEvents_BadTemplateMissingRunID(t *testing.T) {
 	em, logPath := newTestEmitter(t)
 	dir := filepath.Dir(logPath)
 	rs := loadFixture(t)
 	turns, q, _ := ParseOpenClawSpans(rs)
 	bad := openclawEnvelopeTemplate()
 	bad.RunID = ""
-	n, err := EmitModelTurns(em, dir, bad, turns, q)
+	n, err := EmitEvents(em, dir, bad, turns, q)
 	if err == nil {
 		t.Fatal("want error for missing run_id, got nil")
 	}
@@ -130,7 +130,7 @@ func TestEmitModelTurns_BadTemplateMissingRunID(t *testing.T) {
 	}
 }
 
-func TestEmitModelTurns_MixedBatch(t *testing.T) {
+func TestEmitEvents_MixedBatch(t *testing.T) {
 	em, logPath := newTestEmitter(t)
 	dir := filepath.Dir(logPath)
 	rs := loadFixture(t)
@@ -143,9 +143,9 @@ func TestEmitModelTurns_MixedBatch(t *testing.T) {
 	if len(turns) != 1 || len(q) != 1 {
 		t.Fatalf("want 1/1 turns/quarantined pre-emit, got %d/%d", len(turns), len(q))
 	}
-	n, err := EmitModelTurns(em, dir, openclawEnvelopeTemplate(), turns, q)
+	n, err := EmitEvents(em, dir, openclawEnvelopeTemplate(), turns, q)
 	if err != nil {
-		t.Fatalf("EmitModelTurns: %v", err)
+		t.Fatalf("EmitEvents: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("want 1 emitted, got %d", n)

@@ -357,7 +357,7 @@ func cmdIngestOTEL(args []string) {
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
 		Index:   idx,
 	}
-	n, err := ingest.EmitModelTurns(&em, absDir, &tmpl, turns, quarantined)
+	n, err := ingest.EmitEvents(&em, absDir, &tmpl, turns, quarantined)
 	if err != nil {
 		exitErr("emit", err.Error())
 	}
