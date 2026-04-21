@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -352,6 +353,84 @@ func TestWebhookFailed_ImplementsTranslatedSpan(t *testing.T) {
 }
 func TestSessionStuck_ImplementsTranslatedSpan(t *testing.T) {
 	var _ TranslatedSpan = SessionStuck{}
+}
+
+func TestValidateOpenClawEnvelope_ValidSpan(t *testing.T) {
+	start, _ := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{{
+		name:       "openclaw.model.usage",
+		traceID:    sampleTraceID(0xaa),
+		spanID:     sampleSpanID(0xbb),
+		startNanos: start,
+	}})
+	rs, _ := DecodeTraces(payload)
+	var gotSurface, gotTs, gotReason string
+	IterSpans(rs, func(r *resourcepb.Resource, s *tracepb.Span) {
+		gotSurface, gotTs, gotReason = validateOpenClawEnvelope(r, s)
+	})
+	if gotReason != "" {
+		t.Fatalf("reason=%q, want \"\"", gotReason)
+	}
+	if gotSurface != "openclaw" {
+		t.Fatalf("surface=%q, want openclaw", gotSurface)
+	}
+	if gotTs != "2026-04-21T12:00:00Z" {
+		t.Fatalf("ts=%q, want 2026-04-21T12:00:00Z", gotTs)
+	}
+}
+
+func TestValidateOpenClawEnvelope_RejectsInvalidSpans(t *testing.T) {
+	cases := []struct {
+		name         string
+		traceIDLen   int
+		spanIDLen    int
+		zeroTrace    bool
+		zeroSpan     bool
+		emptyService bool
+		zeroStart    bool
+		wantReason   string
+	}{
+		{"invalid trace_id length", 12, 8, false, false, false, false, "invalid_trace_id_length"},
+		{"zero trace_id", 16, 8, true, false, false, false, "invalid_trace_id_zero"},
+		{"invalid span_id length", 16, 4, false, false, false, false, "invalid_span_id_length"},
+		{"zero span_id", 16, 8, false, true, false, false, "invalid_span_id_zero"},
+		{"missing service.name", 16, 8, false, false, true, false, "missing_required_attr:service.name"},
+		{"zero start time", 16, 8, false, false, false, true, "missing_required_attr:start_time_unix_nano"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			traceID := sampleTraceID(0x11)[:tc.traceIDLen]
+			if tc.zeroTrace {
+				traceID = make([]byte, 16)
+			}
+			spanID := sampleSpanID(0x22)[:tc.spanIDLen]
+			if tc.zeroSpan {
+				spanID = make([]byte, 8)
+			}
+			serviceName := "openclaw"
+			if tc.emptyService {
+				serviceName = ""
+			}
+			start, _ := sampleTs(0)
+			if tc.zeroStart {
+				start = 0
+			}
+			payload := buildFixture(t, serviceName, []fixtureSpan{{
+				name:       "openclaw.model.usage",
+				traceID:    traceID,
+				spanID:     spanID,
+				startNanos: start,
+			}})
+			rs, _ := DecodeTraces(payload)
+			var gotReason string
+			IterSpans(rs, func(r *resourcepb.Resource, s *tracepb.Span) {
+				_, _, gotReason = validateOpenClawEnvelope(r, s)
+			})
+			if gotReason != tc.wantReason {
+				t.Fatalf("reason=%q, want %q", gotReason, tc.wantReason)
+			}
+		})
+	}
 }
 
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {

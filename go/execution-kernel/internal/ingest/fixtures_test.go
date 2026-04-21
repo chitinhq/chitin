@@ -5,6 +5,7 @@
 package ingest
 
 import (
+	"sort"
 	"testing"
 	"time"
 
@@ -32,12 +33,25 @@ func buildFixture(t *testing.T, serviceName string, spans []fixtureSpan) []byte 
 
 	toAttrs := func(s map[string]string, i map[string]int64) []*commonpb.KeyValue {
 		var out []*commonpb.KeyValue
-		for k, v := range s {
-			out = append(out, &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}})
+
+		stringKeys := make([]string, 0, len(s))
+		for k := range s {
+			stringKeys = append(stringKeys, k)
 		}
-		for k, v := range i {
-			out = append(out, &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: v}}})
+		sort.Strings(stringKeys)
+		for _, k := range stringKeys {
+			out = append(out, &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s[k]}}})
 		}
+
+		intKeys := make([]string, 0, len(i))
+		for k := range i {
+			intKeys = append(intKeys, k)
+		}
+		sort.Strings(intKeys)
+		for _, k := range intKeys {
+			out = append(out, &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: i[k]}}})
+		}
+
 		return out
 	}
 

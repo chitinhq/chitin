@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -20,35 +19,21 @@ import (
 const openclawWebhookProcessedSpanName = "openclaw.webhook.processed"
 const openclawWebhookErrorSpanName = "openclaw.webhook.error"
 
-// translateWebhookProcessed is the per-span required+optional extraction for
-// openclaw.webhook.processed. Returns (WebhookReceived, "") on success, or
-// (zero-WebhookReceived, reason) with a typed reason on any required-attr
-// failure. Mirrors translateModelUsage in shape: validate trace/span ids,
-// require service.name + start time, require channel + webhook (rejecting
-// "unknown" sentinels), then attach optional chat_id and derive duration.
+// translateWebhookProcessed translates openclaw.webhook.processed spans into
+// WebhookReceived. Sub-millisecond durations floor to 0 (integer division in
+// ns/1_000_000). "unknown" sentinel checks are exact-match lowercase — the
+// plugin (@openclaw/diagnostics-otel@2026.4.15-beta.1 line 53697) emits
+// lowercase only.
+//
+// Returns (WebhookReceived, "") on success, or (zero-WebhookReceived, reason)
+// with a typed reason on any required-attr failure. Mirrors translateModelUsage
+// in shape: validate envelope, require channel + webhook (rejecting "unknown"
+// sentinels), then attach optional chat_id and derive duration.
 func translateWebhookProcessed(resource *resourcepb.Resource, span *tracepb.Span) (WebhookReceived, string) {
-	if len(span.TraceId) != 16 {
-		return WebhookReceived{}, "invalid_trace_id_length"
+	surface, ts, reason := validateOpenClawEnvelope(resource, span)
+	if reason != "" {
+		return WebhookReceived{}, reason
 	}
-	if isAllZero(span.TraceId) {
-		return WebhookReceived{}, "invalid_trace_id_zero"
-	}
-	if len(span.SpanId) != 8 {
-		return WebhookReceived{}, "invalid_span_id_length"
-	}
-	if isAllZero(span.SpanId) {
-		return WebhookReceived{}, "invalid_span_id_zero"
-	}
-
-	surface := getResourceStringAttr(resource, "service.name")
-	if surface == "" {
-		return WebhookReceived{}, "missing_required_attr:service.name"
-	}
-
-	if span.StartTimeUnixNano == 0 {
-		return WebhookReceived{}, "missing_required_attr:start_time_unix_nano"
-	}
-	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
 
 	channel := getSpanStringAttr(span, "openclaw.channel")
 	if channel == "" {
@@ -72,18 +57,16 @@ func translateWebhookProcessed(resource *resourcepb.Resource, span *tracepb.Span
 	}
 
 	w := WebhookReceived{
-		TraceIDBytes: span.TraceId,
-		SpanIDBytes:  span.SpanId,
-		TraceID:      hex.EncodeToString(span.TraceId),
-		SpanIDHex:    hex.EncodeToString(span.SpanId),
-		TsStr:        ts,
-		SurfaceStr:   surface,
-		Channel:      channel,
-		WebhookType:  webhookType,
-		DurationMs:   durationMs,
-	}
-	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
-		w.ParentSpanIDHex = hex.EncodeToString(span.ParentSpanId)
+		TraceIDBytes:    span.TraceId,
+		SpanIDBytes:     span.SpanId,
+		TraceID:         hex.EncodeToString(span.TraceId),
+		SpanIDHex:       hex.EncodeToString(span.SpanId),
+		ParentSpanIDHex: parentSpanIDHex(span),
+		TsStr:           ts,
+		SurfaceStr:      surface,
+		Channel:         channel,
+		WebhookType:     webhookType,
+		DurationMs:      durationMs,
 	}
 	if chatID := getSpanStringAttr(span, "openclaw.chatId"); chatID != "" {
 		w.ChatID = chatID

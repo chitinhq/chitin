@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
@@ -59,6 +60,53 @@ func buildOtelLabels(traceIDHex, spanIDHex, parentSpanIDHex string) map[string]s
 		m["otel_parent_span_id"] = parentSpanIDHex
 	}
 	return m
+}
+
+// validateOpenClawEnvelope runs the shared envelope-validation prefix that
+// every openclaw translator needs: trace_id + span_id length/zero checks,
+// service.name presence, start_time_unix_nano presence, and RFC3339 ts
+// formatting. Returns (surface, ts, "") on success; ("", "", reason) with
+// a typed quarantine reason on any failure.
+//
+// This is the single source of truth for the "valid openclaw span envelope"
+// invariant. Translators call this first, then validate their own
+// dialect-specific attributes.
+func validateOpenClawEnvelope(resource *resourcepb.Resource, span *tracepb.Span) (surface string, ts string, reason string) {
+	if len(span.TraceId) != 16 {
+		return "", "", "invalid_trace_id_length"
+	}
+	if isAllZero(span.TraceId) {
+		return "", "", "invalid_trace_id_zero"
+	}
+	if len(span.SpanId) != 8 {
+		return "", "", "invalid_span_id_length"
+	}
+	if isAllZero(span.SpanId) {
+		return "", "", "invalid_span_id_zero"
+	}
+
+	surface = getResourceStringAttr(resource, "service.name")
+	if surface == "" {
+		return "", "", "missing_required_attr:service.name"
+	}
+
+	if span.StartTimeUnixNano == 0 {
+		return "", "", "missing_required_attr:start_time_unix_nano"
+	}
+	ts = time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
+
+	return surface, ts, ""
+}
+
+// parentSpanIDHex returns the hex-encoded parent_span_id when the span has
+// a real parent (8-byte non-zero). Returns "" for root spans (missing or
+// all-zero parent_span_id). Used by every openclaw translator when
+// populating ParentSpanIDHex.
+func parentSpanIDHex(span *tracepb.Span) string {
+	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
+		return hex.EncodeToString(span.ParentSpanId)
+	}
+	return ""
 }
 
 // TranslatedSpan is the polymorphic output of every per-span translator.

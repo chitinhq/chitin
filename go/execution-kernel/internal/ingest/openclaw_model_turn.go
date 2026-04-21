@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -52,28 +51,10 @@ type modelTurnPayload struct {
 // openclaw.model.usage. Returns (ModelTurn, "") on success, or
 // (zero-ModelTurn, reason) with a typed reason on any required-attr failure.
 func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (ModelTurn, string) {
-	if len(span.TraceId) != 16 {
-		return ModelTurn{}, "invalid_trace_id_length"
+	surface, ts, reason := validateOpenClawEnvelope(resource, span)
+	if reason != "" {
+		return ModelTurn{}, reason
 	}
-	if isAllZero(span.TraceId) {
-		return ModelTurn{}, "invalid_trace_id_zero"
-	}
-	if len(span.SpanId) != 8 {
-		return ModelTurn{}, "invalid_span_id_length"
-	}
-	if isAllZero(span.SpanId) {
-		return ModelTurn{}, "invalid_span_id_zero"
-	}
-
-	surface := getResourceStringAttr(resource, "service.name")
-	if surface == "" {
-		return ModelTurn{}, "missing_required_attr:service.name"
-	}
-
-	if span.StartTimeUnixNano == 0 {
-		return ModelTurn{}, "missing_required_attr:start_time_unix_nano"
-	}
-	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
 
 	provider := getSpanStringAttr(span, "openclaw.provider")
 	if provider == "" {
@@ -107,19 +88,17 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 	}
 
 	mt := ModelTurn{
-		TraceIDBytes: span.TraceId,
-		SpanIDBytes:  span.SpanId,
-		TraceID:      hex.EncodeToString(span.TraceId),
-		SpanIDHex:    hex.EncodeToString(span.SpanId),
-		TsStr:        ts,
-		SurfaceStr:   surface,
-		Provider:     provider,
-		ModelName:    modelName,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}
-	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
-		mt.ParentSpanIDHex = hex.EncodeToString(span.ParentSpanId)
+		TraceIDBytes:    span.TraceId,
+		SpanIDBytes:     span.SpanId,
+		TraceID:         hex.EncodeToString(span.TraceId),
+		SpanIDHex:       hex.EncodeToString(span.SpanId),
+		ParentSpanIDHex: parentSpanIDHex(span),
+		TsStr:           ts,
+		SurfaceStr:      surface,
+		Provider:        provider,
+		ModelName:       modelName,
+		InputTokens:     inputTokens,
+		OutputTokens:    outputTokens,
 	}
 	if sid := getSpanStringAttr(span, "openclaw.sessionId"); sid != "" {
 		mt.SessionIDExternal = sid
