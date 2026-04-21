@@ -25,8 +25,11 @@ import (
 
 // ModelTurn is the parse-stage output for one openclaw.model.usage span.
 type ModelTurn struct {
+	TraceIDBytes      []byte // raw 16-byte trace_id; hex-encoded on demand
+	SpanIDBytes       []byte // raw 8-byte span_id; hex-encoded on demand
 	TraceID           string
 	SpanID            string
+	ParentSpanIDHex   string // hex-encoded parent_span_id; "" when span is a root span
 	Ts                string
 	Surface           string
 	Provider          string
@@ -189,6 +192,8 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 
 	// Optional attributes
 	mt := ModelTurn{
+		TraceIDBytes: span.TraceId,
+		SpanIDBytes:  span.SpanId,
 		TraceID:      traceIDHex,
 		SpanID:       hex.EncodeToString(span.SpanId),
 		Ts:           ts,
@@ -197,6 +202,9 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 		ModelName:    modelName,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
+	}
+	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
+		mt.ParentSpanIDHex = hex.EncodeToString(span.ParentSpanId)
 	}
 	if sid := getSpanStringAttr(span, "openclaw.sessionId"); sid != "" {
 		mt.SessionIDExternal = sid
@@ -310,15 +318,13 @@ type modelTurnPayload struct {
 //
 //	(idempotent replay — re-emitting the same trace produces no new events).
 //
-// Assumption: one openclaw.model.usage span per trace_id. SP-0's static
-// inventory of diagnostics-otel@2026.4.15-beta.1 confirms the plugin
-// emits exactly one openclaw.model.usage span per successful model call,
-// and each model call creates its own trace. If a future openclaw version
-// emits multiple model-usage spans sharing a trace_id within one batch,
-// this loop would emit the first and silently skip the rest — because
-// they'd share chain_id = "otel:"+trace_id and the second Get would
-// find the chain already populated. Revisit the chain_id scheme (e.g.
-// include span_id) when that assumption breaks.
+// Chain-id scheme: every turn's chain_id is built by buildChainID, which
+// produces "otel:<trace_id_hex>:<span_id_hex>". Because span_id is unique
+// within a trace, multiple openclaw.model.usage spans sharing a trace_id
+// (e.g. a retry or a batch-of-model-calls in one trace) each get their
+// own chain_id and are emitted independently. Collisions only occur on
+// true replay of the same (trace_id, span_id), which is exactly what the
+// idempotency check catches.
 //
 // Not safe for concurrent invocation: the em.Index.Get / em.Emit pair is
 // not atomic, so overlapping calls with the same chain_id may race. SP-1
@@ -337,7 +343,7 @@ func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mod
 
 	emitted := 0
 	for i, turn := range turns {
-		chainID := "otel:" + turn.TraceID
+		chainID := buildChainID(turn.TraceIDBytes, turn.SpanIDBytes)
 
 		// Idempotency: if this chain already has any event, skip it.
 		existing, err := em.Index.Get(chainID)
@@ -357,8 +363,9 @@ func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mod
 		if ev.Labels == nil {
 			ev.Labels = map[string]string{}
 		}
-		ev.Labels["source"] = "otel"
-		ev.Labels["dialect"] = "openclaw"
+		for k, v := range buildOtelLabels(turn.TraceID, turn.SpanID, turn.ParentSpanIDHex) {
+			ev.Labels[k] = v
+		}
 
 		payload := modelTurnPayload{
 			ModelName:         turn.ModelName,

@@ -56,8 +56,11 @@ func TestEmitModelTurns_SynthesizedFixtureEndToEnd(t *testing.T) {
 	if ev["event_type"] != "model_turn" {
 		t.Errorf("event_type: got %v", ev["event_type"])
 	}
-	if ev["chain_id"] != "otel:0102030405060708090a0b0c0d0e0f10" {
-		t.Errorf("chain_id: got %v", ev["chain_id"])
+	traceIDHex := "0102030405060708090a0b0c0d0e0f10"
+	spanIDHex := "a1a2a3a4a5a6a7a8"
+	wantChainID := "otel:" + traceIDHex + ":" + spanIDHex
+	if ev["chain_id"] != wantChainID {
+		t.Errorf("chain_id: got %v, want %v", ev["chain_id"], wantChainID)
 	}
 	if ev["surface"] != "openclaw-gateway" {
 		t.Errorf("surface: got %v", ev["surface"])
