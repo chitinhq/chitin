@@ -16,6 +16,12 @@ split.
 
 ## One-sentence invariant (Knuth gate)
 
+> **Retained as historical analysis.** The invariants below describe
+> what v1a or v1b *would have* guaranteed. Neither is being
+> implemented. The OTEL follow-up plan will state its own invariants
+> against the OTEL GenAI span model rather than against a
+> process-wrap or poll-diff model.
+
 **v1a (process-wrap):** Every `chitin run openclaw <args>` invocation
 that the wrapper successfully spawns emits exactly one `session_start`
 event before the child's stdio is connected, and exactly one
@@ -62,9 +68,17 @@ The invariant is structured so boundary cases are named, not implied:
 
 ## Adapter strategy
 
-There are **two honest v1 candidates**, and which one ships depends on
-whether we value "cheapest ship" (v1a) or "captures real usage" (v1b).
-F5 planning picks one; this addendum costs both.
+> **Retained as historical analysis. Superseded by the Socrates trip
+> (see §"Gate verdict — tripped" below).** The v1a/v1b discussion
+> that follows is the costed comparison that informed the split
+> decision, not a recommendation to implement either strategy. The
+> OTEL GenAI ingest follow-up plan replaces both.
+
+There were **two honest v1 candidates**, and which one would have
+shipped depended on whether the priority was "cheapest ship" (v1a)
+or "captures real usage" (v1b). An F5 implementation plan would have
+picked one; this addendum costed both before the Socrates trip
+rendered the choice moot.
 
 ### v1a: process-level wrap
 
@@ -136,6 +150,11 @@ previous:
   explicit opt-in and security review.
 
 ## Events emitted (v1 of capture)
+
+> **Retained as historical analysis.** The event shapes below
+> describe what v1a or v1b *would have* emitted. Neither is being
+> implemented. The OTEL follow-up plan's event model will be spec'd
+> separately from this addendum.
 
 ### v1a event shape
 
@@ -233,10 +252,17 @@ governance thesis"** — the gate trips. A post-F3 scan of the
 governance and observability landscape established that:
 
 - openclaw itself bundles `@openclaw/diagnostics-otel@2026.4.15-beta.1`
-  (verified in the installed tarball — full OpenTelemetry SDK: trace,
-  metrics, and logs OTLP-proto exporters; semantic-conventions;
-  redaction; log-transport integration; disabled-by-default,
-  opt-in via `openclaw plugins enable diagnostics-otel`).
+  (verified in the installed tarball — it ships the full OpenTelemetry
+  SDK stack: `@opentelemetry/sdk-node`, OTLP-proto exporters for
+  trace/metrics/logs, `@opentelemetry/semantic-conventions`, redaction
+  hooks, and a log-transport integration; disabled-by-default, opt-in
+  via `openclaw plugins enable diagnostics-otel`). **What has not
+  been verified** in this session: that the emitted spans actually
+  conform to the OpenTelemetry GenAI semantic conventions (e.g.,
+  `gen_ai.*` attributes on turn spans). Confirming that end-to-end
+  compliance is the first empirical step for the OTEL follow-up
+  plan; the gate decision here rests on the narrower, verified
+  claim that openclaw ships real OTLP export infrastructure.
 - The AI-agent observability ecosystem has standardised on the
   OpenTelemetry GenAI semantic conventions. The landscape research
   surfaced Langfuse, Arize, LangWatch, Orq.ai, and Grafana as

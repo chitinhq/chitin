@@ -74,13 +74,22 @@ adapter (we do not need to wire auth to capture events).
 
 ## Adapter strategy (Q1: hook-API vs process-level wrap)
 
+> **Retained as historical analysis.** The F3 Socrates gate tripped
+> on a later landscape finding (openclaw bundles OTEL export
+> infrastructure); neither the v1a process-wrap nor the v1b
+> session-store poll costed in the F3 addendum will be implemented.
+> The observations in this section (no session-lifecycle hook
+> events; sessions externally observable via `sessions --json` /
+> on-disk store) remain factually accurate about openclaw's surface
+> and will feed the OTEL follow-up plan's verification work.
+
 **Finding — openclaw has a rich plugin/hook system, but none of its
 hook events are session-lifecycle events. Sessions are however observable
 from outside the gateway process via the on-disk session store and the
 `openclaw sessions --json` CLI surface over that store, so the adapter
 strategy is not forced onto log-tailing or a plugin — a session-store
 poll is a first-class v1 option alongside process-wrap.** See the F3
-addendum for the costed recommendation and the v1a/v1b choice.
+addendum for the costed v1a/v1b analysis and the gate-trip verdict.
 
 Evidence observed 2026-04-20:
 
@@ -244,20 +253,26 @@ Evidence observed 2026-04-20:
   `/new`" rather than as "session X started". Translating requires
   correlating the command event against session state before vs after.
 
-**Consequence for the adapter:** there are two honest paths:
+**Consequence for the adapter (historical framing — superseded by
+the F4 Socrates trip):** the Q3 finding originally narrowed the
+adapter choice to two honest paths, both since rejected:
 
-- *Process-wrap v1 (v1a):* `chitin run openclaw [args]` captures the
-  CLI-process lifecycle, which does NOT cleanly map to session
-  lifecycle. v1a redefines event semantics: `session_start` =
-  `cli_invocation_start`, `session_end` = `cli_invocation_end`. Cheap;
-  misses daemon/channel sessions.
-- *Session-store poll v1 (v1b):* chitin polls `openclaw sessions
-  --json` (or watches the underlying `sessions.json` with inotify)
-  and emits `session_start` when a new `sessionId` appears in the
-  store and `session_end` when a `sessionId` disappears (or
-  `ageMs > idleThreshold` in the soft variant). Captures
-  daemon/channel sessions; higher fidelity; more implementation
-  cost. Addendum quantifies the trade-off.
+- *Process-wrap v1 (v1a):* `chitin run openclaw [args]` would have
+  captured the CLI-process lifecycle, which does NOT cleanly map to
+  session lifecycle. v1a redefined event semantics to
+  `session_start` = `cli_invocation_start`, `session_end` =
+  `cli_invocation_end`. Cheap; missed daemon/channel sessions.
+- *Session-store poll v1 (v1b):* chitin would have polled `openclaw
+  sessions --json` (or watched the underlying `sessions.json` with
+  inotify) and emitted `session_start` on new-`sessionId` appearance
+  and `session_end` on disappearance (or `ageMs > idleThreshold` in
+  the soft variant). Captured daemon/channel sessions; higher
+  fidelity; more implementation cost. Addendum quantified the
+  trade-off.
+
+Neither shipped. The OTEL follow-up plan replaces this choice with
+"ingest openclaw's OTEL span output" once the semconv compliance
+question is empirically settled.
 
 ## Tool-call surface (Q4: where is the decision/execution boundary observable)
 
@@ -291,24 +306,29 @@ at that we are capturing CLI-process start/end (see Q3). Tool-call
 chain parity stays deferred to the Phase 2 work named in the parent
 spec.
 
-## Phase 1.5 minimum (target)
+## Phase 1.5 minimum (target) — superseded
 
-`chitin run openclaw [args]` emits a `session_start` on the wrapped
-CLI process's spawn and a `session_end` on the wrapped CLI process's
-exit (including error exit). No inner events. Per the Q3 finding above,
-these events capture **CLI-invocation lifecycle**, not openclaw's
-own persistent-session lifecycle — this is a deliberate v1 scope
-reduction, not a semantic mismatch, and is recorded as the
+> **Superseded by the F4 Socrates trip.** Phase F5 did not run. The
+> original Phase 1.5 minimum described in this section (a process-wrap
+> adapter emitting `session_start`/`session_end` for CLI invocations)
+> is no longer the plan of record; the OTEL follow-up plan will
+> define whatever v1 ingest actually ships. The description below is
+> kept only so a reader following the original SPIKE/plan breadcrumb
+> sees how the target was framed at the time of writing.
+
+`chitin run openclaw [args]` would have emitted a `session_start`
+on the wrapped CLI process's spawn and a `session_end` on the
+wrapped CLI process's exit (including error exit). No inner events.
+Per the Q3 finding above, these events would have captured
+**CLI-invocation lifecycle**, not openclaw's own persistent-session
+lifecycle — a deliberate v1 scope reduction recorded as the
 one-sentence invariant in the F3 addendum.
 
-The known coverage gap is explicit: sessions driven by another openclaw
-CLI invocation, by the daemon after `onboard --install-daemon`, or by
-an inbound chat channel (WhatsApp, Telegram, Signal, …) are invisible
-to a process-wrap adapter. Closing that gap requires the v1.5
-gateway-log tail or v2 in-process plugin strategies covered in the F3
-addendum.
-
-The implementation plan for this minimum is a Phase F5 deliverable and
-is conditional on the Task F4 cost gate passing (≤5 elapsed days of
-estimated work); if it does not pass, Phase F is split into a follow-up
-plan and the minimum is deferred.
+The known coverage gap was explicit: sessions driven by another
+openclaw CLI invocation, by the daemon after `onboard
+--install-daemon`, or by an inbound chat channel (WhatsApp, Telegram,
+Signal, …) would have been invisible to a process-wrap adapter.
+Closing that gap was the rationale for the v1b session-store-poll
+alternative in the F3 addendum — and ultimately (combined with the
+OTEL landscape finding) for tripping the Socrates gate rather than
+building either v1a or v1b.

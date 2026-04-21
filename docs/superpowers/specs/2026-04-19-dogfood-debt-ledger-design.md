@@ -142,8 +142,11 @@ gate.** Phase F of the implementation plan completed steps F1 (install
 F3 (write the adapter-implementation design addendum at
 `docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md`).
 F4's Socrates trip-wire fired: a landscape scan showed openclaw
-natively bundles `@openclaw/diagnostics-otel` (OpenTelemetry GenAI
-exporter) and the ecosystem has standardised on OTEL GenAI semconv,
+natively bundles `@openclaw/diagnostics-otel` (full OpenTelemetry
+SDK stack with OTLP-proto exporters and semantic-conventions; whether
+it emits spans matching the OTEL GenAI semconv vs. a bespoke shape
+is pending F-follow-up verification), and the broader AI-agent
+observability ecosystem has been converging on OTEL GenAI semconv,
 making a bespoke chitin↔openclaw adapter the wrong artifact for
 chitin's governance thesis. The right scope is "chitin ingests OTEL
 GenAI spans; openclaw is the first consumer," which exceeds the 5-day
