@@ -51,6 +51,36 @@ type Quarantine struct {
 // openclawModelUsageSpanName is the one span name the v1 translator maps.
 const openclawModelUsageSpanName = "openclaw.model.usage"
 
+// buildChainID is the single source of truth for OTEL-ingest chain-id
+// construction. Every translator calls this helper; no other code
+// assembles "otel:..." strings. Uniform across event types so chain-ids
+// never collide across spans in a trace.
+//
+// Invariant: the returned string has exactly one ":" prefix after "otel",
+// one full-length (32 hex char) trace portion, and one full-length
+// (16 hex char) span portion. Callers must have already validated
+// trace/span length; this function does not re-check.
+func buildChainID(traceID, spanID []byte) string {
+	return "otel:" + hex.EncodeToString(traceID) + ":" + hex.EncodeToString(spanID)
+}
+
+// buildOtelLabels constructs the label map every OTEL-ingest event gets.
+// Single source of truth for the label vocabulary: source, dialect,
+// otel_trace_id, otel_span_id, and (when non-empty) otel_parent_span_id.
+// parentSpanIDHex is "" when the span has no parent (root span).
+func buildOtelLabels(traceIDHex, spanIDHex, parentSpanIDHex string) map[string]string {
+	m := map[string]string{
+		"source":        "otel",
+		"dialect":       "openclaw",
+		"otel_trace_id": traceIDHex,
+		"otel_span_id":  spanIDHex,
+	}
+	if parentSpanIDHex != "" {
+		m["otel_parent_span_id"] = parentSpanIDHex
+	}
+	return m
+}
+
 // ParseOpenClawSpans classifies every span into either turns (mappable
 // openclaw.model.usage spans) or quarantined (everything else). Never
 // errors mid-walk; a returned error is reserved for structural failures.

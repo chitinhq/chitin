@@ -301,6 +301,39 @@ func TestParseOpenClawSpans_InvalidSpanIDLength(t *testing.T) {
 	}
 }
 
+func TestBuildChainID_UniformFormat(t *testing.T) {
+	trace := []byte{
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+	}
+	span := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	got := buildChainID(trace, span)
+	want := "otel:00112233445566778899aabbccddeeff:0102030405060708"
+	if got != want {
+		t.Fatalf("buildChainID mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestBuildOtelLabels_OmitsEmptyParent(t *testing.T) {
+	got := buildOtelLabels("abc", "def", "")
+	if _, ok := got["otel_parent_span_id"]; ok {
+		t.Fatalf("empty parent should be omitted, got %+v", got)
+	}
+	if got["otel_trace_id"] != "abc" || got["otel_span_id"] != "def" {
+		t.Fatalf("trace/span mismatch: %+v", got)
+	}
+	if got["source"] != "otel" || got["dialect"] != "openclaw" {
+		t.Fatalf("constant labels missing: %+v", got)
+	}
+}
+
+func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
+	got := buildOtelLabels("abc", "def", "parent-hex")
+	if got["otel_parent_span_id"] != "parent-hex" {
+		t.Fatalf("parent label missing: %+v", got)
+	}
+}
+
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 	cases := []struct {
 		name   string
