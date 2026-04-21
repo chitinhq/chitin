@@ -1,4 +1,4 @@
-# openclaw Adapter Implementation — Design Addendum
+# OpenClaw Adapter Implementation — Design Addendum
 
 **Date:** 2026-04-20
 **Supplements:** `docs/superpowers/specs/2026-04-19-dogfood-debt-ledger-design.md` (Phase F).

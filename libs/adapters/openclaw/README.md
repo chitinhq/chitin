@@ -32,9 +32,12 @@ plugin-style adapter strategy; this is confirmed or refuted in Task F2.
 
 ## Install path
 
-Verified 2026-04-20 on Linux (this box — see the machine-topology memory;
-Node 24.15.0 installed via the user's `vite-plus` Node runtime at
-`/home/red/.vite-plus/js_runtime/node/24.15.0`, so no sudo required).
+Verified 2026-04-20 on Linux 6.17 (x86_64) with Node 24.15.0 installed
+via a user-level Node runtime under
+`$HOME/.vite-plus/js_runtime/node/24.15.0/` — so `npm install -g` lands
+in a user-writable prefix without sudo. Any Node ≥ 22.14 satisfies
+openclaw's `engines` field; system-package-manager Node installs
+usually need `sudo` for `-g`.
 
 ```bash
 npm install -g openclaw@2026.4.15
