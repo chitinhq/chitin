@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // HermesEvent is one line in a chitin-sink JSONL stream. Kwargs is
@@ -72,17 +73,155 @@ func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
 			})
 			continue
 		}
-		// Task 9 replaces this branch with translatePostAPIRequest.
-		quarantined = append(quarantined, Quarantine{
-			Reason:   "not_yet_implemented",
-			SpanName: ev.EventType,
-			SpanRaw:  json.RawMessage(lineCopy),
-		})
+		mt, reason := translatePostAPIRequest(&ev)
+		if reason != "" {
+			quarantined = append(quarantined, Quarantine{
+				Reason:   reason,
+				SpanName: ev.EventType,
+				SpanRaw:  json.RawMessage(lineCopy),
+			})
+			continue
+		}
+		turns = append(turns, mt)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, fmt.Errorf("scan: %w", err)
 	}
 	return turns, quarantined, nil
+}
+
+// translatePostAPIRequest extracts a ModelTurn from one post_api_request
+// event. Returns (ModelTurn, "") on success, or (zero, reason) where reason
+// is either "missing_fields:<comma-list>" or a typed error.
+//
+// Required kwargs (quarantine if missing): session_id, api_call_count.
+// Optional kwargs (default to zero-value): usage (→ tokens), model/
+// response_model (→ ModelName), provider, api_duration, cache_read_tokens.
+//
+// Token-key tolerance (matches the real 2026-04-21 capture, see
+// docs/observations/2026-04-21-hermes-post-api-request-capture.md):
+//   - prompt_tokens preferred; input_tokens fallback.
+//   - completion_tokens preferred; output_tokens fallback. (Real hermes emits
+//     output_tokens only — so in practice the fallback always wins — but
+//     accepting both keeps the translator stable if hermes adds OpenAI-compat
+//     keys later.)
+//   - cache_read_tokens at the top level of usage (hermes native), with
+//     prompt_tokens_details.cached_tokens accepted as a fallback for any
+//     future OpenAI-compat variant.
+func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
+	sessionID, sOK := getKwargString(ev.Kwargs, "session_id")
+	callCount, cOK := getKwargInt(ev.Kwargs, "api_call_count")
+
+	var missing []string
+	if !sOK || sessionID == "" {
+		missing = append(missing, "session_id")
+	}
+	if !cOK {
+		missing = append(missing, "api_call_count")
+	}
+	if len(missing) > 0 {
+		return ModelTurn{}, "missing_fields:" + strings.Join(missing, ",")
+	}
+
+	traceHex := hermesSyntheticTraceID(sessionID)
+	spanHex := hermesSyntheticSpanID(sessionID, callCount)
+
+	// response_model is what the LLM server actually used; prefer it over
+	// model (which keeps the `:cloud` routing suffix).
+	modelName, _ := getKwargString(ev.Kwargs, "response_model")
+	if modelName == "" {
+		modelName, _ = getKwargString(ev.Kwargs, "model")
+	}
+
+	provider, _ := getKwargString(ev.Kwargs, "provider")
+
+	var durationMs int64
+	if dur, ok := getKwargFloat(ev.Kwargs, "api_duration"); ok {
+		durationMs = int64(dur*1000 + 0.5)
+	}
+
+	var inputTokens, outputTokens, cacheRead int64
+	if usage, ok := ev.Kwargs["usage"].(map[string]interface{}); ok && usage != nil {
+		inputTokens, _ = getKwargInt(usage, "prompt_tokens")
+		if inputTokens == 0 {
+			inputTokens, _ = getKwargInt(usage, "input_tokens")
+		}
+		outputTokens, _ = getKwargInt(usage, "completion_tokens")
+		if outputTokens == 0 {
+			outputTokens, _ = getKwargInt(usage, "output_tokens")
+		}
+		cacheRead, _ = getKwargInt(usage, "cache_read_tokens")
+		if cacheRead == 0 {
+			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
+				cacheRead, _ = getKwargInt(details, "cached_tokens")
+			}
+		}
+	}
+
+	return ModelTurn{
+		TraceID:           traceHex,
+		SpanID:            spanHex,
+		Ts:                ev.Ts,
+		Surface:           "hermes",
+		Provider:          provider,
+		ModelName:         modelName,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		SessionIDExternal: sessionID,
+		DurationMs:        durationMs,
+		CacheReadTokens:   cacheRead,
+	}, ""
+}
+
+// getKwargString reads a string-valued kwarg. Returns (value, true) on hit,
+// ("", false) otherwise. Missing and non-string both return false.
+func getKwargString(m map[string]interface{}, key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// getKwargInt reads an integer-valued kwarg. JSON unmarshals numbers to
+// float64 by default; we accept that and float32 as well so fixtures can
+// use either.
+func getKwargInt(m map[string]interface{}, key string) (int64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	}
+	return 0, false
+}
+
+// getKwargFloat reads a float64-valued kwarg.
+func getKwargFloat(m map[string]interface{}, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // buildHermesChainID mirrors the tripartite shape SP-2 adopted for OTEL

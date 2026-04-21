@@ -98,3 +98,92 @@ func TestParseHermesEvents_MalformedLineQuarantined(t *testing.T) {
 		t.Errorf("quarantined SpanRaw should preserve the malformed line, got %q", string(parseErrors[0].SpanRaw))
 	}
 }
+
+func TestParseHermesEvents_HappyPath(t *testing.T) {
+	raw := loadHermesFixture(t, "post_api_request_happy.jsonl")
+	turns, quarantined, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("ParseHermesEvents: %v", err)
+	}
+	if len(quarantined) != 0 {
+		t.Fatalf("want 0 quarantined, got %d: %+v", len(quarantined), quarantined)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("want 1 turn, got %d", len(turns))
+	}
+	mt := turns[0]
+	if mt.Surface != "hermes" {
+		t.Errorf("Surface: got %q want \"hermes\"", mt.Surface)
+	}
+	if mt.Provider != "custom" {
+		t.Errorf("Provider: got %q want \"custom\" (hermes normalizes custom-endpoint providers)", mt.Provider)
+	}
+	// response_model preferred over model — spec § Happy path.
+	if mt.ModelName != "glm-5.1" {
+		t.Errorf("ModelName: got %q want \"glm-5.1\" (response_model strips :cloud)", mt.ModelName)
+	}
+	if mt.InputTokens != 1024 {
+		t.Errorf("InputTokens: got %d", mt.InputTokens)
+	}
+	if mt.OutputTokens != 256 {
+		t.Errorf("OutputTokens: got %d", mt.OutputTokens)
+	}
+	if mt.CacheReadTokens != 128 {
+		t.Errorf("CacheReadTokens: got %d want 128 (top-level usage.cache_read_tokens)", mt.CacheReadTokens)
+	}
+	if mt.SessionIDExternal != "s1" {
+		t.Errorf("SessionIDExternal: got %q", mt.SessionIDExternal)
+	}
+	if mt.DurationMs != 2345 {
+		t.Errorf("DurationMs: got %d (want 2345 from api_duration=2.345)", mt.DurationMs)
+	}
+	if mt.Ts != "2026-04-21T19:00:00+00:00" {
+		t.Errorf("Ts: got %q (line-level ts passthrough)", mt.Ts)
+	}
+	wantTrace := hermesSyntheticTraceID("s1")
+	wantSpan := hermesSyntheticSpanID("s1", 1)
+	if mt.TraceID != wantTrace {
+		t.Errorf("TraceID: got %q want %q", mt.TraceID, wantTrace)
+	}
+	if mt.SpanID != wantSpan {
+		t.Errorf("SpanID: got %q want %q", mt.SpanID, wantSpan)
+	}
+}
+
+func TestParseHermesEvents_MissingSessionID_Quarantined(t *testing.T) {
+	raw := loadHermesFixture(t, "missing_session_id.jsonl")
+	turns, quarantined, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("ParseHermesEvents: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("want 0 turns, got %d", len(turns))
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("want 1 quarantined, got %d", len(quarantined))
+	}
+	if !strings.HasPrefix(quarantined[0].Reason, "missing_fields:") {
+		t.Errorf("want Reason to start with 'missing_fields:', got %q", quarantined[0].Reason)
+	}
+	if !strings.Contains(quarantined[0].Reason, "session_id") {
+		t.Errorf("Reason should name session_id, got %q", quarantined[0].Reason)
+	}
+}
+
+func TestParseHermesEvents_MissingUsage_KeepsTurn(t *testing.T) {
+	raw := loadHermesFixture(t, "missing_usage.jsonl")
+	turns, quarantined, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("ParseHermesEvents: %v", err)
+	}
+	if len(quarantined) != 0 {
+		t.Fatalf("want 0 quarantined (usage=null is kept), got %d", len(quarantined))
+	}
+	if len(turns) != 1 {
+		t.Fatalf("want 1 turn, got %d", len(turns))
+	}
+	if turns[0].InputTokens != 0 || turns[0].OutputTokens != 0 {
+		t.Errorf("tokens should be 0 when usage is nil, got in=%d out=%d",
+			turns[0].InputTokens, turns[0].OutputTokens)
+	}
+}
