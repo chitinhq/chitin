@@ -312,7 +312,7 @@ func cmdIngestOTEL(args []string) {
 	if err != nil {
 		exitErr("otlp_decode_failed", err.Error())
 	}
-	turns, quarantined, err := ingest.ParseOpenClawSpans(rs)
+	spans, quarantined, err := ingest.ParseOpenClawSpans(rs)
 	if err != nil {
 		exitErr("parse", err.Error())
 	}
@@ -323,7 +323,7 @@ func cmdIngestOTEL(args []string) {
 		// Parse-only mode.
 		out, _ := json.Marshal(map[string]any{
 			"ok":          true,
-			"turns":       turns,
+			"turns":       spans,
 			"quarantined": quarantined,
 		})
 		fmt.Println(string(out))
@@ -357,7 +357,7 @@ func cmdIngestOTEL(args []string) {
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
 		Index:   idx,
 	}
-	n, err := ingest.EmitEvents(&em, absDir, &tmpl, turns, quarantined)
+	n, err := ingest.EmitEvents(&em, absDir, &tmpl, spans, quarantined)
 	if err != nil {
 		exitErr("emit", err.Error())
 	}

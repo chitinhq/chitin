@@ -179,6 +179,9 @@ func makeQuarantine(reason string, span *tracepb.Span) Quarantine {
 // before the first Emit call; events sorted by (ts asc, span_id asc)
 // before emit; a chain_id already present in the index is skipped
 // (idempotent replay).
+//   - Each event gets a fresh labels map; template labels merge with
+//     span-provided OTEL labels, with OTEL labels taking precedence on
+//     key collision.
 //
 // Not safe for concurrent invocation: the em.Index.Get / em.Emit pair
 // is not atomic. SP-2 preserves SP-1's single-process sequential
@@ -218,10 +221,17 @@ func EmitEvents(em *emit.Emitter, dir string, tmpl *event.Event, spans []Transla
 		ev.Ts = span.Ts()
 		ev.Surface = span.Surface()
 		ev.ChainID = chainID
-		if ev.Labels == nil {
-			ev.Labels = map[string]string{}
+
+		// Allocate a fresh labels map per event so we never mutate the caller's
+		// template. OTEL labels (source, dialect, otel_*) take precedence over
+		// template labels on key collision — documented in the EmitEvents
+		// invariants above.
+		otelLabels := span.Labels()
+		ev.Labels = make(map[string]string, len(tmpl.Labels)+len(otelLabels))
+		for k, v := range tmpl.Labels {
+			ev.Labels[k] = v
 		}
-		for k, v := range span.Labels() {
+		for k, v := range otelLabels {
 			ev.Labels[k] = v
 		}
 

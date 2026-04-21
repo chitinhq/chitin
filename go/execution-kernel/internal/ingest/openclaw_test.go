@@ -25,19 +25,19 @@ func loadFixture(t *testing.T) []*tracepb.ResourceSpans {
 
 func TestParseOpenClawSpans_HappyPath(t *testing.T) {
 	rs := loadFixture(t)
-	turns, quarantined, err := ParseOpenClawSpans(rs)
+	spans, quarantined, err := ParseOpenClawSpans(rs)
 	if err != nil {
 		t.Fatalf("ParseOpenClawSpans: %v", err)
 	}
 	if len(quarantined) != 0 {
 		t.Fatalf("want 0 quarantined, got %d: %+v", len(quarantined), quarantined)
 	}
-	if len(turns) != 1 {
-		t.Fatalf("want 1 turn, got %d", len(turns))
+	if len(spans) != 1 {
+		t.Fatalf("want 1 span, got %d", len(spans))
 	}
-	mt, ok := turns[0].(ModelTurn)
+	mt, ok := spans[0].(ModelTurn)
 	if !ok {
-		t.Fatalf("want ModelTurn, got %T", turns[0])
+		t.Fatalf("want ModelTurn, got %T", spans[0])
 	}
 	if mt.TraceID != "0102030405060708090a0b0c0d0e0f10" {
 		t.Errorf("TraceID: got %q", mt.TraceID)
@@ -135,12 +135,12 @@ func TestParseOpenClawSpans_RequiredAttrMissing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rs := loadFixture(t)
 			tc.mutate(rs[0])
-			turns, q, err := ParseOpenClawSpans(rs)
+			spans, q, err := ParseOpenClawSpans(rs)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
-			if len(turns) != 0 {
-				t.Errorf("want 0 turns, got %d", len(turns))
+			if len(spans) != 0 {
+				t.Errorf("want 0 spans, got %d", len(spans))
 			}
 			if len(q) != 1 {
 				t.Fatalf("want 1 quarantined, got %d", len(q))
@@ -179,9 +179,9 @@ func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
 					kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "unknown"}}
 				}
 			}
-			turns, q, _ := ParseOpenClawSpans(rs)
-			if len(turns) != 0 {
-				t.Errorf("want 0 turns, got %d", len(turns))
+			spans, q, _ := ParseOpenClawSpans(rs)
+			if len(spans) != 0 {
+				t.Errorf("want 0 spans, got %d", len(spans))
 			}
 			if len(q) != 1 || q[0].Reason != tc.reason {
 				t.Errorf("want quarantine reason %q, got %+v", tc.reason, q)
@@ -193,9 +193,9 @@ func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
 func TestParseOpenClawSpans_UnmappedSpanName(t *testing.T) {
 	rs := loadFixture(t)
 	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.webhook.processed"
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
 	if q[0].Reason != "unmapped_span_name:openclaw.webhook.processed" {
 		t.Errorf("reason: got %q", q[0].Reason)
@@ -209,13 +209,13 @@ func TestParseOpenClawSpans_OptionalAbsent(t *testing.T) {
 	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_read")
 	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_write")
 	rs[0].ScopeSpans[0].Spans[0].EndTimeUnixNano = 0
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 1 {
-		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(spans), len(q))
 	}
-	mt, ok := turns[0].(ModelTurn)
+	mt, ok := spans[0].(ModelTurn)
 	if !ok {
-		t.Fatalf("want ModelTurn, got %T", turns[0])
+		t.Fatalf("want ModelTurn, got %T", spans[0])
 	}
 	if mt.SessionIDExternal != "" || mt.DurationMs != 0 ||
 		mt.CacheReadTokens != 0 || mt.CacheWriteTokens != 0 {
@@ -231,12 +231,12 @@ func TestParseOpenClawSpans_MultipleSpansOrderedByTime(t *testing.T) {
 	laterSpan.EndTimeUnixNano = origSpan.EndTimeUnixNano + 1_000_000_000
 	laterSpan.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
 	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, laterSpan)
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 2 {
-		t.Fatalf("want 2 turns, got turns=%d q=%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 2 {
+		t.Fatalf("want 2 spans, got spans=%d q=%d", len(spans), len(q))
 	}
-	if turns[0].Ts() > turns[1].Ts() {
-		t.Errorf("ordering wrong: %q before %q", turns[0].Ts(), turns[1].Ts())
+	if spans[0].Ts() > spans[1].Ts() {
+		t.Errorf("ordering wrong: %q before %q", spans[0].Ts(), spans[1].Ts())
 	}
 }
 
@@ -247,13 +247,13 @@ func TestParseOpenClawSpans_TieBreakerSpanID(t *testing.T) {
 	// Same start time, larger span_id → should sort after.
 	twin.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
 	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, twin)
-	turns, _, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 2 {
-		t.Fatalf("want 2, got %d", len(turns))
+	spans, _, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 2 {
+		t.Fatalf("want 2, got %d", len(spans))
 	}
-	if turns[0].SpanID() >= turns[1].SpanID() {
-		t.Errorf("tie-breaker: turn[0].SpanID %q should be < turn[1].SpanID %q",
-			turns[0].SpanID(), turns[1].SpanID())
+	if spans[0].SpanID() >= spans[1].SpanID() {
+		t.Errorf("tie-breaker: spans[0].SpanID %q should be < spans[1].SpanID %q",
+			spans[0].SpanID(), spans[1].SpanID())
 	}
 }
 
@@ -266,13 +266,13 @@ func TestParseOpenClawSpans_DuplicateAttrKeyLastWins(t *testing.T) {
 		Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "surprise:7b"}},
 	})
 	rs[0].ScopeSpans[0].Spans[0].Attributes = attrs
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 1 {
-		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(spans), len(q))
 	}
-	mt, ok := turns[0].(ModelTurn)
+	mt, ok := spans[0].(ModelTurn)
 	if !ok {
-		t.Fatalf("want ModelTurn, got %T", turns[0])
+		t.Fatalf("want ModelTurn, got %T", spans[0])
 	}
 	if mt.ModelName != "surprise:7b" {
 		t.Errorf("last-write-wins failed; got %q", mt.ModelName)
@@ -289,9 +289,9 @@ func TestParseOpenClawSpans_InvalidTraceIDLength(t *testing.T) {
 	rs := loadFixture(t)
 	// Set trace_id to 8 bytes (valid span_id length, invalid trace_id length).
 	rs[0].ScopeSpans[0].Spans[0].TraceId = []byte{1, 2, 3, 4, 5, 6, 7, 8}
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
 	if q[0].Reason != "invalid_trace_id_length" {
 		t.Errorf("reason: got %q", q[0].Reason)
@@ -302,9 +302,9 @@ func TestParseOpenClawSpans_InvalidSpanIDLength(t *testing.T) {
 	rs := loadFixture(t)
 	// Set span_id to 4 bytes (too short).
 	rs[0].ScopeSpans[0].Spans[0].SpanId = []byte{1, 2, 3, 4}
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
 	if q[0].Reason != "invalid_span_id_length" {
 		t.Errorf("reason: got %q", q[0].Reason)
@@ -344,10 +344,6 @@ func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
 	}
 }
 
-func TestModelTurn_ImplementsTranslatedSpan(t *testing.T) {
-	var _ TranslatedSpan = ModelTurn{}
-}
-
 func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -378,9 +374,9 @@ func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: -1}},
 				})
 			}
-			turns, q, _ := ParseOpenClawSpans(rs)
-			if len(turns) != 0 || len(q) != 1 {
-				t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+			spans, q, _ := ParseOpenClawSpans(rs)
+			if len(spans) != 0 || len(q) != 1 {
+				t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 			}
 			if q[0].Reason != tc.reason {
 				t.Errorf("reason: got %q, want %q", q[0].Reason, tc.reason)
