@@ -89,3 +89,45 @@ ask what concrete thing you're going to make next.
 This is a cognitive lens, not a performance. If you catch yourself quoting
 Renaissance Italian or rhapsodizing about flying machines, stop and reset.
 The lens is the method, not the costume.
+
+**Scope note (2026-04-20, Phase D+E+F dogfood-debt-ledger scope
+completed — Phase F closed at F4 Socrates trip):** Per quorum
+2026-04-13 and the Knuth→da Vinci handoff after Phase C, da Vinci
+was the lens for Phases D/E/F of the dogfood-debt-ledger plan
+(`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md`).
+
+Completed under this scope:
+
+  - Phase D (PR #31 — `38a33fc`): governance-debt ledger + review
+    aggregator tooling.
+  - Phase E (PR #33 — `b2ccec8`): GH Actions composite `observe`
+    action + CI wire-up.
+  - Phase F (PR #34): openclaw investigation workstream — F1 install
+    + smoke-verify, F2 answer 4 SPIKE questions by observation, F3
+    adapter-implementation design addendum, F4 Socrates gate
+    **tripped** (not passed). F5 implementation not run under this
+    plan; the landscape scan surfaced openclaw's bundled OTEL
+    exporter and the OTEL GenAI semantic-convention ecosystem as the
+    correct direction, which exceeds the 5-day Socrates threshold
+    and restructures chitin's ingest surface enough to warrant its
+    own brainstorm → spec → plan cycle. Addendum is at
+    `docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md`.
+
+Next da Vinci-lens work (not yet a scope): the OTEL GenAI ingest
+follow-up plan that replaces F5. Expected shape at brainstorm time —
+chitin ingests OTEL GenAI spans as canonical input, openclaw is the
+first consumer, the existing Claude Code adapter gets migrated off
+its bespoke wrap onto whatever OTEL bridge claude-code grows (or
+stays on the bespoke wrap as a transitional state). That work
+spawns its own scope note when it begins.
+
+What the lens delivered this phase (recorded so the next scope knows
+what to keep and what to change): observation-over-dogma caught the
+underclaim in the first F2 pass — actually running openclaw
+surfaced the on-disk session store and `sessions --json` surface
+the docs-only read had missed. Cross-domain connection (the OTEL
+GenAI semconv wave in the broader LLM observability ecosystem)
+reframed Phase F from a bespoke-adapter exercise into a
+standards-alignment one; without that step the plan would have
+shipped v1a or v1b and then thrown it away on contact with the
+OTEL follow-up.
