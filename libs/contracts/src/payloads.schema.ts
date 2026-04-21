@@ -108,6 +108,28 @@ export const ModelTurnPayloadSchema = z.object({
   cache_write_tokens: z.number().int().nonnegative().optional(),
 });
 
+export const WebhookReceivedPayloadSchema = z.object({
+  channel: z.string().min(1),
+  webhook_type: z.string().min(1),
+  duration_ms: z.number().int().nonnegative(),
+  chat_id: z.string().optional(),
+});
+
+export const WebhookFailedPayloadSchema = z.object({
+  channel: z.string().min(1),
+  webhook_type: z.string().min(1),
+  error_message: z.string().min(1),
+  chat_id: z.string().optional(),
+});
+
+export const SessionStuckPayloadSchema = z.object({
+  state: z.string().min(1),
+  age_ms: z.number().int().nonnegative(),
+  session_id_external: z.string().optional(),
+  session_key: z.string().optional(),
+  queue_depth: z.number().int().nonnegative().optional(),
+});
+
 export type SessionStartPayload = z.infer<typeof SessionStartPayloadSchema>;
 export type UserPromptPayload = z.infer<typeof UserPromptPayloadSchema>;
 export type AssistantTurnPayload = z.infer<typeof AssistantTurnPayloadSchema>;
@@ -117,4 +139,7 @@ export type IntendedPayload = z.infer<typeof IntendedPayloadSchema>;
 export type ExecutedPayload = z.infer<typeof ExecutedPayloadSchema>;
 export type FailedPayload = z.infer<typeof FailedPayloadSchema>;
 export type ModelTurnPayload = z.infer<typeof ModelTurnPayloadSchema>;
+export type WebhookReceivedPayload = z.infer<typeof WebhookReceivedPayloadSchema>;
+export type WebhookFailedPayload = z.infer<typeof WebhookFailedPayloadSchema>;
+export type SessionStuckPayload = z.infer<typeof SessionStuckPayloadSchema>;
 export type ActionType = z.infer<typeof ActionTypeSchema>;

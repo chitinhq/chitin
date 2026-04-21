@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { EventSchema } from '../src/event.schema';
+import {
+  WebhookReceivedPayloadSchema,
+  WebhookFailedPayloadSchema,
+  SessionStuckPayloadSchema,
+} from '../src/payloads.schema';
 
 const baseEnvelope = {
   schema_version: '2' as const,
@@ -166,5 +171,64 @@ describe('model_turn event', () => {
       },
     };
     expect(() => EventSchema.parse(ev)).toThrow();
+  });
+});
+
+describe('WebhookReceivedPayloadSchema', () => {
+  it('accepts valid minimal payload', () => {
+    const p = { channel: 'telegram', webhook_type: 'message', duration_ms: 42 };
+    expect(WebhookReceivedPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('accepts optional chat_id', () => {
+    const p = { channel: 'telegram', webhook_type: 'message', duration_ms: 42, chat_id: 'abc' };
+    expect(WebhookReceivedPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('rejects missing channel', () => {
+    const p = { webhook_type: 'message', duration_ms: 42 };
+    expect(() => WebhookReceivedPayloadSchema.parse(p)).toThrow();
+  });
+  it('rejects negative duration_ms', () => {
+    const p = { channel: 'telegram', webhook_type: 'message', duration_ms: -1 };
+    expect(() => WebhookReceivedPayloadSchema.parse(p)).toThrow();
+  });
+});
+
+describe('WebhookFailedPayloadSchema', () => {
+  it('accepts valid minimal payload', () => {
+    const p = { channel: 'telegram', webhook_type: 'message', error_message: 'boom' };
+    expect(WebhookFailedPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('accepts optional chat_id', () => {
+    const p = { channel: 'telegram', webhook_type: 'message', error_message: 'boom', chat_id: 'abc' };
+    expect(WebhookFailedPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('rejects missing error_message', () => {
+    const p = { channel: 'telegram', webhook_type: 'message' };
+    expect(() => WebhookFailedPayloadSchema.parse(p)).toThrow();
+  });
+});
+
+describe('SessionStuckPayloadSchema', () => {
+  it('accepts valid minimal payload', () => {
+    const p = { state: 'awaiting_model', age_ms: 120000 };
+    expect(SessionStuckPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('accepts all optional fields', () => {
+    const p = {
+      state: 'awaiting_model',
+      age_ms: 120000,
+      session_id_external: 'sess-123',
+      session_key: 'key-abc',
+      queue_depth: 5,
+    };
+    expect(SessionStuckPayloadSchema.parse(p)).toEqual(p);
+  });
+  it('rejects missing state', () => {
+    const p = { age_ms: 120000 };
+    expect(() => SessionStuckPayloadSchema.parse(p)).toThrow();
+  });
+  it('rejects negative age_ms', () => {
+    const p = { state: 'awaiting_model', age_ms: -1 };
+    expect(() => SessionStuckPayloadSchema.parse(p)).toThrow();
   });
 });
