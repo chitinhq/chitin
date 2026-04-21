@@ -250,6 +250,11 @@ type modelTurnPayload struct {
 // Invariant: a turn whose chain_id already exists in the index is skipped
 //
 //	(idempotent replay — re-emitting the same trace produces no new events).
+//
+// Not safe for concurrent invocation: the em.Index.Get / em.Emit pair is
+// not atomic, so overlapping calls with the same chain_id may race. SP-1
+// uses single-process, sequential invocation only; concurrency safety is
+// deferred to a follow-up if SP-3's push receiver requires it.
 func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []ModelTurn, quarantined []Quarantine) (int, error) {
 	if err := ValidateEnvelopeTemplate(tmpl); err != nil {
 		return 0, fmt.Errorf("invalid_envelope_template: %w", err)
