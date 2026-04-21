@@ -174,7 +174,7 @@ func getSpanIntAttr(s *tracepb.Span, key string) (int64, bool) {
 	var last int64
 	// Duplicate-key handling: last write wins (per spec §Data flow tie-breakers).
 	for _, kv := range s.Attributes {
-		if kv.Key != key {
+		if kv.Key != key || kv.Value == nil {
 			continue
 		}
 		if v, ok := kv.Value.GetValue().(*commonpb.AnyValue_IntValue); ok {
@@ -189,7 +189,7 @@ func getStringAttr(attrs []*commonpb.KeyValue, key string) string {
 	// Duplicate-key handling: last write wins.
 	var last string
 	for _, kv := range attrs {
-		if kv.Key != key {
+		if kv.Key != key || kv.Value == nil {
 			continue
 		}
 		if v, ok := kv.Value.GetValue().(*commonpb.AnyValue_StringValue); ok {

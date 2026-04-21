@@ -1,11 +1,9 @@
 package ingest
 
 import (
-	"encoding/hex"
 	"os"
 	"testing"
 
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -72,10 +70,6 @@ func TestParseOpenClawSpans_HappyPath(t *testing.T) {
 	if mt.CacheWriteTokens != 0 {
 		t.Errorf("CacheWriteTokens: got %d (should be 0)", mt.CacheWriteTokens)
 	}
-	// These imports may be unused once the test is fleshed out in Task 5;
-	// silence the lint proactively so this test file compiles on its own.
-	_ = hex.EncodeToString
-	_ = commonpb.KeyValue{}
 }
 
 func TestParseOpenClawSpans_RequiredAttrMissing(t *testing.T) {
