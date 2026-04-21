@@ -210,6 +210,16 @@ differs materially from semconv.
 - Exact raw-OTEL retention policy is decided *inside* SP-1 but is
   not a separate deliverable.
 
+**Status (post-execution):** SP-1 shipped 2026-04-21. PR: #35 (squash
+merge `ce71d10`). Output: OTLP/protobuf decoder + openclaw-dialect
+translator + `model_turn` event type + `chitin-kernel ingest-otel`
+CLI command, 294 Go + 44 TS tests passing. Dogfood gate: **deferred**
+(note at `docs/observations/2026-04-20-sp1-dogfood-gate.md`) — blocker
+is environmental (embedded-agent profile pins an unpulled ollama tag
+per SP-0 findings); retry unblockers documented. Translator is fully
+covered by the SP-0-source-derived synthesized fixture, which is
+wire-identical to a real capture up to attribute values.
+
 ### SP-2 — Complete openclaw translator
 
 **Invariant.** Every distinct `openclaw.*` span-type observed in
@@ -567,16 +577,14 @@ implement anything — it hands off to SP-0 as the next action.
 
 ## Execution handoff
 
-**Next action (amended post-SP-0):** brainstorm SP-1 against the
-SP-0 observation doc
-(`docs/observations/2026-04-20-openclaw-otel-capture.md`) and the
-`openclaw.*` schema inventory it contains. The brainstorm picks:
-(a) the minimum mapping that proves the pipeline — likely
-`openclaw.model.usage` → a new chitin event type, since openclaw
-has no direct `session_start` equivalent — and (b) whether a
-successful runtime capture is a prerequisite for SP-1 (blocker) or
-is produced during SP-1's dogfood-test step (input). SP-1's spec is
-written against captured evidence, not against this meta-spec's
-assumptions.
+**Next action (amended post-SP-1):** brainstorm SP-2 against the
+SP-1-shipped translator (`internal/ingest/openclaw.go`) and the
+SP-0 schema inventory. SP-2 extends the mapping table to the remaining
+`openclaw.*` span types (`openclaw.webhook.processed`,
+`openclaw.webhook.error`, `openclaw.session.stuck`) into chitin event
+types, using the four-station architecture SP-1 proved. Also: retry
+the SP-1 dogfood gate once either of its documented unblockers lands
+(ollama pull of `qwen2.5-coder:7b`, or embedded-agent profile-cache
+surgery per the SP-1 deferral note).
 
-**Completed sub-projects:** SP-0 (2026-04-20).
+**Completed sub-projects:** SP-0 (2026-04-20), SP-1 (2026-04-21).
