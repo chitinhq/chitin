@@ -1,9 +1,24 @@
-# OTEL GenAI Ingest Workstream — Meta-Spec
+# OTEL-Transport Ingest Workstream — Meta-Spec
 
-**Date:** 2026-04-20
+**Date:** 2026-04-20 (amended 2026-04-20 post-SP-0)
 **Supplements:** `docs/superpowers/specs/2026-04-19-dogfood-debt-ledger-design.md` (Phase F)
 **Supersedes (as active workstream):** `docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md` (retained as historical record of the v1a/v1b cost analysis that tripped the Socrates gate)
 **Status:** Meta-spec. Names sub-projects, sequences them, scopes the first. Each sub-project SP-1+ gets its own brainstorm → spec → plan cycle.
+
+> **Amendment — 2026-04-20, post-SP-0.** SP-0's empirical observation
+> (`docs/observations/2026-04-20-openclaw-otel-capture.md`) found
+> openclaw's `diagnostics-otel` plugin emits valid OTLP but uses the
+> `openclaw.*` vendor attribute namespace, not the `gen_ai.*`
+> OpenTelemetry GenAI semantic conventions. The conditional escape
+> hatch in §"Meta-level escape hatch" fired, but rather than pivoting
+> the first consumer (Framing A), we widened the translator to accept
+> openclaw's vendor schema as the v1 dialect (Framing B). Sections
+> below have been amended to reflect that: the canonical-format
+> posture is now "OTEL wire protocol + chitin-owned schema
+> translation", not "OTEL GenAI semconv". The four-station
+> architecture and all sub-project invariants otherwise hold
+> unchanged. `gen_ai.*` becomes a later translator-dialect
+> sub-project, not the v1 target.
 
 ## Preamble
 
@@ -22,9 +37,17 @@ that shape this spec:
 1. **Framing:** Meta-spec first — decompose the workstream into
    sub-projects, then brainstorm the first sub-project in detail on
    its own cycle. (Rather than one big spec or jumping to implementation.)
-2. **Canonical format posture:** OTEL GenAI at the ingest boundary;
-   hash-chained chitin envelope stays the canonical internal store.
-   The translator is the load-bearing abstraction.
+2. **Canonical format posture (amended post-SP-0):** *OTEL wire
+   protocol* (OTLP over HTTP) at the ingest boundary. The attribute
+   schema carried inside is producer-defined — openclaw uses its
+   `openclaw.*` vendor namespace; a future producer emitting
+   `gen_ai.*` will carry that. Chitin's translator is the
+   load-bearing abstraction that maps each producer's schema dialect
+   to the hash-chained envelope; the envelope stays the canonical
+   internal store. "OTEL at the boundary" means the transport and
+   the generic-span-context conventions (`code.*`, resource attrs)
+   are OTEL-compliant — not that the GenAI-specific data follows
+   `gen_ai.*`.
 3. **Finish line (v1 scope):** first live ingest — one real openclaw
    OTEL span translated into one chained envelope event, persisted to
    `.chitin/events/`. Proves receiver + translator + chain end-to-end.
@@ -55,12 +78,18 @@ station. Stations are independently replaceable.
 
 ```
 [OTEL producer]  →  [intake]  →  [translator]  →  [chain writer]  →  [.chitin/events]
- (openclaw's         (v1: file-      (gen_ai.*        (prev_hash/        (unchanged;
-  diagnostics-        based; v2+      span → chitin    this_hash          existing JSONL
-  otel plugin)        push receiver)  envelope event)  linkage over       store)
-                                                       the translated
-                                                       events)
+ (openclaw's         (v1: file-      (vendor          (prev_hash/        (unchanged;
+  diagnostics-        based; v2+      dialect →        this_hash          existing JSONL
+  otel plugin;        push receiver)  chitin           linkage over       store)
+  openclaw.*                          envelope         the translated
+  vendor schema)                      event)           events)
 ```
+
+The translator is per-dialect. V1 ships an openclaw dialect
+(`openclaw.*` attribute namespace). Additional dialects (a `gen_ai.*`
+dialect, a future vendor's dialect) plug into the same station as
+separate translators keyed off resource attributes
+(e.g., `service.name`) or attribute-prefix detection.
 
 ### Meta-level invariants (binding on all sub-projects)
 
@@ -128,21 +157,37 @@ SP-1's translator design has to change or the meta-spec's escape
 hatch fires. Spending build days against the wrong assumed schema
 is exactly the failure mode the Socrates gate just caught in Phase F.
 
+**Status (post-execution):** SP-0 shipped 2026-04-20. Output doc:
+`docs/observations/2026-04-20-openclaw-otel-capture.md` with static
+schema inventory (75 `openclaw.*` attrs, 0 `gen_ai.*`) and runtime
+wire-format sample fixtures. Outcome: the conditional escape hatch
+fired; Framing B was selected (retain openclaw; translator targets
+`openclaw.*` dialect). SP-1 is re-scoped accordingly.
+
 ### SP-1 — First live ingest
 
-**Invariant.** One openclaw OTLP/JSON file produced under SP-0
-conditions, when passed to `chitin ingest --from <file>` (or
-equivalent), produces exactly one `session_start` event in
-`.chitin/events/` with valid `prev_hash` / `this_hash` linkage and
-`labels.source = "otel"`.
+**Invariant.** One openclaw OTLP/protobuf payload produced with a
+successful model turn under SP-0 conditions, when passed to
+`chitin ingest --from <file>` (or equivalent), produces at least one
+chitin envelope event in `.chitin/events/` with valid `prev_hash` /
+`this_hash` linkage, `labels.source = "otel"`, and
+`labels.dialect = "openclaw"`. The specific event type(s) produced
+depend on which `openclaw.*` span(s) the capture contains — SP-1's
+spec picks the minimum mapping that proves the pipeline.
 
 **Scope.**
 
 1. File intake command (Go CLI + adapter code) that reads an
-   OTLP/JSON file and parses it into span objects.
-2. Minimal translator: the *one* OTEL span-type that corresponds to
-   "session starts" in openclaw's actual capture, mapped to
-   `SessionStartPayload`.
+   OTLP/protobuf file (the plugin hard-locks protocol to
+   `http/protobuf` per SP-0 evidence) and parses it into span
+   objects using the OpenTelemetry proto definitions.
+2. Minimal openclaw-dialect translator: pick the minimum mapping
+   that produces a non-trivial envelope event from a real SP-0
+   capture. Candidates based on the SP-0 inventory: `openclaw.model.usage`
+   → a new chitin event type (openclaw has no direct `session_start`
+   equivalent — openclaw's sessions are store-keyed, not span-keyed
+   — so the SP-1 spec may need to introduce a new event type such
+   as `model_turn` rather than force-fit `session_start`).
 3. Chain writer integration — the translated event goes through the
    same chain-writing path as stdin-hook events, with its `chain_id`
    derived deterministically from the OTEL `trace_id`
@@ -167,26 +212,34 @@ differs materially from semconv.
 
 ### SP-2 — Complete openclaw translator
 
-**Invariant.** Every distinct span-type observed in SP-0's capture
-(plus any additional types that surface in repeated captures during
-SP-2) maps to a defined chitin event type, with the full mapping
-table committed and tested against fixtures.
+**Invariant.** Every distinct `openclaw.*` span-type observed in
+SP-0's (and SP-1's) captures, plus any additional types that surface
+in repeated captures during SP-2, maps to a defined chitin event
+type, with the full mapping table committed and tested against
+fixtures.
 
-**Scope.** Extend SP-1's translator to cover every span-type openclaw
-emits. Define new chitin event types *only if* existing ones
-(`user_prompt`, `assistant_turn`, `compaction`, `session_end`,
-`intended`, `executed`, `failed`) cannot hold the data honestly.
-Fixture tests for each mapping.
+**Scope.** Extend SP-1's openclaw-dialect translator to cover every
+`openclaw.*` span-type the plugin emits (per SP-0 inventory:
+`openclaw.model.usage`, `openclaw.webhook.processed`,
+`openclaw.webhook.error`, `openclaw.session.stuck`, plus whatever
+future versions add). Define new chitin event types *only if*
+existing ones (`user_prompt`, `assistant_turn`, `compaction`,
+`session_end`, `intended`, `executed`, `failed`) cannot hold the
+data honestly. Openclaw's metric instruments (`openclaw.tokens`,
+`openclaw.run.duration_ms`, etc.) are also in scope — SP-2 decides
+whether metrics become chitin events, get summarised at session-end,
+or are stored separately. Fixture tests for each mapping.
 
-**v1 deliverable.** Complete translator, mapping table documentation,
-fixtures, passing tests.
+**v1 deliverable.** Complete openclaw-dialect translator, mapping
+table documentation (against SP-0's source inventory + live
+captures), fixtures, passing tests.
 
-**Cost estimate.** 5–7 days — a gut estimate from outside evidence;
-re-estimated after SP-1 ships.
+**Cost estimate.** 5–7 days — a gut estimate; re-estimated after
+SP-1 ships with the mapping pattern established.
 
-**Why deferred.** The mapping table is genuinely unknown until SP-0
-runs and SP-1 proves the pipeline. Pre-committing to it is the same
-over-scope trap Phase F fell into.
+**Why deferred.** The full mapping table is genuinely only knowable
+after SP-1 proves the pipeline with one mapping. Pre-committing to
+it is the same over-scope trap Phase F fell into.
 
 ### SP-3 — Push receiver (OTLP/HTTP endpoint)
 
@@ -247,9 +300,14 @@ this section fixes only the boundary rules.
 
 ### Between stations
 
-- **Producer → intake.** OTLP/JSON. Standard OpenTelemetry protocol,
-  no custom format. Medium is a file on disk for v1; HTTP POST for
-  SP-3. Downstream stations are unaware of which medium was used.
+- **Producer → intake.** OTLP/protobuf (the openclaw plugin
+  hard-locks protocol to `http/protobuf` and refuses `http/json` —
+  verified in SP-0 source inspection). Standard OpenTelemetry
+  protocol, no custom wire format. Medium is a file on disk for v1;
+  HTTP POST for SP-3. Downstream stations are unaware of which
+  medium was used. If a future producer emits OTLP/JSON, intake
+  extends to accept both — same proto schema, different on-wire
+  encoding.
 - **Intake → translator.** A deserialized OTEL span object (or list
   thereof) as Go structs. Intake owns the JSON parse; translator
   owns the semantic interpretation.
@@ -282,6 +340,8 @@ this section fixes only the boundary rules.
    translator logs a warning. This is what makes the translator
    portable across future OTEL-emitting surfaces without hardcoding.
 4. **`labels.source`.** Always `"otel"` on translated events.
+   **`labels.dialect`.** Set to the translator dialect used
+   (`"openclaw"` for v1, `"gen_ai"` for the future dialect, etc.).
    Provenance is auditable at query time without parsing payload.
 5. **`ts`.** The OTEL span's `start_time_unix_nano`, converted to
    the envelope's RFC3339 string. Not the ingest time.
@@ -337,16 +397,19 @@ without full chain linkage.
 
 ### Meta-level escape hatch
 
-SP-0's capture may reveal openclaw emits something that is not
-usable OTEL GenAI — wrong semconv, non-OTLP format, or nothing
-usable for mapping. In that case the meta-spec's v1 scope itself is
-invalid. The response is **not** to build a translator against
-whatever openclaw emits; it is to stop the plan, amend this spec
-with an "openclaw as first consumer was the wrong bet" note, and
-pick a different first consumer (possibly an OTEL-compliant surface
-like LiteLLM or any agent that already emits `gen_ai.*` spans).
-This is the same trip-wire shape as the Socrates gate — the
-meta-spec names the escape rather than pretending it cannot happen.
+**Status: fired and resolved via Framing B (2026-04-20).** SP-0's
+capture confirmed openclaw does not emit `gen_ai.*` semconv, so the
+original "chitin OTEL GenAI ingest" framing was invalid as stated.
+The response was *not* to pivot consumers (Framing A) but to widen
+the translator to accept openclaw's vendor schema as the v1 dialect
+(Framing B). This amendment already reflects that decision. The
+escape hatch is retained here for future use: if SP-1 discovers
+that openclaw's OTLP wire format diverges from standard OTEL proto
+(e.g., custom proto extensions), or if a future producer emits
+something the dialect pattern cannot accommodate, the same
+stop-and-amend response applies. The principle stands — do not
+build a translator against something that does not exist, even if
+the spec says it should.
 
 ## Testing stance
 
@@ -413,32 +476,46 @@ for translator correctness.
 
 ## Open risks
 
-1. **openclaw may not emit `gen_ai.*` semconv.** The addendum
-   verified openclaw ships OTLP export infrastructure but not
-   semconv conformance. SP-0 is the gate that converts this from a
-   risk to either a confirmation or an escape-hatch trigger.
+1. **~~openclaw may not emit `gen_ai.*` semconv.~~** *Resolved by
+   SP-0, 2026-04-20.* Confirmed: openclaw uses `openclaw.*` vendor
+   namespace. Responded to via Framing B (openclaw-dialect
+   translator). No longer an open risk; retained in list-position
+   for history.
 2. **`chain_id = "otel:" + trace_id` may conflict with future
    surfaces.** If two future OTEL-emitting surfaces produce
    colliding `trace_id` values (e.g., both default to all-zero
    trace IDs during tests), their events collide in the same
    chitin chain. Mitigation: SP-1 adds a `surface` disambiguator
-   *if* the SP-0 capture shows this as a real risk — otherwise the
+   *if* a real capture shows this as a real risk — otherwise the
    simple form stays. Do not design around a hypothetical surface
    that may never emit.
-3. **File-intake for v1 is non-canonical OTEL.** Standard OTEL
-   deployments assume push. If SP-0 reveals openclaw's
-   `diagnostics-otel` plugin does not support file export at all,
-   SP-1's scope shifts — either we build a minimal stdout-tail
-   shim, or SP-3 (push receiver) becomes the v1 intake instead of a
-   follow-up. The framing does not fail; only the intake station's
-   implementation changes.
-4. **CC asymmetry may become a positioning liability later.** If
+3. **File-intake for v1 assumes the producer can emit to a local
+   endpoint.** The openclaw plugin emits to
+   `OTEL_EXPORTER_OTLP_ENDPOINT` (verified in SP-0). File-intake in
+   SP-1 requires a small receiver-style shim that converts
+   localhost POSTs to files — or SP-1 uses the receiver directly
+   and SP-3 becomes "harden and make opt-in the receiver SP-1
+   already builds," not "build from scratch." SP-1's spec clarifies.
+4. **openclaw emits protobuf only; no JSON fallback.** SP-1's
+   intake station must depend on OTEL protobuf schemas (via
+   generated Go bindings or a thin proto decoder). This is a
+   load-bearing dependency that lives in chitin forever. Low risk
+   (stable OTEL proto surface) but worth naming.
+5. **CC asymmetry may become a positioning liability later.** If
    the market hardens around "every agent emits OTEL," chitin's
    stdin-hook integration for CC may look like debt even though
    it is a correct engineering choice today. If that happens, the
    follow-up is an *export* workstream (chitin emits OTEL out to
    downstream tools) — not a migration. Named here so the decision
    stays visible in future reviews.
+6. **openclaw only instruments success paths.** SP-0 observed the
+   plugin does not emit `openclaw.model.usage` on failed model
+   calls. Chitin's governance story depends on seeing failures as
+   much as successes; SP-1 or SP-2 should consider whether to
+   complement the OTEL ingest with a secondary signal (log-tail,
+   event-bus subscription) for error-path capture, OR accept that
+   the openclaw-dialect translator will be success-path-only for
+   v1 with error-path coverage punted to a later sub-project.
 
 ## Self-review
 
@@ -490,13 +567,16 @@ implement anything — it hands off to SP-0 as the next action.
 
 ## Execution handoff
 
-**Next action:** brainstorm SP-0 (empirical spike). SP-0 is small
-enough that it may not need a full brainstorm → spec → plan cycle —
-a short task description and an execution session is likely
-sufficient. The meta-spec does not pre-commit to that; the SP-0
-owner decides.
+**Next action (amended post-SP-0):** brainstorm SP-1 against the
+SP-0 observation doc
+(`docs/observations/2026-04-20-openclaw-otel-capture.md`) and the
+`openclaw.*` schema inventory it contains. The brainstorm picks:
+(a) the minimum mapping that proves the pipeline — likely
+`openclaw.model.usage` → a new chitin event type, since openclaw
+has no direct `session_start` equivalent — and (b) whether a
+successful runtime capture is a prerequisite for SP-1 (blocker) or
+is produced during SP-1's dogfood-test step (input). SP-1's spec is
+written against captured evidence, not against this meta-spec's
+assumptions.
 
-After SP-0 ships its capture + observation doc, run a new
-brainstorming session for SP-1 against the real captured payload.
-SP-1's spec is written against that evidence, not against this
-meta-spec's assumptions.
+**Completed sub-projects:** SP-0 (2026-04-20).
