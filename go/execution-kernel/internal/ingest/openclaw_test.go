@@ -274,3 +274,70 @@ func TestParseOpenClawSpans_DuplicateAttrKeyLastWins(t *testing.T) {
 func cloneSpan(s *tracepb.Span) *tracepb.Span {
 	return proto.Clone(s).(*tracepb.Span)
 }
+
+func TestParseOpenClawSpans_InvalidTraceIDLength(t *testing.T) {
+	rs := loadFixture(t)
+	// Set trace_id to 8 bytes (valid span_id length, invalid trace_id length).
+	rs[0].ScopeSpans[0].Spans[0].TraceId = []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(turns) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	}
+	if q[0].Reason != "invalid_trace_id_length" {
+		t.Errorf("reason: got %q", q[0].Reason)
+	}
+}
+
+func TestParseOpenClawSpans_InvalidSpanIDLength(t *testing.T) {
+	rs := loadFixture(t)
+	// Set span_id to 4 bytes (too short).
+	rs[0].ScopeSpans[0].Spans[0].SpanId = []byte{1, 2, 3, 4}
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(turns) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	}
+	if q[0].Reason != "invalid_span_id_length" {
+		t.Errorf("reason: got %q", q[0].Reason)
+	}
+}
+
+func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
+	cases := []struct {
+		name   string
+		attr   string
+		reason string
+	}{
+		{"negative_input", "openclaw.tokens.input", "invalid_value:openclaw.tokens.input"},
+		{"negative_output", "openclaw.tokens.output", "invalid_value:openclaw.tokens.output"},
+		{"negative_cache_read", "openclaw.tokens.cache_read", "invalid_value:openclaw.tokens.cache_read"},
+		{"negative_cache_write", "openclaw.tokens.cache_write", "invalid_value:openclaw.tokens.cache_write"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := loadFixture(t)
+			// Handle cache_write which is absent by default in fixture; append it.
+			span := rs[0].ScopeSpans[0].Spans[0]
+			found := false
+			for _, kv := range span.Attributes {
+				if kv.Key == tc.attr {
+					kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: -1}}
+					found = true
+					break
+				}
+			}
+			if !found {
+				span.Attributes = append(span.Attributes, &commonpb.KeyValue{
+					Key:   tc.attr,
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: -1}},
+				})
+			}
+			turns, q, _ := ParseOpenClawSpans(rs)
+			if len(turns) != 0 || len(q) != 1 {
+				t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+			}
+			if q[0].Reason != tc.reason {
+				t.Errorf("reason: got %q, want %q", q[0].Reason, tc.reason)
+			}
+		})
+	}
+}

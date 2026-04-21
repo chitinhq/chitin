@@ -88,9 +88,18 @@ func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]ModelTurn, []Quarantine,
 // (ModelTurn, "") on success, or (zero-ModelTurn, reason) with a typed
 // reason on any required-attr failure.
 func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (ModelTurn, string) {
-	// Required: trace_id
+	// Required: trace_id must be exactly 16 bytes per OTEL wire format and
+	// non-zero. A too-short trace_id would produce a truncated hex chain_id
+	// that violates the spec's 32-hex-char expectation.
+	if len(span.TraceId) != 16 {
+		return ModelTurn{}, "invalid_trace_id_length"
+	}
 	if isAllZero(span.TraceId) {
 		return ModelTurn{}, "invalid_trace_id_zero"
+	}
+	// Required: span_id must be exactly 8 bytes per OTEL wire format.
+	if len(span.SpanId) != 8 {
+		return ModelTurn{}, "invalid_span_id_length"
 	}
 	traceIDHex := hex.EncodeToString(span.TraceId)
 
@@ -130,14 +139,22 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 		return ModelTurn{}, "unknown_value:openclaw.model"
 	}
 
-	// Required: input + output token counts
+	// Required: input + output token counts, both non-negative. The model_turn
+	// Zod contract enforces non-negative int; quarantine at translation time
+	// so a buggy emitter can't produce payloads that fail validation downstream.
 	inputTokens, inputPresent := getSpanIntAttr(span, "openclaw.tokens.input")
 	if !inputPresent {
 		return ModelTurn{}, "missing_required_attr:openclaw.tokens.input"
 	}
+	if inputTokens < 0 {
+		return ModelTurn{}, "invalid_value:openclaw.tokens.input"
+	}
 	outputTokens, outputPresent := getSpanIntAttr(span, "openclaw.tokens.output")
 	if !outputPresent {
 		return ModelTurn{}, "missing_required_attr:openclaw.tokens.output"
+	}
+	if outputTokens < 0 {
+		return ModelTurn{}, "invalid_value:openclaw.tokens.output"
 	}
 
 	// Optional attributes
@@ -158,9 +175,15 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 		mt.DurationMs = int64((span.EndTimeUnixNano - span.StartTimeUnixNano) / 1_000_000)
 	}
 	if cr, ok := getSpanIntAttr(span, "openclaw.tokens.cache_read"); ok {
+		if cr < 0 {
+			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_read"
+		}
 		mt.CacheReadTokens = cr
 	}
 	if cw, ok := getSpanIntAttr(span, "openclaw.tokens.cache_write"); ok {
+		if cw < 0 {
+			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_write"
+		}
 		mt.CacheWriteTokens = cw
 	}
 	return mt, ""

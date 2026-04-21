@@ -9,8 +9,10 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// fixturePath returns the SP-1 synthesized fixture absolute path, resolved
-// relative to this test file (so `go test` works from any CWD).
+// fixturePath returns the SP-1 synthesized fixture path, resolved as a
+// path relative to this package's test CWD. `go test` always runs with
+// CWD == the package dir, so this path resolves correctly regardless of
+// where the `go test` command was invoked from.
 func fixturePath(t *testing.T) string {
 	t.Helper()
 	// go test CWD = package dir (internal/ingest). Climb 4 levels to repo root.

@@ -289,7 +289,7 @@ func cmdIngestTranscript(args []string) {
 func cmdIngestOTEL(args []string) {
 	fs := flag.NewFlagSet("ingest-otel", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: chitin-kernel ingest-otel --from <file.pb> --dialect openclaw --envelope-template <file> [--dir <dir>]")
+		fmt.Fprintln(os.Stderr, "usage: chitin-kernel ingest-otel --from <file.pb> --dialect openclaw [--envelope-template <file>] [--dir <dir>]")
 		fs.PrintDefaults()
 	}
 	from := fs.String("from", "", "path to OTLP/protobuf file")
