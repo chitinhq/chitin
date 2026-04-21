@@ -3,8 +3,16 @@
 **Date:** 2026-04-20
 **Supplements:** `docs/superpowers/specs/2026-04-19-dogfood-debt-ledger-design.md` (Phase F).
 **Upstream observation:** `libs/adapters/openclaw/README.md` (Phase F Tasks F1+F2).
-**Status:** Ready for a follow-up implementation plan. Socrates gate
-(Phase F Task F4) evaluation below.
+**Status:** **Socrates gate (Task F4) tripped** — a post-F3 landscape
+scan (see §"Why v1a/v1b are the wrong artifact" below) established
+that the bespoke v1a/v1b adapter costed in this addendum is the wrong
+scope for chitin's governance thesis. The right scope is chitin OTEL
+GenAI ingest with openclaw as first consumer, which exceeds the
+5-day threshold. The parent plan's Phase F therefore closes at F4
+without implementing F5; a follow-up brainstorm → spec → plan cycle
+will author the OTEL-ingest work. This addendum is retained as the
+historical record of the v1a/v1b cost analysis that informed the
+split.
 
 ## One-sentence invariant (Knuth gate)
 
@@ -213,21 +221,87 @@ Elapsed-effort estimate: **5 days ± 1 day** (uncertainty range: 4 to
 | README updates + parent-spec linkage + CHANGELOG             | 0.25 |
 | Review cycle (Copilot + adversarial, per memory)             | 0.5  |
 
-### Gate verdict
+### Gate verdict — tripped
 
-Both variants land under the 5-day Socrates threshold (v1a: ≤4d upper
-bound; v1b: ≤6d upper bound, so v1b's upper-uncertainty tail is
-slightly over-gate — worth calling out for F5 planning). The gate
-passes; a Phase F5 implementation plan is warranted within this
-parent plan rather than spun out as a follow-up.
+**Originally — under the narrow framing of "ship a bespoke openclaw
+adapter"** — both v1a and v1b land at or under the 5-day Socrates
+threshold (v1a: ≤4d; v1b: ≤6d, upper tail slightly over). In that
+framing the gate passes.
 
-**The v1a/v1b choice is a scope decision for F5, not a gate decision.**
-v1a is right if the priority is envelope-parity with the claude-code
-wrap pattern and fast ship. v1b is right if the priority is actually
-observing the user's real openclaw usage on the dogfood box (where
-the gateway runs as a daemon and v1a captures nothing). The data
-point from this box — a 3.4-day-old session produced entirely outside
-any chitin wrap — argues for v1b.
+**Actually — under the correct framing of "what advances chitin's
+governance thesis"** — the gate trips. A post-F3 scan of the
+governance and observability landscape established that:
+
+- openclaw itself bundles `@openclaw/diagnostics-otel@2026.4.15-beta.1`
+  (verified in the installed tarball — full OpenTelemetry SDK: trace,
+  metrics, and logs OTLP-proto exporters; semantic-conventions;
+  redaction; log-transport integration; disabled-by-default,
+  opt-in via `openclaw plugins enable diagnostics-otel`).
+- The AI-agent observability ecosystem has standardised on the
+  OpenTelemetry GenAI semantic conventions. Langfuse, Arize,
+  LangWatch, Orq.ai, Grafana, and others ingest openclaw traces off
+  its OTLP endpoint today with zero custom adapter code.
+- Chitin's differentiation isn't single-surface observability (the
+  market solves that); it's cross-surface drift detection + audit
+  aggregation + soul routing. That requires chitin ingesting a
+  canonical, structured event format across surfaces — which on
+  current trajectory is OTEL GenAI, not a bespoke per-surface
+  wrapper.
+
+### Why v1a/v1b are the wrong artifact
+
+Both v1a and v1b would ship working code that fires
+`session_start` / `session_end` events into chitin's envelope. Both
+are also placeholders that get thrown away the moment chitin adopts
+OTEL GenAI as its canonical ingest format, because at that point
+openclaw becomes an adapter-free ingest (user enables
+`diagnostics-otel`, points it at chitin's OTLP endpoint, and chitin
+consumes the same spans Langfuse would).
+
+The landscape scan surfaced three other observations worth recording
+here as context for the follow-up plan, even though they are flagged
+as **not independently verified** in this session and should be
+confirmed before being cited in a downstream spec:
+
+- Multiple multi-surface governance / policy products appear to
+  already exist (enforcement-first — blocking or approving tool
+  calls across Claude Code + openclaw + others). Chitin's posture is
+  analysis-first (drift / audit / soul routing), which differentiates
+  from that category rather than competing with it. Product-name
+  verification is pending.
+- A hardened NVIDIA distribution of openclaw ("NemoClaw") is
+  reportedly in market, adding out-of-process policy enforcement.
+  If real, it emits policy decisions that a chitin ingest layer
+  could consume as a governance signal in the same way it consumes
+  turn spans. Also pending verification.
+- openclaw's own `acp` subcommand is the Agent Control Protocol
+  bridge (verified in the installed tarball); earlier drafts of this
+  addendum's predecessor research conflated it with an external
+  "Agentic Control Plane" product — a name collision to watch for
+  in future research.
+
+The cost tables for v1a/v1b are retained above as accurate records
+of what those specific strategies would have cost, not as
+recommendations.
+
+### What Phase F produced instead of shipping F5
+
+- Verified install + smoke-verify of `openclaw@2026.4.15` on this box
+  (F1).
+- Observation-grounded answers to the four SPIKE questions, including
+  the empirical finding that the pre-existing openclaw daemon here
+  runs as a systemd/launchd service with a 3.4-day-old session that
+  no process-wrap adapter would ever have observed (F2).
+- This addendum as the historical record of why a bespoke v1a/v1b
+  adapter was costed, considered, and ultimately rejected in favour
+  of OTEL GenAI ingest (F3).
+- The Socrates gate decision itself, documented both here and in the
+  parent spec at §"openclaw workstream" (F4).
+
+The follow-up plan that replaces F5 owes: a brainstorm on chitin's
+canonical ingest format (OTEL GenAI vs. the current bespoke-envelope
+approach), a design for the OTLP receiver, a migration story for the
+existing Claude Code adapter, and costing for the larger scope.
 
 ## Out of scope for v1 (either variant)
 

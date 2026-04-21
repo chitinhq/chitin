@@ -136,8 +136,26 @@ removes the symlink.
 
 ### 4. openclaw workstream (parallel to Claude Code install)
 
-**Scope per Jobs overrule (quorum default was tighten; user kept proposed
-scope):**
+**Status (2026-04-20): Split into a follow-up plan at the Socrates
+gate.** Phase F of the implementation plan completed steps F1 (install
++ smoke-verify), F2 (answer the 4 SPIKE questions by observation), and
+F3 (write the adapter-implementation design addendum at
+`docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md`).
+F4's Socrates trip-wire fired: a landscape scan showed openclaw
+natively bundles `@openclaw/diagnostics-otel` (OpenTelemetry GenAI
+exporter) and the ecosystem has standardised on OTEL GenAI semconv,
+making a bespoke chitin↔openclaw adapter the wrong artifact for
+chitin's governance thesis. The right scope is "chitin ingests OTEL
+GenAI spans; openclaw is the first consumer," which exceeds the 5-day
+Socrates threshold and restructures chitin's ingest surface. That
+work will be authored as a separate brainstorm → spec → plan cycle.
+
+This plan therefore declares complete at Phase E; Phase F ends at F4
+with the investigation + addendum as its deliverable. F5 (minimum
+viable capture) is not implemented under this plan.
+
+**Original scope per Jobs overrule (quorum default was tighten; user
+kept proposed scope):**
 
 1. **Install openclaw locally** on this RTX 3090 box. Smoke-verify.
 2. **Answer the SPIKE's 4 open questions by observation:**
