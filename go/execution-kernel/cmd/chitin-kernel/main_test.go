@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -155,6 +156,104 @@ func TestCLI_IngestOTEL_UnsupportedDialect(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `"error":"unsupported_dialect"`) {
 		t.Errorf(`want stderr to contain "error":"unsupported_dialect", got %q`, stderr)
+	}
+}
+
+// TestCLI_IngestOTEL_SP2MixedFixture is the SP-2 end-to-end golden test.
+//
+// Invariant (what this test proves):
+//
+//	Given a 5-span fixture — one of each mapped openclaw span-type
+//	(model.usage, webhook.processed, webhook.error, session.stuck) plus
+//	one unmapped span name — `chitin-kernel ingest-otel` in emit mode
+//	produces EXACTLY the committed golden events (4 lines, byte-for-byte)
+//	AND EXACTLY the committed quarantine manifest (1 file, sanitized
+//	filename, deterministic ordering).
+//
+// Determinism: every input is static (fixture bytes, template bytes,
+// fixed ts, per-span chain_id derived from fixture bytes). Output is a
+// pure function of inputs — including this_hash, which is the SHA-256
+// of the canonical-JSON event. If the golden comparison fails after a
+// translator or hash change, inspect the diff against
+// testdata/sp2-golden-events.jsonl.actual (written on mismatch) and
+// regenerate the golden only after confirming the change is intended.
+//
+// Sort order: all four mapped spans share the same start_time, so the
+// tie-breaker is span_id hex-ascending (0101… < 0202… < 0303… < 0404…).
+func TestCLI_IngestOTEL_SP2MixedFixture(t *testing.T) {
+	wd := t.TempDir()
+	tmplPath := writeTemplate(t, wd)
+
+	fixtureAbs, err := filepath.Abs(filepath.Join("testdata", "sp2-mixed-fixture.pb"))
+	if err != nil {
+		t.Fatalf("abs fixture: %v", err)
+	}
+
+	chitinDir := filepath.Join(wd, ".chitin")
+	stdout, stderr, code := runCLI(t, wd,
+		"ingest-otel",
+		"--from", fixtureAbs,
+		"--dialect", "openclaw",
+		"--envelope-template", tmplPath,
+		"--dir", chitinDir,
+	)
+
+	// Exit code 2 is the documented "some spans quarantined" signal from
+	// cmdIngestOTEL. Any other code is a hard failure.
+	if code != 2 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	// --- events JSONL: byte-for-byte golden compare ---
+
+	runID := "550e8400-e29b-41d4-a716-446655441000" // matches writeTemplate
+	gotEventsPath := filepath.Join(chitinDir, fmt.Sprintf("events-%s.jsonl", runID))
+	gotEvents, err := os.ReadFile(gotEventsPath)
+	if err != nil {
+		t.Fatalf("read emitted events: %v", err)
+	}
+
+	goldenEventsPath, err := filepath.Abs(filepath.Join("testdata", "sp2-golden-events.jsonl"))
+	if err != nil {
+		t.Fatalf("abs golden events: %v", err)
+	}
+	wantEvents, err := os.ReadFile(goldenEventsPath)
+	if err != nil {
+		t.Fatalf("read golden events: %v", err)
+	}
+	if string(gotEvents) != string(wantEvents) {
+		// Write actual output next to the golden so a reviewer can diff
+		// and regenerate if the change is intentional.
+		_ = os.WriteFile(goldenEventsPath+".actual", gotEvents, 0o644)
+		t.Fatalf("events JSONL mismatch; actual written to %s.actual", goldenEventsPath)
+	}
+
+	// --- quarantine manifest: sorted filename list compare ---
+
+	qdir := filepath.Join(chitinDir, "otel-quarantine")
+	entries, err := os.ReadDir(qdir)
+	if err != nil {
+		t.Fatalf("read quarantine dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	gotManifest := strings.Join(names, "\n") + "\n"
+
+	goldenManifestPath, err := filepath.Abs(filepath.Join("testdata", "sp2-golden-quarantine-manifest.txt"))
+	if err != nil {
+		t.Fatalf("abs golden manifest: %v", err)
+	}
+	wantManifest, err := os.ReadFile(goldenManifestPath)
+	if err != nil {
+		t.Fatalf("read golden manifest: %v", err)
+	}
+	if gotManifest != string(wantManifest) {
+		_ = os.WriteFile(goldenManifestPath+".actual", []byte(gotManifest), 0o644)
+		t.Fatalf("quarantine manifest mismatch; actual written to %s.actual\ngot:\n%swant:\n%s",
+			goldenManifestPath, gotManifest, string(wantManifest))
 	}
 }
 
