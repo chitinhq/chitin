@@ -25,16 +25,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: mkdir temp:", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmp)
 	testBinary = filepath.Join(tmp, "chitin-kernel")
 	build := exec.Command("go", "build", "-o", testBinary, ".")
 	build.Stderr = os.Stderr
 	build.Stdout = os.Stdout
 	if err := build.Run(); err != nil {
+		os.RemoveAll(tmp)
 		fmt.Fprintln(os.Stderr, "TestMain: go build failed:", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(tmp)
+	os.Exit(code)
 }
 
 // runCLI invokes the built chitin-kernel binary with the given args, inside

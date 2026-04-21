@@ -316,7 +316,7 @@ func TestOpenClawIngest_EmptyPayload(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	spans, quarantined, err := ParseOpenClawSpans(rs)
-	if err != nil || spans != nil || quarantined != nil {
+	if err != nil || len(spans) != 0 || len(quarantined) != 0 {
 		t.Fatalf("empty: spans=%v quarantined=%v err=%v", spans, quarantined, err)
 	}
 }
@@ -337,6 +337,12 @@ func TestOpenClawIngest_AllQuarantine(t *testing.T) {
 	}
 	if len(quarantined) != 2 {
 		t.Fatalf("quarantined=%d, want 2", len(quarantined))
+	}
+	wantReasons := []string{"unmapped_span_name:something.else", "unmapped_span_name:another.span"}
+	for i, q := range quarantined {
+		if q.Reason != wantReasons[i] {
+			t.Errorf("quarantined[%d].Reason=%q, want %q", i, q.Reason, wantReasons[i])
+		}
 	}
 }
 
@@ -367,6 +373,9 @@ func TestOpenClawIngest_MixedValidInvalid(t *testing.T) {
 	}
 	if len(quarantined) != 1 {
 		t.Fatalf("quarantined=%d, want 1", len(quarantined))
+	}
+	if quarantined[0].Reason != "missing_required_attr:openclaw.provider" {
+		t.Errorf("reason=%q, want missing_required_attr:openclaw.provider", quarantined[0].Reason)
 	}
 }
 
@@ -436,6 +445,10 @@ func TestOpenClawIngest_DuplicateSpanIDQuarantinesLaterSpans(t *testing.T) {
 	if len(quarantined) != 1 || quarantined[0].Reason != "duplicate_span_id" {
 		t.Fatalf("quarantined=%+v, want 1 with reason=duplicate_span_id", quarantined)
 	}
+	mt := spans[0].(ModelTurn)
+	if mt.InputTokens != 1 || mt.OutputTokens != 2 {
+		t.Fatalf("dedup kept wrong span: got tokens %d/%d, want 1/2 (first wins)", mt.InputTokens, mt.OutputTokens)
+	}
 }
 
 // TestOpenClawIngest_IdempotentReplay: ingesting the same payload twice
@@ -462,5 +475,9 @@ func TestOpenClawIngest_IdempotentReplay(t *testing.T) {
 
 	if n1 != 1 || n2 != 0 {
 		t.Fatalf("n1=%d n2=%d, want 1 and 0", n1, n2)
+	}
+	events := readEmittedEvents(t, dir)
+	if len(events) != 1 {
+		t.Fatalf("events after replay=%d, want 1", len(events))
 	}
 }

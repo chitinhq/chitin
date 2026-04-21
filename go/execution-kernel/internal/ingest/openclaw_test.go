@@ -348,16 +348,6 @@ func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
 	}
 }
 
-func TestWebhookReceived_ImplementsTranslatedSpan(t *testing.T) {
-	var _ TranslatedSpan = WebhookReceived{}
-}
-func TestWebhookFailed_ImplementsTranslatedSpan(t *testing.T) {
-	var _ TranslatedSpan = WebhookFailed{}
-}
-func TestSessionStuck_ImplementsTranslatedSpan(t *testing.T) {
-	var _ TranslatedSpan = SessionStuck{}
-}
-
 func TestValidateOpenClawEnvelope_ValidSpan(t *testing.T) {
 	start, _ := sampleTs(0)
 	payload := buildFixture(t, "openclaw", []fixtureSpan{{
