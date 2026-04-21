@@ -6,7 +6,7 @@
 
 **Goal:** Execute the 1-week Hermes probe defined in `docs/superpowers/specs/2026-04-20-hermes-probe-design.md`, producing a committed observations doc with verdict + evidence.
 
-**Architecture:** Install Hermes via `ollama launch hermes`, configure Telegram gateway, run on `qwen3.5:cloud` days 1-3, swap to local `qwen3.6` on the 3090 days 4-7, write daily log entries, write final observations doc at day-7 review gate.
+**Architecture:** Install Hermes via `ollama launch hermes`, configure Telegram gateway, run on `qwen3.5:cloud` days 1-3, swap to local `qwen3.5:27b` on the 3090 days 4-7, write daily log entries, write final observations doc at day-7 review gate.
 
 **Tech Stack:** Ollama (existing local install + Cloud subscription), Hermes (to be installed via `ollama launch hermes`), Telegram bot (new), markdown.
 
@@ -320,7 +320,7 @@ Expected: Roughly 24 GB total on the 3090 with ≥20 GB free. If significantly l
 - [ ] **Step 5.2: Pull the local model**
 
 ```bash
-ollama pull qwen3.6
+ollama pull qwen3.5:27b
 ```
 
 Expected: Model downloads (several GB). Note approximate download size.
@@ -332,10 +332,10 @@ Via Hermes's setup wizard or config file (exact path depends on Hermes's layout 
 ```bash
 hermes setup
 # Select: change primary model
-# New primary: qwen3.6
+# New primary: qwen3.5:27b
 ```
 
-If the wizard doesn't have a "change primary model" path, edit the config file directly — replace `qwen3.5:cloud` with `qwen3.6` in the model field.
+If the wizard doesn't have a "change primary model" path, edit the config file directly — replace `qwen3.5:cloud` with `qwen3.5:27b` in the model field.
 
 - [ ] **Step 5.4: Smoke-test memory persistence across the swap**
 
@@ -348,9 +348,9 @@ Expected: Hermes references something from day-1 conversation. Whether this work
 Via Telegram, send a modest task (a paragraph summarization of something non-trivial). Wait up to 60 seconds.
 
 Expected: A coherent reply. Fallback logic:
-- If OOM or crash (check Ollama logs via `journalctl --user -u ollama` or wherever your Ollama logs go, OR `ollama ps`): run `ollama pull gemma4` and redo Step 5.3 with `gemma4` in place of `qwen3.6`. Record the fall-back as a finding in Step 5.6.
-- If unusably slow (>60s with no output, or output that takes >2 min per message): same as OOM — fall back to `gemma4`.
-- If `gemma4` also fails both checks: record "local stack could not carry either candidate model" as a finding, revert primary to `qwen3.5:cloud`, continue the probe on cloud for days 5-7 with the finding documented.
+- If OOM or crash (check Ollama logs via `journalctl --user -u ollama` or wherever your Ollama logs go, OR `ollama ps`): run `ollama pull gemma4:26b` and redo Step 5.3 with `gemma4:26b` in place of `qwen3.5:27b`. Record the fall-back as a finding in Step 5.6.
+- If unusably slow (>60s with no output, or output that takes >2 min per message): same as OOM — fall back to `gemma4:26b`.
+- If `gemma4:26b` also fails both checks: record "local stack could not carry either candidate model" as a finding, revert primary to `qwen3.5:cloud`, continue the probe on cloud for days 5-7 with the finding documented.
 
 - [ ] **Step 5.6: Append day-4 entry + commit**
 
@@ -359,11 +359,11 @@ Append to `docs/observations/${PROBE_DATE}-hermes-probe-log.md`:
 ```markdown
 ## Day 4 — <YYYY-MM-DD>  (swap)
 
-- Local model: qwen3.6 (or gemma4 fallback / or reverted to cloud — record actual)
+- Local model: qwen3.5:27b (or gemma4:26b fallback / or reverted to cloud — record actual)
 - VRAM usage (nvidia-smi after smoke test): <X GB of 24 GB>
 - Memory-persistence smoke test: <pass/fail + brief>
 - Responsiveness smoke test: <pass/fail + brief, include rough latency>
-- Fallback taken: <none / gemma4 / reverted to cloud — with reason>
+- Fallback taken: <none / gemma4:26b / reverted to cloud — with reason>
 - **habit:** <Y/N>
 ```
 
@@ -529,7 +529,7 @@ The memory file's frontmatter `description` currently mentions "north star is au
   - Install Hermes → Task 1
   - Messaging gateway → Task 1 (Steps 1.5, 1.6)
   - qwen3.5:cloud days 1-3 → Task 1 + Task 4 cloud-phase protocol
-  - Swap to qwen3.6 local days 4-7 → Task 5 + Task 4 local-phase protocol
+  - Swap to qwen3.5:27b local days 4-7 → Task 5 + Task 4 local-phase protocol
   - Day-1 OTEL investigation with 30-min cap → Task 2
   - Daily probe-log entries → Task 4
   - Observations doc at review gate → Task 6
@@ -547,7 +547,7 @@ The memory file's frontmatter `description` currently mentions "north star is au
 
 **Consistency:**
 
-- Model names match between spec (`qwen3.5:cloud`, `qwen3.6`, `gemma4` fallback) and plan.
+- Model names match between spec (`qwen3.5:cloud`, `qwen3.5:27b`, `gemma4:26b` fallback) and plan.
 - Filename convention `<PROBE_DATE>-hermes-probe-log.md` / `<PROBE_DATE>-hermes-probe.md` / `<PROBE_DATE>-hermes-otel-capture.md` is the same across all tasks.
 - The habit-count math in Task 6.1 (days 2-7 = 6 possible Y days, ≥3 = yes, ≤1 = no) matches the spec's § "Habit-verdict mechanics" (the spec said ≥3 out of 7 — this plan corrects to ≥3 out of 6 because day 1 is structurally N setup-day; the spec thresholds still work because ≥3 is the same and ≤1 collapses identically).
 - Kill-criteria gates in Task 4 Step 4.4 match spec § "Hard kill" #1-3.

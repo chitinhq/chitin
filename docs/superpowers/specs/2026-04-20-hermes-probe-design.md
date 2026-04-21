@@ -23,7 +23,7 @@ By end of the probe week (or at the review-gate decision point), the probe produ
 
 - Install Hermes via `ollama launch hermes` on the local Linux workstation.
 - Configure one messaging gateway (Telegram by default) as the async channel.
-- Run Hermes on `qwen3.5:cloud` for days 1–3, swap to local `qwen3.6` on the 3090 for days 4–7.
+- Run Hermes on `qwen3.5:cloud` for days 1–3, swap to local `qwen3.5:27b` on the 3090 for days 4–7.
 - Use Hermes as an async teammate for real work that comes up during the week — no synthetic tasks.
 - Day-1 OTEL-surface investigation, ≤30 min hard cap. If Hermes has an export config, enable it and capture one payload.
 - Daily probe-log entries in a scratch file during the week.
@@ -53,7 +53,7 @@ By end of the probe week (or at the review-gate decision point), the probe produ
                     ┌───────┴────────┐
                     ▼                ▼
            days 1–3: cloud    days 4–7: local
-           qwen3.5:cloud      qwen3.6 on 3090
+           qwen3.5:cloud      qwen3.5:27b on 3090
 
             [optional, day-1 only]
             OTEL export → local file
@@ -70,7 +70,7 @@ By end of the probe week (or at the review-gate decision point), the probe produ
 
 2. **Model — cloud phase.** `qwen3.5:cloud` for days 1–3. Chosen because its stated profile ("reasoning, coding, agentic tool use with vision") matches async-teammate work, and keeping the same model family across the mid-week swap isolates the local-vs-cloud variable.
 
-3. **Model — local phase.** `qwen3.6` on the 3090 for days 4–7, ~24 GB — fits the 3090's memory exactly. If it OOMs or is unusably slow, fall back to `gemma4` (~16 GB) and record the fall-back as a finding rather than ending the probe.
+3. **Model — local phase.** `qwen3.5:27b` on the 3090 for days 4–7. 27B model, typically ~16–18 GB at default quantization — fits within the 3090's 24 GB budget with headroom. Same model family as the cloud phase, which isolates the local-vs-cloud variable cleanly. If it OOMs or is unusably slow, fall back to `gemma4:26b` (18 GB per Ollama's catalog) and record the fall-back as a finding rather than ending the probe.
 
 4. **Messaging gateway.** Telegram (bot created via @BotFather — lowest-friction setup). If Signal / Discord / etc. is preferred, swap the platform — the specific channel is not the variable being tested. One platform, one identity, one conversation thread across the full week.
 
@@ -98,9 +98,9 @@ By end of the probe week (or at the review-gate decision point), the probe produ
 
 ### Day 4 — model swap
 
-- Switch Hermes's primary model from `qwen3.5:cloud` to local `qwen3.6` via Hermes provider config. Keep the gateway, Telegram identity, conversation thread, and memory store intact — the swap isolates the model, not the state.
+- Switch Hermes's primary model from `qwen3.5:cloud` to local `qwen3.5:27b` via Hermes provider config. Keep the gateway, Telegram identity, conversation thread, and memory store intact — the swap isolates the model, not the state.
 - Smoke-test: ask Hermes something it should remember from days 1–3. Confirm memory survived the swap.
-- If `qwen3.6` OOMs or is unusably slow: fall back to `gemma4`, log the fall-back, continue.
+- If `qwen3.5:27b` OOMs or is unusably slow: fall back to `gemma4:26b`, log the fall-back, continue.
 
 ### Days 5–7 — local phase
 
@@ -133,7 +133,7 @@ Each day, the probe-log entry ends with `habit: Y` or `habit: N` — did you mes
 
 ### Soft kill — note and continue
 
-4. **Local model OOMs or unusably slow.** Fall back from `qwen3.6` to `gemma4`. If `gemma4` also fails, record "local stack can't carry this workload today" as a finding and finish the probe on cloud. The local-stack verdict IS the finding — don't abandon the probe over it.
+4. **Local model OOMs or unusably slow.** Fall back from `qwen3.5:27b` to `gemma4:26b`. If `gemma4:26b` also fails, record "local stack can't carry this workload today" as a finding and finish the probe on cloud. The local-stack verdict IS the finding — don't abandon the probe over it.
 5. **No OTEL surface in Hermes.** Expected outcome for some fraction of agent platforms. Log as finding, continue the probe.
 6. **Auto-skill-creation did not fire during the week.** Note in the evidence checklist as "property not observed." Does not fail the probe — the habit verdict remains the primary signal.
 
