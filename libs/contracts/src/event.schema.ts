@@ -9,6 +9,7 @@ import {
   IntendedPayloadSchema,
   ExecutedPayloadSchema,
   FailedPayloadSchema,
+  ModelTurnPayloadSchema,
 } from './payloads.schema';
 
 const envShape = EnvelopeSchema.shape;
@@ -22,6 +23,7 @@ export const EventSchema = z.discriminatedUnion('event_type', [
   z.object({ ...envShape, event_type: z.literal('intended'), payload: IntendedPayloadSchema }),
   z.object({ ...envShape, event_type: z.literal('executed'), payload: ExecutedPayloadSchema }),
   z.object({ ...envShape, event_type: z.literal('failed'), payload: FailedPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('model_turn'), payload: ModelTurnPayloadSchema }),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;
