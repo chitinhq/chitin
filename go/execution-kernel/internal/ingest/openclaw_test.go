@@ -193,12 +193,15 @@ func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
 
 func TestParseOpenClawSpans_UnmappedSpanName(t *testing.T) {
 	rs := loadFixture(t)
-	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.webhook.processed"
+	// openclaw.message.processed is a span name that does NOT route to any
+	// of the four mapped translators (model.usage, webhook.processed,
+	// webhook.error, session.stuck), so it must land in quarantine.
+	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.message.processed"
 	spans, q, _ := ParseOpenClawSpans(rs)
 	if len(spans) != 0 || len(q) != 1 {
 		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
-	if q[0].Reason != "unmapped_span_name:openclaw.webhook.processed" {
+	if q[0].Reason != "unmapped_span_name:openclaw.message.processed" {
 		t.Errorf("reason: got %q", q[0].Reason)
 	}
 }
@@ -493,5 +496,83 @@ func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 				t.Errorf("reason: got %q, want %q", q[0].Reason, tc.reason)
 			}
 		})
+	}
+}
+
+func TestParseOpenClawSpans_RoutesAllFourSpanTypes(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name:       "openclaw.model.usage",
+			traceID:    sampleTraceID(0x01),
+			spanID:     sampleSpanID(0x01),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{
+				"openclaw.provider": "ollama",
+				"openclaw.model":    "qwen2.5:0.5b",
+			},
+			intAttrs: map[string]int64{
+				"openclaw.tokens.input":  10,
+				"openclaw.tokens.output": 20,
+			},
+		},
+		{
+			name:       "openclaw.webhook.processed",
+			traceID:    sampleTraceID(0x02),
+			spanID:     sampleSpanID(0x02),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{
+				"openclaw.channel": "telegram",
+				"openclaw.webhook": "message",
+			},
+		},
+		{
+			name:       "openclaw.webhook.error",
+			traceID:    sampleTraceID(0x03),
+			spanID:     sampleSpanID(0x03),
+			startNanos: start, endNanos: start,
+			stringAttrs: map[string]string{
+				"openclaw.channel": "telegram",
+				"openclaw.webhook": "message",
+				"openclaw.error":   "boom",
+			},
+		},
+		{
+			name:       "openclaw.session.stuck",
+			traceID:    sampleTraceID(0x04),
+			spanID:     sampleSpanID(0x04),
+			startNanos: start, endNanos: start,
+			stringAttrs: map[string]string{"openclaw.state": "awaiting_model"},
+			intAttrs:   map[string]int64{"openclaw.ageMs": 120000},
+		},
+		{
+			name:       "openclaw.message.processed", // unmapped — should quarantine
+			traceID:    sampleTraceID(0x05),
+			spanID:     sampleSpanID(0x05),
+			startNanos: start, endNanos: end,
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, err := ParseOpenClawSpans(rs)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(spans) != 4 {
+		t.Fatalf("spans=%d, want 4", len(spans))
+	}
+	if len(quarantined) != 1 || quarantined[0].Reason != "unmapped_span_name:openclaw.message.processed" {
+		t.Fatalf("quarantined=%+v", quarantined)
+	}
+
+	types := map[string]int{}
+	for _, s := range spans {
+		types[s.EventType()]++
+	}
+	want := map[string]int{"model_turn": 1, "webhook_received": 1, "webhook_failed": 1, "session_stuck": 1}
+	for k, v := range want {
+		if types[k] != v {
+			t.Fatalf("event_type %q count=%d, want %d (all counts: %+v)", k, types[k], v, types)
+		}
 	}
 }

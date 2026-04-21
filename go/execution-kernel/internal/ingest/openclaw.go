@@ -124,28 +124,84 @@ type TranslatedSpan interface {
 	Labels() map[string]string
 }
 
+// seenKey is the (trace_id, span_id) pair used to detect duplicates within
+// a single ingest batch. The pair — not just span_id — preserves the
+// possibility that two distinct traces share a span_id by coincidence
+// (OTEL only guarantees span_id uniqueness within a trace).
+type seenKey struct {
+	trace [16]byte
+	span  [8]byte
+}
+
 // ParseOpenClawSpans classifies every span into either translated
 // (mappable openclaw spans) or quarantined (everything else). Never
 // errors mid-walk; a returned error is reserved for structural failures.
 // The returned slice is unsorted; EmitEvents is responsible for the
 // deterministic (ts asc, span_id asc) ordering before emission.
+//
+// Dispatch invariant: every span lands in exactly one of translated or
+// quarantined. The switch on span.Name routes well-formed openclaw spans
+// to their per-type translator; unknown names quarantine with
+// unmapped_span_name:<name>. Within a single batch, the second (and any
+// later) occurrence of a (trace_id, span_id) pair quarantines with
+// duplicate_span_id — dedup runs BEFORE translation so malformed
+// envelopes quarantine with their length-specific reason rather than
+// the duplicate reason.
 func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]TranslatedSpan, []Quarantine, error) {
 	var translated []TranslatedSpan
 	var quarantined []Quarantine
+	seen := map[seenKey]bool{}
 
 	IterSpans(rs, func(resource *resourcepb.Resource, span *tracepb.Span) {
-		if span.Name != openclawModelUsageSpanName {
+		// Duplicate detection runs BEFORE translation so malformed spans
+		// (wrong trace/span length) quarantine with the length reason
+		// rather than the duplicate reason. Only well-formed pairs enter
+		// the seen set.
+		if len(span.TraceId) == 16 && len(span.SpanId) == 8 {
+			var key seenKey
+			copy(key.trace[:], span.TraceId)
+			copy(key.span[:], span.SpanId)
+			if seen[key] {
+				quarantined = append(quarantined, makeQuarantine("duplicate_span_id", span))
+				return
+			}
+			seen[key] = true
+		}
+
+		switch span.Name {
+		case openclawModelUsageSpanName:
+			mt, reason := translateModelUsage(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, mt)
+		case openclawWebhookProcessedSpanName:
+			w, reason := translateWebhookProcessed(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, w)
+		case openclawWebhookErrorSpanName:
+			w, reason := translateWebhookError(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, w)
+		case openclawSessionStuckSpanName:
+			s, reason := translateSessionStuck(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, s)
+		default:
 			quarantined = append(quarantined, makeQuarantine(
 				fmt.Sprintf("unmapped_span_name:%s", span.Name), span,
 			))
-			return
 		}
-		mt, reason := translateModelUsage(resource, span)
-		if reason != "" {
-			quarantined = append(quarantined, makeQuarantine(reason, span))
-			return
-		}
-		translated = append(translated, mt)
 	})
 
 	return translated, quarantined, nil

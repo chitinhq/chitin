@@ -224,8 +224,11 @@ func TestEmitEvents_MixedBatch(t *testing.T) {
 	dir := filepath.Dir(logPath)
 	rs := loadFixture(t)
 	// Append one unmapped-name span by cloning the mapped one and renaming.
+	// openclaw.message.processed does NOT route to any of the four mapped
+	// translators (model.usage, webhook.processed, webhook.error,
+	// session.stuck), so it must quarantine with unmapped_span_name.
 	unmapped := cloneSpan(rs[0].ScopeSpans[0].Spans[0])
-	unmapped.Name = "openclaw.webhook.processed"
+	unmapped.Name = "openclaw.message.processed"
 	unmapped.SpanId = []byte{0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8}
 	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, unmapped)
 	spans, q, _ := ParseOpenClawSpans(rs)
@@ -256,7 +259,7 @@ func TestEmitEvents_MixedBatch(t *testing.T) {
 	if err := json.Unmarshal(qBytes, &qRec); err != nil {
 		t.Fatalf("quarantine file not JSON: %v", err)
 	}
-	if qRec["reason"] != "unmapped_span_name:openclaw.webhook.processed" {
+	if qRec["reason"] != "unmapped_span_name:openclaw.message.processed" {
 		t.Errorf("quarantine reason: got %v", qRec["reason"])
 	}
 }
