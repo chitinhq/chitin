@@ -10,9 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -222,4 +226,130 @@ func makeQuarantine(reason string, span *tracepb.Span) Quarantine {
 		SpanID:   hex.EncodeToString(span.SpanId),
 		SpanRaw:  json.RawMessage(raw),
 	}
+}
+
+// modelTurnPayload is the typed shape of the model_turn event payload.
+type modelTurnPayload struct {
+	ModelName         string `json:"model_name"`
+	Provider          string `json:"provider"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	SessionIDExternal string `json:"session_id_external,omitempty"`
+	DurationMs        int64  `json:"duration_ms,omitempty"`
+	CacheReadTokens   int64  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int64  `json:"cache_write_tokens,omitempty"`
+}
+
+// EmitModelTurns validates the envelope template, writes every quarantine
+// side-car first (crash-safety: quarantine complete before any event is
+// emitted), then emits one model_turn event per ModelTurn through the
+// transactional Emitter. Returns the number of NEW events emitted.
+//
+// Invariant: ValidateEnvelopeTemplate is called before any side-effects.
+// Invariant: quarantine files are written before the first Emit call.
+// Invariant: a turn whose chain_id already exists in the index is skipped
+//
+//	(idempotent replay — re-emitting the same trace produces no new events).
+func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []ModelTurn, quarantined []Quarantine) (int, error) {
+	if err := ValidateEnvelopeTemplate(tmpl); err != nil {
+		return 0, fmt.Errorf("invalid_envelope_template: %w", err)
+	}
+	// Write quarantine side-cars BEFORE any event is emitted — crash-safety.
+	for _, q := range quarantined {
+		if err := WriteQuarantine(dir, q); err != nil {
+			return 0, fmt.Errorf("write_quarantine: %w", err)
+		}
+	}
+
+	emitted := 0
+	for i, turn := range turns {
+		chainID := "otel:" + turn.TraceID
+
+		// Idempotency: if this chain already has any event, skip it.
+		existing, err := em.Index.Get(chainID)
+		if err != nil {
+			return emitted, fmt.Errorf("index lookup for turn %d: %w", i, err)
+		}
+		if existing != nil {
+			// Chain already populated — this turn was already emitted.
+			continue
+		}
+
+		ev := cloneTemplate(tmpl)
+		ev.EventType = "model_turn"
+		ev.Ts = turn.Ts
+		ev.Surface = turn.Surface
+		ev.ChainID = chainID
+		if ev.Labels == nil {
+			ev.Labels = map[string]string{}
+		}
+		ev.Labels["source"] = "otel"
+		ev.Labels["dialect"] = "openclaw"
+
+		payload := modelTurnPayload{
+			ModelName:         turn.ModelName,
+			Provider:          turn.Provider,
+			InputTokens:       turn.InputTokens,
+			OutputTokens:      turn.OutputTokens,
+			SessionIDExternal: turn.SessionIDExternal,
+			DurationMs:        turn.DurationMs,
+			CacheReadTokens:   turn.CacheReadTokens,
+			CacheWriteTokens:  turn.CacheWriteTokens,
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return emitted, fmt.Errorf("marshal payload for turn %d: %w", i, err)
+		}
+		ev.Payload = json.RawMessage(raw)
+
+		if err := em.Emit(&ev); err != nil {
+			return emitted, fmt.Errorf("emit turn %d: %w", i, err)
+		}
+		emitted++
+	}
+	return emitted, nil
+}
+
+// WriteQuarantine persists one unmappable span to
+// <dir>/otel-quarantine/<span_name>-<trace_id>-<span_id>.json.
+// Idempotent: overwriting the same path with the same span produces
+// identical content.
+func WriteQuarantine(dir string, q Quarantine) error {
+	qdir := filepath.Join(dir, "otel-quarantine")
+	if err := os.MkdirAll(qdir, 0o755); err != nil {
+		return err
+	}
+	name := fmt.Sprintf("%s-%s-%s.json", sanitizeFilename(q.SpanName), q.TraceID, q.SpanID)
+	data, err := json.MarshalIndent(struct {
+		Reason   string          `json:"reason"`
+		SpanName string          `json:"span_name"`
+		TraceID  string          `json:"trace_id"`
+		SpanID   string          `json:"span_id"`
+		SpanRaw  json.RawMessage `json:"span_raw"`
+	}{
+		Reason:   q.Reason,
+		SpanName: q.SpanName,
+		TraceID:  q.TraceID,
+		SpanID:   q.SpanID,
+		SpanRaw:  q.SpanRaw,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(qdir, name), data, 0o644)
+}
+
+// sanitizeFilename replaces filesystem-problematic chars in span names like
+// ":", "/", "\" so they are safe as filename fragments. Dots are kept.
+func sanitizeFilename(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '/' || c == '\\' || c == ':' {
+			out = append(out, '_')
+		} else {
+			out = append(out, c)
+		}
+	}
+	return string(out)
 }
