@@ -97,6 +97,17 @@ export const FailedPayloadSchema = z.object({
   output_preview: z.string().optional(),
 });
 
+export const ModelTurnPayloadSchema = z.object({
+  model_name: z.string().min(1),
+  provider: z.string().min(1),
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  session_id_external: z.string().optional(),
+  duration_ms: z.number().int().nonnegative().optional(),
+  cache_read_tokens: z.number().int().nonnegative().optional(),
+  cache_write_tokens: z.number().int().nonnegative().optional(),
+});
+
 export type SessionStartPayload = z.infer<typeof SessionStartPayloadSchema>;
 export type UserPromptPayload = z.infer<typeof UserPromptPayloadSchema>;
 export type AssistantTurnPayload = z.infer<typeof AssistantTurnPayloadSchema>;
@@ -105,4 +116,5 @@ export type SessionEndPayload = z.infer<typeof SessionEndPayloadSchema>;
 export type IntendedPayload = z.infer<typeof IntendedPayloadSchema>;
 export type ExecutedPayload = z.infer<typeof ExecutedPayloadSchema>;
 export type FailedPayload = z.infer<typeof FailedPayloadSchema>;
+export type ModelTurnPayload = z.infer<typeof ModelTurnPayloadSchema>;
 export type ActionType = z.infer<typeof ActionTypeSchema>;

@@ -13,6 +13,7 @@ export type {
   IntendedPayload,
   ExecutedPayload,
   FailedPayload,
+  ModelTurnPayload,
   ActionType,
 } from './payloads.schema';
 

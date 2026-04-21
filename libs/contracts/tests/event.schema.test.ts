@@ -71,3 +71,100 @@ describe('EventSchema (discriminated by event_type)', () => {
     expect(() => EventSchema.parse(e)).toThrow();
   });
 });
+
+describe('model_turn event', () => {
+  const validEnvelopeBase = {
+    schema_version: '2' as const,
+    run_id: '550e8400-e29b-41d4-a716-446655440000',
+    session_id: '550e8400-e29b-41d4-a716-446655440001',
+    surface: 'openclaw-gateway',
+    driver_identity: {
+      user: 'u',
+      machine_id: 'm',
+      machine_fingerprint: 'a'.repeat(64),
+    },
+    agent_instance_id: '550e8400-e29b-41d4-a716-446655440002',
+    parent_agent_id: null,
+    agent_fingerprint: 'b'.repeat(64),
+    chain_id: 'otel:0102030405060708090a0b0c0d0e0f10',
+    chain_type: 'session' as const,
+    parent_chain_id: null,
+    seq: 0,
+    prev_hash: null,
+    this_hash: 'c'.repeat(64),
+    ts: '2026-04-20T12:00:00.000Z',
+    labels: { source: 'otel', dialect: 'openclaw' },
+  };
+
+  it('accepts a full model_turn payload', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'model_turn' as const,
+      payload: {
+        model_name: 'qwen2.5:0.5b',
+        provider: 'ollama',
+        input_tokens: 42,
+        output_tokens: 17,
+        session_id_external: 'sp1-fixture-session',
+        duration_ms: 1500,
+        cache_read_tokens: 3,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).not.toThrow();
+  });
+
+  it('accepts model_turn with only required payload fields', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'model_turn' as const,
+      payload: {
+        model_name: 'x',
+        provider: 'y',
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).not.toThrow();
+  });
+
+  it('rejects model_turn with missing required payload field', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'model_turn' as const,
+      payload: {
+        provider: 'y',
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).toThrow();
+  });
+
+  it('rejects model_turn with empty model_name', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'model_turn' as const,
+      payload: {
+        model_name: '',
+        provider: 'y',
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).toThrow();
+  });
+
+  it('rejects model_turn with negative input_tokens', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'model_turn' as const,
+      payload: {
+        model_name: 'x',
+        provider: 'y',
+        input_tokens: -1,
+        output_tokens: 0,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).toThrow();
+  });
+});
