@@ -4,7 +4,9 @@ import (
 	"os"
 	"testing"
 
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // loadFixture reads the SP-1 synthesized fixture and decodes it.
@@ -156,4 +158,119 @@ func removeSpanAttr(s *tracepb.Span, key string) {
 		}
 	}
 	s.Attributes = out
+}
+
+func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
+	cases := []struct {
+		attr   string
+		reason string
+	}{
+		{"openclaw.provider", "unknown_value:openclaw.provider"},
+		{"openclaw.model", "unknown_value:openclaw.model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.attr, func(t *testing.T) {
+			rs := loadFixture(t)
+			for _, kv := range rs[0].ScopeSpans[0].Spans[0].Attributes {
+				if kv.Key == tc.attr {
+					kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "unknown"}}
+				}
+			}
+			turns, q, _ := ParseOpenClawSpans(rs)
+			if len(turns) != 0 {
+				t.Errorf("want 0 turns, got %d", len(turns))
+			}
+			if len(q) != 1 || q[0].Reason != tc.reason {
+				t.Errorf("want quarantine reason %q, got %+v", tc.reason, q)
+			}
+		})
+	}
+}
+
+func TestParseOpenClawSpans_UnmappedSpanName(t *testing.T) {
+	rs := loadFixture(t)
+	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.webhook.processed"
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(turns) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	}
+	if q[0].Reason != "unmapped_span_name:openclaw.webhook.processed" {
+		t.Errorf("reason: got %q", q[0].Reason)
+	}
+}
+
+func TestParseOpenClawSpans_OptionalAbsent(t *testing.T) {
+	rs := loadFixture(t)
+	// Remove all optional attrs.
+	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.sessionId")
+	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_read")
+	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_write")
+	rs[0].ScopeSpans[0].Spans[0].EndTimeUnixNano = 0
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(turns) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	}
+	mt := turns[0]
+	if mt.SessionIDExternal != "" || mt.DurationMs != 0 ||
+		mt.CacheReadTokens != 0 || mt.CacheWriteTokens != 0 {
+		t.Errorf("optional fields should be zero, got %+v", mt)
+	}
+}
+
+func TestParseOpenClawSpans_MultipleSpansOrderedByTime(t *testing.T) {
+	rs := loadFixture(t)
+	origSpan := rs[0].ScopeSpans[0].Spans[0]
+	laterSpan := cloneSpan(origSpan)
+	laterSpan.StartTimeUnixNano = origSpan.StartTimeUnixNano + 1_000_000_000 // +1s
+	laterSpan.EndTimeUnixNano = origSpan.EndTimeUnixNano + 1_000_000_000
+	laterSpan.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
+	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, laterSpan)
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(turns) != 2 {
+		t.Fatalf("want 2 turns, got turns=%d q=%d", len(turns), len(q))
+	}
+	if turns[0].Ts > turns[1].Ts {
+		t.Errorf("ordering wrong: %q before %q", turns[0].Ts, turns[1].Ts)
+	}
+}
+
+func TestParseOpenClawSpans_TieBreakerSpanID(t *testing.T) {
+	rs := loadFixture(t)
+	origSpan := rs[0].ScopeSpans[0].Spans[0]
+	twin := cloneSpan(origSpan)
+	// Same start time, larger span_id → should sort after.
+	twin.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
+	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, twin)
+	turns, _, _ := ParseOpenClawSpans(rs)
+	if len(turns) != 2 {
+		t.Fatalf("want 2, got %d", len(turns))
+	}
+	if turns[0].SpanID >= turns[1].SpanID {
+		t.Errorf("tie-breaker: turn[0].SpanID %q should be < turn[1].SpanID %q",
+			turns[0].SpanID, turns[1].SpanID)
+	}
+}
+
+func TestParseOpenClawSpans_DuplicateAttrKeyLastWins(t *testing.T) {
+	rs := loadFixture(t)
+	attrs := rs[0].ScopeSpans[0].Spans[0].Attributes
+	// Add a second openclaw.model attribute AFTER the first — the last should win.
+	attrs = append(attrs, &commonpb.KeyValue{
+		Key:   "openclaw.model",
+		Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "surprise:7b"}},
+	})
+	rs[0].ScopeSpans[0].Spans[0].Attributes = attrs
+	turns, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(turns) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	}
+	if turns[0].ModelName != "surprise:7b" {
+		t.Errorf("last-write-wins failed; got %q", turns[0].ModelName)
+	}
+}
+
+// cloneSpan returns a deep copy so mutations in a test do not bleed
+// between sub-tests. Uses proto.Clone to avoid copying the embedded mutex.
+func cloneSpan(s *tracepb.Span) *tracepb.Span {
+	return proto.Clone(s).(*tracepb.Span)
 }
