@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
@@ -23,25 +22,6 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// ModelTurn is the parse-stage output for one openclaw.model.usage span.
-type ModelTurn struct {
-	TraceIDBytes      []byte // raw 16-byte trace_id; hex-encoded on demand
-	SpanIDBytes       []byte // raw 8-byte span_id; hex-encoded on demand
-	TraceID           string
-	SpanID            string
-	ParentSpanIDHex   string // hex-encoded parent_span_id; "" when span is a root span
-	Ts                string
-	Surface           string
-	Provider          string
-	ModelName         string
-	InputTokens       int64
-	OutputTokens      int64
-	SessionIDExternal string
-	DurationMs        int64
-	CacheReadTokens   int64
-	CacheWriteTokens  int64
-}
-
 // Quarantine records an unmappable span for audit.
 type Quarantine struct {
 	Reason   string
@@ -50,9 +30,6 @@ type Quarantine struct {
 	SpanID   string
 	SpanRaw  json.RawMessage
 }
-
-// openclawModelUsageSpanName is the one span name the v1 translator maps.
-const openclawModelUsageSpanName = "openclaw.model.usage"
 
 // buildChainID is the single source of truth for OTEL-ingest chain-id
 // construction. Every translator calls this helper; no other code
@@ -108,123 +85,13 @@ func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]ModelTurn, []Quarantine,
 
 	// Deterministic order: timestamp ascending, span_id tie-break.
 	sort.SliceStable(turns, func(i, j int) bool {
-		if turns[i].Ts != turns[j].Ts {
-			return turns[i].Ts < turns[j].Ts
+		if turns[i].TsStr != turns[j].TsStr {
+			return turns[i].TsStr < turns[j].TsStr
 		}
-		return turns[i].SpanID < turns[j].SpanID
+		return turns[i].SpanIDHex < turns[j].SpanIDHex
 	})
 
 	return turns, quarantined, nil
-}
-
-// translateModelUsage is the per-span required+optional extraction. Returns
-// (ModelTurn, "") on success, or (zero-ModelTurn, reason) with a typed
-// reason on any required-attr failure.
-func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (ModelTurn, string) {
-	// Required: trace_id must be exactly 16 bytes per OTEL wire format and
-	// non-zero. A too-short trace_id would produce a truncated hex chain_id
-	// that violates the spec's 32-hex-char expectation.
-	if len(span.TraceId) != 16 {
-		return ModelTurn{}, "invalid_trace_id_length"
-	}
-	if isAllZero(span.TraceId) {
-		return ModelTurn{}, "invalid_trace_id_zero"
-	}
-	// Required: span_id must be exactly 8 bytes per OTEL wire format.
-	if len(span.SpanId) != 8 {
-		return ModelTurn{}, "invalid_span_id_length"
-	}
-	traceIDHex := hex.EncodeToString(span.TraceId)
-
-	// Required: resource service.name
-	surface := getResourceStringAttr(resource, "service.name")
-	if surface == "" {
-		return ModelTurn{}, "missing_required_attr:service.name"
-	}
-
-	// Required: start_time_unix_nano non-zero
-	if span.StartTimeUnixNano == 0 {
-		return ModelTurn{}, "missing_required_attr:start_time_unix_nano"
-	}
-	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
-
-	// Required: openclaw.provider non-empty, ≠ "unknown".
-	// The literal "unknown" is openclaw's in-source fallback for degraded
-	// paths (diagnostics-otel@2026.4.15-beta.1 emits it when the provider
-	// is unresolved). Comparison is case-sensitive because the plugin
-	// source emits the exact lowercase literal; if a future openclaw
-	// version introduces case variants, extend this to strings.EqualFold.
-	provider := getSpanStringAttr(span, "openclaw.provider")
-	if provider == "" {
-		return ModelTurn{}, "missing_required_attr:openclaw.provider"
-	}
-	if provider == "unknown" {
-		return ModelTurn{}, "unknown_value:openclaw.provider"
-	}
-
-	// Required: openclaw.model non-empty, ≠ "unknown". Same case-sensitivity
-	// note as openclaw.provider above.
-	modelName := getSpanStringAttr(span, "openclaw.model")
-	if modelName == "" {
-		return ModelTurn{}, "missing_required_attr:openclaw.model"
-	}
-	if modelName == "unknown" {
-		return ModelTurn{}, "unknown_value:openclaw.model"
-	}
-
-	// Required: input + output token counts, both non-negative. The model_turn
-	// Zod contract enforces non-negative int; quarantine at translation time
-	// so a buggy emitter can't produce payloads that fail validation downstream.
-	inputTokens, inputPresent := getSpanIntAttr(span, "openclaw.tokens.input")
-	if !inputPresent {
-		return ModelTurn{}, "missing_required_attr:openclaw.tokens.input"
-	}
-	if inputTokens < 0 {
-		return ModelTurn{}, "invalid_value:openclaw.tokens.input"
-	}
-	outputTokens, outputPresent := getSpanIntAttr(span, "openclaw.tokens.output")
-	if !outputPresent {
-		return ModelTurn{}, "missing_required_attr:openclaw.tokens.output"
-	}
-	if outputTokens < 0 {
-		return ModelTurn{}, "invalid_value:openclaw.tokens.output"
-	}
-
-	// Optional attributes
-	mt := ModelTurn{
-		TraceIDBytes: span.TraceId,
-		SpanIDBytes:  span.SpanId,
-		TraceID:      traceIDHex,
-		SpanID:       hex.EncodeToString(span.SpanId),
-		Ts:           ts,
-		Surface:      surface,
-		Provider:     provider,
-		ModelName:    modelName,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}
-	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
-		mt.ParentSpanIDHex = hex.EncodeToString(span.ParentSpanId)
-	}
-	if sid := getSpanStringAttr(span, "openclaw.sessionId"); sid != "" {
-		mt.SessionIDExternal = sid
-	}
-	if span.EndTimeUnixNano != 0 && span.EndTimeUnixNano >= span.StartTimeUnixNano {
-		mt.DurationMs = int64((span.EndTimeUnixNano - span.StartTimeUnixNano) / 1_000_000)
-	}
-	if cr, ok := getSpanIntAttr(span, "openclaw.tokens.cache_read"); ok {
-		if cr < 0 {
-			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_read"
-		}
-		mt.CacheReadTokens = cr
-	}
-	if cw, ok := getSpanIntAttr(span, "openclaw.tokens.cache_write"); ok {
-		if cw < 0 {
-			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_write"
-		}
-		mt.CacheWriteTokens = cw
-	}
-	return mt, ""
 }
 
 // --- attribute helpers ---
@@ -295,18 +162,6 @@ func makeQuarantine(reason string, span *tracepb.Span) Quarantine {
 	}
 }
 
-// modelTurnPayload is the typed shape of the model_turn event payload.
-type modelTurnPayload struct {
-	ModelName         string `json:"model_name"`
-	Provider          string `json:"provider"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	SessionIDExternal string `json:"session_id_external,omitempty"`
-	DurationMs        int64  `json:"duration_ms,omitempty"`
-	CacheReadTokens   int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens,omitempty"`
-}
-
 // EmitModelTurns validates the envelope template, writes every quarantine
 // side-car first (crash-safety: quarantine complete before any event is
 // emitted), then emits one model_turn event per ModelTurn through the
@@ -357,31 +212,21 @@ func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mod
 
 		ev := cloneTemplate(tmpl)
 		ev.EventType = "model_turn"
-		ev.Ts = turn.Ts
-		ev.Surface = turn.Surface
+		ev.Ts = turn.TsStr
+		ev.Surface = turn.SurfaceStr
 		ev.ChainID = chainID
 		if ev.Labels == nil {
 			ev.Labels = map[string]string{}
 		}
-		for k, v := range buildOtelLabels(turn.TraceID, turn.SpanID, turn.ParentSpanIDHex) {
+		for k, v := range buildOtelLabels(turn.TraceID, turn.SpanIDHex, turn.ParentSpanIDHex) {
 			ev.Labels[k] = v
 		}
 
-		payload := modelTurnPayload{
-			ModelName:         turn.ModelName,
-			Provider:          turn.Provider,
-			InputTokens:       turn.InputTokens,
-			OutputTokens:      turn.OutputTokens,
-			SessionIDExternal: turn.SessionIDExternal,
-			DurationMs:        turn.DurationMs,
-			CacheReadTokens:   turn.CacheReadTokens,
-			CacheWriteTokens:  turn.CacheWriteTokens,
-		}
-		raw, err := json.Marshal(payload)
+		raw, err := buildModelTurnPayload(turn)
 		if err != nil {
 			return emitted, fmt.Errorf("marshal payload for turn %d: %w", i, err)
 		}
-		ev.Payload = json.RawMessage(raw)
+		ev.Payload = raw
 
 		if err := em.Emit(&ev); err != nil {
 			return emitted, fmt.Errorf("emit turn %d: %w", i, err)

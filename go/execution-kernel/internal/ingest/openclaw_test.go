@@ -39,14 +39,14 @@ func TestParseOpenClawSpans_HappyPath(t *testing.T) {
 	if mt.TraceID != "0102030405060708090a0b0c0d0e0f10" {
 		t.Errorf("TraceID: got %q", mt.TraceID)
 	}
-	if mt.SpanID != "a1a2a3a4a5a6a7a8" {
-		t.Errorf("SpanID: got %q", mt.SpanID)
+	if mt.SpanIDHex != "a1a2a3a4a5a6a7a8" {
+		t.Errorf("SpanIDHex: got %q", mt.SpanIDHex)
 	}
-	if mt.Ts != "2026-04-20T12:00:00Z" {
-		t.Errorf("Ts: got %q", mt.Ts)
+	if mt.TsStr != "2026-04-20T12:00:00Z" {
+		t.Errorf("TsStr: got %q", mt.TsStr)
 	}
-	if mt.Surface != "openclaw-gateway" {
-		t.Errorf("Surface: got %q", mt.Surface)
+	if mt.SurfaceStr != "openclaw-gateway" {
+		t.Errorf("SurfaceStr: got %q", mt.SurfaceStr)
 	}
 	if mt.Provider != "ollama" {
 		t.Errorf("Provider: got %q", mt.Provider)
@@ -229,8 +229,8 @@ func TestParseOpenClawSpans_MultipleSpansOrderedByTime(t *testing.T) {
 	if len(q) != 0 || len(turns) != 2 {
 		t.Fatalf("want 2 turns, got turns=%d q=%d", len(turns), len(q))
 	}
-	if turns[0].Ts > turns[1].Ts {
-		t.Errorf("ordering wrong: %q before %q", turns[0].Ts, turns[1].Ts)
+	if turns[0].TsStr > turns[1].TsStr {
+		t.Errorf("ordering wrong: %q before %q", turns[0].TsStr, turns[1].TsStr)
 	}
 }
 
@@ -245,9 +245,9 @@ func TestParseOpenClawSpans_TieBreakerSpanID(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("want 2, got %d", len(turns))
 	}
-	if turns[0].SpanID >= turns[1].SpanID {
-		t.Errorf("tie-breaker: turn[0].SpanID %q should be < turn[1].SpanID %q",
-			turns[0].SpanID, turns[1].SpanID)
+	if turns[0].SpanIDHex >= turns[1].SpanIDHex {
+		t.Errorf("tie-breaker: turn[0].SpanIDHex %q should be < turn[1].SpanIDHex %q",
+			turns[0].SpanIDHex, turns[1].SpanIDHex)
 	}
 }
 
