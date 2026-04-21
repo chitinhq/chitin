@@ -2,24 +2,45 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// testBinary is the path to the chitin-kernel binary built by TestMain.
+// Populated before any test runs; accessed from runCLI.
+var testBinary string
+
+// TestMain builds the chitin-kernel binary into a temp path and points
+// every CLI test at it. This removes the implicit `go build` ordering
+// dependency that would otherwise cause `go test ./...` to silently
+// skip these tests on a fresh checkout.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "chitin-kernel-test-*")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: mkdir temp:", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmp)
+	testBinary = filepath.Join(tmp, "chitin-kernel")
+	build := exec.Command("go", "build", "-o", testBinary, ".")
+	build.Stderr = os.Stderr
+	build.Stdout = os.Stdout
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: go build failed:", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 // runCLI invokes the built chitin-kernel binary with the given args, inside
 // the given working directory. Returns stdout, stderr, exit code.
 func runCLI(t *testing.T, wd string, args ...string) (string, string, int) {
 	t.Helper()
-	bin, err := filepath.Abs(filepath.Join("..", "..", "chitin-kernel"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(bin); os.IsNotExist(err) {
-		t.Skipf("binary not built at %s; run `go build -o chitin-kernel ./cmd/chitin-kernel` first", bin)
-	}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(testBinary, args...)
 	cmd.Dir = wd
 	stdout, err := cmd.Output()
 	var stderr []byte
@@ -124,7 +145,7 @@ func TestCLI_IngestOTEL_EmitMode(t *testing.T) {
 }
 
 func TestCLI_IngestOTEL_UnsupportedDialect(t *testing.T) {
-	_, _, code := runCLI(t, t.TempDir(),
+	_, stderr, code := runCLI(t, t.TempDir(),
 		"ingest-otel",
 		"--from", fixturePathForCLI(t),
 		"--dialect", "gen_ai",
@@ -132,14 +153,20 @@ func TestCLI_IngestOTEL_UnsupportedDialect(t *testing.T) {
 	if code == 0 {
 		t.Fatal("want non-zero exit for unsupported dialect")
 	}
+	if !strings.Contains(stderr, `"error":"unsupported_dialect"`) {
+		t.Errorf(`want stderr to contain "error":"unsupported_dialect", got %q`, stderr)
+	}
 }
 
 func TestCLI_IngestOTEL_MalformedProtobuf(t *testing.T) {
 	wd := t.TempDir()
 	bad := filepath.Join(wd, "bad.pb")
 	_ = os.WriteFile(bad, []byte("absolutely not a protobuf"), 0o644)
-	_, _, code := runCLI(t, wd, "ingest-otel", "--from", bad, "--dialect", "openclaw")
+	_, stderr, code := runCLI(t, wd, "ingest-otel", "--from", bad, "--dialect", "openclaw")
 	if code == 0 {
 		t.Fatal("want non-zero exit for malformed input")
+	}
+	if !strings.Contains(stderr, `"error":"otlp_decode_failed"`) {
+		t.Errorf(`want stderr to contain "error":"otlp_decode_failed", got %q`, stderr)
 	}
 }

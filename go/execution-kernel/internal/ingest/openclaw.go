@@ -106,7 +106,12 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 	}
 	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
 
-	// Required: openclaw.provider non-empty, ≠ "unknown"
+	// Required: openclaw.provider non-empty, ≠ "unknown".
+	// The literal "unknown" is openclaw's in-source fallback for degraded
+	// paths (diagnostics-otel@2026.4.15-beta.1 emits it when the provider
+	// is unresolved). Comparison is case-sensitive because the plugin
+	// source emits the exact lowercase literal; if a future openclaw
+	// version introduces case variants, extend this to strings.EqualFold.
 	provider := getSpanStringAttr(span, "openclaw.provider")
 	if provider == "" {
 		return ModelTurn{}, "missing_required_attr:openclaw.provider"
@@ -115,7 +120,8 @@ func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (Mod
 		return ModelTurn{}, "unknown_value:openclaw.provider"
 	}
 
-	// Required: openclaw.model non-empty, ≠ "unknown"
+	// Required: openclaw.model non-empty, ≠ "unknown". Same case-sensitivity
+	// note as openclaw.provider above.
 	modelName := getSpanStringAttr(span, "openclaw.model")
 	if modelName == "" {
 		return ModelTurn{}, "missing_required_attr:openclaw.model"
@@ -250,6 +256,16 @@ type modelTurnPayload struct {
 // Invariant: a turn whose chain_id already exists in the index is skipped
 //
 //	(idempotent replay — re-emitting the same trace produces no new events).
+//
+// Assumption: one openclaw.model.usage span per trace_id. SP-0's static
+// inventory of diagnostics-otel@2026.4.15-beta.1 confirms the plugin
+// emits exactly one openclaw.model.usage span per successful model call,
+// and each model call creates its own trace. If a future openclaw version
+// emits multiple model-usage spans sharing a trace_id within one batch,
+// this loop would emit the first and silently skip the rest — because
+// they'd share chain_id = "otel:"+trace_id and the second Get would
+// find the chain already populated. Revisit the chain_id scheme (e.g.
+// include span_id) when that assumption breaks.
 //
 // Not safe for concurrent invocation: the em.Index.Get / em.Emit pair is
 // not atomic, so overlapping calls with the same chain_id may race. SP-1
