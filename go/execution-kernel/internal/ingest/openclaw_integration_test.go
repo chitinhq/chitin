@@ -1,12 +1,18 @@
 package ingest
 
 import (
+	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // openclawEnvelopeTemplate is a known-valid template for emitting model_turn events.
@@ -261,5 +267,200 @@ func TestEmitEvents_MixedBatch(t *testing.T) {
 	}
 	if qRec["reason"] != "unmapped_span_name:openclaw.message.processed" {
 		t.Errorf("quarantine reason: got %v", qRec["reason"])
+	}
+}
+
+// --- boundary-case helpers ---
+
+// setupTestEmitter returns an emitter wired to a fresh temp dir plus a
+// valid openclaw envelope template. Wraps newTestEmitter for the
+// openclaw-integration case where every test needs all three.
+func setupTestEmitter(t *testing.T) (*emit.Emitter, string, *event.Event) {
+	t.Helper()
+	em, logPath := newTestEmitter(t)
+	return em, filepath.Dir(logPath), openclawEnvelopeTemplate()
+}
+
+// readEmittedEvents reads <dir>/events.jsonl and decodes each line into a
+// typed *event.Event so callers can assert on struct fields (ChainID,
+// Seq, etc.) without map-based type gymnastics.
+func readEmittedEvents(t *testing.T, dir string) []*event.Event {
+	t.Helper()
+	f, err := os.Open(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("open events.jsonl: %v", err)
+	}
+	defer f.Close()
+	var out []*event.Event
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var ev event.Event
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatalf("decode event line: %v", err)
+		}
+		out = append(out, &ev)
+	}
+	return out
+}
+
+// --- boundary-case tests (SP-2 T11) ---
+
+// TestOpenClawIngest_EmptyPayload: decoding an empty TracesData yields
+// (nil, nil, nil) from ParseOpenClawSpans — no spans, no quarantine, no error.
+func TestOpenClawIngest_EmptyPayload(t *testing.T) {
+	td := &tracepb.TracesData{}
+	data, _ := proto.Marshal(td)
+
+	rs, err := DecodeTraces(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	spans, quarantined, err := ParseOpenClawSpans(rs)
+	if err != nil || spans != nil || quarantined != nil {
+		t.Fatalf("empty: spans=%v quarantined=%v err=%v", spans, quarantined, err)
+	}
+}
+
+// TestOpenClawIngest_AllQuarantine: a batch of entirely unmapped span
+// names produces 0 translated, 2 quarantined, no error.
+func TestOpenClawIngest_AllQuarantine(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{name: "something.else", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0x01), startNanos: start, endNanos: end},
+		{name: "another.span", traceID: sampleTraceID(0x02), spanID: sampleSpanID(0x02), startNanos: start, endNanos: end},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 {
+		t.Fatalf("spans=%d, want 0", len(spans))
+	}
+	if len(quarantined) != 2 {
+		t.Fatalf("quarantined=%d, want 2", len(quarantined))
+	}
+}
+
+// TestOpenClawIngest_MixedValidInvalid: one valid + one missing-provider
+// span yields 1 translated, 1 quarantined, no error.
+func TestOpenClawIngest_MixedValidInvalid(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0x01),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+		// Missing openclaw.provider
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x02), spanID: sampleSpanID(0x02),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 1 {
+		t.Fatalf("spans=%d, want 1", len(spans))
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("quarantined=%d, want 1", len(quarantined))
+	}
+}
+
+// TestOpenClawIngest_IdenticalTsSortsBySpanID: two events with identical
+// ts must be emitted in span_id lexicographic order. The tie-breaker
+// is the secondary sort key in EmitEvents.
+func TestOpenClawIngest_IdenticalTsSortsBySpanID(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0xbb), // lex LATER
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x02), spanID: sampleSpanID(0xaa), // lex EARLIER
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	em, dir, tmpl := setupTestEmitter(t)
+	spans, quarantined, _ := ParseOpenClawSpans(rs)
+	n, err := EmitEvents(em, dir, tmpl, spans, quarantined)
+	if err != nil || n != 2 {
+		t.Fatalf("emit: n=%d err=%v", n, err)
+	}
+
+	events := readEmittedEvents(t, dir)
+	if len(events) != 2 {
+		t.Fatalf("events=%d", len(events))
+	}
+	first := events[0]
+	if !strings.HasSuffix(first.ChainID, ":"+hex.EncodeToString(sampleSpanID(0xaa))) {
+		t.Fatalf("first chain_id=%q, want suffix for 0xaa", first.ChainID)
+	}
+}
+
+// TestOpenClawIngest_DuplicateSpanIDQuarantinesLaterSpans: when two spans
+// share (trace_id, span_id), the first is translated and the rest
+// quarantine with reason "duplicate_span_id". Validates T10's dedup.
+func TestOpenClawIngest_DuplicateSpanIDQuarantinesLaterSpans(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0x01),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0x01), // same trace+span
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 9, "openclaw.tokens.output": 9},
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 1 {
+		t.Fatalf("spans=%d, want 1 (first wins)", len(spans))
+	}
+	if len(quarantined) != 1 || quarantined[0].Reason != "duplicate_span_id" {
+		t.Fatalf("quarantined=%+v, want 1 with reason=duplicate_span_id", quarantined)
+	}
+}
+
+// TestOpenClawIngest_IdempotentReplay: ingesting the same payload twice
+// emits the event on the first call and 0 new events on the second
+// (chain_id already in the index).
+func TestOpenClawIngest_IdempotentReplay(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{{
+		name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: sampleSpanID(0x01),
+		startNanos: start, endNanos: end,
+		stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+		intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+	}})
+
+	em, dir, tmpl := setupTestEmitter(t)
+
+	rs1, _ := DecodeTraces(payload)
+	spans1, q1, _ := ParseOpenClawSpans(rs1)
+	n1, _ := EmitEvents(em, dir, tmpl, spans1, q1)
+
+	rs2, _ := DecodeTraces(payload)
+	spans2, q2, _ := ParseOpenClawSpans(rs2)
+	n2, _ := EmitEvents(em, dir, tmpl, spans2, q2)
+
+	if n1 != 1 || n2 != 0 {
+		t.Fatalf("n1=%d n2=%d, want 1 and 0", n1, n2)
 	}
 }
