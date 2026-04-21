@@ -170,6 +170,49 @@ func TestParseHermesEvents_MissingSessionID_Quarantined(t *testing.T) {
 	}
 }
 
+func TestParseHermesEvents_DeterministicOrdering(t *testing.T) {
+	// Same input, parsed twice, must yield identical turn + quarantine
+	// ordering. Guards against map-iteration-order leaking into output.
+	raw := []byte(strings.Join([]string{
+		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:02+00:00", "kwargs": {"session_id": "s1", "api_call_count": 2, "model": "m", "usage": {"input_tokens": 5, "output_tokens": 2}, "api_duration": 0.1}}`,
+		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:01+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "m", "usage": {"input_tokens": 4, "output_tokens": 1}, "api_duration": 0.1}}`,
+		`{"event_type": "on_session_start", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1"}}`,
+		`{"event_type": "pre_tool_call", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"tool_name": "t"}}`,
+		"",
+	}, "\n"))
+
+	turnsA, quarA, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	turnsB, quarB, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+
+	if len(turnsA) != 2 {
+		t.Fatalf("want 2 turns, got %d", len(turnsA))
+	}
+	// Turns should be sorted by Ts ascending even though input was Ts descending.
+	if turnsA[0].Ts >= turnsA[1].Ts {
+		t.Errorf("turns not sorted by Ts ascending: [0]=%q [1]=%q", turnsA[0].Ts, turnsA[1].Ts)
+	}
+	// Determinism check.
+	for i := range turnsA {
+		if turnsA[i].SpanID != turnsB[i].SpanID {
+			t.Errorf("turn %d span diverges: A=%q B=%q", i, turnsA[i].SpanID, turnsB[i].SpanID)
+		}
+	}
+	if len(quarA) != len(quarB) {
+		t.Fatalf("quarantine count diverges: A=%d B=%d", len(quarA), len(quarB))
+	}
+	for i := range quarA {
+		if quarA[i].SpanName != quarB[i].SpanName {
+			t.Errorf("quar %d name diverges: A=%q B=%q", i, quarA[i].SpanName, quarB[i].SpanName)
+		}
+	}
+}
+
 func TestParseHermesEvents_MissingUsage_KeepsTurn(t *testing.T) {
 	raw := loadHermesFixture(t, "missing_usage.jsonl")
 	turns, quarantined, err := ParseHermesEvents(raw)

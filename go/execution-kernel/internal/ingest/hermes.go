@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -87,6 +88,26 @@ func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, nil, fmt.Errorf("scan: %w", err)
 	}
+
+	// Deterministic order: timestamp ascending, span_id tie-break — same
+	// pattern as openclaw.ParseOpenClawSpans. Source JSONL is typically in
+	// arrival order already, but sorting cements determinism across
+	// re-ingests and concatenated-file inputs.
+	sort.SliceStable(turns, func(i, j int) bool {
+		if turns[i].Ts != turns[j].Ts {
+			return turns[i].Ts < turns[j].Ts
+		}
+		return turns[i].SpanID < turns[j].SpanID
+	})
+	sort.SliceStable(quarantined, func(i, j int) bool {
+		// Quarantined entries may lack Ts if JSON parsing failed; fall back
+		// to SpanRaw for a stable total ordering.
+		if quarantined[i].SpanName != quarantined[j].SpanName {
+			return quarantined[i].SpanName < quarantined[j].SpanName
+		}
+		return bytes.Compare(quarantined[i].SpanRaw, quarantined[j].SpanRaw) < 0
+	})
+
 	return turns, quarantined, nil
 }
 
