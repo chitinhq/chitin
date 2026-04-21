@@ -74,6 +74,55 @@ func translateWebhookProcessed(resource *resourcepb.Resource, span *tracepb.Span
 	return w, ""
 }
 
+// translateWebhookError translates openclaw.webhook.error spans into
+// WebhookFailed. Instant span (start == end); no duration computed.
+// "unknown" sentinel checks are exact-match lowercase per the plugin
+// (@openclaw/diagnostics-otel@2026.4.15-beta.1 line 53715).
+func translateWebhookError(resource *resourcepb.Resource, span *tracepb.Span) (WebhookFailed, string) {
+	surface, ts, reason := validateOpenClawEnvelope(resource, span)
+	if reason != "" {
+		return WebhookFailed{}, reason
+	}
+
+	channel := getSpanStringAttr(span, "openclaw.channel")
+	if channel == "" {
+		return WebhookFailed{}, "missing_required_attr:openclaw.channel"
+	}
+	if channel == "unknown" {
+		return WebhookFailed{}, "unknown_value:openclaw.channel"
+	}
+
+	webhookType := getSpanStringAttr(span, "openclaw.webhook")
+	if webhookType == "" {
+		return WebhookFailed{}, "missing_required_attr:openclaw.webhook"
+	}
+	if webhookType == "unknown" {
+		return WebhookFailed{}, "unknown_value:openclaw.webhook"
+	}
+
+	errMsg := getSpanStringAttr(span, "openclaw.error")
+	if errMsg == "" {
+		return WebhookFailed{}, "missing_required_attr:openclaw.error"
+	}
+
+	w := WebhookFailed{
+		TraceIDBytes:    span.TraceId,
+		SpanIDBytes:     span.SpanId,
+		TraceID:         hex.EncodeToString(span.TraceId),
+		SpanIDHex:       hex.EncodeToString(span.SpanId),
+		ParentSpanIDHex: parentSpanIDHex(span),
+		TsStr:           ts,
+		SurfaceStr:      surface,
+		Channel:         channel,
+		WebhookType:     webhookType,
+		ErrorMessage:    errMsg,
+	}
+	if chatID := getSpanStringAttr(span, "openclaw.chatId"); chatID != "" {
+		w.ChatID = chatID
+	}
+	return w, ""
+}
+
 // WebhookReceived is the translated form of openclaw.webhook.processed.
 type WebhookReceived struct {
 	TraceIDBytes    []byte
