@@ -8,9 +8,88 @@
 package ingest
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
+
+const openclawWebhookProcessedSpanName = "openclaw.webhook.processed"
+const openclawWebhookErrorSpanName = "openclaw.webhook.error"
+
+// translateWebhookProcessed is the per-span required+optional extraction for
+// openclaw.webhook.processed. Returns (WebhookReceived, "") on success, or
+// (zero-WebhookReceived, reason) with a typed reason on any required-attr
+// failure. Mirrors translateModelUsage in shape: validate trace/span ids,
+// require service.name + start time, require channel + webhook (rejecting
+// "unknown" sentinels), then attach optional chat_id and derive duration.
+func translateWebhookProcessed(resource *resourcepb.Resource, span *tracepb.Span) (WebhookReceived, string) {
+	if len(span.TraceId) != 16 {
+		return WebhookReceived{}, "invalid_trace_id_length"
+	}
+	if isAllZero(span.TraceId) {
+		return WebhookReceived{}, "invalid_trace_id_zero"
+	}
+	if len(span.SpanId) != 8 {
+		return WebhookReceived{}, "invalid_span_id_length"
+	}
+	if isAllZero(span.SpanId) {
+		return WebhookReceived{}, "invalid_span_id_zero"
+	}
+
+	surface := getResourceStringAttr(resource, "service.name")
+	if surface == "" {
+		return WebhookReceived{}, "missing_required_attr:service.name"
+	}
+
+	if span.StartTimeUnixNano == 0 {
+		return WebhookReceived{}, "missing_required_attr:start_time_unix_nano"
+	}
+	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
+
+	channel := getSpanStringAttr(span, "openclaw.channel")
+	if channel == "" {
+		return WebhookReceived{}, "missing_required_attr:openclaw.channel"
+	}
+	if channel == "unknown" {
+		return WebhookReceived{}, "unknown_value:openclaw.channel"
+	}
+
+	webhookType := getSpanStringAttr(span, "openclaw.webhook")
+	if webhookType == "" {
+		return WebhookReceived{}, "missing_required_attr:openclaw.webhook"
+	}
+	if webhookType == "unknown" {
+		return WebhookReceived{}, "unknown_value:openclaw.webhook"
+	}
+
+	var durationMs int64
+	if span.EndTimeUnixNano != 0 && span.EndTimeUnixNano >= span.StartTimeUnixNano {
+		durationMs = int64((span.EndTimeUnixNano - span.StartTimeUnixNano) / 1_000_000)
+	}
+
+	w := WebhookReceived{
+		TraceIDBytes: span.TraceId,
+		SpanIDBytes:  span.SpanId,
+		TraceID:      hex.EncodeToString(span.TraceId),
+		SpanIDHex:    hex.EncodeToString(span.SpanId),
+		TsStr:        ts,
+		SurfaceStr:   surface,
+		Channel:      channel,
+		WebhookType:  webhookType,
+		DurationMs:   durationMs,
+	}
+	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
+		w.ParentSpanIDHex = hex.EncodeToString(span.ParentSpanId)
+	}
+	if chatID := getSpanStringAttr(span, "openclaw.chatId"); chatID != "" {
+		w.ChatID = chatID
+	}
+	return w, ""
+}
 
 // WebhookReceived is the translated form of openclaw.webhook.processed.
 type WebhookReceived struct {
