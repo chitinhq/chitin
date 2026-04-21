@@ -16,10 +16,74 @@
 package ingest
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 )
+
+// HermesEvent is one line in a chitin-sink JSONL stream. Kwargs is
+// intentionally a generic map — the translator inspects it per event_type.
+type HermesEvent struct {
+	EventType string                 `json:"event_type"`
+	Ts        string                 `json:"ts"`
+	Kwargs    map[string]interface{} `json:"kwargs"`
+}
+
+// ParseHermesEvents classifies every line of a chitin-sink JSONL stream
+// into parseable ModelTurns (v1: only post_api_request) and Quarantine
+// records (v1-scope for other event_types, parse_error for malformed JSON,
+// missing_fields:<list> for required-attr failures).
+//
+// Never errors mid-walk; a returned error is reserved for structural
+// failures like a scanner I/O error. Blank lines are skipped.
+func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
+	var turns []ModelTurn
+	var quarantined []Quarantine
+
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	// post_api_request lines with large usage/prompt-details dicts can exceed
+	// the 64 KiB default scanner buffer; give it 1 MiB headroom.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		// Copy — scanner buffer is reused on next Scan().
+		lineCopy := append([]byte(nil), line...)
+
+		var ev HermesEvent
+		if err := json.Unmarshal(lineCopy, &ev); err != nil {
+			quarantined = append(quarantined, Quarantine{
+				Reason:  "parse_error",
+				SpanRaw: json.RawMessage(lineCopy),
+			})
+			continue
+		}
+		if ev.EventType != "post_api_request" {
+			quarantined = append(quarantined, Quarantine{
+				Reason:   "v1-scope",
+				SpanName: ev.EventType,
+				SpanRaw:  json.RawMessage(lineCopy),
+			})
+			continue
+		}
+		// Task 9 replaces this branch with translatePostAPIRequest.
+		quarantined = append(quarantined, Quarantine{
+			Reason:   "not_yet_implemented",
+			SpanName: ev.EventType,
+			SpanRaw:  json.RawMessage(lineCopy),
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, fmt.Errorf("scan: %w", err)
+	}
+	return turns, quarantined, nil
+}
 
 // buildHermesChainID mirrors the tripartite shape SP-2 adopted for OTEL
 // ingest ("otel:<trace>:<span>"), with "hermes:" as an honest-about-source
