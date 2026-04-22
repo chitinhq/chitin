@@ -144,27 +144,62 @@ func classifyShellCommand(cmd string) Action {
 	return Action{Type: ActShellExec, Target: trimmed}
 }
 
-// extractShellIntent scans Python code for subprocess.run/call/Popen with
-// a command list, or shutil.rmtree. Returns the reconstructed shell
-// command if found, or "" otherwise.
+// extractShellIntent scans Python code for anything that would execute
+// a shell command or delete files, and returns the reconstructed shell
+// command. Returns "" if no dangerous pattern is found.
 //
 // This is the core of the execute_code bypass closure: whatever an agent
-// writes in Python that shells out gets mapped back to its shell equivalent.
+// writes in Python that shells out gets mapped back to its shell
+// equivalent for policy evaluation.
+//
+// Patterns matched (ordered by specificity):
+//  1. subprocess.run/call/Popen/check_* with a LIST argument:
+//        subprocess.run(["rm", "-rf", "go/"])
+//  2. subprocess.run/call/Popen/check_* with a STRING argument (typically
+//     shell=True, but matched regardless — string form is shell semantics):
+//        subprocess.run("rm -rf go/", shell=True)
+//  3. os.system("rm -rf go/") — always shell
+//  4. shutil.rmtree("go/") → rm -rf go/
+//  5. os.remove/unlink("x") → rm x
+//  6. Last-resort pattern match: if the code contains a bare "rm -rf"
+//     or "rm -r" substring anywhere (e.g. in a non-obvious helper, f-string,
+//     or pathlib.Path.unlink call we didn't catch), treat the whole code
+//     as a shell exec of that fragment so the policy engine's target_regex
+//     can still match it.
 func extractShellIntent(code string) string {
-	// subprocess.run(["rm", "-rf", "x"]) or subprocess.run(['rm','-rf','x'])
-	subRE := regexp.MustCompile(`subprocess\.(?:run|call|Popen|check_call|check_output)\s*\(\s*\[([^\]]+)\]`)
-	if m := subRE.FindStringSubmatch(code); len(m) > 1 {
+	// 1. List-form subprocess
+	subListRE := regexp.MustCompile(`subprocess\.(?:run|call|Popen|check_call|check_output)\s*\(\s*\[([^\]]+)\]`)
+	if m := subListRE.FindStringSubmatch(code); len(m) > 1 {
 		return joinQuotedList(m[1])
 	}
-	// shutil.rmtree("x") — map to rm -rf <x>
+	// 2. String-form subprocess (shell=True or default on some platforms)
+	subStrRE := regexp.MustCompile(`subprocess\.(?:run|call|Popen|check_call|check_output)\s*\(\s*['"]([^'"]+)['"]`)
+	if m := subStrRE.FindStringSubmatch(code); len(m) > 1 {
+		return m[1]
+	}
+	// 3. os.system
+	osSysRE := regexp.MustCompile(`os\.system\s*\(\s*['"]([^'"]+)['"]`)
+	if m := osSysRE.FindStringSubmatch(code); len(m) > 1 {
+		return m[1]
+	}
+	// 4. shutil.rmtree
 	rmtreeRE := regexp.MustCompile(`shutil\.rmtree\s*\(\s*['"]([^'"]+)['"]`)
 	if m := rmtreeRE.FindStringSubmatch(code); len(m) > 1 {
 		return "rm -rf " + m[1]
 	}
-	// os.remove("x") / os.unlink("x") — map to rm <x>
+	// 5. os.remove / os.unlink
 	rmRE := regexp.MustCompile(`os\.(?:remove|unlink)\s*\(\s*['"]([^'"]+)['"]`)
 	if m := rmRE.FindStringSubmatch(code); len(m) > 1 {
 		return "rm " + m[1]
+	}
+	// 6. Last-resort: bare "rm -rf" substring. Catches f-strings,
+	// pathlib.Path(...).unlink(missing_ok=True), and other forms we
+	// don't explicitly model. Target becomes the full code fragment so
+	// policy regexes can still match it (the raw "rm -rf" literal
+	// triggers the no-destructive-rm target: "rm -rf" substring match).
+	rawRmRE := regexp.MustCompile(`\brm\s+-r[f]?\b`)
+	if rawRmRE.MatchString(code) {
+		return code
 	}
 	return ""
 }

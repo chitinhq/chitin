@@ -173,6 +173,45 @@ rules:
 	}
 }
 
+func TestPolicy_SelfModification_AbsolutePath(t *testing.T) {
+	// Regression for C2: the baseline no-governance-self-modification rule
+	// must match absolute paths (e.g. when hermes calls write_file with
+	// /home/red/workspace/chitin/chitin.yaml), not just repo-relative paths.
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "chitin.yaml")
+	if err := os.WriteFile(policy, []byte(`
+id: t
+mode: enforce
+rules:
+  - id: no-governance-self-modification
+    action: file.write
+    effect: deny
+    target_regex: '(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)'
+    reason: "self-mod blocked"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := LoadWithInheritance(dir)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	cases := []string{
+		"chitin.yaml",
+		"/home/red/workspace/chitin/chitin.yaml", // absolute — was the bypass
+		"./chitin.yaml",
+		".chitin/gov.db",
+		"/home/red/.chitin/gov-decisions-2026-04-22.jsonl",
+		"/home/red/.hermes/plugins/chitin-governance/__init__.py",
+	}
+	for _, path := range cases {
+		d := p.Evaluate(Action{Type: ActFileWrite, Target: path})
+		if d.Allowed {
+			t.Errorf("write to %q should be denied by self-mod rule, got allowed (rule_id=%q)", path, d.RuleID)
+		}
+	}
+}
+
 func TestMonotonicStrictness_UnknownMode(t *testing.T) {
 	// Unknown mode strings are explicit errors — don't silently default to monitor.
 	root := t.TempDir()

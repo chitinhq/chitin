@@ -1,6 +1,9 @@
 package gov
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalize_TerminalRmRf(t *testing.T) {
 	a, err := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
@@ -92,6 +95,49 @@ func TestNormalize_DelegateTask(t *testing.T) {
 	a, _ := Normalize("delegate_task", map[string]any{"goal": "review"})
 	if a.Type != ActDelegateTask {
 		t.Errorf("Type: got %q want delegate.task", a.Type)
+	}
+}
+
+func TestNormalize_ExecuteCodeSubprocessString(t *testing.T) {
+	// Regression for C3: subprocess.run("rm -rf X", shell=True) — string form
+	// (not a list literal) must also route through shell.exec so policy
+	// regexes can match. Previous extractShellIntent only handled list form.
+	code := `import subprocess
+subprocess.run("rm -rf /tmp/x", shell=True)`
+	a, _ := Normalize("execute_code", map[string]any{"code": code})
+	if a.Type != ActShellExec {
+		t.Errorf("subprocess.run string-form must map to shell.exec, got %q", a.Type)
+	}
+	if a.Target == "" || a.Target == "execute_code" {
+		t.Errorf("Target should be the extracted command, got %q", a.Target)
+	}
+}
+
+func TestNormalize_ExecuteCodeOsSystem(t *testing.T) {
+	// Regression for C3: os.system("rm -rf X") is a pure shell call.
+	code := `import os
+os.system("rm -rf /tmp/x")`
+	a, _ := Normalize("execute_code", map[string]any{"code": code})
+	if a.Type != ActShellExec {
+		t.Errorf("os.system must map to shell.exec, got %q", a.Type)
+	}
+}
+
+func TestNormalize_ExecuteCodeRawRmFallback(t *testing.T) {
+	// Regression for C3: if we can't parse the specific call pattern but
+	// the code contains "rm -rf" anywhere (f-strings, pathlib.unlink,
+	// obfuscated variants), fall back to treating the whole code as a
+	// shell.exec so the no-destructive-rm target:"rm -rf" substring match
+	// still fires.
+	code := `import subprocess
+cmd = "rm -rf " + target_dir
+subprocess.run(cmd, shell=True)`
+	a, _ := Normalize("execute_code", map[string]any{"code": code})
+	if a.Type != ActShellExec {
+		t.Errorf("code containing 'rm -rf' should map to shell.exec, got %q", a.Type)
+	}
+	if !strings.Contains(a.Target, "rm -rf") {
+		t.Errorf("Target should contain 'rm -rf' so target: rule still matches, got %q", a.Target)
 	}
 }
 

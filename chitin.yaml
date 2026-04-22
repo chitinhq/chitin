@@ -58,7 +58,11 @@ rules:
   - id: no-governance-self-modification
     action: file.write
     effect: deny
-    target_regex: '(?:^chitin\.yaml$|^\.chitin/|^\.hermes/plugins/chitin-governance/)'
+    # Match whether the path is relative to a chitin repo root OR absolute.
+    # Previously anchored on ^ only, which missed absolute paths like
+    # "/home/red/workspace/chitin/chitin.yaml" — a bypass the agent could
+    # exploit by writing with the full path instead of a repo-relative one.
+    target_regex: '(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)'
     reason: "Agents may not modify their own governance policy or plugin"
     escalation_weight: 2
 
