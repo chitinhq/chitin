@@ -31,6 +31,45 @@ mkdir -p "$TICK_DIR"
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*" >> "$TICK_DIR/tick.log"; }
 
+probe_ollama() {
+  if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    echo "ok" > "$TICK_DIR/ollama-probe.txt"
+    return 0
+  fi
+  echo "unreachable" > "$TICK_DIR/ollama-probe.txt"
+  return 1
+}
+
+run_stage_code() {
+  log "stage 2 (code) starting"
+  local plan_body file_dump files
+  plan_body="$(cat "$TICK_DIR/plan.json")"
+  # Read the files listed in diff_request.files (best-effort — missing
+  # files become empty context strings).
+  files="$(jq -r '.diff_request.files[]?' "$TICK_DIR/plan.json")"
+  file_dump=""
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if [[ -f "$REPO_ROOT/$f" ]]; then
+      file_dump+=$'\n--- FILE: '"$f"$' ---\n'
+      file_dump+="$(cat "$REPO_ROOT/$f")"
+    fi
+  done <<< "$files"
+
+  if ! hermes chat --model "$MODEL_CODE" --system "$PROMPT_CODE" \
+         --context "plan=$plan_body files=$file_dump" \
+         > "$TICK_DIR/diff.patch" 2> "$TICK_DIR/code-stderr.txt"; then
+    log "stage 2 failed (hermes non-zero)"
+    return 1
+  fi
+
+  if [[ ! -s "$TICK_DIR/diff.patch" ]]; then
+    log "code_empty_output: stage 2 emitted empty diff"
+    return 1
+  fi
+  log "stage 2 done"
+}
+
 run_stage_act() {
   log "stage 3 (act) starting"
   local plan_body diff_body
@@ -87,7 +126,14 @@ case "$action" in
     exit 0
     ;;
   code)
-    log "TODO: stage 2 + 3 not wired yet for code"
+    if ! probe_ollama; then
+      log "ollama_unreachable: skip stages 2 and 3"
+      exit 0
+    fi
+    if ! run_stage_code; then
+      exit 0
+    fi
+    run_stage_act
     exit 0
     ;;
   external)
