@@ -220,6 +220,30 @@ func TestParseHermesEvents_DeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestParseHermesEvents_ZeroPromptTokens_WinsOverAlias(t *testing.T) {
+	// Regression guard for the presence-vs-zero token-key fallback: a
+	// legitimate prompt_tokens:0 must not be overridden by a separate
+	// input_tokens alias on the same event.
+	raw := []byte(`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "api_duration": 0.1, "usage": {"prompt_tokens": 0, "input_tokens": 999, "completion_tokens": 5, "output_tokens": 999}}}` + "\n")
+
+	turns, quarantined, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("ParseHermesEvents: %v", err)
+	}
+	if len(quarantined) != 0 {
+		t.Fatalf("want 0 quarantined, got %d", len(quarantined))
+	}
+	if len(turns) != 1 {
+		t.Fatalf("want 1 turn, got %d", len(turns))
+	}
+	if turns[0].InputTokens != 0 {
+		t.Errorf("InputTokens: got %d want 0 (prompt_tokens present wins over input_tokens alias)", turns[0].InputTokens)
+	}
+	if turns[0].OutputTokens != 5 {
+		t.Errorf("OutputTokens: got %d want 5 (completion_tokens present wins over output_tokens alias)", turns[0].OutputTokens)
+	}
+}
+
 func TestParseHermesEvents_MissingTs_Quarantined(t *testing.T) {
 	// ts drives the span ID — without it, all calls in a session would
 	// collide on chain_id. Required-field check must reject.

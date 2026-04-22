@@ -178,25 +178,28 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 
 	var inputTokens, outputTokens, cacheRead, cacheWrite int64
 	if usage, ok := ev.Kwargs["usage"].(map[string]interface{}); ok && usage != nil {
-		inputTokens, _ = getKwargInt(usage, "prompt_tokens")
-		if inputTokens == 0 {
+		// Fallbacks check key PRESENCE, not zero-value. A legitimate
+		// prompt_tokens: 0 (e.g. cache-only call, empty-prompt edge case)
+		// must win over a present-but-different input_tokens alias.
+		if v, ok := getKwargInt(usage, "prompt_tokens"); ok {
+			inputTokens = v
+		} else {
 			inputTokens, _ = getKwargInt(usage, "input_tokens")
 		}
-		outputTokens, _ = getKwargInt(usage, "completion_tokens")
-		if outputTokens == 0 {
+		if v, ok := getKwargInt(usage, "completion_tokens"); ok {
+			outputTokens = v
+		} else {
 			outputTokens, _ = getKwargInt(usage, "output_tokens")
 		}
-		cacheRead, _ = getKwargInt(usage, "cache_read_tokens")
-		if cacheRead == 0 {
-			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
-				cacheRead, _ = getKwargInt(details, "cached_tokens")
-			}
+		if v, ok := getKwargInt(usage, "cache_read_tokens"); ok {
+			cacheRead = v
+		} else if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
+			cacheRead, _ = getKwargInt(details, "cached_tokens")
 		}
-		cacheWrite, _ = getKwargInt(usage, "cache_write_tokens")
-		if cacheWrite == 0 {
-			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
-				cacheWrite, _ = getKwargInt(details, "cache_write_tokens")
-			}
+		if v, ok := getKwargInt(usage, "cache_write_tokens"); ok {
+			cacheWrite = v
+		} else if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
+			cacheWrite, _ = getKwargInt(details, "cache_write_tokens")
 		}
 	}
 
