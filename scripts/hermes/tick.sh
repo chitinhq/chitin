@@ -32,9 +32,11 @@ mkdir -p "$TICK_DIR"
 log() { echo "[$(date -u +%H:%M:%SZ)] $*" >> "$TICK_DIR/tick.log"; }
 
 probe_ollama() {
+  # Non-atomic read-modify-write on streak_file; safe only under cron max_parallel_jobs=1.
   local streak_file="$CHITIN_SINK_ROOT/ollama-unreachable-streak.txt"
   local current=0
   [[ -f "$streak_file" ]] && current="$(cat "$streak_file")"
+  [[ "$current" =~ ^[0-9]+$ ]] || current=0
 
   if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     echo "ok" > "$TICK_DIR/ollama-probe.txt"
