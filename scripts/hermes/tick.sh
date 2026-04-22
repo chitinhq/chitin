@@ -30,6 +30,23 @@ TICK_DIR="$CHITIN_SINK_ROOT/ticks/$date_str/$ts"
 mkdir -p "$TICK_DIR"
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*" >> "$TICK_DIR/tick.log"; }
+
+run_stage_act() {
+  log "stage 3 (act) starting"
+  local plan_body diff_body
+  plan_body="$(cat "$TICK_DIR/plan.json")"
+  diff_body=""
+  [[ -f "$TICK_DIR/diff.patch" ]] && diff_body="$(cat "$TICK_DIR/diff.patch")"
+
+  if ! hermes chat --model "$MODEL_ACT" --system "$PROMPT_ACT" \
+         --context "plan=$plan_body diff=$diff_body" \
+         > "$TICK_DIR/act-log.txt" 2> "$TICK_DIR/act-stderr.txt"; then
+    log "stage 3 failed (hermes non-zero)"
+    return 0
+  fi
+  log "stage 3 done"
+}
+
 log "tick starting; dir=$TICK_DIR"
 
 # Capture env snapshot (scrubbed).
@@ -69,8 +86,12 @@ case "$action" in
     log "skip: exit without invoking stages 2 or 3"
     exit 0
     ;;
-  code|external)
-    log "TODO: stages 2/3 not wired yet"
+  code)
+    log "TODO: stage 2 + 3 not wired yet for code"
+    exit 0
+    ;;
+  external)
+    run_stage_act
     exit 0
     ;;
   *)
