@@ -3,6 +3,7 @@
 # (for Stage 1), a diff for Stage 2, or a short act-log for Stage 3.
 set -euo pipefail
 echo "hermes $*" >> "${STUB_LOG:?STUB_LOG unset}"
+[[ -n "${HERMES_TICK_DRY_RUN:-}" ]] && echo "HERMES_TICK_DRY_RUN=${HERMES_TICK_DRY_RUN}" >> "$STUB_LOG"
 # Detect stage by inspecting --system flag value.
 for i in "$@"; do
   case "$i" in

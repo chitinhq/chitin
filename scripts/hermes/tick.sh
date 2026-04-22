@@ -10,6 +10,20 @@
 
 set -euo pipefail
 
+HERMES_TICK_DRY_RUN="${HERMES_TICK_DRY_RUN:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) HERMES_TICK_DRY_RUN=1 ;;
+    -h|--help)
+      echo "Usage: tick.sh [--dry-run]"
+      echo "  Runs one staged-tick cycle. Artifacts at \$CHITIN_SINK_ROOT/ticks/<date>/<ts>/."
+      echo "  --dry-run : Stage 3 describes tool calls without executing them (handled by prompt-act.md)."
+      exit 0
+      ;;
+  esac
+done
+export HERMES_TICK_DRY_RUN
+
 # ---- Config (env-overridable for tests) -----------------------------------
 CHITIN_SINK_ROOT="${CHITIN_SINK_ROOT:-$HOME/chitin-sink}"
 REPO_ROOT="${HERMES_TICK_REPO_ROOT:-$HOME/workspace/chitin}"

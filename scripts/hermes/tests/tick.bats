@@ -132,3 +132,14 @@ teardown() {
   run "$BATS_TEST_DIRNAME/../tick.sh"
   [ "$(cat "$streak_file")" = "0" ]
 }
+
+@test "dry-run: external action path — stage 3 invoked with HERMES_TICK_DRY_RUN=1 in env" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"external","issue_number":10,"reason":"groom","external_action":{"kind":"label","body_or_label":"hermes-autonomous","linked_issue":10}}'
+
+  run "$BATS_TEST_DIRNAME/../tick.sh" --dry-run
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  [ -f "$tick_dir/act-log.txt" ]
+  grep -q 'HERMES_TICK_DRY_RUN=1' "$STUB_LOG"
+}
