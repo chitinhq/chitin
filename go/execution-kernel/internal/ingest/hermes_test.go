@@ -181,8 +181,8 @@ func TestParseHermesEvents_DeterministicOrdering(t *testing.T) {
 	// Same input, parsed twice, must yield identical turn + quarantine
 	// ordering. Guards against map-iteration-order leaking into output.
 	raw := []byte(strings.Join([]string{
-		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:02+00:00", "kwargs": {"session_id": "s1", "api_call_count": 2, "model": "m", "usage": {"input_tokens": 5, "output_tokens": 2}, "api_duration": 0.1}}`,
-		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:01+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "m", "usage": {"input_tokens": 4, "output_tokens": 1}, "api_duration": 0.1}}`,
+		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:02+00:00", "kwargs": {"session_id": "s1", "api_call_count": 2, "model": "m", "provider": "custom", "usage": {"input_tokens": 5, "output_tokens": 2}, "api_duration": 0.1}}`,
+		`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:01+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "m", "provider": "custom", "usage": {"input_tokens": 4, "output_tokens": 1}, "api_duration": 0.1}}`,
 		`{"event_type": "on_session_start", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1"}}`,
 		`{"event_type": "pre_tool_call", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"tool_name": "t"}}`,
 		"",
@@ -224,7 +224,7 @@ func TestParseHermesEvents_ZeroPromptTokens_WinsOverAlias(t *testing.T) {
 	// Regression guard for the presence-vs-zero token-key fallback: a
 	// legitimate prompt_tokens:0 must not be overridden by a separate
 	// input_tokens alias on the same event.
-	raw := []byte(`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "api_duration": 0.1, "usage": {"prompt_tokens": 0, "input_tokens": 999, "completion_tokens": 5, "output_tokens": 999}}}` + "\n")
+	raw := []byte(`{"event_type": "post_api_request", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "m", "provider": "custom", "api_duration": 0.1, "usage": {"prompt_tokens": 0, "input_tokens": 999, "completion_tokens": 5, "output_tokens": 999}}}` + "\n")
 
 	turns, quarantined, err := ParseHermesEvents(raw)
 	if err != nil {
@@ -260,6 +260,39 @@ func TestParseHermesEvents_MissingTs_Quarantined(t *testing.T) {
 	}
 	if !strings.Contains(quarantined[0].Reason, "ts") {
 		t.Errorf("Reason should name ts, got %q", quarantined[0].Reason)
+	}
+}
+
+func TestParseHermesEvents_RequiredFieldInvariants(t *testing.T) {
+	// Mirrors openclaw.go's non-empty-provider / non-empty-model /
+	// non-negative-token invariants. Each case must quarantine with the
+	// documented reason.
+	cases := []struct {
+		fixture string
+		wantSub string
+	}{
+		{"missing_provider.jsonl", "missing_fields:provider"},
+		{"missing_model.jsonl", "missing_fields:model_name"},
+		{"negative_input_tokens.jsonl", "invalid_value:input_tokens"},
+		{"negative_api_duration.jsonl", "invalid_value:api_duration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			raw := loadHermesFixture(t, tc.fixture)
+			turns, q, err := ParseHermesEvents(raw)
+			if err != nil {
+				t.Fatalf("ParseHermesEvents: %v", err)
+			}
+			if len(turns) != 0 {
+				t.Errorf("want 0 turns, got %d", len(turns))
+			}
+			if len(q) != 1 {
+				t.Fatalf("want 1 quarantined, got %d", len(q))
+			}
+			if !strings.Contains(q[0].Reason, tc.wantSub) {
+				t.Errorf("Reason: got %q want substring %q", q[0].Reason, tc.wantSub)
+			}
+		})
 	}
 }
 

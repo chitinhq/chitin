@@ -163,16 +163,26 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 	spanHex := hermesSyntheticSpanID(sessionID, ev.Ts)
 
 	// response_model is what the LLM server actually used; prefer it over
-	// model (which keeps the `:cloud` routing suffix).
+	// model (which keeps the `:cloud` routing suffix). Non-empty required
+	// for parity with openclaw's model_turn invariant.
 	modelName, _ := getKwargString(ev.Kwargs, "response_model")
 	if modelName == "" {
 		modelName, _ = getKwargString(ev.Kwargs, "model")
 	}
+	if modelName == "" {
+		return ModelTurn{}, "missing_fields:model_name"
+	}
 
 	provider, _ := getKwargString(ev.Kwargs, "provider")
+	if provider == "" {
+		return ModelTurn{}, "missing_fields:provider"
+	}
 
 	var durationMs int64
 	if dur, ok := getKwargFloat(ev.Kwargs, "api_duration"); ok {
+		if dur < 0 {
+			return ModelTurn{}, "invalid_value:api_duration"
+		}
 		durationMs = int64(dur*1000 + 0.5)
 	}
 
@@ -201,6 +211,21 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 		} else if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
 			cacheWrite, _ = getKwargInt(details, "cache_write_tokens")
 		}
+	}
+	// Non-negative invariant — mirrors openclaw's quarantine at translation
+	// time so a buggy plugin output can't leak into a chain event that
+	// downstream validation will reject.
+	if inputTokens < 0 {
+		return ModelTurn{}, "invalid_value:input_tokens"
+	}
+	if outputTokens < 0 {
+		return ModelTurn{}, "invalid_value:output_tokens"
+	}
+	if cacheRead < 0 {
+		return ModelTurn{}, "invalid_value:cache_read_tokens"
+	}
+	if cacheWrite < 0 {
+		return ModelTurn{}, "invalid_value:cache_write_tokens"
 	}
 
 	return ModelTurn{
