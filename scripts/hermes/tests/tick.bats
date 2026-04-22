@@ -63,3 +63,44 @@ teardown() {
   ! grep -q 'prompt-code.md' "$STUB_LOG"
   ! grep -q 'qwen3-coder'     "$STUB_LOG"
 }
+
+@test "code path + ollama ok: all three stages run; diff.patch written" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix ESM import","diff_request":{"files":["apps/cli/src/telemetry/jsonl-tailer.ts"],"intent":"append .js extension"}}'
+  export STUB_HERMES_CODE_OUTPUT='--- a/apps/cli/src/telemetry/jsonl-tailer.ts
++++ b/apps/cli/src/telemetry/jsonl-tailer.ts
+@@ -1 +1 @@
+-import { foo } from "./event-parser";
++import { foo } from "./event-parser.js";'
+  export STUB_CURL_OLLAMA_OK=1
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  [ -f "$tick_dir/plan.json" ]
+  [ -f "$tick_dir/diff.patch" ]
+  [ -f "$tick_dir/act-log.txt" ]
+  [ "$(cat "$tick_dir/ollama-probe.txt")" = "ok" ]
+
+  grep -q 'prompt-plan.md' "$STUB_LOG"
+  grep -q 'prompt-code.md' "$STUB_LOG"
+  grep -q 'prompt-act.md'  "$STUB_LOG"
+  grep -q 'qwen3-coder'    "$STUB_LOG"
+}
+
+@test "code path + ollama unreachable: Stage 1 runs; Stages 2 & 3 skipped" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix ESM import","diff_request":{"files":["apps/cli/src/telemetry/jsonl-tailer.ts"],"intent":"append .js extension"}}'
+  export STUB_CURL_OLLAMA_OK=0
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  [ -f "$tick_dir/plan.json" ]
+  [ ! -f "$tick_dir/diff.patch" ]
+  [ ! -f "$tick_dir/act-log.txt" ]
+  [ "$(cat "$tick_dir/ollama-probe.txt")" = "unreachable" ]
+
+  ! grep -q 'qwen3-coder' "$STUB_LOG"
+  ! grep -q 'prompt-act.md' "$STUB_LOG"
+}
