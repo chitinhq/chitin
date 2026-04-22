@@ -1,1 +1,0 @@
-{"event_type": "post_api_request", "ts": "", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "qwen3-coder:30b", "usage": {"input_tokens": 10, "output_tokens": 5}, "api_duration": 1.0}}

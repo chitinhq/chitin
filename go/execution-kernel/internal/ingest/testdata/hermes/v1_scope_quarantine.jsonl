@@ -1,4 +1,0 @@
-{"event_type": "on_session_start", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1", "model": "qwen3-coder:30b", "platform": "telegram"}}
-{"event_type": "pre_tool_call", "ts": "2026-04-21T19:00:01+00:00", "kwargs": {"tool_name": "terminal", "args": {"cmd": "ls"}, "task_id": "t1"}}
-{"event_type": "post_tool_call", "ts": "2026-04-21T19:00:02+00:00", "kwargs": {"tool_name": "terminal", "result": "foo\nbar\n", "task_id": "t1"}}
-{"event_type": "on_session_end", "ts": "2026-04-21T19:00:03+00:00", "kwargs": {"session_id": "s1", "completed": true, "interrupted": false}}

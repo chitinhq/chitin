@@ -1,1 +1,0 @@
-{"event_type": "post_api_request", "ts": "2026-04-21T19:00:00+00:00", "kwargs": {"session_id": "s1", "api_call_count": 1, "model": "m", "provider": "custom", "api_duration": 0.1, "usage": {"input_tokens": -5, "output_tokens": 10}}}
