@@ -1,0 +1,264 @@
+package gov
+
+import (
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Policy is the merged rule set evaluated on every gate call.
+// Loaded from YAML; LoadWithInheritance merges parent chitin.yaml
+// files into a single Policy before evaluation.
+type Policy struct {
+	ID             string            `yaml:"id"`
+	Name           string            `yaml:"name,omitempty"`
+	Mode           string            `yaml:"mode,omitempty"` // monitor | enforce | guide; default guide
+	Pack           string            `yaml:"pack,omitempty"`
+	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
+	Bounds         Bounds            `yaml:"bounds,omitempty"`
+	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
+	Rules          []Rule            `yaml:"rules"`
+}
+
+// Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
+type Rule struct {
+	ID               string        `yaml:"id"`
+	Action           ActionMatcher `yaml:"action"` // single type OR list of types
+	Effect           string        `yaml:"effect"` // deny | allow
+	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
+	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
+	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
+	PathUnder        []string      `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
+	Reason           string        `yaml:"reason,omitempty"`
+	Suggestion       string        `yaml:"suggestion,omitempty"`
+	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
+	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
+
+	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
+	// validate patterns at load time (fail-closed on bad regex) rather than
+	// silently-return-false at each eval.
+	compiledRegex *regexp.Regexp `yaml:"-"`
+}
+
+// Bounds are the blast-radius ceilings checked for push-shaped actions.
+//
+// Note: MaxRuntimeSeconds was in the v1 schema but never implemented at
+// the gate layer (no reliable way to time a future action before it runs).
+// Removed from v1 to avoid giving a false sense of protection; may return
+// in v2 if we add post-action runtime tracking with a ceiling.
+type Bounds struct {
+	MaxFilesChanged int `yaml:"max_files_changed"`
+	MaxLinesChanged int `yaml:"max_lines_changed"`
+}
+
+// EscalationConfig overrides the default escalation thresholds.
+type EscalationConfig struct {
+	ElevatedThreshold  int `yaml:"elevated_threshold"`  // default 3
+	HighThreshold      int `yaml:"high_threshold"`      // default 7
+	LockdownThreshold  int `yaml:"lockdown_threshold"`  // default 10
+	MaxRetriesPerFp    int `yaml:"max_retries_per_action"` // default 3
+}
+
+// Decision is the result of evaluating an Action against a Policy.
+type Decision struct {
+	Allowed          bool   `json:"allowed"`
+	Mode             string `json:"mode"` // monitor | enforce | guide
+	RuleID           string `json:"rule_id"`
+	Reason           string `json:"reason,omitempty"`
+	Suggestion       string `json:"suggestion,omitempty"`
+	CorrectedCommand string `json:"corrected_command,omitempty"`
+	Escalation       string `json:"escalation,omitempty"` // normal | elevated | high | lockdown
+	Action           Action `json:"-"`
+	Ts               string `json:"ts"`
+}
+
+// ActionMatcher is a yaml.Unmarshaler that accepts either a single
+// action type string or a list of strings.
+type ActionMatcher []string
+
+func (a *ActionMatcher) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*a = []string{node.Value}
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		var list []string
+		if err := node.Decode(&list); err != nil {
+			return err
+		}
+		*a = list
+		return nil
+	}
+	return fmt.Errorf("action must be string or list of strings, got %v", node.Kind)
+}
+
+// Matches returns true if the given ActionType appears in the matcher.
+func (a ActionMatcher) Matches(t ActionType) bool {
+	s := string(t)
+	for _, v := range a {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadPolicyFile reads and parses a single chitin.yaml. Returns an error
+// on malformed YAML or any rule with a regex that fails to compile —
+// fail-closed at load time rather than silently-false at eval time.
+func LoadPolicyFile(path string) (Policy, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Policy{}, fmt.Errorf("read policy: %w", err)
+	}
+	var p Policy
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return Policy{}, fmt.Errorf("parse policy %s: %w", path, err)
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		return Policy{}, fmt.Errorf("validate policy %s: %w", path, err)
+	}
+	return p, nil
+}
+
+// ApplyDefaults fills in unset fields with their baseline values,
+// validates that Mode is one of {monitor,guide,enforce}, and compiles
+// every rule's TargetRegex. Returns a non-nil error on any validation
+// failure (fail-closed at load time rather than silent at eval time).
+func (p *Policy) ApplyDefaults() error {
+	if p.Mode == "" {
+		p.Mode = "guide"
+	}
+	switch p.Mode {
+	case "monitor", "guide", "enforce":
+	default:
+		return fmt.Errorf("invalid mode=%q: must be one of monitor|guide|enforce", p.Mode)
+	}
+	if p.Escalation.ElevatedThreshold == 0 {
+		p.Escalation.ElevatedThreshold = 3
+	}
+	if p.Escalation.HighThreshold == 0 {
+		p.Escalation.HighThreshold = 7
+	}
+	if p.Escalation.LockdownThreshold == 0 {
+		p.Escalation.LockdownThreshold = 10
+	}
+	if p.Escalation.MaxRetriesPerFp == 0 {
+		p.Escalation.MaxRetriesPerFp = 3
+	}
+	for i := range p.Rules {
+		if p.Rules[i].EscalationWeight == 0 {
+			p.Rules[i].EscalationWeight = 1
+		}
+		if p.Rules[i].TargetRegex != "" {
+			re, err := regexp.Compile(p.Rules[i].TargetRegex)
+			if err != nil {
+				return fmt.Errorf("rule %q: invalid target_regex: %w", p.Rules[i].ID, err)
+			}
+			p.Rules[i].compiledRegex = re
+		}
+	}
+	return nil
+}
+
+// Evaluate walks the rule list in two passes so deny precedence is
+// rule-order-independent: first pass checks all deny rules (first match
+// wins), second pass checks all allow rules (first match wins). If no
+// rule matches, fail-closed default-deny.
+//
+// This matters because a leading allow-* rule like default-allow-shell
+// must NOT override a later deny rule like no-destructive-rm. With
+// single-pass order-dependent evaluation, a permissive allow rule
+// placed early silently re-permits everything below it.
+func (p Policy) Evaluate(a Action) Decision {
+	for _, r := range p.Rules {
+		if r.Effect != "deny" || !r.matches(a) {
+			continue
+		}
+		return p.decisionFromRule(r, false, a)
+	}
+	for _, r := range p.Rules {
+		if r.Effect != "allow" || !r.matches(a) {
+			continue
+		}
+		return p.decisionFromRule(r, true, a)
+	}
+	// Fail-closed default
+	return Decision{
+		Allowed: false,
+		Mode:    p.Mode,
+		RuleID:  "default-deny",
+		Reason:  "no matching allow rule; policy default is deny",
+		Action:  a,
+	}
+}
+
+func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
+	mode := p.Mode
+	if m, ok := p.InvariantModes[r.ID]; ok {
+		mode = m
+	}
+	return Decision{
+		Allowed:          allowed,
+		Mode:             mode,
+		RuleID:           r.ID,
+		Reason:           r.Reason,
+		Suggestion:       r.Suggestion,
+		CorrectedCommand: r.CorrectedCommand,
+		Action:           a,
+	}
+}
+
+func (r Rule) matches(a Action) bool {
+	if !r.Action.Matches(a.Type) {
+		return false
+	}
+	// Branch condition: Action.Target must be in the list
+	if len(r.Branches) > 0 {
+		inList := false
+		for _, b := range r.Branches {
+			if a.Target == b {
+				inList = true
+				break
+			}
+		}
+		if !inList {
+			return false
+		}
+	}
+	// PathUnder: Action.Target must begin with one of the prefixes
+	if len(r.PathUnder) > 0 {
+		under := false
+		for _, p := range r.PathUnder {
+			if len(a.Target) >= len(p) && a.Target[:len(p)] == p {
+				under = true
+				break
+			}
+		}
+		if !under {
+			return false
+		}
+	}
+	// Target: case-sensitive substring match (renamed from containsFold —
+	// previous impl was neither case-folding nor efficient).
+	if r.Target != "" {
+		if !strings.Contains(a.Target, r.Target) {
+			return false
+		}
+	}
+	// TargetRegex: compiled at load time via ApplyDefaults; a missing
+	// compiledRegex with a non-empty TargetRegex would indicate LoadPolicyFile
+	// was bypassed, which we treat as fail-closed (don't match).
+	if r.TargetRegex != "" {
+		if r.compiledRegex == nil {
+			return false
+		}
+		if !r.compiledRegex.MatchString(a.Target) {
+			return false
+		}
+	}
+	return true
+}

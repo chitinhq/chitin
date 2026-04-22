@@ -1,0 +1,7 @@
+id: malformed
+mode: guide
+rules:
+  - id: broken
+    action:
+    effect: deny
+    target  "no colon"
