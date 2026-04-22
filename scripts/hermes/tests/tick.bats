@@ -38,13 +38,13 @@ teardown() {
   [ ! -f "$tick_dir/act-log.txt" ]
 
   # Stage 1 invoked exactly once
-  grep -c '^hermes chat --model glm-5.1:cloud' "$STUB_LOG" | grep -qx 1
+  grep -c '^hermes chat -Q --model glm-5.1:cloud' "$STUB_LOG" | grep -qx 1
 
   # Stage 2 (qwen) never invoked
   ! grep -q 'qwen3-coder' "$STUB_LOG"
 
-  # Stage 3 (prompt-act) never invoked
-  ! grep -q 'prompt-act.md' "$STUB_LOG"
+  # Stage 3 (ACT) never invoked
+  ! grep -q 'Stage 3 (ACT)' "$STUB_LOG"
 }
 
 @test "external path: Stage 1 + Stage 3 run, Stage 2 does not" {
@@ -58,9 +58,9 @@ teardown() {
   [ -f "$tick_dir/act-log.txt" ]
   [ ! -f "$tick_dir/diff.patch" ]
 
-  grep -q 'prompt-plan.md' "$STUB_LOG"
-  grep -q 'prompt-act.md'  "$STUB_LOG"
-  ! grep -q 'prompt-code.md' "$STUB_LOG"
+  grep -q 'Stage 1 (PLAN)' "$STUB_LOG"
+  grep -q 'Stage 3 (ACT)'  "$STUB_LOG"
+  ! grep -q 'Stage 2 (CODE)' "$STUB_LOG"
   ! grep -q 'qwen3-coder'     "$STUB_LOG"
 }
 
@@ -82,9 +82,9 @@ teardown() {
   [ -f "$tick_dir/act-log.txt" ]
   [ "$(cat "$tick_dir/ollama-probe.txt")" = "ok" ]
 
-  grep -q 'prompt-plan.md' "$STUB_LOG"
-  grep -q 'prompt-code.md' "$STUB_LOG"
-  grep -q 'prompt-act.md'  "$STUB_LOG"
+  grep -q 'Stage 1 (PLAN)' "$STUB_LOG"
+  grep -q 'Stage 2 (CODE)' "$STUB_LOG"
+  grep -q 'Stage 3 (ACT)'  "$STUB_LOG"
   grep -q 'qwen3-coder'    "$STUB_LOG"
 }
 
@@ -102,7 +102,7 @@ teardown() {
   [ "$(cat "$tick_dir/ollama-probe.txt")" = "unreachable" ]
 
   ! grep -q 'qwen3-coder' "$STUB_LOG"
-  ! grep -q 'prompt-act.md' "$STUB_LOG"
+  ! grep -q 'Stage 3 (ACT)' "$STUB_LOG"
 }
 
 @test "streak: counter increments on each unreachable, resets on reachable" {

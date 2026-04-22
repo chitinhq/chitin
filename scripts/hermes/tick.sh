@@ -79,8 +79,14 @@ run_stage_code() {
     fi
   done <<< "$files"
 
-  if ! hermes chat --model "$MODEL_CODE" --system "$PROMPT_CODE" \
-         --context "plan=$plan_body files=$file_dump" \
+  local stage2_prompt
+  stage2_prompt="$(cat "$PROMPT_CODE")
+
+--- CONTEXT ---
+plan=$plan_body
+
+files=$file_dump"
+  if ! hermes chat -Q --model "$MODEL_CODE" -q "$stage2_prompt" \
          > "$TICK_DIR/diff.patch" 2> "$TICK_DIR/code-stderr.txt"; then
     log "stage 2 failed (hermes non-zero)"
     return 1
@@ -100,8 +106,14 @@ run_stage_act() {
   diff_body=""
   [[ -f "$TICK_DIR/diff.patch" ]] && diff_body="$(cat "$TICK_DIR/diff.patch")"
 
-  if ! hermes chat --model "$MODEL_ACT" --system "$PROMPT_ACT" \
-         --context "plan=$plan_body diff=$diff_body" \
+  local stage3_prompt
+  stage3_prompt="$(cat "$PROMPT_ACT")
+
+--- CONTEXT ---
+plan=$plan_body
+
+diff=$diff_body"
+  if ! hermes chat -Q --model "$MODEL_ACT" -q "$stage3_prompt" \
          > "$TICK_DIR/act-log.txt" 2> "$TICK_DIR/act-stderr.txt"; then
     log "stage 3 failed (hermes non-zero)"
     return 0
@@ -128,8 +140,11 @@ log "queue captured"
 
 # ---- STAGE 1: PLAN (glm-5.1) ----------------------------------------------
 log "stage 1 (plan) starting"
-if ! hermes chat --model "$MODEL_PLAN" --system "$PROMPT_PLAN" \
-       --context "$(cat "$TICK_DIR/queue.json")" \
+stage1_prompt="$(cat "$PROMPT_PLAN")
+
+--- CONTEXT ---
+$(cat "$TICK_DIR/queue.json")"
+if ! hermes chat -Q --model "$MODEL_PLAN" -q "$stage1_prompt" \
        > "$TICK_DIR/plan.json" 2> "$TICK_DIR/plan-stderr.txt"; then
   log "stage 1 failed (hermes non-zero)"
   exit 0
