@@ -35,6 +35,8 @@ func main() {
 		cmdIngestTranscript(args)
 	case "ingest-otel":
 		cmdIngestOTEL(args)
+	case "ingest-hermes":
+		cmdIngestHermes(args)
 	case "sweep-transcripts":
 		cmdSweepTranscripts(args)
 	case "install-hook":
@@ -358,6 +360,97 @@ func cmdIngestOTEL(args []string) {
 		Index:   idx,
 	}
 	n, err := ingest.EmitModelTurns(&em, absDir, &tmpl, turns, quarantined)
+	if err != nil {
+		exitErr("emit", err.Error())
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok":          true,
+		"emitted":     n,
+		"quarantined": len(quarantined),
+	})
+	fmt.Println(string(out))
+
+	if len(quarantined) > 0 {
+		os.Exit(2)
+	}
+}
+
+// cmdIngestHermes reads a chitin-sink JSONL file and, in emit mode, produces
+// one model_turn envelope event per successfully translated post_api_request
+// line. Non-primary events and malformed lines go to
+// <dir>/hermes-quarantine/.
+//
+// Parse-only mode (no --envelope-template): prints JSON
+// {"ok":true,"turns":[...],"quarantined":[...]}. Useful for debugging.
+//
+// Emit mode (--envelope-template <file>): emits events via the transactional
+// Emitter. Exit codes mirror cmdIngestOTEL:
+//
+//	0 — all mappable events emitted, zero quarantined.
+//	2 — some events quarantined; non-quarantined events emitted durably.
+//	non-zero-other — fatal station failure.
+func cmdIngestHermes(args []string) {
+	fs := flag.NewFlagSet("ingest-hermes", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: chitin-kernel ingest-hermes --from <file.jsonl> [--envelope-template <file>] [--dir <dir>]")
+		fs.PrintDefaults()
+	}
+	from := fs.String("from", "", "path to chitin-sink JSONL file")
+	envelopeTemplateFile := fs.String("envelope-template", "", "path to JSON envelope template; if set, emits events")
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	fs.Parse(args)
+
+	if *from == "" {
+		exitErr("missing_args", "--from is required")
+	}
+	data, err := os.ReadFile(*from)
+	if err != nil {
+		exitErr("read_from", err.Error())
+	}
+	turns, quarantined, err := ingest.ParseHermesEvents(data)
+	if err != nil {
+		exitErr("parse", err.Error())
+	}
+
+	absDir, _ := filepath.Abs(*dir)
+
+	if *envelopeTemplateFile == "" {
+		out, _ := json.Marshal(map[string]any{
+			"ok":          true,
+			"turns":       turns,
+			"quarantined": quarantined,
+		})
+		fmt.Println(string(out))
+		return
+	}
+
+	if err := kstate.Init(absDir, false); err != nil {
+		exitErr("init", err.Error())
+	}
+	rawTmpl, err := os.ReadFile(*envelopeTemplateFile)
+	if err != nil {
+		exitErr("read_envelope_template", err.Error())
+	}
+	var tmpl event.Event
+	if err := json.Unmarshal(rawTmpl, &tmpl); err != nil {
+		exitErr("parse_envelope_template", err.Error())
+	}
+	if err := ingest.ValidateEnvelopeTemplate(&tmpl); err != nil {
+		exitErr("invalid_envelope_template", err.Error())
+	}
+	idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
+	if err != nil {
+		exitErr("open_index", err.Error())
+	}
+	defer idx.Close()
+	if err := idx.RebuildFromJSONL(absDir); err != nil {
+		exitErr("rebuild_index", err.Error())
+	}
+	em := emit.Emitter{
+		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
+		Index:   idx,
+	}
+	n, err := ingest.EmitHermesTurns(&em, absDir, &tmpl, turns, quarantined)
 	if err != nil {
 		exitErr("emit", err.Error())
 	}

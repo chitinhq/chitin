@@ -22,8 +22,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
 )
 
 // HermesEvent is one line in a chitin-sink JSONL stream. Kwargs is
@@ -243,6 +248,118 @@ func getKwargFloat(m map[string]interface{}, key string) (float64, bool) {
 		return float64(n), true
 	}
 	return 0, false
+}
+
+// EmitHermesTurns is the hermes-dialect analogue of EmitModelTurns. Same
+// shape: validate template, write quarantine side-cars first (crash-safety),
+// then emit one model_turn event per ModelTurn via the transactional emitter.
+// Differences from EmitModelTurns:
+//
+//   - chain_id format is "hermes:<trace>:<span>" (per-api-call), not
+//     "otel:<trace>" (per-trace). Each post_api_request is its own chain.
+//   - Labels["source"] = "hermes-plugin", Labels["dialect"] = "hermes".
+//   - Quarantines land in <dir>/hermes-quarantine/ — a sibling of the
+//     otel-quarantine dir so a mixed-dialect .chitin tree doesn't commingle.
+//
+// Returns the number of NEW events emitted (idempotent replay: a turn whose
+// chain_id already exists is skipped).
+func EmitHermesTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []ModelTurn, quarantined []Quarantine) (int, error) {
+	if err := ValidateEnvelopeTemplate(tmpl); err != nil {
+		return 0, fmt.Errorf("invalid_envelope_template: %w", err)
+	}
+	for _, q := range quarantined {
+		if err := WriteHermesQuarantine(dir, q); err != nil {
+			return 0, fmt.Errorf("write_quarantine: %w", err)
+		}
+	}
+
+	emitted := 0
+	for i, turn := range turns {
+		chainID := buildHermesChainID(turn.TraceID, turn.SpanID)
+
+		existing, err := em.Index.Get(chainID)
+		if err != nil {
+			return emitted, fmt.Errorf("index lookup for turn %d: %w", i, err)
+		}
+		if existing != nil {
+			continue
+		}
+
+		ev := cloneTemplate(tmpl)
+		ev.EventType = "model_turn"
+		ev.Ts = turn.Ts
+		ev.Surface = turn.Surface
+		ev.ChainID = chainID
+		if ev.Labels == nil {
+			ev.Labels = map[string]string{}
+		}
+		ev.Labels["source"] = "hermes-plugin"
+		ev.Labels["dialect"] = "hermes"
+
+		payload := modelTurnPayload{
+			ModelName:         turn.ModelName,
+			Provider:          turn.Provider,
+			InputTokens:       turn.InputTokens,
+			OutputTokens:      turn.OutputTokens,
+			SessionIDExternal: turn.SessionIDExternal,
+			DurationMs:        turn.DurationMs,
+			CacheReadTokens:   turn.CacheReadTokens,
+			CacheWriteTokens:  turn.CacheWriteTokens,
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return emitted, fmt.Errorf("marshal payload for turn %d: %w", i, err)
+		}
+		ev.Payload = json.RawMessage(raw)
+
+		if err := em.Emit(&ev); err != nil {
+			return emitted, fmt.Errorf("emit turn %d: %w", i, err)
+		}
+		emitted++
+	}
+	return emitted, nil
+}
+
+// WriteHermesQuarantine persists one hermes-dialect quarantine record under
+// <dir>/hermes-quarantine/<reason>-<seq>.json. Because many hermes quarantines
+// lack trace/span IDs (v1-scope events and parse_errors), filenames use a
+// monotonically-increasing sequence derived from the quarantine-dir contents
+// rather than the ID tuple openclaw uses.
+func WriteHermesQuarantine(dir string, q Quarantine) error {
+	qdir := filepath.Join(dir, "hermes-quarantine")
+	if err := os.MkdirAll(qdir, 0o755); err != nil {
+		return err
+	}
+	// Sequence: count existing files in the dir. Cheap for Phase 1.5 volumes;
+	// Phase 2 can swap to an atomic counter if throughput demands it.
+	entries, err := os.ReadDir(qdir)
+	if err != nil {
+		return err
+	}
+	seq := len(entries) + 1
+	reason := sanitizeFilename(q.Reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	span := sanitizeFilename(q.SpanName)
+	if span == "" {
+		span = "nospan"
+	}
+	name := fmt.Sprintf("%s-%s-%06d.json", reason, span, seq)
+
+	data, err := json.MarshalIndent(struct {
+		Reason   string          `json:"reason"`
+		SpanName string          `json:"span_name"`
+		SpanRaw  json.RawMessage `json:"span_raw"`
+	}{
+		Reason:   q.Reason,
+		SpanName: q.SpanName,
+		SpanRaw:  q.SpanRaw,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(qdir, name), data, 0o644)
 }
 
 // buildHermesChainID mirrors the tripartite shape SP-2 adopted for OTEL
