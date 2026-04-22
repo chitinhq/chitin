@@ -1,7 +1,7 @@
 id: chitin-governance-baseline
 name: Chitin v2 baseline governance
 description: Block classes of actions that the 2026-04-21 hermes autonomy incident demonstrated were dangerous.
-mode: guide
+mode: enforce
 
 bounds:
   max_files_changed: 25
