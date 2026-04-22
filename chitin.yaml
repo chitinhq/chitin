@@ -1,0 +1,114 @@
+id: chitin-governance-baseline
+name: Chitin v2 baseline governance
+description: Block classes of actions that the 2026-04-21 hermes autonomy incident demonstrated were dangerous.
+mode: guide
+
+bounds:
+  max_files_changed: 25
+  max_lines_changed: 500
+  max_runtime_seconds: 900
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-protected-push: guide
+  no-env-file-write: enforce
+
+rules:
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked — use targeted file operations"
+    suggestion: "Use git rm <specific-files>, or rm <specific-file>. Mass deletion requires human review."
+    correctedCommand: "git rm <specific-files>"
+
+  - id: no-destructive-rm-via-execute-code
+    action: shell.exec
+    effect: deny
+    target_regex: '(?:subprocess\.(?:run|call|Popen|check_call|check_output)\([[:space:]]*\[[[:space:]]*[''"]rm[''"],[[:space:]]*[''"]-rf?[''"])|(?:shutil\.rmtree)'
+    reason: "Recursive delete via execute_code subprocess is blocked"
+    suggestion: "This rule fires on the normalized action, catching execute_code bypass attempts."
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master]
+    reason: "Direct push to protected branch"
+    suggestion: "Push to a feature branch and open a pull request"
+    correctedCommand: "git push origin HEAD:fix/<issue>-<slug>"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target: ".env"
+    reason: "Secrets files must not be modified by agents"
+
+  - id: no-governance-self-modification
+    action: file.write
+    effect: deny
+    target_regex: '(?:^chitin\.yaml$|^\.chitin/|^\.hermes/plugins/chitin-governance/)'
+    reason: "Agents may not modify their own governance policy or plugin"
+    escalation_weight: 2
+
+  - id: default-allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are always safe"
+
+  - id: default-allow-git-read
+    action: [git.diff, git.log, git.status, git.worktree.list]
+    effect: allow
+    reason: "Git read operations are always safe"
+
+  - id: default-allow-github-read
+    action: [github.issue.list, github.issue.view, github.pr.list, github.pr.view, github.api]
+    effect: allow
+    reason: "GitHub read-only operations allowed"
+
+  - id: default-allow-github-write
+    action: [github.issue.create, github.issue.close, github.pr.create, github.pr.close]
+    effect: allow
+    reason: "GitHub state-changing operations allowed (bounds still apply to pr.create)"
+
+  - id: default-allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.branch.delete, git.merge, git.worktree.add, git.worktree.remove]
+    effect: allow
+    reason: "Non-push git operations allowed"
+
+  - id: default-allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Push to non-protected branches (bounds still apply)"
+
+  - id: default-allow-tests
+    action: [test.run]
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: default-allow-delegate
+    action: delegate.task
+    effect: allow
+    reason: "Delegation to subagents allowed"
+
+  - id: default-allow-http
+    action: http.request
+    effect: allow
+    reason: "HTTP requests allowed"
+
+  - id: default-allow-mcp
+    action: mcp.call
+    effect: allow
+    reason: "MCP tool invocations allowed"
