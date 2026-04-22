@@ -84,10 +84,11 @@ func TestParseHermesEvents_MalformedLineQuarantined(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseHermesEvents: %v", err)
 	}
-	// One malformed line should appear as parse_error. The two valid
-	// post_api_request lines — task 8 leaves them as "not_yet_implemented"
-	// quarantine; task 9 turns them into ModelTurns. We only assert the
-	// malformed one here so this test stays green across both tasks.
+	// The malformed line should be quarantined as parse_error; this test
+	// focuses on that quarantine behavior and verifies the original line is
+	// preserved in SpanRaw. The other two post_api_request lines are valid
+	// and get parsed into ModelTurns — not asserted here because that's the
+	// happy-path tests' job.
 	var parseErrors []Quarantine
 	for _, q := range quarantined {
 		if q.Reason == "parse_error" {
@@ -133,6 +134,9 @@ func TestParseHermesEvents_HappyPath(t *testing.T) {
 	}
 	if mt.CacheReadTokens != 128 {
 		t.Errorf("CacheReadTokens: got %d want 128 (top-level usage.cache_read_tokens)", mt.CacheReadTokens)
+	}
+	if mt.CacheWriteTokens != 16 {
+		t.Errorf("CacheWriteTokens: got %d want 16 (top-level usage.cache_write_tokens)", mt.CacheWriteTokens)
 	}
 	if mt.SessionIDExternal != "s1" {
 		t.Errorf("SessionIDExternal: got %q", mt.SessionIDExternal)
@@ -213,6 +217,25 @@ func TestParseHermesEvents_DeterministicOrdering(t *testing.T) {
 		if quarA[i].SpanName != quarB[i].SpanName {
 			t.Errorf("quar %d name diverges: A=%q B=%q", i, quarA[i].SpanName, quarB[i].SpanName)
 		}
+	}
+}
+
+func TestParseHermesEvents_MissingTs_Quarantined(t *testing.T) {
+	// ts drives the span ID — without it, all calls in a session would
+	// collide on chain_id. Required-field check must reject.
+	raw := loadHermesFixture(t, "missing_ts.jsonl")
+	turns, quarantined, err := ParseHermesEvents(raw)
+	if err != nil {
+		t.Fatalf("ParseHermesEvents: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("want 0 turns, got %d", len(turns))
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("want 1 quarantined, got %d", len(quarantined))
+	}
+	if !strings.Contains(quarantined[0].Reason, "ts") {
+		t.Errorf("Reason should name ts, got %q", quarantined[0].Reason)
 	}
 }
 

@@ -136,7 +136,7 @@ func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
 //     future OpenAI-compat variant.
 func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 	sessionID, sOK := getKwargString(ev.Kwargs, "session_id")
-	callCount, cOK := getKwargInt(ev.Kwargs, "api_call_count")
+	_, cOK := getKwargInt(ev.Kwargs, "api_call_count")
 
 	var missing []string
 	if !sOK || sessionID == "" {
@@ -145,14 +145,20 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 	if !cOK {
 		missing = append(missing, "api_call_count")
 	}
+	// ts is carried on the event line (not in kwargs) and drives the span
+	// ID — without it, all calls in a session collide. Enforce it here so
+	// a malformed plugin writer cannot silently break dedup/idempotency.
+	if ev.Ts == "" {
+		missing = append(missing, "ts")
+	}
 	if len(missing) > 0 {
 		return ModelTurn{}, "missing_fields:" + strings.Join(missing, ",")
 	}
 
-	// callCount is validated above but only used for the missing-fields
-	// check. The ts from the event line carries the uniqueness that
-	// api_call_count appeared to promise but does not deliver in practice.
-	_ = callCount
+	// api_call_count is required as a malformed-output signal but is not
+	// part of the span-ID input — the hermes counter resets across turns,
+	// so it is not unique within a session (see the Phase B observation
+	// doc). ev.Ts is microsecond-resolution and unique per call.
 	traceHex := hermesSyntheticTraceID(sessionID)
 	spanHex := hermesSyntheticSpanID(sessionID, ev.Ts)
 
@@ -170,7 +176,7 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 		durationMs = int64(dur*1000 + 0.5)
 	}
 
-	var inputTokens, outputTokens, cacheRead int64
+	var inputTokens, outputTokens, cacheRead, cacheWrite int64
 	if usage, ok := ev.Kwargs["usage"].(map[string]interface{}); ok && usage != nil {
 		inputTokens, _ = getKwargInt(usage, "prompt_tokens")
 		if inputTokens == 0 {
@@ -184,6 +190,12 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 		if cacheRead == 0 {
 			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
 				cacheRead, _ = getKwargInt(details, "cached_tokens")
+			}
+		}
+		cacheWrite, _ = getKwargInt(usage, "cache_write_tokens")
+		if cacheWrite == 0 {
+			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok && details != nil {
+				cacheWrite, _ = getKwargInt(details, "cache_write_tokens")
 			}
 		}
 	}
@@ -200,6 +212,7 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 		SessionIDExternal: sessionID,
 		DurationMs:        durationMs,
 		CacheReadTokens:   cacheRead,
+		CacheWriteTokens:  cacheWrite,
 	}, ""
 }
 
@@ -325,22 +338,19 @@ func EmitHermesTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mo
 }
 
 // WriteHermesQuarantine persists one hermes-dialect quarantine record under
-// <dir>/hermes-quarantine/<reason>-<seq>.json. Because many hermes quarantines
-// lack trace/span IDs (v1-scope events and parse_errors), filenames use a
-// monotonically-increasing sequence derived from the quarantine-dir contents
-// rather than the ID tuple openclaw uses.
+// <dir>/hermes-quarantine/<reason>-<span_name>-<raw-sha256-prefix>.json.
+//
+// Hermes quarantines typically lack trace/span IDs (v1-scope events and
+// parse_errors carry neither), so the filename-uniqueness input is a
+// sha256 prefix of SpanRaw. This makes replays idempotent: the same
+// byte-identical line overwrites its own file rather than creating
+// monotonically-numbered duplicates that would grow the dir unbounded
+// across re-ingests.
 func WriteHermesQuarantine(dir string, q Quarantine) error {
 	qdir := filepath.Join(dir, "hermes-quarantine")
 	if err := os.MkdirAll(qdir, 0o755); err != nil {
 		return err
 	}
-	// Sequence: count existing files in the dir. Cheap for Phase 1.5 volumes;
-	// Phase 2 can swap to an atomic counter if throughput demands it.
-	entries, err := os.ReadDir(qdir)
-	if err != nil {
-		return err
-	}
-	seq := len(entries) + 1
 	reason := sanitizeFilename(q.Reason)
 	if reason == "" {
 		reason = "unknown"
@@ -349,7 +359,9 @@ func WriteHermesQuarantine(dir string, q Quarantine) error {
 	if span == "" {
 		span = "nospan"
 	}
-	name := fmt.Sprintf("%s-%s-%06d.json", reason, span, seq)
+	sum := sha256.Sum256(q.SpanRaw)
+	rawHash := hex.EncodeToString(sum[:8])
+	name := fmt.Sprintf("%s-%s-%s.json", reason, span, rawHash)
 
 	data, err := json.MarshalIndent(struct {
 		Reason   string          `json:"reason"`
@@ -368,9 +380,9 @@ func WriteHermesQuarantine(dir string, q Quarantine) error {
 
 // buildHermesChainID mirrors the tripartite shape SP-2 adopted for OTEL
 // ingest ("otel:<trace>:<span>"), with "hermes:" as an honest-about-source
-// prefix. The chain_id is deterministic from (session_id, api_call_count)
-// via the synthetic-ID helpers below — so re-ingest of the same JSONL is
-// idempotent at the emit layer.
+// prefix. The chain_id is deterministic from the synthetic trace/span IDs
+// below: trace from session_id, and span from (session_id, ts). Re-ingest
+// of the same JSONL is therefore idempotent at the emit layer.
 func buildHermesChainID(traceHex, spanHex string) string {
 	return "hermes:" + traceHex + ":" + spanHex
 }

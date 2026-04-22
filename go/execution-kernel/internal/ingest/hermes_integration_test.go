@@ -133,6 +133,15 @@ func TestEmitHermesTurns_Idempotent(t *testing.T) {
 	if len(lines) != 22 {
 		t.Errorf("JSONL should still have 22 lines after idempotent replay, has %d", len(lines))
 	}
+	// Quarantine dir must not grow across replays — sha256-named files
+	// overwrite rather than accumulating. 59 before, 59 after.
+	entries, err := os.ReadDir(filepath.Join(dir, "hermes-quarantine"))
+	if err != nil {
+		t.Fatalf("read hermes-quarantine dir: %v", err)
+	}
+	if len(entries) != 59 {
+		t.Errorf("hermes-quarantine should stay at 59 files after replay, has %d", len(entries))
+	}
 }
 
 func TestEmitHermesTurns_BadTemplateMissingRunID(t *testing.T) {
