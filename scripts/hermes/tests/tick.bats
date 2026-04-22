@@ -46,3 +46,20 @@ teardown() {
   # Stage 3 (prompt-act) never invoked
   ! grep -q 'prompt-act.md' "$STUB_LOG"
 }
+
+@test "external path: Stage 1 + Stage 3 run, Stage 2 does not" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"external","issue_number":10,"reason":"groom","external_action":{"kind":"label","body_or_label":"hermes-autonomous","linked_issue":10}}'
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  [ -f "$tick_dir/plan.json" ]
+  [ -f "$tick_dir/act-log.txt" ]
+  [ ! -f "$tick_dir/diff.patch" ]
+
+  grep -q 'prompt-plan.md' "$STUB_LOG"
+  grep -q 'prompt-act.md'  "$STUB_LOG"
+  ! grep -q 'prompt-code.md' "$STUB_LOG"
+  ! grep -q 'qwen3-coder'     "$STUB_LOG"
+}
