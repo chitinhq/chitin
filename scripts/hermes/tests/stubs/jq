@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Real jq — the schema-validation path relies on its actual behavior.
+exec /usr/bin/jq "$@"

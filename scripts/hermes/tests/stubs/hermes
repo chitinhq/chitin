@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Logs the invocation, emits a plan per the test's STUB_HERMES_PLAN_OUTPUT
+# (for Stage 1), a diff for Stage 2, or a short act-log for Stage 3.
+set -euo pipefail
+echo "hermes $*" >> "${STUB_LOG:?STUB_LOG unset}"
+# Detect stage by inspecting --system flag value.
+for i in "$@"; do
+  case "$i" in
+    *prompt-plan.md) echo "${STUB_HERMES_PLAN_OUTPUT:-{}}"; exit 0 ;;
+    *prompt-code.md) echo "${STUB_HERMES_CODE_OUTPUT:-}"; exit 0 ;;
+    *prompt-act.md)  echo "${STUB_HERMES_ACT_OUTPUT:-ok}"; exit 0 ;;
+  esac
+done
+exit 0
