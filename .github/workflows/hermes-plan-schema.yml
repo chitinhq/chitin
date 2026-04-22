@@ -1,0 +1,28 @@
+name: hermes-plan-schema
+
+on:
+  push:
+    paths:
+      - 'scripts/hermes/plan-schema.json'
+      - 'scripts/hermes/tests/fixtures/**'
+      - 'scripts/hermes/tests/validate-plans.sh'
+      - '.github/workflows/hermes-plan-schema.yml'
+  pull_request:
+    paths:
+      - 'scripts/hermes/plan-schema.json'
+      - 'scripts/hermes/tests/fixtures/**'
+      - 'scripts/hermes/tests/validate-plans.sh'
+      - '.github/workflows/hermes-plan-schema.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install ajv-cli
+        run: npm install -g ajv-cli
+      - name: Validate fixtures
+        run: bash scripts/hermes/tests/validate-plans.sh
