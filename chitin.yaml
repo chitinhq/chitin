@@ -112,3 +112,23 @@ rules:
     action: mcp.call
     effect: allow
     reason: "MCP tool invocations allowed"
+
+  - id: default-allow-shell
+    action: shell.exec
+    effect: allow
+    reason: "Shell commands allowed by default (specific dangerous patterns denied above)"
+
+  - id: default-allow-file-write
+    action: file.write
+    effect: allow
+    reason: "File writes allowed by default (secrets + governance self-mod denied above)"
+
+  - id: default-allow-file-delete
+    action: file.delete
+    effect: allow
+    reason: "Single-file deletes allowed (mass recursive delete via rm -rf denied above)"
+
+  - id: default-allow-unknown
+    action: unknown
+    effect: allow
+    reason: "Unknown tools allowed in v1 — too restrictive to default-deny; tighten in v2 once vocabulary is stable"
