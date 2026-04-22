@@ -93,3 +93,18 @@ usage shape. Real hermes v0.10.0 emits a richer, native-hermes shape:
 (`20260421_194524_bf44f6`). Hermes appears to use the session timestamp ID as
 both task and session identifier for CLI sessions. Translator stays robust by
 reading `session_id` as authoritative for trace derivation (per spec).
+
+## api_call_count is per-turn, not per-session
+
+The design spec's `hermesSyntheticSpanID(session_id, api_call_count)` assumed
+`api_call_count` is a monotonically-increasing counter across a session. The
+real capture disproves this: 8 distinct LLM calls within session
+`20260421_194524_bf44f6` (different timestamps, token counts, finish reasons)
+**all have `api_call_count: 1`**. The counter resets on turn boundaries
+rather than accumulating for the session.
+
+Fix: the translator now derives the span ID from `(session_id, ts)` — the
+plugin's `ts` field is microsecond-resolution ISO UTC, unique per
+post_api_request line. `api_call_count` is still required for the
+missing-fields quarantine check (it signals malformed plugin output), but is
+no longer part of the span-ID input.

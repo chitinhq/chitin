@@ -149,8 +149,12 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 		return ModelTurn{}, "missing_fields:" + strings.Join(missing, ",")
 	}
 
+	// callCount is validated above but only used for the missing-fields
+	// check. The ts from the event line carries the uniqueness that
+	// api_call_count appeared to promise but does not deliver in practice.
+	_ = callCount
 	traceHex := hermesSyntheticTraceID(sessionID)
-	spanHex := hermesSyntheticSpanID(sessionID, callCount)
+	spanHex := hermesSyntheticSpanID(sessionID, ev.Ts)
 
 	// response_model is what the LLM server actually used; prefer it over
 	// model (which keeps the `:cloud` routing suffix).
@@ -381,10 +385,17 @@ func hermesSyntheticTraceID(sessionID string) string {
 }
 
 // hermesSyntheticSpanID derives a deterministic 64-bit (16 hex char) span
-// ID from (session_id, api_call_count). Unique per API call within a
-// session; stable across re-ingests of the same JSONL.
-func hermesSyntheticSpanID(sessionID string, apiCallCount int64) string {
-	key := fmt.Sprintf("hermes-span:%s:%d", sessionID, apiCallCount)
+// ID from (session_id, ts). Unique per API call within a session; stable
+// across re-ingests of the same JSONL.
+//
+// The design spec originally proposed (session_id, api_call_count) as the
+// span key. The 2026-04-21 real capture showed that api_call_count resets
+// to 1 across turns within a session (8 distinct calls share call=1 in one
+// session). Timestamps are microsecond-resolution and unique per post_api_request
+// line, so they are the stable disambiguator. See
+// docs/observations/2026-04-21-hermes-post-api-request-capture.md.
+func hermesSyntheticSpanID(sessionID, ts string) string {
+	key := "hermes-span:" + sessionID + ":" + ts
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:8])
 }

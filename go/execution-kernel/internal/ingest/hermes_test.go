@@ -36,18 +36,21 @@ func TestHermesSyntheticIDs_DeterministicFromSessionAndCall(t *testing.T) {
 		t.Fatalf("trace ID should be 32 hex chars (128 bits); got len=%d", len(trace1))
 	}
 
-	span1 := hermesSyntheticSpanID("session-abc", 1)
-	span2 := hermesSyntheticSpanID("session-abc", 1)
-	if span1 != span2 {
-		t.Fatalf("span IDs should be deterministic; got %q vs %q", span1, span2)
+	const ts1 = "2026-04-21T23:45:37.556922+00:00"
+	const ts2 = "2026-04-21T23:45:59.645480+00:00"
+
+	span1 := hermesSyntheticSpanID("session-abc", ts1)
+	span1Again := hermesSyntheticSpanID("session-abc", ts1)
+	if span1 != span1Again {
+		t.Fatalf("span IDs should be deterministic; got %q vs %q", span1, span1Again)
 	}
 	if len(span1) != 16 {
 		t.Fatalf("span ID should be 16 hex chars (64 bits); got len=%d", len(span1))
 	}
 
-	spanCall2 := hermesSyntheticSpanID("session-abc", 2)
-	if span1 == spanCall2 {
-		t.Fatalf("different api_call_count should give different span IDs")
+	spanOtherTs := hermesSyntheticSpanID("session-abc", ts2)
+	if span1 == spanOtherTs {
+		t.Fatalf("different ts should give different span IDs")
 	}
 
 	traceOther := hermesSyntheticTraceID("session-xyz")
@@ -141,7 +144,7 @@ func TestParseHermesEvents_HappyPath(t *testing.T) {
 		t.Errorf("Ts: got %q (line-level ts passthrough)", mt.Ts)
 	}
 	wantTrace := hermesSyntheticTraceID("s1")
-	wantSpan := hermesSyntheticSpanID("s1", 1)
+	wantSpan := hermesSyntheticSpanID("s1", "2026-04-21T19:00:00+00:00")
 	if mt.TraceID != wantTrace {
 		t.Errorf("TraceID: got %q want %q", mt.TraceID, wantTrace)
 	}
