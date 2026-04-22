@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Command } from 'commander';
 
@@ -7,6 +7,38 @@ interface InstallOpts {
   surface: string;
   global: boolean;
   adapter?: string;
+  adapterShell?: boolean;
+}
+
+const SHELL_METACHAR_RE = /[;&|`\x60$()\n\r]/;
+
+/** Returns true if `s` contains shell metacharacters that could enable
+ *  command injection when the string is later passed to a shell. */
+export function hasShellMetacharacters(s: string): boolean {
+  return SHELL_METACHAR_RE.test(s);
+}
+
+/** Validates that `adapter` is an absolute path to an existing executable,
+ *  and contains no shell metacharacters. Throws on failure. */
+export function validateAdapterPath(adapter: string): void {
+  if (!adapter) {
+    throw new Error('adapter path cannot be empty');
+  }
+  if (!adapter.startsWith('/')) {
+    throw new Error(`adapter path must be absolute, got: ${adapter}`);
+  }
+  if (hasShellMetacharacters(adapter)) {
+    throw new Error(
+      `adapter path contains shell metacharacters; use --adapter-shell if you intend a shell command: ${adapter}`,
+    );
+  }
+  if (!existsSync(adapter)) {
+    throw new Error(`adapter path does not exist: ${adapter}`);
+  }
+  const stat = statSync(adapter);
+  if ((stat.mode & 0o111) === 0) {
+    throw new Error(`adapter file is not executable: ${adapter}`);
+  }
 }
 
 export function registerInstall(program: Command): void {
@@ -17,15 +49,38 @@ export function registerInstall(program: Command): void {
     .option('--global', 'install user-level (always-on)', false)
     .option(
       '--adapter <path>',
-      'adapter invocation command; defaults to $CHITIN_ADAPTER_BINARY',
+      'adapter binary path (must be absolute path to executable; use --adapter-shell for shell commands)',
+    )
+    .option(
+      '--adapter-shell',
+      'allow shell command string for adapter (security: trust-on-use)',
+      false,
     )
     .action((opts: InstallOpts) => {
       const kernelBin = process.env.CHITIN_KERNEL_BINARY ?? 'chitin-kernel';
       const adapter = opts.adapter ?? process.env.CHITIN_ADAPTER_BINARY ?? '';
 
+      if (adapter) {
+        if (opts.adapterShell) {
+          console.error(
+            'WARNING: --adapter-shell skips path validation. The adapter string will be invoked via shell semantics on every hook.',
+          );
+        } else {
+          try {
+            validateAdapterPath(adapter);
+          } catch (err: unknown) {
+            console.error(`error: ${(err as Error).message}`);
+            process.exit(1);
+          }
+        }
+      }
+
       const args = ['install', '--surface', opts.surface];
       if (opts.global) args.push('--global');
-      if (adapter) args.push('--adapter', adapter);
+      if (adapter) {
+        args.push('--adapter', adapter);
+        if (opts.adapterShell) args.push('--adapter-shell');
+      }
 
       const res = spawnSync(kernelBin, args, { stdio: 'inherit' });
       if (res.status !== 0) process.exit(res.status ?? 3);
