@@ -1,0 +1,10 @@
+{
+  "action": "external",
+  "issue_number": 10,
+  "reason": "promote small, clear-scope issue to the autonomous queue",
+  "external_action": {
+    "kind": "label",
+    "body_or_label": "hermes-autonomous",
+    "linked_issue": 10
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chitinhq/chitin/scripts/hermes/plan-schema.json",
+  "title": "Hermes staged-tick plan",
+  "type": "object",
+  "required": ["action", "issue_number", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["skip", "code", "external"]
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "diff_request": {
+      "type": "object",
+      "required": ["files", "intent"],
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "maxItems": 20
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    },
+    "external_action": {
+      "type": "object",
+      "required": ["kind", "body_or_label", "linked_issue"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["comment", "label", "pr_open"]
+        },
+        "body_or_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "linked_issue": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if":  { "properties": { "action": { "const": "code" } } },
+      "then": { "required": ["diff_request"] }
+    },
+    {
+      "if":  { "properties": { "action": { "const": "external" } } },
+      "then": { "required": ["external_action"] }
+    }
+  ]
+}

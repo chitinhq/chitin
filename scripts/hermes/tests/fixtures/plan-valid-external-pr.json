@@ -1,0 +1,10 @@
+{
+  "action": "external",
+  "issue_number": 10,
+  "reason": "open PR for previously-implemented diff",
+  "external_action": {
+    "kind": "pr_open",
+    "body_or_label": "fix: add .js extension for ESM import\n\nCloses #10",
+    "linked_issue": 10
+  }
+}
