@@ -104,3 +104,31 @@ teardown() {
   ! grep -q 'qwen3-coder' "$STUB_LOG"
   ! grep -q 'prompt-act.md' "$STUB_LOG"
 }
+
+@test "streak: counter increments on each unreachable, resets on reachable" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix","diff_request":{"files":["x.ts"],"intent":"fix"}}'
+  streak_file="$CHITIN_SINK_ROOT/ollama-unreachable-streak.txt"
+
+  # Run 1 — unreachable
+  export STUB_CURL_OLLAMA_OK=0
+  export HERMES_TICK_TS="20260422T000000Z"
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$streak_file")" = "1" ]
+
+  # Run 2 — unreachable
+  export HERMES_TICK_TS="20260422T001000Z"
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$(cat "$streak_file")" = "2" ]
+
+  # Run 3 — unreachable
+  export HERMES_TICK_TS="20260422T002000Z"
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$(cat "$streak_file")" = "3" ]
+
+  # Run 4 — reachable → reset
+  export STUB_CURL_OLLAMA_OK=1
+  export HERMES_TICK_TS="20260422T003000Z"
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$(cat "$streak_file")" = "0" ]
+}
