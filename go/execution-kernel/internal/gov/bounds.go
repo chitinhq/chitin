@@ -64,19 +64,31 @@ func evaluateBoundsFromStats(a Action, p Policy, files, ins, del int) Decision {
 }
 
 func collectDiffStats(cwd string) (files, ins, del int, err error) {
-	// Use origin/main...HEAD (three dots = merge-base diff, matches what
-	// would become the PR diff). Fall back to HEAD~1 if origin/main absent.
+	// origin/main...HEAD (three dots = merge-base diff, matches what the PR
+	// diff would be). If origin/main isn't available (detached HEAD, no
+	// remote), fail-closed upstream treats bounds:undetermined as a deny.
+	// No silent HEAD~1 fallback: a single-commit diff doesn't tell us the
+	// PR-level blast radius, and getting bounds wrong in the permissive
+	// direction defeats the point.
 	cmd := exec.Command("git", "-C", cwd, "diff", "--stat", "origin/main...HEAD")
 	out, runErr := cmd.Output()
 	if runErr != nil {
 		return 0, 0, 0, fmt.Errorf("git diff --stat origin/main...HEAD: %w", runErr)
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		// Empty diff (no changes vs. base). All zeros pass bounds.
 		return 0, 0, 0, nil
 	}
+	lines := strings.Split(trimmed, "\n")
 	last := lines[len(lines)-1]
 	f, ip, dp := parseDiffStatLine(last)
+	// Non-empty output but the summary line didn't match the expected
+	// shape — fail-closed rather than let bounds silently pass on
+	// unparseable input.
+	if f == 0 && ip == 0 && dp == 0 && !strings.Contains(last, "files changed") && !strings.Contains(last, "file changed") {
+		return 0, 0, 0, fmt.Errorf("unparseable git diff --stat summary: %q", last)
+	}
 	return f, ip, dp, nil
 }
 

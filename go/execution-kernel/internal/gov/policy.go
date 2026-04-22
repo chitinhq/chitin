@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,13 +36,22 @@ type Rule struct {
 	Suggestion       string        `yaml:"suggestion,omitempty"`
 	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
 	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
+
+	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
+	// validate patterns at load time (fail-closed on bad regex) rather than
+	// silently-return-false at each eval.
+	compiledRegex *regexp.Regexp `yaml:"-"`
 }
 
 // Bounds are the blast-radius ceilings checked for push-shaped actions.
+//
+// Note: MaxRuntimeSeconds was in the v1 schema but never implemented at
+// the gate layer (no reliable way to time a future action before it runs).
+// Removed from v1 to avoid giving a false sense of protection; may return
+// in v2 if we add post-action runtime tracking with a ceiling.
 type Bounds struct {
-	MaxFilesChanged   int `yaml:"max_files_changed"`
-	MaxLinesChanged   int `yaml:"max_lines_changed"`
-	MaxRuntimeSeconds int `yaml:"max_runtime_seconds"`
+	MaxFilesChanged int `yaml:"max_files_changed"`
+	MaxLinesChanged int `yaml:"max_lines_changed"`
 }
 
 // EscalationConfig overrides the default escalation thresholds.
@@ -96,7 +106,9 @@ func (a ActionMatcher) Matches(t ActionType) bool {
 	return false
 }
 
-// LoadPolicyFile reads and parses a single chitin.yaml.
+// LoadPolicyFile reads and parses a single chitin.yaml. Returns an error
+// on malformed YAML or any rule with a regex that fails to compile —
+// fail-closed at load time rather than silently-false at eval time.
 func LoadPolicyFile(path string) (Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -106,14 +118,24 @@ func LoadPolicyFile(path string) (Policy, error) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return Policy{}, fmt.Errorf("parse policy %s: %w", path, err)
 	}
-	p.ApplyDefaults()
+	if err := p.ApplyDefaults(); err != nil {
+		return Policy{}, fmt.Errorf("validate policy %s: %w", path, err)
+	}
 	return p, nil
 }
 
-// ApplyDefaults fills in unset fields with their baseline values.
-func (p *Policy) ApplyDefaults() {
+// ApplyDefaults fills in unset fields with their baseline values,
+// validates that Mode is one of {monitor,guide,enforce}, and compiles
+// every rule's TargetRegex. Returns a non-nil error on any validation
+// failure (fail-closed at load time rather than silent at eval time).
+func (p *Policy) ApplyDefaults() error {
 	if p.Mode == "" {
 		p.Mode = "guide"
+	}
+	switch p.Mode {
+	case "monitor", "guide", "enforce":
+	default:
+		return fmt.Errorf("invalid mode=%q: must be one of monitor|guide|enforce", p.Mode)
 	}
 	if p.Escalation.ElevatedThreshold == 0 {
 		p.Escalation.ElevatedThreshold = 3
@@ -131,28 +153,38 @@ func (p *Policy) ApplyDefaults() {
 		if p.Rules[i].EscalationWeight == 0 {
 			p.Rules[i].EscalationWeight = 1
 		}
+		if p.Rules[i].TargetRegex != "" {
+			re, err := regexp.Compile(p.Rules[i].TargetRegex)
+			if err != nil {
+				return fmt.Errorf("rule %q: invalid target_regex: %w", p.Rules[i].ID, err)
+			}
+			p.Rules[i].compiledRegex = re
+		}
 	}
+	return nil
 }
 
-// Evaluate walks the rule list top-to-bottom. First deny match wins;
-// otherwise first allow match; otherwise default deny (fail-closed).
+// Evaluate walks the rule list in two passes so deny precedence is
+// rule-order-independent: first pass checks all deny rules (first match
+// wins), second pass checks all allow rules (first match wins). If no
+// rule matches, fail-closed default-deny.
+//
+// This matters because a leading allow-* rule like default-allow-shell
+// must NOT override a later deny rule like no-destructive-rm. With
+// single-pass order-dependent evaluation, a permissive allow rule
+// placed early silently re-permits everything below it.
 func (p Policy) Evaluate(a Action) Decision {
 	for _, r := range p.Rules {
-		if r.matches(a) {
-			mode := p.Mode
-			if m, ok := p.InvariantModes[r.ID]; ok {
-				mode = m
-			}
-			return Decision{
-				Allowed:          r.Effect == "allow",
-				Mode:             mode,
-				RuleID:           r.ID,
-				Reason:           r.Reason,
-				Suggestion:       r.Suggestion,
-				CorrectedCommand: r.CorrectedCommand,
-				Action:           a,
-			}
+		if r.Effect != "deny" || !r.matches(a) {
+			continue
 		}
+		return p.decisionFromRule(r, false, a)
+	}
+	for _, r := range p.Rules {
+		if r.Effect != "allow" || !r.matches(a) {
+			continue
+		}
+		return p.decisionFromRule(r, true, a)
 	}
 	// Fail-closed default
 	return Decision{
@@ -161,6 +193,22 @@ func (p Policy) Evaluate(a Action) Decision {
 		RuleID:  "default-deny",
 		Reason:  "no matching allow rule; policy default is deny",
 		Action:  a,
+	}
+}
+
+func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
+	mode := p.Mode
+	if m, ok := p.InvariantModes[r.ID]; ok {
+		mode = m
+	}
+	return Decision{
+		Allowed:          allowed,
+		Mode:             mode,
+		RuleID:           r.ID,
+		Reason:           r.Reason,
+		Suggestion:       r.Suggestion,
+		CorrectedCommand: r.CorrectedCommand,
+		Action:           a,
 	}
 }
 
@@ -194,25 +242,23 @@ func (r Rule) matches(a Action) bool {
 			return false
 		}
 	}
-	// Target substring
+	// Target: case-sensitive substring match (renamed from containsFold —
+	// previous impl was neither case-folding nor efficient).
 	if r.Target != "" {
-		if !containsFold(a.Target, r.Target) {
+		if !strings.Contains(a.Target, r.Target) {
 			return false
 		}
 	}
-	// TargetRegex
+	// TargetRegex: compiled at load time via ApplyDefaults; a missing
+	// compiledRegex with a non-empty TargetRegex would indicate LoadPolicyFile
+	// was bypassed, which we treat as fail-closed (don't match).
 	if r.TargetRegex != "" {
-		re, err := regexp.Compile(r.TargetRegex)
-		if err != nil {
+		if r.compiledRegex == nil {
 			return false
 		}
-		if !re.MatchString(a.Target) {
+		if !r.compiledRegex.MatchString(a.Target) {
 			return false
 		}
 	}
 	return true
-}
-
-func containsFold(haystack, needle string) bool {
-	return regexp.MustCompile(regexp.QuoteMeta(needle)).MatchString(haystack)
 }

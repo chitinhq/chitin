@@ -6,7 +6,6 @@ mode: enforce
 bounds:
   max_files_changed: 25
   max_lines_changed: 500
-  max_runtime_seconds: 900
 
 escalation:
   elevated_threshold: 3
@@ -128,7 +127,7 @@ rules:
     effect: allow
     reason: "Single-file deletes allowed (mass recursive delete via rm -rf denied above)"
 
-  - id: default-allow-unknown
+  - id: default-deny-unknown
     action: unknown
-    effect: allow
-    reason: "Unknown tools allowed in v1 — too restrictive to default-deny; tighten in v2 once vocabulary is stable"
+    effect: deny
+    reason: "Unknown tools are denied — the action vocabulary is a closed enum. If Normalize returns ActUnknown, extend the normalizer rather than broadening this rule."

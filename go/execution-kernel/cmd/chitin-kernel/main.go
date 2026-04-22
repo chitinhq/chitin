@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
@@ -640,15 +641,27 @@ func cmdGateEvaluate(args []string) {
 	absCwd, _ := filepath.Abs(*cwd)
 	policy, _, err := gov.LoadWithInheritance(absCwd)
 	if err != nil {
-		// No policy or parse error → fail-closed deny with a structured Decision.
+		// Distinguish "no policy found" (intentional deny, exit 1) from
+		// "policy invalid" (misconfiguration, exit 2) so the plugin's
+		// scope-override fallthrough only applies to genuinely-unpoliced
+		// cwds — not to silent policy bugs.
+		errMsg := err.Error()
+		isNoPolicy := strings.HasPrefix(errMsg, "no_policy_found")
+		ruleID := "no_policy_found"
+		exitCode := 1
+		if !isNoPolicy {
+			ruleID = "policy_invalid"
+			exitCode = 2
+		}
 		out := map[string]any{
-			"allowed": false, "mode": "enforce", "rule_id": "no_policy_found",
-			"reason": err.Error(), "action_type": string(action.Type),
+			"allowed": false, "mode": "enforce", "rule_id": ruleID,
+			"reason":        errMsg,
+			"action_type":   string(action.Type),
 			"action_target": action.Target,
 		}
 		b, _ := json.Marshal(out)
 		fmt.Println(string(b))
-		os.Exit(1)
+		os.Exit(exitCode)
 	}
 
 	home, _ := os.UserHomeDir()
@@ -666,7 +679,17 @@ func cmdGateEvaluate(args []string) {
 	}
 	d := gate.Evaluate(action, *agent)
 
+	// Include action metadata in the CLI output. The Decision struct tags
+	// Action as json:"-" to keep the chain-event payload lean, but the CLI
+	// caller often wants to see what was evaluated without parsing args back.
 	b, _ := json.Marshal(d)
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		exitErr("gate_marshal_decision", err.Error())
+	}
+	out["action_type"] = string(action.Type)
+	out["action_target"] = action.Target
+	b, _ = json.Marshal(out)
 	fmt.Println(string(b))
 	if d.Allowed {
 		os.Exit(0)
@@ -717,8 +740,10 @@ func cmdGateLockdown(args []string) {
 	if *agent == "" {
 		exitErr("lockdown_missing_agent", "--agent required")
 	}
-	home, _ := os.UserHomeDir()
-	counter, _ := gov.OpenCounter(filepath.Join(home, ".chitin", "gov.db"))
+	counter, err := openStateCounter()
+	if err != nil {
+		exitErr("lockdown_counter", err.Error())
+	}
 	defer counter.Close()
 	counter.Lockdown(*agent)
 	fmt.Println(`{"ok":true,"action":"lockdown","agent":"` + *agent + `"}`)
@@ -731,9 +756,26 @@ func cmdGateReset(args []string) {
 	if *agent == "" {
 		exitErr("reset_missing_agent", "--agent required")
 	}
-	home, _ := os.UserHomeDir()
-	counter, _ := gov.OpenCounter(filepath.Join(home, ".chitin", "gov.db"))
+	counter, err := openStateCounter()
+	if err != nil {
+		exitErr("reset_counter", err.Error())
+	}
 	defer counter.Close()
 	counter.Reset(*agent)
 	fmt.Println(`{"ok":true,"action":"reset","agent":"` + *agent + `"}`)
+}
+
+// openStateCounter opens ~/.chitin/gov.db, creating the parent dir if needed.
+// Shared by gate subcommands that need to touch escalation state without
+// a full policy load.
+func openStateCounter() (*gov.Counter, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("user home: %w", err)
+	}
+	stateDir := filepath.Join(home, ".chitin")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir state dir: %w", err)
+	}
+	return gov.OpenCounter(filepath.Join(stateDir, "gov.db"))
 }

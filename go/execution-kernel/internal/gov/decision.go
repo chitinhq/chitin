@@ -2,16 +2,20 @@ package gov
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // WriteLog appends a Decision as one JSON line to
 // <dir>/gov-decisions-<utc-date>.jsonl. Daily-rotated; append-only.
-// Tolerates ENOSPC (logs to stderr, drops the line, returns nil).
+// Tolerates ENOSPC specifically (logs to stderr, drops the line,
+// returns nil). Other errors are propagated so permission/path/etc
+// problems don't silently vanish from audit.
 func WriteLog(d Decision, dir string) error {
 	if d.Ts == "" {
 		d.Ts = time.Now().UTC().Format(time.RFC3339)
@@ -50,9 +54,12 @@ func WriteLog(d Decision, dir string) error {
 		return fmt.Errorf("marshal decision: %w", err)
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		// Best-effort on ENOSPC — log once to stderr, don't fail the gate call
-		fmt.Fprintf(os.Stderr, "gov: decision log write failed: %v\n", err)
-		return nil
+		if errors.Is(err, syscall.ENOSPC) {
+			// Best-effort on disk-full — don't fail the gate call.
+			fmt.Fprintf(os.Stderr, "gov: decision log write skipped (ENOSPC): %v\n", err)
+			return nil
+		}
+		return fmt.Errorf("write decision: %w", err)
 	}
 	return nil
 }

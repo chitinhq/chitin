@@ -87,8 +87,20 @@ func mergePolicies(parent, child Policy) Policy {
 	if child.Bounds.MaxLinesChanged > 0 {
 		out.Bounds.MaxLinesChanged = child.Bounds.MaxLinesChanged
 	}
-	if child.Bounds.MaxRuntimeSeconds > 0 {
-		out.Bounds.MaxRuntimeSeconds = child.Bounds.MaxRuntimeSeconds
+	// (MaxRuntimeSeconds removed from v1 — see Bounds doc.)
+	// Escalation config: child overrides parent per field (only if child
+	// explicitly set the value — zero means "use parent/default").
+	if child.Escalation.ElevatedThreshold > 0 {
+		out.Escalation.ElevatedThreshold = child.Escalation.ElevatedThreshold
+	}
+	if child.Escalation.HighThreshold > 0 {
+		out.Escalation.HighThreshold = child.Escalation.HighThreshold
+	}
+	if child.Escalation.LockdownThreshold > 0 {
+		out.Escalation.LockdownThreshold = child.Escalation.LockdownThreshold
+	}
+	if child.Escalation.MaxRetriesPerFp > 0 {
+		out.Escalation.MaxRetriesPerFp = child.Escalation.MaxRetriesPerFp
 	}
 	if out.InvariantModes == nil {
 		out.InvariantModes = make(map[string]string)
