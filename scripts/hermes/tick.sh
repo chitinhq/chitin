@@ -46,6 +46,17 @@ TIMEOUT_ACT="${HERMES_TICK_TIMEOUT_ACT:-600}"
 # Worktree base for in-flight detection (see code-action branch).
 WORKTREE_BASE="${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}"
 
+# Precondition: flock + timeout are required. Without them, the guards
+# and per-stage budgets below would fail under `set -e` mid-run. Exit 0
+# with an explicit stderr message to preserve the script contract
+# ("Always exits 0 except on shell crash") on minimal boxes.
+for bin in flock timeout; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[$(date -u +%H:%M:%SZ)] tick aborted — required binary not found: $bin" >&2
+    exit 0
+  fi
+done
+
 # Deterministic timestamps for tests; real runs compute fresh.
 ts="${HERMES_TICK_TS:-$(date -u +%Y%m%dT%H%M%SZ)}"
 date_str="${HERMES_TICK_DATE:-$(date -u +%Y-%m-%d)}"
@@ -127,8 +138,13 @@ files=$file_dump"
   # Strip leading/trailing triple-backtick fences. qwen3-coder:30b emits
   # fenced diffs despite prompt instructions, and `git apply -` chokes on
   # the opening backticks — observed 2026-04-23 during first live tick.
-  sed -i -E '1{/^```[a-zA-Z]*[[:space:]]*$/d;};${/^```[[:space:]]*$/d;}' \
-    "$TICK_DIR/diff.patch"
+  # Temp-file + mv pattern avoids `sed -i` which is non-portable across
+  # GNU and BSD (BSD treats `-E` as the required -i backup extension).
+  local tmp_diff="$TICK_DIR/diff.patch.tmp"
+  sed -E -e '1{/^```[a-zA-Z]*[[:space:]]*$/d;}' \
+         -e '${/^```[[:space:]]*$/d;}' \
+         "$TICK_DIR/diff.patch" > "$tmp_diff"
+  mv "$tmp_diff" "$TICK_DIR/diff.patch"
 
   # Validate the diff applies cleanly before handing to stage 3. This
   # catches malformed hunks early (partial failures in ACT leave the
