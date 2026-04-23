@@ -1,0 +1,9 @@
+{
+  "action": "code",
+  "issue_number": 10,
+  "reason": "add .js extension for ESM import in jsonl-tailer.ts",
+  "diff_request": {
+    "files": ["apps/cli/src/telemetry/jsonl-tailer.ts"],
+    "intent": "append .js to the relative import of ./event-parser per ESM requirements"
+  }
+}

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Only used by tick.sh to probe ollama at 127.0.0.1:11434.
+# Emits a successful or failing HTTP based on STUB_CURL_OLLAMA_OK.
+set -euo pipefail
+echo "curl $*" >> "${STUB_LOG:?}"
+if [[ "${STUB_CURL_OLLAMA_OK:-1}" -eq 1 ]]; then
+  echo '{"models":[{"name":"qwen3-coder:30b"}]}'
+  exit 0
+fi
+exit 7   # curl "failed to connect"

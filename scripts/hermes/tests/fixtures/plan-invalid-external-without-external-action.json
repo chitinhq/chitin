@@ -1,0 +1,5 @@
+{
+  "action": "external",
+  "issue_number": 10,
+  "reason": "external action must include external_action"
+}

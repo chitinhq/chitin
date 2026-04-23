@@ -1,0 +1,5 @@
+{
+  "action": "skip",
+  "issue_number": "10",
+  "reason": "issue_number must be integer, not string"
+}

@@ -1,0 +1,5 @@
+{
+  "action": "code",
+  "issue_number": 10,
+  "reason": "code action must include diff_request"
+}

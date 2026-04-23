@@ -1,0 +1,5 @@
+{
+  "action": "merge",
+  "issue_number": 10,
+  "reason": "merge is not a permitted action"
+}
