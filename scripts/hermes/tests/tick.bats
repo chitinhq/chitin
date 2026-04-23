@@ -153,10 +153,15 @@ teardown() {
   # Hold the lock in an inherited fd from a subshell that blocks until we
   # let it go. If tick.sh sees the lock busy, it must exit 0 without
   # running any stages.
-  ( flock -x 200; sleep 5 ) 200>"$HERMES_TICK_LOCK_FILE" &
+  ready_file="$TEST_TMPDIR/lock-holder.ready"
+  ( flock -x 200; touch "$ready_file"; sleep 5 ) 200>"$HERMES_TICK_LOCK_FILE" &
   lock_holder=$!
-  # Give the subshell a moment to acquire the flock.
-  sleep 0.2
+  # Wait (up to ~2.5s) for the holder to signal it has the lock.
+  for _ in $(seq 1 50); do
+    [[ -f "$ready_file" ]] && break
+    sleep 0.05
+  done
+  [[ -f "$ready_file" ]]
 
   run "$BATS_TEST_DIRNAME/../tick.sh"
   [ "$status" -eq 0 ]

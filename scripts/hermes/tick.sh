@@ -240,7 +240,7 @@ case "$action" in
     # previous tick is (or was) working it. Stage 1 doesn't see local
     # state; without this check, two ticks duplicate the same PR attempt.
     issue_num="$(jq -r '.issue_number' "$TICK_DIR/plan.json")"
-    if [[ -n "$issue_num" && "$issue_num" != "0" && -d "$WORKTREE_BASE/chitin-$issue_num" ]]; then
+    if [[ -n "$issue_num" && "$issue_num" != "0" && "$issue_num" != "null" && -d "$WORKTREE_BASE/chitin-$issue_num" ]]; then
       log "in_flight_local: worktree $WORKTREE_BASE/chitin-$issue_num exists for #$issue_num; skip"
       exit 0
     fi
