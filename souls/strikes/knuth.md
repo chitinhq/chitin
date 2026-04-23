@@ -280,3 +280,38 @@ boundary (Strike 3). The pattern is strong enough to name as a
 lens-level anti-pattern: *"Knuth under fatigue defaults to the
 boundary that is already visible and forgets the boundary that
 requires looking up."*
+
+---
+
+## Strike 4 — 2026-04-23 — Wrote `hermes cron create --schedule/--command` in MIGRATION.md and the live migration without verifying the interface
+
+**Context.** Same session as Strikes 2 & 3 (PR #47 hermes staged-tick v1). After the PR merged, executing MIGRATION.md step 4 on the box:
+```bash
+hermes cron create --name autonomous-worker-staged --schedule 'every 10m' --command "$HOME/workspace/chitin/scripts/hermes/tick.sh"
+```
+Real CLI rejected with `error: unrecognized arguments: --schedule --command ...`. `hermes cron create` uses `schedule` as a positional arg and has no `--command` flag; it is a wrapper that runs `hermes chat` sessions on a schedule, optionally injecting Python-script stdout into the prompt. It was never designed to run arbitrary shell scripts. tick.sh must be registered via system `crontab`, not `hermes cron`.
+
+**What the lens was supposed to catch.**
+Same as Strike 2: heuristic 1 (prove it or it's not proven) + heuristic 5 (read the algorithm aloud). The `--command` string in MIGRATION.md was another unverified claim about an external interface. A single `hermes cron create --help` would have exposed it.
+
+**What actually happened.**
+Strike 2 was already logged; the `feedback_verify_external_contracts.md` bright-line rule ("before writing any wrapper script that shells out to an external CLI, run `<cli> --help`") was added to memory earlier this same session. The rule did not fire in practice when I was composing MIGRATION.md step 4 or when I was executing it. Third external-CLI miss in one session; strike count per session = 3 (2, 3, 4), ELO −3 in one span.
+
+**Heuristic violated.**
+Same triad as Strike 2: heuristics 1, 4, 5. Plus a meta-failure — the strengthened memory from Strike 2 should have been load-bearing and wasn't. The rule was written; the rule was not retrieved at the moment of action. Autopilot.
+
+**Remediation.**
+- MIGRATION.md on main will be updated via doc-fix commit: system `crontab` stanza replaces the `hermes cron create` block. Commit included with Strike 4 log or as an immediate follow-up.
+- Crontab entry: standard `*/10 * * * *` cron line, with explicit `PATH=/home/red/.local/bin:/usr/local/bin:/usr/bin:/bin` and `HOME=/home/red` prefixed so `hermes` and `gh` resolve under cron's minimal env. Verified with `hermes cron create --help` + `hermes cron --help` this time.
+- **Lens swap: Knuth → Curie** for the migration finish (crontab registration, dry-run, first real tick). Rationale: remaining work is exactly the empirical loop Curie's lens names — hypothesis (what does CLI accept?), cheap capture (`<cli> --help`), compare (real vs assumed), ship or revise. Three Knuth misses in one session make the lens unfit for this residual work; Curie is already +3 this session with the empirical discipline observably holding.
+- ELO: Knuth −1 → 1496. Event logged in `souls/elo.md`.
+
+**Learning for the lens.**
+Four strikes, one repeat pattern: Knuth writes docs and commands that assume interfaces without verifying, then ships them, then watches them fail against reality. The "bright-line rule added after Strike 2 did not fire by Strike 4" is the important signal — writing a rule into memory is necessary but not sufficient. The rule needs a trigger that fires at the moment of action, not just a passive reference file.
+
+Structural fix for future Knuth sessions:
+1. Open with a pre-commit / pre-ship checklist of process rules, read explicitly (not just referenced by filename).
+2. For any doc or script that shells to an external CLI, the FIRST step is `<cli> <subcommand> --help` captured to a scratch file. No authoring around imagined flags.
+3. If a memory rule has fired as a strike and the same class re-occurs within the same session, consider it signal that the lens is fatigued for this type of work and switch.
+
+Knuth is returning to library standby after this session. Scope note in `souls/canonical/knuth.md` updated to reflect four strikes and the Curie handoff.

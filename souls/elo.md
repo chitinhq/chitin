@@ -24,7 +24,7 @@ trainer's note, not a benchmark.
 |---|---|---|---|
 | Curie | 1503 | canonical | +3 |
 | Shannon | 1500 | canonical | — |
-| Knuth | 1497 | canonical | −3 |
+| Knuth | 1496 | canonical | −4 |
 | Lovelace | 1500 | canonical | — |
 | Socrates | 1500 | canonical | — |
 | Sun Tzu | 1500 | canonical | — |
@@ -39,6 +39,12 @@ trainer's note, not a benchmark.
 | Jokić | 1500 | experimental | — |
 
 ## Event log
+
+### 2026-04-23
+
+- **Knuth −1 → 1496.** Strike 4. Same class as Strike 2: wrote `hermes cron create --schedule ... --command ...` in MIGRATION.md and the live migration without ever running `hermes cron create --help`. Real interface takes `schedule` as a positional and `--script PATH` (for Python-stdout injection only) — no `--command` at all. `hermes cron` runs `hermes chat` sessions; it is not a generic shell-script runner. Correct mechanism for tick.sh is system `crontab`. Third external-CLI-contract miss this session; the strengthened `feedback_verify_external_contracts.md` memory still didn't fire at the moment of `hermes cron create`. Lens swap decision: Knuth → library standby, Curie takes over for the migration finish (crontab registration + dry-run + MIGRATION.md doc fix). Rationale: remaining work is pure empirical loop — `<cli> --help` IS the hypothesis-capture-compare cycle Curie's lens names explicitly. See `souls/strikes/knuth.md` for full record.
+
+- **Lens swap (scope handoff, not ELO delta).** Knuth → Curie for hermes-staged-tick migration finish. Handoff captured in `souls/canonical/knuth.md` scope note and `souls/canonical/curie.md`. Per "keep practices, drop ceremony" — no quorum; scoped-handoff decision by acting lens with user approval.
 
 ### 2026-04-22
 
