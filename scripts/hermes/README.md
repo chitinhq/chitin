@@ -40,11 +40,14 @@ Each tick writes to `~/chitin-sink/ticks/<YYYY-MM-DD>/<UTC-ISO>/`:
 
 ## Pausing the worker
 
+Registered via system crontab (not `hermes cron` — tick.sh is a shell
+orchestrator, not a `hermes chat` session). To pause:
+
 ```bash
-hermes cron list                       # find the id of autonomous-worker
-hermes cron pause <id>                 # pause
-hermes cron resume <id>                # resume
+crontab -e            # comment the tick.sh line (prefix with #)
 ```
+
+To resume, remove the `#`. See MIGRATION.md for the full rationale.
 
 ## Troubleshooting
 

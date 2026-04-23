@@ -36,13 +36,36 @@ Verify `scripts/hermes/tick.sh` is present and executable:
 test -x scripts/hermes/tick.sh && echo OK
 ```
 
-## 4. Register the new cron
+## 4. Register the new cron (system crontab — NOT `hermes cron`)
+
+`hermes cron` is designed to run `hermes chat` sessions on a schedule
+(optionally injecting a Python script's stdout into the prompt). It is
+not a generic shell-script runner. `tick.sh` is a standalone bash
+orchestrator that invokes `hermes chat` itself for each stage, so it
+must be registered with the system's own cron (`cron.service`), not
+with `hermes cron`.
+
+Append a tick.sh entry to your user crontab (the PATH and HOME lines
+are required — cron's default env lacks the dirs where `hermes` and
+`gh` live):
 
 ```bash
-hermes cron create \
-  --name autonomous-worker-staged \
-  --schedule 'every 10m' \
-  --command "$HOME/workspace/chitin/scripts/hermes/tick.sh"
+(crontab -l 2>/dev/null; cat <<'CRONEOF'
+PATH=/home/red/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+HOME=/home/red
+*/10 * * * * /home/red/workspace/chitin/scripts/hermes/tick.sh >> /home/red/chitin-sink/cron-tick.log 2>&1
+CRONEOF
+) | crontab -
+```
+
+Adjust `/home/red` if your home dir differs. Verify:
+```bash
+crontab -l
+```
+
+System cron must be running; on Debian/Ubuntu systemd:
+```bash
+systemctl is-active cron        # expected: active
 ```
 
 ## 5. Dry-run before letting cron fire
@@ -57,13 +80,21 @@ Inspect the newest tick dir under `~/chitin-sink/ticks/` and confirm
 
 ## 6. Let one real tick fire
 
-Wait ≤10 minutes, then:
+Wait until the next `:00` / `:10` / `:20` / `:30` / `:40` / `:50`
+minute mark plus a few seconds, then:
 
 ```bash
-hermes cron list | grep autonomous-worker-staged
+ls -lt ~/chitin-sink/ticks/$(date -u +%Y-%m-%d)/ | head
 ```
 
-`Last run` should show `ok`. Inspect the artifact dir for that tick.
+Look for a new tick dir whose `env.txt` shows `HERMES_TICK_DRY_RUN=0`
+and a PATH matching your crontab line (not your interactive shell's
+PATH — that's how you distinguish cron from manual runs). Inspect its
+`plan.json` and `tick.log` for sane stage transitions.
+
+`~/chitin-sink/cron-tick.log` stays empty on healthy ticks (tick.sh
+writes only to tick artifact files, never to stdout/stderr). Non-empty
+content there indicates unexpected output and is worth investigating.
 
 ## Optional: wire the 3-tick streak to WhatsApp
 
@@ -88,12 +119,23 @@ Runtime behaviors that only surface against the real models, not the stubs. Insp
 
 ## Rollback
 
-If the new worker misbehaves:
-
+If the new worker misbehaves, edit the crontab:
 ```bash
-hermes cron pause <id of autonomous-worker-staged>
+crontab -e
+```
+Comment out the `*/10 * * * * .../tick.sh` line (prefix with `#`),
+save, exit. The `PATH=` and `HOME=` env lines can stay. To re-enable,
+remove the `#`.
+
+To fully remove (destructive — also drops the PATH/HOME lines; only
+use if this machine's user crontab has nothing else you care about):
+```bash
+crontab -r
 ```
 
 Work reverts to whatever manual `hermes chat` invocations you run. The
-retired prompt can be restored from `~/.hermes/scripts/retired-<date>/`
-if you want to re-register the v1 cron.
+retired v1 prompt + context script are at
+`~/.hermes/scripts/retired-<date>/` if you want to re-register the v1
+hermes cron (`hermes cron create '<schedule>' '<prompt>' --script
+autonomous-worker-context.py --name autonomous-worker --deliver
+local`).
