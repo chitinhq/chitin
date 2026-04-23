@@ -14,6 +14,9 @@ on:
       - 'scripts/hermes/tests/validate-plans.sh'
       - '.github/workflows/hermes-plan-schema.yml'
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest

@@ -124,12 +124,18 @@ diff=$diff_body"
 log "tick starting; dir=$TICK_DIR"
 
 # Capture env snapshot (scrubbed).
-env | grep -E '^(CHITIN|HERMES|OLLAMA|PATH)=' > "$TICK_DIR/env.txt" || true
+# Narrow allowlist — avoid catching any secret-like vars by prefix accident.
+: > "$TICK_DIR/env.txt"
+for var in PATH CHITIN_SINK_ROOT HERMES_TICK_DRY_RUN HERMES_TICK_TS HERMES_TICK_DATE; do
+  if [[ -v "$var" ]]; then
+    printf '%s=%s\n' "$var" "${!var}" >> "$TICK_DIR/env.txt"
+  fi
+done
 
 # ---- Queue fetch ----------------------------------------------------------
-queue_labeled="$(gh issue list --repo chitinhq/chitin --label hermes-autonomous --state open --json number,title,body 2>/dev/null || echo '[]')"
-queue_unlabeled="$(gh issue list --repo chitinhq/chitin --search 'no:label is:open' --json number,title,body 2>/dev/null || echo '[]')"
-pr_inflight="$(gh pr list --repo chitinhq/chitin --search 'is:open linked:issue' --json number,title 2>/dev/null || echo '[]')"
+queue_labeled="$(gh issue list --repo chitinhq/chitin --label hermes-autonomous --state open --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
+queue_unlabeled="$(gh issue list --repo chitinhq/chitin --search 'no:label is:open' --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
+pr_inflight="$(gh pr list --repo chitinhq/chitin --search 'is:open linked:issue' --json number,title,closingIssuesReferences 2>/dev/null || echo '[]')"
 jq -n \
   --argjson labeled "$queue_labeled" \
   --argjson unlabeled "$queue_unlabeled" \
@@ -153,6 +159,18 @@ fi
 if ! jq -e 'type == "object" and has("action")' "$TICK_DIR/plan.json" >/dev/null 2>&1; then
   log "plan_parse_error: stage 1 output is not a plan object"
   exit 0
+fi
+
+# Validate plan.json against the formal schema when ajv is available.
+# ajv is installed in CI; on the runtime box it may or may not be present.
+# If missing, we fall back to the structural check above.
+# NOTE: the schema is draft 2020-12; ajv-cli defaults to draft-07 so we must
+# pass --spec=draft2020 explicitly (same flag used by validate-plans.sh).
+if command -v ajv >/dev/null 2>&1; then
+  if ! ajv validate -s "$SCHEMA" -d "$TICK_DIR/plan.json" --spec=draft2020 >/dev/null 2>&1; then
+    log "plan_schema_violation: plan.json failed ajv validation against $SCHEMA"
+    exit 0
+  fi
 fi
 
 action="$(jq -r '.action' "$TICK_DIR/plan.json")"

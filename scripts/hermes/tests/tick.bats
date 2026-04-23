@@ -5,7 +5,7 @@
 # that write deterministic output and log calls to $STUB_LOG.
 
 setup() {
-  export TEST_TMPDIR="$(mktemp -d)"
+  export TEST_TMPDIR="$(mktemp -d 2>/dev/null || mktemp -d -t hermes-tick)"
   export STUB_LOG="$TEST_TMPDIR/stub-calls.log"
   export CHITIN_SINK_ROOT="$TEST_TMPDIR/chitin-sink"
   export HERMES_TICK_TS="20260422T000000Z"         # deterministic tick dir name

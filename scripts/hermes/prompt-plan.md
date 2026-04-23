@@ -31,8 +31,9 @@ The queue context has three lists: `labeled` (issues with
 (PRs linked to an issue).
 
 1. **Work an already-labeled issue if one is eligible.** From `labeled`,
-   pick the oldest issue whose number does NOT appear in any
-   `in_flight_prs.<pr>.linkedIssue`. Emit either:
+   pick the oldest issue (smallest `labeled[i].createdAt`) whose
+   `number` does NOT appear in any
+   `in_flight_prs[j].closingIssuesReferences[].number`. Emit either:
    - `{"action":"code", "issue_number":<n>, ..., "diff_request":{...}}`
      if you can state a small, concrete code change in one paragraph.
      Populate `diff_request.files` with 1–5 relative paths you believe
@@ -48,7 +49,8 @@ The queue context has three lists: `labeled` (issues with
    - small, clear scope (resolvable in a single PR)
    - code-only (no docs-only, no discussion-only)
    - no words matching `security|breaking|auth|credential` in title or body
-   - no open PR linked to it in `in_flight_prs`
+   - its `number` does NOT appear in any
+     `in_flight_prs[j].closingIssuesReferences[].number`
 
    If you find one, emit:
    `{"action":"external", ..., "external_action":{"kind":"label",
@@ -61,8 +63,8 @@ The queue context has three lists: `labeled` (issues with
 
 - Never propose `merge`, `force-push`, `delete`, or touching any file
   whose path matches `security|secret|credential|\\.env`.
-- Never propose an action on an issue that already has a PR in
-  `in_flight_prs`.
+- Never propose an action on an issue whose `number` already appears
+  in any `in_flight_prs[j].closingIssuesReferences[].number`.
 - Never emit anything except the JSON object. If you need to explain, put
   the explanation in the `reason` field.
 - If the queue is malformed or empty, emit

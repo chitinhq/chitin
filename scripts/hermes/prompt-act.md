@@ -32,8 +32,12 @@ Required sequence. Perform each step; stop on the first failure.
 5. Commit with message `fix: <plan.reason> (#<issue_number>)` using
    `git commit -am` — do not skip hooks.
 6. Push: `git push -u origin <branch>`.
-7. Open PR: `gh pr create --title "<short title>" --body "Closes
-   #<issue_number>\n\n<plan.diff_request.intent>" --base main --head <branch>`.
+7. Write the PR body to a temp file (newlines rendered, not literal),
+   then open the PR with `--body-file`:
+   ```bash
+   printf 'Closes #%s\n\n%s\n' "<issue_number>" "<plan.diff_request.intent>" > /tmp/pr-body.md
+   gh pr create --title "<short title>" --body-file /tmp/pr-body.md --base main --head <branch>
+   ```
 8. Print the PR URL.
 
 ### action == "external"

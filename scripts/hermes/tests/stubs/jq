@@ -1,3 +1,18 @@
 #!/usr/bin/env bash
 # Real jq — the schema-validation path relies on its actual behavior.
-exec /usr/bin/jq "$@"
+# Find real jq outside the stub directory. setup() must export REAL_JQ before
+# prepending the stub dir to PATH, OR we walk PATH ourselves excluding the
+# stub dir.
+if [[ -n "${REAL_JQ:-}" && -x "$REAL_JQ" ]]; then
+  exec "$REAL_JQ" "$@"
+fi
+STUB_DIR="$(cd "$(dirname "$0")" && pwd)"
+IFS=':' read -ra path_parts <<< "$PATH"
+for dir in "${path_parts[@]}"; do
+  [[ "$dir" == "$STUB_DIR" ]] && continue
+  if [[ -x "$dir/jq" ]]; then
+    exec "$dir/jq" "$@"
+  fi
+done
+echo "jq stub: real jq not found on PATH" >&2
+exit 127
