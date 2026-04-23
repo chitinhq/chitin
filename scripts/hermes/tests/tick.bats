@@ -11,11 +11,13 @@ setup() {
   export HERMES_TICK_TS="20260422T000000Z"         # deterministic tick dir name
   export HERMES_TICK_DATE="2026-04-22"
   # Isolate tick-level state that now has env overrides (lock file,
-  # worktree base). Keeps tests from touching the real /tmp lock or
-  # ~/workspace.
+  # worktree base, repo root). Keeps tests from touching the real /tmp
+  # lock or ~/workspace. The repo root is where stage 2 runs
+  # `git apply --check` — bare dir is enough since `git` is stubbed.
   export HERMES_TICK_LOCK_FILE="$TEST_TMPDIR/hermes-tick.lock"
   export HERMES_TICK_WORKTREE_BASE="$TEST_TMPDIR/worktrees"
-  mkdir -p "$CHITIN_SINK_ROOT/ticks" "$HERMES_TICK_WORKTREE_BASE"
+  export HERMES_TICK_REPO_ROOT="$TEST_TMPDIR/repo"
+  mkdir -p "$CHITIN_SINK_ROOT/ticks" "$HERMES_TICK_WORKTREE_BASE" "$HERMES_TICK_REPO_ROOT"
   : > "$STUB_LOG"
 
   STUBS="$BATS_TEST_DIRNAME/stubs"
