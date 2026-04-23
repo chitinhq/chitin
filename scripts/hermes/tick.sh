@@ -46,6 +46,13 @@ TIMEOUT_ACT="${HERMES_TICK_TIMEOUT_ACT:-600}"
 # Worktree base for in-flight detection (see code-action branch).
 WORKTREE_BASE="${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}"
 
+# Retry budget. After N consecutive stage-2 failures on the same issue,
+# the issue is re-labeled `hermes-autonomous` → `hermes-gate-blocked`
+# so the planner stops re-picking it every tick. Counter resets when
+# stage 2 produces a valid diff.
+RETRY_BUDGET="${HERMES_TICK_RETRY_BUDGET:-3}"
+FAILURE_COUNTS_FILE="${HERMES_TICK_FAILURE_COUNTS_FILE:-${CHITIN_SINK_ROOT}/issue-failure-counts.json}"
+
 # Precondition: flock + timeout are required. Without them, the guards
 # and per-stage budgets below would fail under `set -e` mid-run. Exit 0
 # with an explicit stderr message to preserve the script contract
@@ -76,6 +83,50 @@ TICK_DIR="$CHITIN_SINK_ROOT/ticks/$date_str/$ts"
 mkdir -p "$TICK_DIR"
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*" >> "$TICK_DIR/tick.log"; }
+
+# ---- Retry-budget helpers -------------------------------------------------
+# Read-modify-write is safe because the tick-level flock serializes all
+# mutations. The counts file is JSON: {"<issue_number>": <count>}.
+
+failure_counts_init() {
+  [[ -f "$FAILURE_COUNTS_FILE" ]] || echo '{}' > "$FAILURE_COUNTS_FILE"
+}
+
+failure_count_bump() {
+  # Increment and print the new count for the given issue number.
+  local issue="$1" count
+  failure_counts_init
+  count=$(jq -r --arg k "$issue" '.[$k] // 0' "$FAILURE_COUNTS_FILE")
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  count=$((count + 1))
+  local tmp="$FAILURE_COUNTS_FILE.tmp"
+  jq --arg k "$issue" --argjson v "$count" '.[$k] = $v' \
+    "$FAILURE_COUNTS_FILE" > "$tmp"
+  mv "$tmp" "$FAILURE_COUNTS_FILE"
+  echo "$count"
+}
+
+failure_count_reset() {
+  local issue="$1"
+  failure_counts_init
+  local tmp="$FAILURE_COUNTS_FILE.tmp"
+  jq --arg k "$issue" 'del(.[$k])' "$FAILURE_COUNTS_FILE" > "$tmp"
+  mv "$tmp" "$FAILURE_COUNTS_FILE"
+}
+
+blockade_issue() {
+  # Swap the hermes-autonomous label for hermes-gate-blocked so the
+  # planner stops picking this issue. Label failures are logged but do
+  # not fail the tick — the issue already failed; extra noise is fine.
+  local issue="$1"
+  if gh issue edit "$issue" --repo chitinhq/chitin \
+       --remove-label hermes-autonomous \
+       --add-label hermes-gate-blocked 2>> "$TICK_DIR/tick.log"; then
+    log "blockade_applied: #$issue relabeled hermes-gate-blocked"
+  else
+    log "blockade_failed: could not relabel #$issue (see stderr above)"
+  fi
+}
 
 probe_ollama() {
   # Non-atomic read-modify-write on streak_file; safe only under cron max_parallel_jobs=1.
@@ -118,9 +169,14 @@ run_stage_code() {
 plan=$plan_body
 
 files=$file_dump"
+  # Stage 2 v2: the model emits SEARCH/REPLACE blocks (see prompt-code.md).
+  # Unified-diff generation by an LLM is fragile — line-number math drifts
+  # across many hunks even when the edit intent is correct. Shifting to
+  # string-based SEARCH/REPLACE and computing the diff in Python via
+  # difflib removes that failure mode entirely.
   local rc=0
   timeout "${TIMEOUT_CODE}s" hermes chat -Q --model "$MODEL_CODE" -q "$stage2_prompt" \
-      > "$TICK_DIR/diff.patch" 2> "$TICK_DIR/code-stderr.txt" || rc=$?
+      > "$TICK_DIR/sr-output.txt" 2> "$TICK_DIR/code-stderr.txt" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if [[ $rc -eq 124 ]]; then
       log "stage 2 timeout (${TIMEOUT_CODE}s)"
@@ -130,25 +186,44 @@ files=$file_dump"
     return 1
   fi
 
-  if [[ ! -s "$TICK_DIR/diff.patch" ]]; then
-    log "code_empty_output: stage 2 emitted empty diff"
+  if [[ ! -s "$TICK_DIR/sr-output.txt" ]]; then
+    log "code_empty_output: stage 2 emitted empty output"
     return 1
   fi
 
-  # Strip leading/trailing triple-backtick fences. qwen3-coder:30b emits
-  # fenced diffs despite prompt instructions, and `git apply -` chokes on
-  # the opening backticks — observed 2026-04-23 during first live tick.
+  # Strip leading/trailing triple-backtick fences before handing to the
+  # parser. Models still wrap responses in ``` despite prompt rules.
   # Temp-file + mv pattern avoids `sed -i` which is non-portable across
   # GNU and BSD (BSD treats `-E` as the required -i backup extension).
-  local tmp_diff="$TICK_DIR/diff.patch.tmp"
+  local tmp_sr="$TICK_DIR/sr-output.txt.tmp"
   sed -E -e '1{/^```[a-zA-Z]*[[:space:]]*$/d;}' \
          -e '${/^```[[:space:]]*$/d;}' \
-         "$TICK_DIR/diff.patch" > "$tmp_diff"
-  mv "$tmp_diff" "$TICK_DIR/diff.patch"
+         "$TICK_DIR/sr-output.txt" > "$tmp_sr"
+  mv "$tmp_sr" "$TICK_DIR/sr-output.txt"
 
-  # Validate the diff applies cleanly before handing to stage 3. This
-  # catches malformed hunks early (partial failures in ACT leave the
-  # worktree half-modified with no PR — hard to diagnose after the fact).
+  # Convert SEARCH/REPLACE blocks → unified diff. This is deterministic:
+  # blocks are applied to the REPO_ROOT file via exact-string match, and
+  # the diff is computed by Python's difflib. Exits:
+  #   0 = valid non-empty diff, 1 = parse/apply error, 2 = no-op.
+  local sr_rc=0
+  python3 "$SCRIPT_DIR/apply-search-replace.py" \
+    --repo-root "$REPO_ROOT" \
+    --plan "$TICK_DIR/plan.json" \
+    --out-diff "$TICK_DIR/diff.patch" \
+    < "$TICK_DIR/sr-output.txt" \
+    2> "$TICK_DIR/sr-apply.err" || sr_rc=$?
+  case "$sr_rc" in
+    0) ;;
+    2) log "code_no_op_edits: SEARCH/REPLACE blocks produced no effective change"
+       return 1 ;;
+    *) log "stage 2 search_replace_failed (rc=$sr_rc)"
+       return 1 ;;
+  esac
+
+  # Belt-and-suspenders: validate the computed diff applies cleanly.
+  # Should always succeed when apply-search-replace.py returned 0
+  # (difflib emits valid unified diffs), but confirms the REPO_ROOT
+  # hasn't drifted out from under us between generation and stage 3.
   if ! (cd "$REPO_ROOT" && git apply --check "$TICK_DIR/diff.patch") \
        2> "$TICK_DIR/diff-check.err"; then
     log "stage 2 invalid diff (git apply --check failed)"
@@ -265,7 +340,23 @@ case "$action" in
       exit 0
     fi
     if ! run_stage_code; then
+      # Retry budget: track consecutive stage-2 failures per issue. Once
+      # the budget is spent, re-label the issue hermes-gate-blocked so
+      # the planner stops re-picking the same unsolvable item each tick.
+      if [[ -n "$issue_num" && "$issue_num" != "0" && "$issue_num" != "null" ]]; then
+        count="$(failure_count_bump "$issue_num")"
+        log "failure_count: #$issue_num is now $count/$RETRY_BUDGET"
+        if (( count >= RETRY_BUDGET )); then
+          blockade_issue "$issue_num"
+          failure_count_reset "$issue_num"
+        fi
+      fi
       exit 0
+    fi
+    # Stage 2 produced a valid diff — clear any prior failures for this
+    # issue so a previously-flaky issue isn't held against forever.
+    if [[ -n "$issue_num" && "$issue_num" != "0" && "$issue_num" != "null" ]]; then
+      failure_count_reset "$issue_num"
     fi
     run_stage_act
     exit 0

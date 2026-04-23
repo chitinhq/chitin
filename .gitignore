@@ -52,3 +52,7 @@ Thumbs.db
 
 # Go kernel build artifacts
 /go/execution-kernel/chitin-kernel
+
+# Python bytecode (scripts/hermes/apply-search-replace.py etc.)
+__pycache__/
+*.pyc
