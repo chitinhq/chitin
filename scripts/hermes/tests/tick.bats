@@ -10,7 +10,12 @@ setup() {
   export CHITIN_SINK_ROOT="$TEST_TMPDIR/chitin-sink"
   export HERMES_TICK_TS="20260422T000000Z"         # deterministic tick dir name
   export HERMES_TICK_DATE="2026-04-22"
-  mkdir -p "$CHITIN_SINK_ROOT/ticks"
+  # Isolate tick-level state that now has env overrides (lock file,
+  # worktree base). Keeps tests from touching the real /tmp lock or
+  # ~/workspace.
+  export HERMES_TICK_LOCK_FILE="$TEST_TMPDIR/hermes-tick.lock"
+  export HERMES_TICK_WORKTREE_BASE="$TEST_TMPDIR/worktrees"
+  mkdir -p "$CHITIN_SINK_ROOT/ticks" "$HERMES_TICK_WORKTREE_BASE"
   : > "$STUB_LOG"
 
   STUBS="$BATS_TEST_DIRNAME/stubs"
@@ -142,4 +147,84 @@ teardown() {
   tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
   [ -f "$tick_dir/act-log.txt" ]
   grep -q 'HERMES_TICK_DRY_RUN=1' "$STUB_LOG"
+}
+
+@test "concurrency guard: second tick exits cleanly when lock is held" {
+  # Hold the lock in an inherited fd from a subshell that blocks until we
+  # let it go. If tick.sh sees the lock busy, it must exit 0 without
+  # running any stages.
+  ( flock -x 200; sleep 5 ) 200>"$HERMES_TICK_LOCK_FILE" &
+  lock_holder=$!
+  # Give the subshell a moment to acquire the flock.
+  sleep 0.2
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  # No stage 1 invocation, no tick dir contents — the run short-circuited
+  # before queue fetch.
+  ! grep -q '^hermes chat' "$STUB_LOG"
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  [ ! -f "$tick_dir/plan.json" ]
+
+  # The skip message goes to stderr so cron-tick.log captures it.
+  echo "$output" | grep -q 'lock held by another run'
+
+  kill "$lock_holder" 2>/dev/null || true
+  wait "$lock_holder" 2>/dev/null || true
+}
+
+@test "fence strip: stage 2 output wrapped in code fences is stripped before git apply --check" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix ESM","diff_request":{"files":["x.ts"],"intent":"append .js"}}'
+  # qwen3-coder:30b emits its diff inside a fenced block despite prompt
+  # instructions. The fence lines must be stripped before stage 3.
+  export STUB_HERMES_CODE_OUTPUT='```diff
+--- a/x.ts
++++ b/x.ts
+@@ -1 +1 @@
+-import { foo } from "./bar";
++import { foo } from "./bar.js";
+```'
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  # Fences gone, diff body preserved.
+  ! grep -q '^```' "$tick_dir/diff.patch"
+  grep -q '^--- a/x.ts' "$tick_dir/diff.patch"
+  grep -q '^+++ b/x.ts' "$tick_dir/diff.patch"
+  # Stage 2 logged as done (validation passed via git stub apply --check).
+  grep -q 'stage 2 done' "$tick_dir/tick.log"
+}
+
+@test "invalid diff: git apply --check failure short-circuits before stage 3" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix","diff_request":{"files":["x.ts"],"intent":"fix"}}'
+  export STUB_HERMES_CODE_OUTPUT='not a valid diff at all'
+  export STUB_GIT_APPLY_CHECK_FAIL=1
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  grep -q 'stage 2 invalid diff' "$tick_dir/tick.log"
+  # Stage 3 never ran — no act-log.
+  [ ! -f "$tick_dir/act-log.txt" ]
+  ! grep -q 'Stage 3 (ACT)' "$STUB_LOG"
+}
+
+@test "in-flight worktree: pre-existing chitin-N dir causes code action to skip" {
+  export STUB_HERMES_PLAN_OUTPUT='{"action":"code","issue_number":10,"reason":"fix","diff_request":{"files":["x.ts"],"intent":"fix"}}'
+  # A worktree already exists for issue #10 — likely from an earlier tick
+  # still finishing. Skip rather than duplicate the attempt.
+  mkdir -p "$HERMES_TICK_WORKTREE_BASE/chitin-10"
+
+  run "$BATS_TEST_DIRNAME/../tick.sh"
+  [ "$status" -eq 0 ]
+
+  tick_dir="$CHITIN_SINK_ROOT/ticks/$HERMES_TICK_DATE/$HERMES_TICK_TS"
+  grep -q 'in_flight_local' "$tick_dir/tick.log"
+  # Stage 2 never ran.
+  [ ! -f "$tick_dir/diff.patch" ]
+  ! grep -q 'qwen3-coder' "$STUB_LOG"
 }
