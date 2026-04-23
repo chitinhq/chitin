@@ -36,9 +36,41 @@ MODEL_PLAN="${HERMES_TICK_MODEL_PLAN:-glm-5.1:cloud}"
 MODEL_CODE="${HERMES_TICK_MODEL_CODE:-qwen3-coder:30b}"
 MODEL_ACT="${HERMES_TICK_MODEL_ACT:-glm-5.1:cloud}"
 
+# Per-stage timeouts. Stage 2 budget covers cold local-model load (~7 min
+# observed for qwen3-coder:30b after 38h idle). Stage 3 budget covers
+# multi-tool execution (git apply → commit → push → gh pr create).
+TIMEOUT_PLAN="${HERMES_TICK_TIMEOUT_PLAN:-120}"
+TIMEOUT_CODE="${HERMES_TICK_TIMEOUT_CODE:-900}"
+TIMEOUT_ACT="${HERMES_TICK_TIMEOUT_ACT:-600}"
+
+# Worktree base for in-flight detection (see code-action branch).
+WORKTREE_BASE="${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}"
+
+# Precondition: flock + timeout are required. Without them, the guards
+# and per-stage budgets below would fail under `set -e` mid-run. Exit 0
+# with an explicit stderr message to preserve the script contract
+# ("Always exits 0 except on shell crash") on minimal boxes.
+for bin in flock timeout; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[$(date -u +%H:%M:%SZ)] tick aborted — required binary not found: $bin" >&2
+    exit 0
+  fi
+done
+
 # Deterministic timestamps for tests; real runs compute fresh.
 ts="${HERMES_TICK_TS:-$(date -u +%Y%m%dT%H%M%SZ)}"
 date_str="${HERMES_TICK_DATE:-$(date -u +%Y-%m-%d)}"
+
+# ---- Concurrency guard ----------------------------------------------------
+# Prevent stacked ticks when a previous run is still in flight (eg. stage 2
+# took longer than the cron cadence). A second cron fire exits cleanly
+# rather than racing for the same queue item.
+LOCK_FILE="${HERMES_TICK_LOCK_FILE:-/tmp/hermes-tick.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date -u +%H:%M:%SZ)] tick skipped — lock held by another run ($LOCK_FILE)" >&2
+  exit 0
+fi
 
 TICK_DIR="$CHITIN_SINK_ROOT/ticks/$date_str/$ts"
 mkdir -p "$TICK_DIR"
@@ -86,14 +118,40 @@ run_stage_code() {
 plan=$plan_body
 
 files=$file_dump"
-  if ! hermes chat -Q --model "$MODEL_CODE" -q "$stage2_prompt" \
-         > "$TICK_DIR/diff.patch" 2> "$TICK_DIR/code-stderr.txt"; then
-    log "stage 2 failed (hermes non-zero)"
+  local rc=0
+  timeout "${TIMEOUT_CODE}s" hermes chat -Q --model "$MODEL_CODE" -q "$stage2_prompt" \
+      > "$TICK_DIR/diff.patch" 2> "$TICK_DIR/code-stderr.txt" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 124 ]]; then
+      log "stage 2 timeout (${TIMEOUT_CODE}s)"
+    else
+      log "stage 2 failed (rc=$rc)"
+    fi
     return 1
   fi
 
   if [[ ! -s "$TICK_DIR/diff.patch" ]]; then
     log "code_empty_output: stage 2 emitted empty diff"
+    return 1
+  fi
+
+  # Strip leading/trailing triple-backtick fences. qwen3-coder:30b emits
+  # fenced diffs despite prompt instructions, and `git apply -` chokes on
+  # the opening backticks — observed 2026-04-23 during first live tick.
+  # Temp-file + mv pattern avoids `sed -i` which is non-portable across
+  # GNU and BSD (BSD treats `-E` as the required -i backup extension).
+  local tmp_diff="$TICK_DIR/diff.patch.tmp"
+  sed -E -e '1{/^```[a-zA-Z]*[[:space:]]*$/d;}' \
+         -e '${/^```[[:space:]]*$/d;}' \
+         "$TICK_DIR/diff.patch" > "$tmp_diff"
+  mv "$tmp_diff" "$TICK_DIR/diff.patch"
+
+  # Validate the diff applies cleanly before handing to stage 3. This
+  # catches malformed hunks early (partial failures in ACT leave the
+  # worktree half-modified with no PR — hard to diagnose after the fact).
+  if ! (cd "$REPO_ROOT" && git apply --check "$TICK_DIR/diff.patch") \
+       2> "$TICK_DIR/diff-check.err"; then
+    log "stage 2 invalid diff (git apply --check failed)"
     return 1
   fi
   log "stage 2 done"
@@ -113,9 +171,15 @@ run_stage_act() {
 plan=$plan_body
 
 diff=$diff_body"
-  if ! hermes chat -Q --model "$MODEL_ACT" -q "$stage3_prompt" \
-         > "$TICK_DIR/act-log.txt" 2> "$TICK_DIR/act-stderr.txt"; then
-    log "stage 3 failed (hermes non-zero)"
+  local rc=0
+  timeout "${TIMEOUT_ACT}s" hermes chat -Q --model "$MODEL_ACT" -q "$stage3_prompt" \
+      > "$TICK_DIR/act-log.txt" 2> "$TICK_DIR/act-stderr.txt" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 124 ]]; then
+      log "stage 3 timeout (${TIMEOUT_ACT}s)"
+    else
+      log "stage 3 failed (rc=$rc)"
+    fi
     return 0
   fi
   log "stage 3 done"
@@ -150,9 +214,15 @@ stage1_prompt="$(cat "$PROMPT_PLAN")
 
 --- CONTEXT ---
 $(cat "$TICK_DIR/queue.json")"
-if ! hermes chat -Q --model "$MODEL_PLAN" -q "$stage1_prompt" \
-       > "$TICK_DIR/plan.json" 2> "$TICK_DIR/plan-stderr.txt"; then
-  log "stage 1 failed (hermes non-zero)"
+rc=0
+timeout "${TIMEOUT_PLAN}s" hermes chat -Q --model "$MODEL_PLAN" -q "$stage1_prompt" \
+    > "$TICK_DIR/plan.json" 2> "$TICK_DIR/plan-stderr.txt" || rc=$?
+if [[ $rc -ne 0 ]]; then
+  if [[ $rc -eq 124 ]]; then
+    log "stage 1 timeout (${TIMEOUT_PLAN}s)"
+  else
+    log "stage 1 failed (rc=$rc)"
+  fi
   exit 0
 fi
 
@@ -182,6 +252,14 @@ case "$action" in
     exit 0
     ;;
   code)
+    # In-flight guard: if a worktree for this issue already exists, a
+    # previous tick is (or was) working it. Stage 1 doesn't see local
+    # state; without this check, two ticks duplicate the same PR attempt.
+    issue_num="$(jq -r '.issue_number' "$TICK_DIR/plan.json")"
+    if [[ -n "$issue_num" && "$issue_num" != "0" && "$issue_num" != "null" && -d "$WORKTREE_BASE/chitin-$issue_num" ]]; then
+      log "in_flight_local: worktree $WORKTREE_BASE/chitin-$issue_num exists for #$issue_num; skip"
+      exit 0
+    fi
     if ! probe_ollama; then
       log "ollama_unreachable: skip stages 2 and 3"
       exit 0
