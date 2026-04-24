@@ -1,9 +1,11 @@
 package copilot
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +79,7 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 		Gate:       gate,
 		Agent:      "copilot-cli",
 		Cwd:        opts.Cwd,
+		Verbose:    opts.Verbose,
 		LockdownCh: lockdownCh,
 	}
 
@@ -99,7 +102,7 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 
 	// 7. Dispatch.
 	if opts.Interactive {
-		return runInteractive(ctx, session)
+		return runInteractive(ctx, session, lockdownCh)
 	}
 
 	// Run the prompt via SendAndWait. While it blocks, the permission
@@ -206,7 +209,54 @@ func printLockdownSummary(lde *LockdownError) {
 	fmt.Fprintf(os.Stderr, "\n=== Session terminated: %s ===\n", lde.Error())
 }
 
-// runInteractive is stubbed — Task 14 implements the full REPL.
-func runInteractive(_ context.Context, _ *copilotsdk.Session) error {
-	return errors.New("interactive mode not yet implemented — Task 14 adds REPL")
+// runInteractive implements a stdin-driven REPL. Reads prompts from the
+// operator one line at a time, dispatches each via session.SendAndWait,
+// and exits cleanly on /quit, /exit, or EOF. LockdownError mid-session
+// terminates the REPL with a summary.
+//
+// Invariant: every non-empty, non-command line is dispatched exactly once.
+// SDK errors surface to stderr but do not kill the loop — only /quit, /exit,
+// EOF, ctx cancellation, or a lockdown signal terminates the REPL.
+func runInteractive(ctx context.Context, session *copilotsdk.Session, lockdownCh <-chan *LockdownError) error {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprintln(os.Stderr, "chitin/copilot interactive mode. Type /quit or /exit to leave; Ctrl-D for EOF.")
+	for {
+		fmt.Fprint(os.Stderr, "> ")
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			fmt.Fprintln(os.Stderr) // newline after ^D
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("stdin read: %w", err)
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "/quit" || line == "/exit" {
+			return nil
+		}
+
+		// Dispatch the prompt; race against lockdown and context cancellation.
+		sendDone := make(chan error, 1)
+		go func() {
+			_, sendErr := session.SendAndWait(ctx, copilotsdk.MessageOptions{Prompt: line})
+			sendDone <- sendErr
+		}()
+
+		select {
+		case lde := <-lockdownCh:
+			printLockdownSummary(lde)
+			return nil
+		case sendErr := <-sendDone:
+			if sendErr != nil {
+				// SDK error — surface to stderr, continue the REPL.
+				// Operator can /quit if they want to stop.
+				fmt.Fprintln(os.Stderr, "error:", sendErr)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }

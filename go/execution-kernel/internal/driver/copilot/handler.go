@@ -1,7 +1,9 @@
 package copilot
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	copilotsdk "github.com/github/copilot-sdk/go"
@@ -44,9 +46,10 @@ func (e *LockdownError) Error() string {
 // Wire-up: assign Handler.OnPermissionRequest as the OnPermissionRequest
 // field in copilotsdk.SessionConfig or copilotsdk.ClientOptions.
 type Handler struct {
-	Gate  Gate
-	Agent string // "copilot-cli" for this driver
-	Cwd   string
+	Gate    Gate
+	Agent   string // "copilot-cli" for this driver
+	Cwd     string
+	Verbose bool // when true, log every Decision as JSON to stderr
 
 	// LockdownCh, if non-nil, receives a *LockdownError when OnPermissionRequest
 	// detects a lockdown decision. The SDK's executePermissionAndRespond discards
@@ -77,6 +80,10 @@ func (h *Handler) OnPermissionRequest(
 
 	action := Normalize(req, h.Cwd)
 	decision := h.Gate.Evaluate(action, h.Agent)
+
+	if h.Verbose {
+		_ = json.NewEncoder(os.Stderr).Encode(decision)
+	}
 
 	if decision.Allowed {
 		return copilotsdk.PermissionRequestResult{
