@@ -66,6 +66,21 @@ rules:
     reason: "Agents may not modify their own governance policy or plugin"
     escalation_weight: 2
 
+  - id: no-terraform-destroy
+    action: infra.destroy
+    effect: deny
+    reason: "terraform destroy removes live infrastructure"
+    suggestion: "Use `terraform plan` first; if destroy is intended, it requires a human-approved path (not an agent action)"
+    correctedCommand: "terraform plan"
+
+  - id: no-curl-pipe-bash
+    action: shell.exec
+    effect: deny
+    target_regex: '\bcurl\b[^|]*\|\s*(bash|sh)\b'
+    reason: "curl-pipe-bash executes untrusted remote code"
+    suggestion: "Download first (`curl -fsSLo /tmp/x.sh <url>`), inspect, then run explicitly if safe"
+    correctedCommand: "curl -fsSLo /tmp/script.sh <url> && less /tmp/script.sh"
+
   - id: default-allow-reads
     action: file.read
     effect: allow
