@@ -5,11 +5,12 @@ import (
 	"strings"
 )
 
-// Package-level regexes for infra.destroy detection.
+// Package-level regexes for infra.destroy detection and shape annotation.
 // Compiled once at init time; not recompiled per call.
 var (
 	reTerraformDestroy = regexp.MustCompile(`^terraform\s+destroy\b`)
 	reKubectlDeleteNS  = regexp.MustCompile(`^kubectl\s+delete\s+(ns|namespace)\b`)
+	reCurlPipeBash     = regexp.MustCompile(`\bcurl\b[^|]*\|\s*(bash|sh)\b`)
 )
 
 // Normalize maps a raw tool call to a canonical Action. Closed enum:
@@ -158,8 +159,17 @@ func classifyShellCommand(cmd string) Action {
 		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "kubectl"}}
 	}
 
-	// Default: generic shell.exec — all other commands (including rm -rf)
-	return Action{Type: ActShellExec, Target: trimmed}
+	// Default: generic shell.exec — all other commands (including rm -rf).
+	// Annotate curl-pipe-bash shape: action stays shell.exec, but policy can
+	// target Params["shape"] = "curl-pipe-bash" to match this dangerous pattern.
+	// Invariant: every curl ... | bash/sh command produces exactly one
+	// ActShellExec action with Params["shape"] = "curl-pipe-bash".
+	// wget pipe bash and curl without pipe intentionally do not match.
+	action := Action{Type: ActShellExec, Target: trimmed}
+	if reCurlPipeBash.MatchString(trimmed) {
+		action.Params = map[string]any{"shape": "curl-pipe-bash"}
+	}
+	return action
 }
 
 // extractShellIntent scans Python code for anything that would execute
