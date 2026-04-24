@@ -47,6 +47,14 @@ type Handler struct {
 	Gate  Gate
 	Agent string // "copilot-cli" for this driver
 	Cwd   string
+
+	// LockdownCh, if non-nil, receives a *LockdownError when OnPermissionRequest
+	// detects a lockdown decision. The SDK's executePermissionAndRespond discards
+	// handler errors before they can propagate to SendAndWait, so this channel
+	// is the reliable signal path for Run() to detect lockdown and terminate
+	// the session cleanly. A capacity-1 buffered channel is recommended so the
+	// send never blocks (lockdown fires at most once per session).
+	LockdownCh chan<- *LockdownError
 }
 
 // OnPermissionRequest is the SDK PermissionHandlerFunc callback. Called
@@ -78,9 +86,19 @@ func (h *Handler) OnPermissionRequest(
 
 	// Lockdown short-circuit: gate.Evaluate returns RuleID="lockdown" when
 	// the agent is in lockdown (either pre-existing or just triggered).
-	// Return the sentinel type so the driver can terminate the session.
+	// Return the sentinel type so the driver can detect via errors.As.
+	// Also signal LockdownCh — the SDK discards handler errors before they
+	// reach SendAndWait, so the channel is the reliable signal path.
 	if decision.RuleID == "lockdown" {
-		return denied, &LockdownError{Agent: h.Agent}
+		lde := &LockdownError{Agent: h.Agent}
+		if h.LockdownCh != nil {
+			select {
+			case h.LockdownCh <- lde:
+			default:
+				// channel full (already signalled); drop — Run already knows
+			}
+		}
+		return denied, lde
 	}
 
 	// Guide-mode (or enforce-mode) denial: encode into model-facing error
