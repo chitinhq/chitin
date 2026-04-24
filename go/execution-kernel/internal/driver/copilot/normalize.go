@@ -1,0 +1,94 @@
+package copilot
+
+import (
+	"fmt"
+
+	copilotsdk "github.com/github/copilot-sdk/go"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
+)
+
+// Normalize translates a Copilot SDK PermissionRequest into chitin's
+// canonical gov.Action. Returns Action{Type: ActUnknown} for unrecognized
+// Kinds so that the policy default-deny catches them (fail-closed).
+//
+// Invariant: for every Kind k in the SDK's documented 8-value enum,
+// Normalize(PermissionRequest{Kind: k}, cwd).Type is a non-empty string
+// and .Path == cwd.
+//
+// The cwd parameter is the chitin-kernel working directory, set on every
+// Action for policy-path scoping (LoadWithInheritance uses this).
+func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
+	action := gov.Action{
+		Path:   cwd,
+		Params: map[string]any{},
+	}
+
+	switch req.Kind {
+	case copilotsdk.PermissionRequestKindShell:
+		action.Type = gov.ActShellExec
+		if req.FullCommandText != nil {
+			action.Target = *req.FullCommandText
+		}
+
+	case copilotsdk.PermissionRequestKindWrite:
+		action.Type = gov.ActFileWrite
+		// FileName is the SDK field for the path being written.
+		// Falls back to empty string if nil (nil-safe, no panic).
+		if req.FileName != nil {
+			action.Target = *req.FileName
+		}
+
+	case copilotsdk.PermissionRequestKindRead:
+		action.Type = gov.ActFileRead
+		if req.Path != nil {
+			action.Target = *req.Path
+		}
+
+	case copilotsdk.PermissionRequestKindMcp:
+		action.Type = gov.ActMCPCall
+		// Compose "serverName/toolName" as a stable composite identifier.
+		// Either or both may be nil; deref only when non-nil.
+		server := ""
+		tool := ""
+		if req.ServerName != nil {
+			server = *req.ServerName
+		}
+		if req.ToolName != nil {
+			tool = *req.ToolName
+		}
+		if server != "" || tool != "" {
+			action.Target = fmt.Sprintf("%s/%s", server, tool)
+		}
+
+	case copilotsdk.PermissionRequestKindURL:
+		action.Type = gov.ActHTTPRequest
+		if req.URL != nil {
+			action.Target = *req.URL
+		}
+
+	case copilotsdk.PermissionRequestKindMemory:
+		action.Type = "memory.access"
+		if req.Subject != nil {
+			action.Target = *req.Subject
+		}
+
+	case copilotsdk.PermissionRequestKindCustomTool:
+		action.Type = "tool.custom"
+		if req.ToolName != nil {
+			action.Target = *req.ToolName
+		}
+
+	case copilotsdk.PermissionRequestKindHook:
+		action.Type = "hook.invoke"
+		if req.HookMessage != nil {
+			action.Target = *req.HookMessage
+		}
+
+	default:
+		// Fail-closed: unknown Kind maps to ActUnknown so the policy
+		// default-deny rule catches it without special-casing.
+		action.Type = gov.ActUnknown
+	}
+
+	return action
+}
