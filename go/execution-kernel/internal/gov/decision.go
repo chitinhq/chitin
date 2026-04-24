@@ -40,6 +40,7 @@ func WriteLog(d Decision, dir string) error {
 		Suggestion       string `json:"suggestion,omitempty"`
 		CorrectedCommand string `json:"corrected_command,omitempty"`
 		Escalation       string `json:"escalation,omitempty"`
+		Agent            string `json:"agent,omitempty"`
 		ActionType       string `json:"action_type"`
 		ActionTarget     string `json:"action_target"`
 		Ts               string `json:"ts"`
@@ -47,7 +48,7 @@ func WriteLog(d Decision, dir string) error {
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
 		CorrectedCommand: d.CorrectedCommand, Escalation: d.Escalation,
-		ActionType: string(d.Action.Type), ActionTarget: d.Action.Target,
+		Agent: d.Agent, ActionType: string(d.Action.Type), ActionTarget: d.Action.Target,
 		Ts: d.Ts,
 	})
 	if err != nil {

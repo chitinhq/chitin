@@ -30,7 +30,7 @@ func (g *Gate) Evaluate(a Action, agent string) Decision {
 		d := Decision{
 			Allowed: false, Mode: "enforce", RuleID: "lockdown",
 			Reason: "agent in lockdown — contact operator",
-			Escalation: "lockdown", Action: a, Ts: now,
+			Escalation: "lockdown", Action: a, Agent: agent, Ts: now,
 		}
 		_ = WriteLog(d, g.LogDir)
 		return d
@@ -39,6 +39,7 @@ func (g *Gate) Evaluate(a Action, agent string) Decision {
 	// 2. Policy evaluate.
 	d := g.Policy.Evaluate(a)
 	d.Ts = now
+	d.Agent = agent
 
 	// 3. Bounds — only for push-shaped when policy allows the action so far.
 	if d.Allowed && (a.Type == ActGitPush || a.Type == ActGithubPRCreate) {
