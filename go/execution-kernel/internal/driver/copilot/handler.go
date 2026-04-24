@@ -63,21 +63,36 @@ type Handler struct {
 // OnPermissionRequest is the SDK PermissionHandlerFunc callback. Called
 // synchronously by the SDK before each tool execution.
 //
+// Wire kinds are the Copilot CLI's user-intent vocabulary ("approve-once",
+// "reject") rather than the Go SDK's internal enum ("approved", "denied-*").
+// The JS CLI's permission consumer (Ice() in sdk/index.js) switches on
+// user-intent only; sending the Go enum hits its default branch and
+// produces "unexpected user permission response", breaking every tool
+// call — allow and deny alike. The Go SDK's handlePermissionRequestV2
+// also overrides the kind to "denied-no-approval-rule-and-could-not-
+// request-from-user" whenever the handler returns a non-nil error, so
+// we return nil error on deny too and rely on LockdownCh for the
+// lockdown signal path (the SDK discards handler errors before they
+// reach SendAndWait anyway).
+//
 // Returns:
-//   - (Approved, nil)            when the gate allows the action
-//   - (Denied, error)            with guide-mode encoding on gate deny:
-//     "chitin: <Reason> [| suggest: <Suggestion>] [| try: <CorrectedCommand>]"
-//     (Suggestion and CorrectedCommand segments are omitted when empty)
-//   - (Denied, *LockdownError)   when the decision has RuleID "lockdown",
-//     so the driver can detect via errors.As and terminate the session cleanly
+//   - (approve-once,      nil) when the gate allows
+//   - (user-not-available, nil) when the gate denies in guide or enforce mode —
+//     maps to "denied-no-approval-rule-and-could-not-request-from-user" on the
+//     model side, which the model treats as a try-something-else signal
+//     (required for the Demo 5 escalation narrative where the model must
+//     retry variants until the lockdown threshold fires)
+//   - (reject,             nil) when gate returns lockdown — maps to
+//     "denied-interactively-by-user", a hard refusal that stops the session;
+//     paired with a *LockdownError send on LockdownCh for clean termination
+//
+// Side effects:
+//   - Verbose: decision JSON written to stderr
+//   - Lockdown: *LockdownError sent on LockdownCh (non-blocking, capacity-1 buffered)
 func (h *Handler) OnPermissionRequest(
 	req copilotsdk.PermissionRequest,
 	inv copilotsdk.PermissionInvocation,
 ) (copilotsdk.PermissionRequestResult, error) {
-	denied := copilotsdk.PermissionRequestResult{
-		Kind: copilotsdk.PermissionRequestResultKindDeniedCouldNotRequestFromUser,
-	}
-
 	action := Normalize(req, h.Cwd)
 	decision := h.Gate.Evaluate(action, h.Agent)
 
@@ -87,15 +102,10 @@ func (h *Handler) OnPermissionRequest(
 
 	if decision.Allowed {
 		return copilotsdk.PermissionRequestResult{
-			Kind: copilotsdk.PermissionRequestResultKindApproved,
+			Kind: copilotsdk.PermissionRequestResultKind("approve-once"),
 		}, nil
 	}
 
-	// Lockdown short-circuit: gate.Evaluate returns RuleID="lockdown" when
-	// the agent is in lockdown (either pre-existing or just triggered).
-	// Return the sentinel type so the driver can detect via errors.As.
-	// Also signal LockdownCh — the SDK discards handler errors before they
-	// reach SendAndWait, so the channel is the reliable signal path.
 	if decision.RuleID == "lockdown" {
 		lde := &LockdownError{Agent: h.Agent}
 		if h.LockdownCh != nil {
@@ -105,12 +115,18 @@ func (h *Handler) OnPermissionRequest(
 				// channel full (already signalled); drop — Run already knows
 			}
 		}
-		return denied, lde
+		// Hard refusal for lockdown — session must terminate now.
+		return copilotsdk.PermissionRequestResult{
+			Kind: copilotsdk.PermissionRequestResultKind("reject"),
+		}, nil
 	}
 
-	// Guide-mode (or enforce-mode) denial: encode into model-facing error
-	// string so the model can self-correct.
-	return denied, fmt.Errorf("%s", formatGuideError(decision))
+	// Regular deny — "user-not-available" invites the model to attempt a
+	// variation, which drives the escalation counter toward lockdown when
+	// the model keeps firing at the same rule.
+	return copilotsdk.PermissionRequestResult{
+		Kind: copilotsdk.PermissionRequestResultKind("user-not-available"),
+	}, nil
 }
 
 // formatGuideError produces the model-facing refusal string.

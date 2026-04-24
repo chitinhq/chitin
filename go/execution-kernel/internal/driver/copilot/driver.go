@@ -3,6 +3,7 @@ package copilot
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,7 +101,17 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 	defer session.Disconnect() //nolint:errcheck
 
-	// 7. Dispatch.
+	// 7. Subscribe to the event stream so model text, tool calls, and tool
+	// results reach stdout. Without this, SendAndWait returns silently and
+	// the operator sees nothing — governance still runs, but the demo story
+	// ("model tried X; tool returned Y") is invisible. Registered before
+	// dispatch so no events are missed.
+	unsubscribe := session.On(func(evt copilotsdk.SessionEvent) {
+		PrintEvent(os.Stdout, evt)
+	})
+	defer unsubscribe()
+
+	// 8. Dispatch.
 	if opts.Interactive {
 		return runInteractive(ctx, session, lockdownCh)
 	}
@@ -259,4 +270,95 @@ func runInteractive(ctx context.Context, session *copilotsdk.Session, lockdownCh
 			return ctx.Err()
 		}
 	}
+}
+
+// PrintEvent writes a human-readable rendering of a SessionEvent to w,
+// restricted to the subset relevant for an operator or stage audience:
+// the model's text replies, the tool calls it requests, and the tool
+// results. All session-protocol chatter (turn markers, usage info,
+// streaming deltas, reasoning, skill loads) is suppressed.
+//
+// Invariant: returns true iff the event was recognized AND produced
+// at least one byte of output. Unrecognized event types and recognized
+// events with empty payloads both return false and write nothing.
+func PrintEvent(w io.Writer, evt copilotsdk.SessionEvent) bool {
+	switch evt.Type {
+	case copilotsdk.SessionEventTypeAssistantMessage:
+		d, ok := evt.Data.(*copilotsdk.AssistantMessageData)
+		if !ok || d == nil || d.Content == "" {
+			return false
+		}
+		fmt.Fprintf(w, "\n%s\n", strings.TrimRight(d.Content, "\n"))
+		return true
+
+	case copilotsdk.SessionEventTypeToolExecutionStart:
+		d, ok := evt.Data.(*copilotsdk.ToolExecutionStartData)
+		if !ok || d == nil {
+			return false
+		}
+		summary := summarizeArgs(d.Arguments)
+		if summary == "" {
+			fmt.Fprintf(w, "\n▸ %s\n", d.ToolName)
+		} else {
+			fmt.Fprintf(w, "\n▸ %s  %s\n", d.ToolName, summary)
+		}
+		return true
+
+	case copilotsdk.SessionEventTypeToolExecutionComplete:
+		d, ok := evt.Data.(*copilotsdk.ToolExecutionCompleteData)
+		if !ok || d == nil {
+			return false
+		}
+		if d.Success {
+			if d.Result == nil {
+				return false
+			}
+			content := d.Result.Content
+			if d.Result.DetailedContent != nil && *d.Result.DetailedContent != "" {
+				content = *d.Result.DetailedContent
+			}
+			if content == "" {
+				return false
+			}
+			fmt.Fprintln(w, strings.TrimRight(content, "\n"))
+			return true
+		}
+		if d.Error != nil {
+			fmt.Fprintf(w, "✗ %s\n", d.Error.Message)
+			return true
+		}
+		fmt.Fprintln(w, "✗ tool execution failed")
+		return true
+	}
+	return false
+}
+
+// summarizeArgs renders a short one-line preview of a tool-call's
+// arguments for the pre-execution banner. Known shapes (bash command,
+// file path) are surfaced directly; anything else falls back to
+// truncated JSON.
+func summarizeArgs(args any) string {
+	if args == nil {
+		return ""
+	}
+	if m, ok := args.(map[string]any); ok {
+		if cmd, ok := m["command"].(string); ok && cmd != "" {
+			return cmd
+		}
+		if path, ok := m["path"].(string); ok && path != "" {
+			return path
+		}
+		if path, ok := m["filePath"].(string); ok && path != "" {
+			return path
+		}
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	s := string(b)
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	return s
 }
