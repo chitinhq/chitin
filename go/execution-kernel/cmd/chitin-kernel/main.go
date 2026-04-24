@@ -53,6 +53,18 @@ func main() {
 		cmdHealth(args)
 	case "gate":
 		cmdGate(args)
+	case "drive":
+		if len(args) < 1 {
+			exitErr("drive_no_driver", "usage: chitin-kernel drive <driver> [flags]")
+		}
+		driver := args[0]
+		driverArgs := args[1:]
+		switch driver {
+		case "copilot":
+			os.Exit(cmdDriveCopilot(driverArgs))
+		default:
+			exitErr("drive_unknown_driver", driver)
+		}
 	default:
 		exitErr("unknown_subcommand", sub)
 	}
