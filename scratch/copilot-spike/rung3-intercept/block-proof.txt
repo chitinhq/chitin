@@ -1,0 +1,5 @@
+INTERCEPTOR_CALLED: true
+PERMISSION_KIND_SEEN: shell
+COMMAND_SEEN: echo canary > /tmp/rung3-canary.txt
+CANARY_FILE_EXISTS: no
+SIDE_EFFECT_OBSERVED: no side effect
