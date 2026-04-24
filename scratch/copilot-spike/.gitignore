@@ -1,0 +1,7 @@
+*.token
+*.key
+.env
+.env.*
+*/bin/
+*/build/
+*/dist/
