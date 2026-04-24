@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// Package-level regexes for infra.destroy detection.
+// Compiled once at init time; not recompiled per call.
+var (
+	reTerraformDestroy = regexp.MustCompile(`^terraform\s+destroy\b`)
+	reKubectlDeleteNS  = regexp.MustCompile(`^kubectl\s+delete\s+(ns|namespace)\b`)
+)
+
 // Normalize maps a raw tool call to a canonical Action. Closed enum:
 // unknown tools produce ActUnknown (fail-closed at the policy layer).
 //
@@ -138,6 +145,17 @@ func classifyShellCommand(cmd string) Action {
 	}
 	if matched, _ := regexp.MatchString(`\bgh\s+api\b`, trimmed); matched {
 		return Action{Type: ActGithubAPI, Target: trimmed}
+	}
+
+	// Infra-destroy patterns: re-tag from shell.exec to infra.destroy so
+	// policy rules can match the intent-class, not the shell string.
+	// Invariant: every command matching these patterns produces exactly one
+	// ActInfraDestroy action with Params["tool"] naming the CLI tool.
+	if reTerraformDestroy.MatchString(trimmed) {
+		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "terraform"}}
+	}
+	if reKubectlDeleteNS.MatchString(trimmed) {
+		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "kubectl"}}
 	}
 
 	// Default: generic shell.exec — all other commands (including rm -rf)

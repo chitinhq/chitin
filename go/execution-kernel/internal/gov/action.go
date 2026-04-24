@@ -49,6 +49,7 @@ const (
 	ActNPMRun            ActionType = "npm.script.run"
 	ActTestRun           ActionType = "test.run"
 	ActMCPCall           ActionType = "mcp.call"
+	ActInfraDestroy      ActionType = "infra.destroy"
 	ActUnknown           ActionType = "unknown"
 )
 

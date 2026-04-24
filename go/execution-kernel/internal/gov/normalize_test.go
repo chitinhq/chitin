@@ -141,6 +141,69 @@ subprocess.run(cmd, shell=True)`
 	}
 }
 
+func TestNormalize_TerraformDestroy(t *testing.T) {
+	cases := []struct {
+		name     string
+		command  string
+		wantType ActionType
+		wantTool string
+	}{
+		{"basic", "terraform destroy", ActInfraDestroy, "terraform"},
+		{"with auto-approve", "terraform destroy -auto-approve", ActInfraDestroy, "terraform"},
+		{"with target", "terraform destroy -target=aws_instance.web", ActInfraDestroy, "terraform"},
+		{"plan is NOT destroy", "terraform plan", ActShellExec, ""},
+		{"apply is NOT destroy", "terraform apply -auto-approve", ActShellExec, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Normalize("terminal", map[string]any{"command": tc.command})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if got.Type != tc.wantType {
+				t.Errorf("Type: got %q, want %q", got.Type, tc.wantType)
+			}
+			if tc.wantTool != "" {
+				tool, _ := got.Params["tool"].(string)
+				if tool != tc.wantTool {
+					t.Errorf("Params[tool]: got %q, want %q", tool, tc.wantTool)
+				}
+			}
+		})
+	}
+}
+
+func TestNormalize_KubectlDelete(t *testing.T) {
+	cases := []struct {
+		name     string
+		command  string
+		wantType ActionType
+		wantTool string
+	}{
+		{"delete ns", "kubectl delete ns production", ActInfraDestroy, "kubectl"},
+		{"delete namespace", "kubectl delete namespace production", ActInfraDestroy, "kubectl"},
+		{"delete pod is NOT infra destroy", "kubectl delete pod my-pod", ActShellExec, ""},
+		{"get ns is NOT destroy", "kubectl get ns", ActShellExec, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Normalize("terminal", map[string]any{"command": tc.command})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if got.Type != tc.wantType {
+				t.Errorf("Type: got %q, want %q", got.Type, tc.wantType)
+			}
+			if tc.wantTool != "" {
+				tool, _ := got.Params["tool"].(string)
+				if tool != tc.wantTool {
+					t.Errorf("Params[tool]: got %q, want %q", tool, tc.wantTool)
+				}
+			}
+		})
+	}
+}
+
 func TestNormalize_UnknownTool(t *testing.T) {
 	a, _ := Normalize("no_such_tool", map[string]any{"foo": "bar"})
 	if a.Type != ActUnknown {
