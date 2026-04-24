@@ -25,9 +25,32 @@ func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
 
 	switch req.Kind {
 	case copilotsdk.PermissionRequestKindShell:
-		action.Type = gov.ActShellExec
+		// Route through gov.Normalize so shell commands receive the full
+		// re-tagging treatment: git.force-push detection, infra.destroy
+		// detection for terraform destroy / kubectl delete ns, and
+		// curl-pipe-bash shape annotation.
+		//
+		// Invariant: for any shell command that gov.classifyShellCommand
+		// maps to a more specific type, this path produces that type —
+		// not the generic shell.exec default.
+		cmd := ""
 		if req.FullCommandText != nil {
-			action.Target = *req.FullCommandText
+			cmd = *req.FullCommandText
+		}
+		govAction, err := gov.Normalize("terminal", map[string]any{"command": cmd})
+		if err != nil {
+			// Fallback: at least set shell.exec with the raw target so the
+			// policy default-allow-shell can match rather than panicking.
+			action.Type = gov.ActShellExec
+			action.Target = cmd
+		} else {
+			// Use gov's fully-tagged Action. Preserve Path (gov.Normalize
+			// does not know cwd) and merge in any Params gov produced.
+			action.Type = govAction.Type
+			action.Target = govAction.Target
+			for k, v := range govAction.Params {
+				action.Params[k] = v
+			}
 		}
 
 	case copilotsdk.PermissionRequestKindWrite:

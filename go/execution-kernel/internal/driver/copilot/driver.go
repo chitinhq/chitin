@@ -81,7 +81,15 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 
 	// 6. Create session with handler registered.
+	// Model: "gpt-4.1" is required for reliable tool-use in headless ACP mode.
+	// The spike's Rung 4 confirmed this model calls the shell tool in response
+	// to shell-action prompts; the default model applies its own safety filters
+	// and declines tool calls for risky prompts (rm -rf, curl|bash) without
+	// ever firing OnPermissionRequest, which bypasses chitin governance entirely.
+	// AvailableTools: nil = all built-in tools remain available so the model
+	// can call shell, file-read, file-write, and other Copilot built-ins.
 	session, err := client.SDKClient().CreateSession(ctx, &copilotsdk.SessionConfig{
+		Model:               "gpt-4.1",
 		OnPermissionRequest: handler.OnPermissionRequest,
 	})
 	if err != nil {
