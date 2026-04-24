@@ -1,0 +1,2 @@
+2026-04-24T01:13:26Z	A-allow	true	default-allow-shell	ls /tmp
+2026-04-24T01:13:30Z	B-block	false	no-destructive-rm	rm -rf /tmp/copilot-spike-test-dir
