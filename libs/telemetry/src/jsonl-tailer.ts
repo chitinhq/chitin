@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import type { V2Event } from './sqlite-indexer';
+import type { V2Event } from './sqlite-indexer.js';
 
 export async function* tailJSONL(path: string): AsyncGenerator<V2Event> {
   const rl = createInterface({
