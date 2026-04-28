@@ -532,12 +532,23 @@ func cmdInstallHook(args []string) {
 	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
 	sessionID := fs.String("session-id", "", "session id")
 	adapter := fs.String("adapter", os.Getenv("CHITIN_ADAPTER_BINARY"), "adapter binary path")
+	adapterShell := fs.Bool("adapter-shell", false, "allow shell command string for adapter (security: trust-on-use)")
 	fs.Parse(args)
 	if *sessionID == "" {
 		exitErr("missing_session_id", "--session-id required")
 	}
 	if *adapter == "" {
 		exitErr("missing_adapter", "--adapter or CHITIN_ADAPTER_BINARY required")
+	}
+	if !*adapterShell {
+		if err := hookinstall.ValidateAdapter(*adapter); err != nil {
+			exitErr("invalid_adapter", err.Error())
+		}
+	} else {
+		if err := hookinstall.ValidateAdapterShell(*adapter); err != nil {
+			exitErr("invalid_adapter", err.Error())
+		}
+		fmt.Fprintf(os.Stderr, `{"warning":"adapter_shell_trusted","message":"--adapter-shell skips path validation. The adapter string will be invoked via shell semantics on every hook."}`+"\n")
 	}
 	absDir, _ := filepath.Abs(*dir)
 	if err := hookinstall.Install(absDir, *sessionID, *adapter); err != nil {
@@ -566,6 +577,7 @@ func cmdInstall(args []string) {
 	surface := fs.String("surface", "", "surface to install (claude-code)")
 	global := fs.Bool("global", false, "install into user-level settings (always-on)")
 	adapter := fs.String("adapter", os.Getenv("CHITIN_ADAPTER_BINARY"), "adapter binary path")
+	adapterShell := fs.Bool("adapter-shell", false, "allow shell command string for adapter (security: trust-on-use)")
 	fs.Parse(args)
 	if *surface == "" {
 		exitErr("missing_surface", "--surface required")
@@ -575,6 +587,16 @@ func cmdInstall(args []string) {
 	}
 	if *adapter == "" {
 		exitErr("missing_adapter", "--adapter or CHITIN_ADAPTER_BINARY required")
+	}
+	if !*adapterShell {
+		if err := hookinstall.ValidateAdapter(*adapter); err != nil {
+			exitErr("invalid_adapter", err.Error())
+		}
+	} else {
+		if err := hookinstall.ValidateAdapterShell(*adapter); err != nil {
+			exitErr("invalid_adapter", err.Error())
+		}
+		fmt.Fprintf(os.Stderr, `{"warning":"adapter_shell_trusted","message":"--adapter-shell skips path validation. The adapter string will be invoked via shell semantics on every hook."}`+"\n")
 	}
 	switch *surface {
 	case "claude-code":
