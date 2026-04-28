@@ -1,0 +1,8 @@
+id: strict-parent
+mode: enforce
+rules:
+  - id: r1
+    action: shell.exec
+    effect: deny
+    target: "rm"
+    reason: "parent deny"

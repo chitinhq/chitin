@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "git $*" >> "${STUB_LOG:?}"
+# Pass-through mode for sub-commands tick.sh cares about (apply --check
+# must succeed for happy paths; commit/push are no-ops).
+case "$*" in
+  "apply --check"*)
+    if [[ -n "${STUB_GIT_APPLY_CHECK_FAIL:-}" ]]; then
+      echo "error: patch does not apply" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac

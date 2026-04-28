@@ -1,0 +1,44 @@
+id: test-baseline
+name: Test baseline
+mode: guide
+
+bounds:
+  max_files_changed: 25
+  max_lines_changed: 500
+  max_runtime_seconds: 900
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+
+rules:
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+    suggestion: "Use git rm <specific-files>"
+    correctedCommand: "git rm <files>"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master]
+    reason: "Direct push to protected branch"
+
+  - id: no-env-write
+    action: file.write
+    effect: deny
+    target: ".env"
+    reason: "Secrets"
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Non-protected branch pushes are allowed"

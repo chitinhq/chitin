@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "gh $*" >> "${STUB_LOG:?}"
+case "$*" in
+  *"issue list"*) echo "${STUB_GH_ISSUE_LIST_OUTPUT:-[]}" ;;
+  *"pr list"*)    echo "${STUB_GH_PR_LIST_OUTPUT:-[]}" ;;
+  *)              echo "" ;;
+esac

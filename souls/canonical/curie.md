@@ -104,3 +104,27 @@ per quorum vote at
 `docs/observations/quorums/2026-04-19-phase-b-finish.md`. Curie returns
 to library standby; next activation when a measurable experiment
 appears.
+
+**Scope note (2026-04-23, active):** Curie reactivated for
+hermes-staged-tick v1 migration finish after Knuth earned four strikes
+in one session (three of the same shape — imagined external-CLI flags
+not verified against `<cli> --help`). Remaining scope is narrow and
+empirical:
+
+  1. Register system `crontab` entry for tick.sh (verify syntax against
+     `crontab --help` and real cron behavior before editing).
+  2. Dry-run tick.sh against real gh/hermes, inspect the artifact dir,
+     confirm Stage 1 emits a schema-valid plan.
+  3. Let one real cron fire; compare the live tick's artifacts against
+     the dry-run baseline.
+  4. Fix MIGRATION.md on main — replace the incorrect `hermes cron
+     create --command` block with the real system-crontab instructions,
+     per observed reality not plan imagination.
+
+Every step is hypothesis → cheap capture (`--help` or one-shot run) →
+compare → ship or revise. No code architecture involved; no multi-step
+reasoning. If architecture questions arise mid-flow, swap to da Vinci
+(default canonical lens) rather than pulling Curie off-cadence. Scoped
+handoff only, no quorum ceremony per "keep practices, drop ceremony"
+feedback. Knuth Strike 4 record at `souls/strikes/knuth.md` and ELO
+log at `souls/elo.md`.

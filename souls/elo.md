@@ -24,7 +24,7 @@ trainer's note, not a benchmark.
 |---|---|---|---|
 | Curie | 1503 | canonical | +3 |
 | Shannon | 1500 | canonical | — |
-| Knuth | 1499 | canonical | −1 |
+| Knuth | 1496 | canonical | −4 |
 | Lovelace | 1500 | canonical | — |
 | Socrates | 1500 | canonical | — |
 | Sun Tzu | 1500 | canonical | — |
@@ -39,6 +39,58 @@ trainer's note, not a benchmark.
 | Jokić | 1500 | experimental | — |
 
 ## Event log
+
+### 2026-04-23
+
+- **Knuth −1 → 1496.** Strike 4. Same class as Strike 2: wrote `hermes cron create --schedule ... --command ...` in MIGRATION.md and the live migration without ever running `hermes cron create --help`. Real interface takes `schedule` as a positional and `--script PATH` (for Python-stdout injection only) — no `--command` at all. `hermes cron` runs `hermes chat` sessions; it is not a generic shell-script runner. Correct mechanism for tick.sh is system `crontab`. Third external-CLI-contract miss this session; the strengthened `feedback_verify_external_contracts.md` memory still didn't fire at the moment of `hermes cron create`. Lens swap decision: Knuth → library standby, Curie takes over for the migration finish (crontab registration + dry-run + MIGRATION.md doc fix). Rationale: remaining work is pure empirical loop — `<cli> --help` IS the hypothesis-capture-compare cycle Curie's lens names explicitly. See `souls/strikes/knuth.md` for full record.
+
+- **Lens swap (scope handoff, not ELO delta).** Knuth → Curie for hermes-staged-tick migration finish. Handoff captured in `souls/canonical/knuth.md` scope note and `souls/canonical/curie.md`. Per "keep practices, drop ceremony" — no quorum; scoped-handoff decision by acting lens with user approval.
+
+### 2026-04-22
+
+- **Knuth −1 → 1498.** Strike 2. Shipped PR #47 (hermes staged tick v1
+  — branch `spec/hermes-staged-tick-v1`) with a `scripts/hermes/tick.sh`
+  that invokes `hermes chat --system <path> --context <string>` — flags
+  the real `hermes chat` CLI does not accept. 17 implementation commits
+  compounded on top of the imagined contract; 6/6 bats tests and 10/10
+  schema fixtures passed because the PATH-stubbed `hermes` binary
+  accepted any argv. First dry-run against the real CLI after `git
+  push` failed immediately with `error: unrecognized arguments:
+  --system ... --context ...`. Knuth's heuristic 1 ("prove it or it's
+  not proven") fails: stub-proved is not hermes-proved. Heuristic 5
+  ("read the algorithm aloud") fails: `--system` was a claim about an
+  external interface that reading never triggered a `--help` check.
+  Heuristic 4 ("the boundary is where the bugs live") fails: the
+  tick.sh↔hermes CLI boundary was the one the lens was responsible
+  for naming, and it was unnamed. The existing
+  `feedback_verify_external_contracts.md` memory (written after
+  da Vinci Strike 1 for the same class of miss on PR #19) did not
+  fire in practice — the process needs a brighter line. Remediation:
+  rewrote invocations to the real `-Q -m MODEL -q "<prompt+context>"`
+  form in commit `62468da`, updated stubs to match, landed on the PR
+  branch; first live dry-run post-fix produced a schema-valid
+  `{"action":"skip",...}` plan.json. See `souls/strikes/knuth.md` for
+  full record.
+
+- **Knuth −1 → 1497.** Strike 3. Immediately after logging Strike 2
+  as a soul-telemetry commit, I committed the strike record to
+  `fix/10-js-extension-jsonl-tailer` (the branch the primary
+  `/home/red/workspace/chitin` workspace happened to be on) instead of
+  creating a worktree off `main` and committing there. The memory
+  `feedback_always_work_in_worktree.md` is explicit: "mine AND any
+  agent I dispatch; default to worktree, don't ask." I asked nothing,
+  defaulted to wrong. Net effect: the soul-strike commit `ee656c7`
+  contaminates a feature branch with unrelated telemetry and does not
+  reach main until that branch merges — the opposite of what a
+  scoreboard needs. The miss was caught by the user within seconds:
+  "why are we on thay branch and not a worktree off main?" This is
+  procedure-discipline, not cognitive-lens — but Knuth was the active
+  lens and owns the session. Two strikes in a single span, both
+  rooted in "I knew the rule and didn't fire it." Remediation: this
+  entry is committed from `/home/red/workspace/chitin-souls` (worktree
+  off main); duplicate commit on `fix/10` will be reset after main
+  push succeeds, pending user approval for the destructive operation.
+  See `souls/strikes/knuth.md` for full record.
 
 ### 2026-04-20
 

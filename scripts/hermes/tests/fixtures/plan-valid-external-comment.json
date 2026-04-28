@@ -1,0 +1,10 @@
+{
+  "action": "external",
+  "issue_number": 22,
+  "reason": "request clarification on chain-id behavior",
+  "external_action": {
+    "kind": "comment",
+    "body_or_label": "Should PreCompact emit one event per /compact invocation regardless of preceding state?",
+    "linked_issue": 22
+  }
+}

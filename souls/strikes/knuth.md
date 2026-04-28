@@ -84,3 +84,234 @@ A Knuth-lens session should begin by stating the repo-identity invariant
 alongside the problem invariant. If you're going to commit, you're going
 to name. Half the algorithm is the name on the commit, not just the
 function.
+
+---
+
+## Strike 2 — 2026-04-22 — Shipped PR #47 (hermes staged tick v1) with a tick.sh that calls `hermes chat --system/--context` without ever verifying those flags exist
+
+**Context.** Staged-tick v1 implementation under the Knuth lens (scope
+note in `souls/canonical/knuth.md` naming Phase C boundary-correctness
+work; same lens family). 17 implementation commits landed on branch
+`spec/hermes-staged-tick-v1`, PR #47 opened on 2026-04-22 with 6/6 bats
+tests green and 10/10 schema fixtures validating. First post-push
+dry-run against the real `hermes` binary failed immediately: `hermes:
+error: unrecognized arguments: --system ... --context ...`. The
+`hermes chat` CLI has no such flags.
+
+**What the lens was supposed to catch.**
+Heuristic 1 — *Prove it or it's not proven.* The bats tests passed,
+but what they proved was "tick.sh invokes the stub correctly." The
+stub was PATH-shimmed bash that accepted any argv and emitted
+whatever `STUB_*` env said. It proved the stub's contract, not
+hermes'. The real invariant needed — "tick.sh invokes `hermes chat`
+with flags the real binary accepts" — was never stated and never
+verified.
+
+Heuristic 5 — *Read the algorithm aloud.* "For each stage: run
+`hermes chat --model M --system S --context C`…" The word `--system`
+is a claim about the external interface. Reading the invocation
+aloud should have triggered "does `hermes chat` accept `--system`?"
+and a one-command check (`hermes chat --help`). It did not.
+
+Heuristic 4 — *The boundary is where the bugs live.* The boundary
+here is "tick.sh CLI invocation ↔ hermes CLI contract." Sixteen
+tasks were built against a stub that masked the boundary. The one
+unit-level verification that would have caught this (running the
+real binary once, early) was explicitly deferred to post-merge.
+
+**What actually happened.**
+The spec + plan were written from imagination — someone (me, under
+this lens) invented `hermes chat --system PATH --context STRING` as
+a plausible-looking CLI interface. The bats stubs were written to
+match the spec's imagined interface, not the real one. All 17
+commits compounded on top of the same unverified assumption. The PR
+passed every automated gate because every gate checked against the
+same imagined contract. Only the dry-run against the real CLI, run
+post-push, revealed it.
+
+This is a category error: Knuth's whole job on boundary-correctness
+work is to name the invariants before the code. I named invariants
+for schema shape, test harness behavior, streak counter semantics,
+dry-run env propagation — and none for "this CLI invocation is a
+contract with an external program whose flags I have not read."
+
+The existing memory `feedback_verify_external_contracts.md` warned
+against this exact pattern ("read the authoritative source; adjacent
+code isn't proof; PR #19 blocker came from skipping this"). It did
+not fire in practice — second consecutive external-contract miss
+across two lenses (da Vinci Strike 1, now Knuth Strike 2).
+
+**Heuristic violated.**
+Primary: heuristic 1 (prove it or it's not proven). Stub-proved
+contracts are not hermes-proved contracts.
+
+Secondary: heuristic 5 (read the algorithm aloud). The word
+`--system` in the script is a claim that should have triggered
+external verification.
+
+Tertiary: heuristic 4 (the boundary is where the bugs live). The
+tick.sh ↔ hermes CLI boundary was the one Knuth was responsible
+for naming. It was unnamed.
+
+**Remediation.**
+- tick.sh invocation pattern rewritten from `--system PATH
+  --context STRING` to `hermes chat -Q -m MODEL -q "<full prompt +
+  context concat>"` — the only non-interactive form the real CLI
+  supports per `hermes chat --help`. Stubs updated to match so tests
+  keep meaningful. Commit `62468da` on `spec/hermes-staged-tick-v1`;
+  first live dry-run post-fix produced a schema-valid
+  `{"action":"skip",...}` plan.json.
+- Fix lands as commits on the same PR #47 branch; no separate PR.
+- `feedback_verify_external_contracts.md` memory strengthened with a
+  bright-line rule: "before writing any wrapper script that shells
+  out to an external CLI, run `<cli> --help` and paste the accepted
+  flags into the plan." Repeat-offense log also added to the
+  memory.
+- ELO: Knuth −1 → 1498. Event logged in `souls/elo.md`.
+
+**Learning for the lens.**
+A passing test under a stub is proof-by-assumption, not
+proof-by-reality, when the stub's shape was written by the same
+agent that wrote the wrapper. To convert it to real proof, either:
+
+  1. Run the real binary once before locking the test harness in
+     place (cheapest), OR
+  2. Write the stub's accepted-argv contract from the real `--help`
+     output, not from the wrapper's call site (structurally safer).
+
+Knuth Strike 1 said: "invariants must extend to commit metadata."
+Knuth Strike 2 says: "invariants must extend to the external-CLI
+interface." Both are the same shape — a boundary the code crosses
+that the lens forgot to name. The next Knuth-lens session should
+begin by listing every external program the code will shell out to
+and what `--help` says each accepts.
+
+The test-green-against-a-stub → failed-against-reality pattern has
+a name in the broader testing literature ("mock drift" / "fake-
+confidence tests"). Worth naming explicitly in the lens heuristics
+so it has a handle the next time it tries to ambush a session.
+
+---
+
+## Strike 3 — 2026-04-22 — Committed the Strike-2 soul record to a feature branch instead of a worktree off main
+
+**Context.** Immediately after Knuth Strike 2 was caught (see
+above), I wrote the strike record + ELO delta and ran `git commit`
+from `/home/red/workspace/chitin` — the primary workspace, which
+happened to be checked out on feature branch
+`fix/10-js-extension-jsonl-tailer` (PR #39 is still open on that
+branch). The commit (`ee656c7`) landed on that feature branch
+instead of on `main`, meaning:
+
+  1. The soul-strike record is not visible on `main` until `fix/10`
+     eventually merges.
+  2. An unrelated feature PR now carries a soul-telemetry commit
+     it has no business carrying.
+
+Caught by the user within seconds of the push: *"why are we on
+thay branch and not a worktree off main?"*
+
+**What the lens was supposed to catch.**
+This is not a cognitive-lens miss; it's a procedure-discipline
+miss that the lens happened to be driving when it occurred. There
+is an explicit, durable memory entry:
+`feedback_always_work_in_worktree.md` — *"Always work in a git
+worktree for branch work — mine AND any agent I dispatch (hermes,
+subagents); default to worktree, don't ask."* The memory is
+unambiguous and was authored specifically to prevent exactly this.
+I had the memory in context. I did not fire it.
+
+**Heuristic violated.**
+Primary: the memory above (not a Knuth heuristic — a general
+procedure rule that every lens inherits).
+
+Adjacent: Knuth heuristic 4 (the boundary is where the bugs live).
+The boundary here is "which branch is this commit landing on?" —
+the same kind of metadata invariant that Strike 1 missed for
+`author.email`. Strike 1 said "invariants extend to commit
+metadata"; Strike 3 says "and to the branch the metadata is on."
+Same shape, third time.
+
+**What actually happened.**
+Authored the soul edits from the primary workspace without checking
+`git branch --show-current`. The subagent that fixed tick.sh
+(commit `62468da`) ran in `/home/red/workspace/chitin-staged-tick`
+— already a worktree, so that was safe. But the soul edit I did
+directly in the main conversation used `/home/red/workspace/chitin`
+— not a worktree off main, and not main either. Pure autopilot
+default.
+
+**Remediation.**
+- Created `/home/red/workspace/chitin-souls` worktree off `main`.
+- Re-authored the Strike 2 content + this Strike 3 content into
+  that worktree's `souls/strikes/knuth.md`.
+- Applied the ELO deltas for both strikes in `souls/elo.md`
+  (1499 → 1497).
+- Commit lands from `chitin-souls` → pushed to `origin/main`.
+- The duplicate commit on `fix/10-js-extension-jsonl-tailer` will
+  be reset after main push succeeds, pending user approval for the
+  destructive operation.
+- ELO: Knuth −1 → 1497. Event logged in `souls/elo.md`.
+
+**Learning for the lens.**
+Two strikes in a single session span is a warning about
+autopilot — not about cognition, about hands. The memory existed;
+context held it; and it still didn't fire at the moment of the
+commit. A practical counter: before every `git commit` in the
+primary workspace, check `git branch --show-current`; if not
+`main` and not an intended branch, stop. This is a five-second
+check; it catches both "wrong branch" and "should this even be
+committed here?"
+
+The "always worktree" rule and the "verify external contracts"
+rule both share a failure mode: the lens knows the rule and still
+flies past it when the local context seems familiar enough. A
+possible structural fix: the next Knuth-lens session should open
+with an explicit checklist of durable process rules to enforce,
+read aloud, alongside the cognitive heuristics — not to ritualize
+but to pull process memories into active working set before the
+first action. Treat them the same way heuristic 1 treats
+invariants: state them first.
+
+Knuth Strikes 1, 2, 3 are all the same shape at one level of
+abstraction: a boundary the lens crossed without naming. Identity
+boundary (Strike 1), external-CLI boundary (Strike 2), branch
+boundary (Strike 3). The pattern is strong enough to name as a
+lens-level anti-pattern: *"Knuth under fatigue defaults to the
+boundary that is already visible and forgets the boundary that
+requires looking up."*
+
+---
+
+## Strike 4 — 2026-04-23 — Wrote `hermes cron create --schedule/--command` in MIGRATION.md and the live migration without verifying the interface
+
+**Context.** Same session as Strikes 2 & 3 (PR #47 hermes staged-tick v1). After the PR merged, executing MIGRATION.md step 4 on the box:
+```bash
+hermes cron create --name autonomous-worker-staged --schedule 'every 10m' --command "$HOME/workspace/chitin/scripts/hermes/tick.sh"
+```
+Real CLI rejected with `error: unrecognized arguments: --schedule --command ...`. `hermes cron create` uses `schedule` as a positional arg and has no `--command` flag; it is a wrapper that runs `hermes chat` sessions on a schedule, optionally injecting Python-script stdout into the prompt. It was never designed to run arbitrary shell scripts. tick.sh must be registered via system `crontab`, not `hermes cron`.
+
+**What the lens was supposed to catch.**
+Same as Strike 2: heuristic 1 (prove it or it's not proven) + heuristic 5 (read the algorithm aloud). The `--command` string in MIGRATION.md was another unverified claim about an external interface. A single `hermes cron create --help` would have exposed it.
+
+**What actually happened.**
+Strike 2 was already logged; the `feedback_verify_external_contracts.md` bright-line rule ("before writing any wrapper script that shells out to an external CLI, run `<cli> --help`") was added to memory earlier this same session. The rule did not fire in practice when I was composing MIGRATION.md step 4 or when I was executing it. Third external-CLI miss in one session; strike count per session = 3 (2, 3, 4), ELO −3 in one span.
+
+**Heuristic violated.**
+Same triad as Strike 2: heuristics 1, 4, 5. Plus a meta-failure — the strengthened memory from Strike 2 should have been load-bearing and wasn't. The rule was written; the rule was not retrieved at the moment of action. Autopilot.
+
+**Remediation.**
+- MIGRATION.md on main will be updated via doc-fix commit: system `crontab` stanza replaces the `hermes cron create` block. Commit included with Strike 4 log or as an immediate follow-up.
+- Crontab entry: standard `*/10 * * * *` cron line, with explicit `PATH=/home/red/.local/bin:/usr/local/bin:/usr/bin:/bin` and `HOME=/home/red` prefixed so `hermes` and `gh` resolve under cron's minimal env. Verified with `hermes cron create --help` + `hermes cron --help` this time.
+- **Lens swap: Knuth → Curie** for the migration finish (crontab registration, dry-run, first real tick). Rationale: remaining work is exactly the empirical loop Curie's lens names — hypothesis (what does CLI accept?), cheap capture (`<cli> --help`), compare (real vs assumed), ship or revise. Three Knuth misses in one session make the lens unfit for this residual work; Curie is already +3 this session with the empirical discipline observably holding.
+- ELO: Knuth −1 → 1496. Event logged in `souls/elo.md`.
+
+**Learning for the lens.**
+Four strikes, one repeat pattern: Knuth writes docs and commands that assume interfaces without verifying, then ships them, then watches them fail against reality. The "bright-line rule added after Strike 2 did not fire by Strike 4" is the important signal — writing a rule into memory is necessary but not sufficient. The rule needs a trigger that fires at the moment of action, not just a passive reference file.
+
+Structural fix for future Knuth sessions:
+1. Open with a pre-commit / pre-ship checklist of process rules, read explicitly (not just referenced by filename).
+2. For any doc or script that shells to an external CLI, the FIRST step is `<cli> <subcommand> --help` captured to a scratch file. No authoring around imagined flags.
+3. If a memory rule has fired as a strike and the same class re-occurs within the same session, consider it signal that the lens is fatigued for this type of work and switch.
+
+Knuth is returning to library standby after this session. Scope note in `souls/canonical/knuth.md` updated to reflect four strikes and the Curie handoff.

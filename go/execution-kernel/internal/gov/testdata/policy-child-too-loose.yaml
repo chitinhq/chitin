@@ -1,0 +1,7 @@
+id: child-loose
+mode: monitor
+rules:
+  - id: r2
+    action: file.read
+    effect: allow
+    reason: "child allow"
