@@ -1,0 +1,12 @@
+*.token
+*.key
+.env
+.env.*
+*/bin/
+*/build/
+*/dist/
+
+# Compiled Go binaries from rung probes
+rung*-*/rung*-*
+rung*-*/main
+rung*-*/*.test
