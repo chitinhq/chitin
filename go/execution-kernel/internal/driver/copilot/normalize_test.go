@@ -1,6 +1,8 @@
 package copilot
 
 import (
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	copilotsdk "github.com/github/copilot-sdk/go"
@@ -279,6 +281,80 @@ func TestNormalize_ShellPathPreservedAfterGovNormalize(t *testing.T) {
 	if got.Type != gov.ActInfraDestroy {
 		t.Errorf("Type: got %q, want %q", got.Type, gov.ActInfraDestroy)
 	}
+}
+
+// Bare `git push` in a real git repo: gov returns Target="", driver
+// resolves the current branch via `git symbolic-ref` so policy rules with
+// `branches:` lists can match. Closes #62.
+func TestNormalize_BareGitPushResolvesCurrentBranch(t *testing.T) {
+	dir := initTestRepoOnBranch(t, "feature/test-x")
+	req := copilotsdk.PermissionRequest{
+		Kind:            copilotsdk.PermissionRequestKindShell,
+		FullCommandText: ptr("git push"),
+	}
+	got := Normalize(req, dir)
+	if got.Type != gov.ActGitPush {
+		t.Errorf("Type: got %q, want git.push", got.Type)
+	}
+	if got.Target != "feature/test-x" {
+		t.Errorf("Target: got %q, want feature/test-x (resolved from HEAD)", got.Target)
+	}
+}
+
+// Same bare push, but in a non-repo directory: resolution returns "" and
+// Target stays empty — no panic, no spurious branch name.
+func TestNormalize_BareGitPushOutsideRepoReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	req := copilotsdk.PermissionRequest{
+		Kind:            copilotsdk.PermissionRequestKindShell,
+		FullCommandText: ptr("git push"),
+	}
+	got := Normalize(req, dir)
+	if got.Type != gov.ActGitPush {
+		t.Errorf("Type: got %q, want git.push", got.Type)
+	}
+	if got.Target != "" {
+		t.Errorf("Target: got %q, want empty outside repo", got.Target)
+	}
+}
+
+// Explicit `git push origin main` in the same repo must still produce
+// Target="main" (driver-side resolution must not clobber explicit branches).
+func TestNormalize_ExplicitGitPushDoesNotOverrideTarget(t *testing.T) {
+	dir := initTestRepoOnBranch(t, "feature/test-y")
+	req := copilotsdk.PermissionRequest{
+		Kind:            copilotsdk.PermissionRequestKindShell,
+		FullCommandText: ptr("git push origin main"),
+	}
+	got := Normalize(req, dir)
+	if got.Target != "main" {
+		t.Errorf("Target: got %q, want main (explicit branch must win)", got.Target)
+	}
+}
+
+// initTestRepoOnBranch creates a fresh git repo at t.TempDir() with one
+// initial commit, then checks out the given branch. Returns the repo path.
+func initTestRepoOnBranch(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "-q")
+	run("git", "config", "user.email", "test@example.com")
+	run("git", "config", "user.name", "test")
+	// Need a commit before checkout -b will work cleanly on some git versions.
+	if err := exec.Command("touch", filepath.Join(dir, "x")).Run(); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	run("git", "add", "x")
+	run("git", "commit", "-q", "-m", "init")
+	run("git", "checkout", "-q", "-b", branch)
+	return dir
 }
 
 func TestNormalize_UnknownKindIsFailClosed(t *testing.T) {

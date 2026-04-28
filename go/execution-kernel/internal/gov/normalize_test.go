@@ -64,6 +64,59 @@ func TestNormalize_TerminalGitForcePush(t *testing.T) {
 	}
 }
 
+// extractPushBranch must skip leading flag tokens (-u, --set-upstream, -q, etc.)
+// before consuming the remote arg. Closes #52 — agent that adds -u silently
+// shifts the branch capture onto the remote name.
+func TestNormalize_GitPushFlagPrefixDoesNotShiftBranch(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want string
+	}{
+		{"git push origin main", "main"},
+		{"git push -u origin main", "main"},
+		{"git push --set-upstream origin main", "main"},
+		{"git push -q origin feature/x", "feature/x"},
+		{"git push -u origin HEAD:main", "main"},
+		{"git push origin HEAD:main", "main"},
+		{"git push --no-verify origin main", "main"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cmd, func(t *testing.T) {
+			a, _ := Normalize("terminal", map[string]any{"command": tc.cmd})
+			if a.Type != ActGitPush {
+				t.Errorf("Type: got %q want git.push", a.Type)
+			}
+			if a.Target != tc.want {
+				t.Errorf("Target: got %q want %q", a.Target, tc.want)
+			}
+		})
+	}
+}
+
+// Bare `git push` (no remote, no branch) and `git push origin` (no branch)
+// produce Target="". The driver layer is responsible for resolving the
+// current branch from cwd. Closes #62 — without this contract, the gov
+// parser silently mis-parses these forms.
+func TestNormalize_GitPushNoBranchArgReturnsEmptyTarget(t *testing.T) {
+	cases := []string{
+		"git push",
+		"git push origin",
+		"git push -u origin",
+		"git push --set-upstream",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			a, _ := Normalize("terminal", map[string]any{"command": cmd})
+			if a.Type != ActGitPush {
+				t.Errorf("Type: got %q want git.push", a.Type)
+			}
+			if a.Target != "" {
+				t.Errorf("Target: got %q want \"\" (driver resolves)", a.Target)
+			}
+		})
+	}
+}
+
 func TestNormalize_TerminalGhPRCreate(t *testing.T) {
 	a, _ := Normalize("terminal", map[string]any{"command": `gh pr create --title "x"`})
 	if a.Type != ActGithubPRCreate {

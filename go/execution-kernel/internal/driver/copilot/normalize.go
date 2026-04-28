@@ -2,6 +2,8 @@ package copilot
 
 import (
 	"fmt"
+	"os/exec"
+	"strings"
 
 	copilotsdk "github.com/github/copilot-sdk/go"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -50,6 +52,18 @@ func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
 			action.Target = govAction.Target
 			for k, v := range govAction.Params {
 				action.Params[k] = v
+			}
+		}
+
+		// Bare `git push` (or `git push origin` without branch arg) leaves
+		// Target empty because the gov-side parser is pure and can't run git.
+		// Resolve the current branch from cwd here so policy rules with
+		// explicit `branches:` lists (e.g. no-protected-push) can match.
+		// Closes #62 — without this, `git push` on an upstream-tracking main
+		// branch would fall through every protected-branch rule.
+		if action.Type == gov.ActGitPush && action.Target == "" && cwd != "" {
+			if branch := resolveCurrentBranch(cwd); branch != "" {
+				action.Target = branch
 			}
 		}
 
@@ -114,4 +128,16 @@ func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
 	}
 
 	return action
+}
+
+// resolveCurrentBranch returns the branch HEAD points at in cwd, or "" on
+// detached HEAD, missing git, non-repo cwd, or any non-zero exit. The single
+// side effect inside Normalize, fired only when Type=git.push AND Target=""
+// — never on the happy path of explicit pushes.
+func resolveCurrentBranch(cwd string) string {
+	out, err := exec.Command("git", "-C", cwd, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
