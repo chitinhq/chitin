@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -284,7 +285,11 @@ func cmdIngestTranscript(args []string) {
 // <dir>/otel-quarantine/.
 //
 // Parse-only mode (no --envelope-template): prints JSON
-// {"ok":true,"turns":[...],"quarantined":[...]}. Useful for debugging.
+// {"ok":true,"events":[{event_type, ts, surface, chain_id, payload}, ...],
+// "quarantined":[{reason, span_name, trace_id, span_id, span_raw}, ...]}.
+// Useful for debugging. Shape is stable across all four span types — the
+// per-translator concrete struct is hidden behind the TranslatedSpan
+// interface.
 //
 // Emit mode (--envelope-template <file>): emits events via the
 // transactional Emitter. Exit codes:
@@ -318,7 +323,7 @@ func cmdIngestOTEL(args []string) {
 	if err != nil {
 		exitErr("otlp_decode_failed", err.Error())
 	}
-	turns, quarantined, err := ingest.ParseOpenClawSpans(rs)
+	spans, quarantined, err := ingest.ParseOpenClawSpans(rs)
 	if err != nil {
 		exitErr("parse", err.Error())
 	}
@@ -326,10 +331,44 @@ func cmdIngestOTEL(args []string) {
 	absDir, _ := filepath.Abs(*dir)
 
 	if *envelopeTemplateFile == "" {
-		// Parse-only mode.
+		// Parse-only mode. Build a stable shape from the TranslatedSpan
+		// interface — never serialize the concrete translator structs
+		// directly, which would leak CamelCase field names and
+		// per-type-divergent shapes.
+		//
+		// Apply the same (ts asc, span_id asc) ordering that EmitEvents
+		// uses, so parse-only output is deterministic across runs and
+		// matches what emit mode would produce for the same input.
+		sort.SliceStable(spans, func(i, j int) bool {
+			if spans[i].Ts() != spans[j].Ts() {
+				return spans[i].Ts() < spans[j].Ts()
+			}
+			return spans[i].SpanID() < spans[j].SpanID()
+		})
+		type parseOnlySpan struct {
+			EventType string          `json:"event_type"`
+			Ts        string          `json:"ts"`
+			Surface   string          `json:"surface"`
+			ChainID   string          `json:"chain_id"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		events := make([]parseOnlySpan, 0, len(spans))
+		for _, s := range spans {
+			payload, err := s.Payload()
+			if err != nil {
+				exitErr("payload_marshal", err.Error())
+			}
+			events = append(events, parseOnlySpan{
+				EventType: s.EventType(),
+				Ts:        s.Ts(),
+				Surface:   s.Surface(),
+				ChainID:   s.ChainID(),
+				Payload:   payload,
+			})
+		}
 		out, _ := json.Marshal(map[string]any{
 			"ok":          true,
-			"turns":       turns,
+			"events":      events,
 			"quarantined": quarantined,
 		})
 		fmt.Println(string(out))
@@ -363,7 +402,7 @@ func cmdIngestOTEL(args []string) {
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", tmpl.RunID)),
 		Index:   idx,
 	}
-	n, err := ingest.EmitModelTurns(&em, absDir, &tmpl, turns, quarantined)
+	n, err := ingest.EmitEvents(&em, absDir, &tmpl, spans, quarantined)
 	if err != nil {
 		exitErr("emit", err.Error())
 	}

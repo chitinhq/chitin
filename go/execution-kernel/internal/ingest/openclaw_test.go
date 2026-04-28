@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -25,28 +26,31 @@ func loadFixture(t *testing.T) []*tracepb.ResourceSpans {
 
 func TestParseOpenClawSpans_HappyPath(t *testing.T) {
 	rs := loadFixture(t)
-	turns, quarantined, err := ParseOpenClawSpans(rs)
+	spans, quarantined, err := ParseOpenClawSpans(rs)
 	if err != nil {
 		t.Fatalf("ParseOpenClawSpans: %v", err)
 	}
 	if len(quarantined) != 0 {
 		t.Fatalf("want 0 quarantined, got %d: %+v", len(quarantined), quarantined)
 	}
-	if len(turns) != 1 {
-		t.Fatalf("want 1 turn, got %d", len(turns))
+	if len(spans) != 1 {
+		t.Fatalf("want 1 span, got %d", len(spans))
 	}
-	mt := turns[0]
+	mt, ok := spans[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", spans[0])
+	}
 	if mt.TraceID != "0102030405060708090a0b0c0d0e0f10" {
 		t.Errorf("TraceID: got %q", mt.TraceID)
 	}
-	if mt.SpanID != "a1a2a3a4a5a6a7a8" {
-		t.Errorf("SpanID: got %q", mt.SpanID)
+	if mt.SpanIDHex != "a1a2a3a4a5a6a7a8" {
+		t.Errorf("SpanIDHex: got %q", mt.SpanIDHex)
 	}
-	if mt.Ts != "2026-04-20T12:00:00Z" {
-		t.Errorf("Ts: got %q", mt.Ts)
+	if mt.TsStr != "2026-04-20T12:00:00Z" {
+		t.Errorf("TsStr: got %q", mt.TsStr)
 	}
-	if mt.Surface != "openclaw-gateway" {
-		t.Errorf("Surface: got %q", mt.Surface)
+	if mt.SurfaceStr != "openclaw-gateway" {
+		t.Errorf("SurfaceStr: got %q", mt.SurfaceStr)
 	}
 	if mt.Provider != "ollama" {
 		t.Errorf("Provider: got %q", mt.Provider)
@@ -132,12 +136,12 @@ func TestParseOpenClawSpans_RequiredAttrMissing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rs := loadFixture(t)
 			tc.mutate(rs[0])
-			turns, q, err := ParseOpenClawSpans(rs)
+			spans, q, err := ParseOpenClawSpans(rs)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
-			if len(turns) != 0 {
-				t.Errorf("want 0 turns, got %d", len(turns))
+			if len(spans) != 0 {
+				t.Errorf("want 0 spans, got %d", len(spans))
 			}
 			if len(q) != 1 {
 				t.Fatalf("want 1 quarantined, got %d", len(q))
@@ -176,9 +180,9 @@ func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
 					kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "unknown"}}
 				}
 			}
-			turns, q, _ := ParseOpenClawSpans(rs)
-			if len(turns) != 0 {
-				t.Errorf("want 0 turns, got %d", len(turns))
+			spans, q, _ := ParseOpenClawSpans(rs)
+			if len(spans) != 0 {
+				t.Errorf("want 0 spans, got %d", len(spans))
 			}
 			if len(q) != 1 || q[0].Reason != tc.reason {
 				t.Errorf("want quarantine reason %q, got %+v", tc.reason, q)
@@ -189,12 +193,15 @@ func TestParseOpenClawSpans_UnknownValueRejected(t *testing.T) {
 
 func TestParseOpenClawSpans_UnmappedSpanName(t *testing.T) {
 	rs := loadFixture(t)
-	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.webhook.processed"
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	// openclaw.message.processed is a span name that does NOT route to any
+	// of the four mapped translators (model.usage, webhook.processed,
+	// webhook.error, session.stuck), so it must land in quarantine.
+	rs[0].ScopeSpans[0].Spans[0].Name = "openclaw.message.processed"
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
-	if q[0].Reason != "unmapped_span_name:openclaw.webhook.processed" {
+	if q[0].Reason != "unmapped_span_name:openclaw.message.processed" {
 		t.Errorf("reason: got %q", q[0].Reason)
 	}
 }
@@ -206,11 +213,14 @@ func TestParseOpenClawSpans_OptionalAbsent(t *testing.T) {
 	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_read")
 	removeSpanAttr(rs[0].ScopeSpans[0].Spans[0], "openclaw.tokens.cache_write")
 	rs[0].ScopeSpans[0].Spans[0].EndTimeUnixNano = 0
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 1 {
-		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(spans), len(q))
 	}
-	mt := turns[0]
+	mt, ok := spans[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", spans[0])
+	}
 	if mt.SessionIDExternal != "" || mt.DurationMs != 0 ||
 		mt.CacheReadTokens != 0 || mt.CacheWriteTokens != 0 {
 		t.Errorf("optional fields should be zero, got %+v", mt)
@@ -225,12 +235,12 @@ func TestParseOpenClawSpans_MultipleSpansOrderedByTime(t *testing.T) {
 	laterSpan.EndTimeUnixNano = origSpan.EndTimeUnixNano + 1_000_000_000
 	laterSpan.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
 	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, laterSpan)
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 2 {
-		t.Fatalf("want 2 turns, got turns=%d q=%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 2 {
+		t.Fatalf("want 2 spans, got spans=%d q=%d", len(spans), len(q))
 	}
-	if turns[0].Ts > turns[1].Ts {
-		t.Errorf("ordering wrong: %q before %q", turns[0].Ts, turns[1].Ts)
+	if spans[0].Ts() > spans[1].Ts() {
+		t.Errorf("ordering wrong: %q before %q", spans[0].Ts(), spans[1].Ts())
 	}
 }
 
@@ -241,13 +251,13 @@ func TestParseOpenClawSpans_TieBreakerSpanID(t *testing.T) {
 	// Same start time, larger span_id → should sort after.
 	twin.SpanId = []byte{0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8}
 	rs[0].ScopeSpans[0].Spans = append(rs[0].ScopeSpans[0].Spans, twin)
-	turns, _, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 2 {
-		t.Fatalf("want 2, got %d", len(turns))
+	spans, _, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 2 {
+		t.Fatalf("want 2, got %d", len(spans))
 	}
-	if turns[0].SpanID >= turns[1].SpanID {
-		t.Errorf("tie-breaker: turn[0].SpanID %q should be < turn[1].SpanID %q",
-			turns[0].SpanID, turns[1].SpanID)
+	if spans[0].SpanID() >= spans[1].SpanID() {
+		t.Errorf("tie-breaker: spans[0].SpanID %q should be < spans[1].SpanID %q",
+			spans[0].SpanID(), spans[1].SpanID())
 	}
 }
 
@@ -260,12 +270,16 @@ func TestParseOpenClawSpans_DuplicateAttrKeyLastWins(t *testing.T) {
 		Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "surprise:7b"}},
 	})
 	rs[0].ScopeSpans[0].Spans[0].Attributes = attrs
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(q) != 0 || len(turns) != 1 {
-		t.Fatalf("want 1/0, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(q) != 0 || len(spans) != 1 {
+		t.Fatalf("want 1/0, got %d/%d", len(spans), len(q))
 	}
-	if turns[0].ModelName != "surprise:7b" {
-		t.Errorf("last-write-wins failed; got %q", turns[0].ModelName)
+	mt, ok := spans[0].(ModelTurn)
+	if !ok {
+		t.Fatalf("want ModelTurn, got %T", spans[0])
+	}
+	if mt.ModelName != "surprise:7b" {
+		t.Errorf("last-write-wins failed; got %q", mt.ModelName)
 	}
 }
 
@@ -279,9 +293,9 @@ func TestParseOpenClawSpans_InvalidTraceIDLength(t *testing.T) {
 	rs := loadFixture(t)
 	// Set trace_id to 8 bytes (valid span_id length, invalid trace_id length).
 	rs[0].ScopeSpans[0].Spans[0].TraceId = []byte{1, 2, 3, 4, 5, 6, 7, 8}
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
 	if q[0].Reason != "invalid_trace_id_length" {
 		t.Errorf("reason: got %q", q[0].Reason)
@@ -292,12 +306,145 @@ func TestParseOpenClawSpans_InvalidSpanIDLength(t *testing.T) {
 	rs := loadFixture(t)
 	// Set span_id to 4 bytes (too short).
 	rs[0].ScopeSpans[0].Spans[0].SpanId = []byte{1, 2, 3, 4}
-	turns, q, _ := ParseOpenClawSpans(rs)
-	if len(turns) != 0 || len(q) != 1 {
-		t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+	spans, q, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 || len(q) != 1 {
+		t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 	}
 	if q[0].Reason != "invalid_span_id_length" {
 		t.Errorf("reason: got %q", q[0].Reason)
+	}
+}
+
+func TestBuildChainID_UniformFormat(t *testing.T) {
+	trace := []byte{
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+	}
+	span := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	got := buildChainID(trace, span)
+	want := "otel:00112233445566778899aabbccddeeff:0102030405060708"
+	if got != want {
+		t.Fatalf("buildChainID mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestBuildOtelLabels_OmitsEmptyParent(t *testing.T) {
+	got := buildOtelLabels("abc", "def", "")
+	if _, ok := got["otel_parent_span_id"]; ok {
+		t.Fatalf("empty parent should be omitted, got %+v", got)
+	}
+	if got["otel_trace_id"] != "abc" || got["otel_span_id"] != "def" {
+		t.Fatalf("trace/span mismatch: %+v", got)
+	}
+	if got["source"] != "otel" || got["dialect"] != "openclaw" {
+		t.Fatalf("constant labels missing: %+v", got)
+	}
+}
+
+func TestBuildOtelLabels_IncludesParentWhenSet(t *testing.T) {
+	got := buildOtelLabels("abc", "def", "parent-hex")
+	if got["otel_parent_span_id"] != "parent-hex" {
+		t.Fatalf("parent label missing: %+v", got)
+	}
+}
+
+func TestValidateOpenClawEnvelope_ValidSpan(t *testing.T) {
+	start, _ := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{{
+		name:       "openclaw.model.usage",
+		traceID:    sampleTraceID(0xaa),
+		spanID:     sampleSpanID(0xbb),
+		startNanos: start,
+	}})
+	rs, _ := DecodeTraces(payload)
+	var gotSurface, gotTs, gotReason string
+	IterSpans(rs, func(r *resourcepb.Resource, s *tracepb.Span) {
+		gotSurface, gotTs, gotReason = validateOpenClawEnvelope(r, s)
+	})
+	if gotReason != "" {
+		t.Fatalf("reason=%q, want \"\"", gotReason)
+	}
+	if gotSurface != "openclaw" {
+		t.Fatalf("surface=%q, want openclaw", gotSurface)
+	}
+	if gotTs != "2026-04-21T12:00:00Z" {
+		t.Fatalf("ts=%q, want 2026-04-21T12:00:00Z", gotTs)
+	}
+}
+
+func TestValidateOpenClawEnvelope_RejectsInvalidSpans(t *testing.T) {
+	cases := []struct {
+		name         string
+		traceIDLen   int
+		spanIDLen    int
+		zeroTrace    bool
+		zeroSpan     bool
+		emptyService bool
+		zeroStart    bool
+		wantReason   string
+	}{
+		{"invalid trace_id length", 12, 8, false, false, false, false, "invalid_trace_id_length"},
+		{"zero trace_id", 16, 8, true, false, false, false, "invalid_trace_id_zero"},
+		{"invalid span_id length", 16, 4, false, false, false, false, "invalid_span_id_length"},
+		{"zero span_id", 16, 8, false, true, false, false, "invalid_span_id_zero"},
+		{"missing service.name", 16, 8, false, false, true, false, "missing_required_attr:service.name"},
+		{"zero start time", 16, 8, false, false, false, true, "missing_required_attr:start_time_unix_nano"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			traceID := sampleTraceID(0x11)[:tc.traceIDLen]
+			if tc.zeroTrace {
+				traceID = make([]byte, 16)
+			}
+			spanID := sampleSpanID(0x22)[:tc.spanIDLen]
+			if tc.zeroSpan {
+				spanID = make([]byte, 8)
+			}
+			serviceName := "openclaw"
+			if tc.emptyService {
+				serviceName = ""
+			}
+			start, _ := sampleTs(0)
+			if tc.zeroStart {
+				start = 0
+			}
+			payload := buildFixture(t, serviceName, []fixtureSpan{{
+				name:       "openclaw.model.usage",
+				traceID:    traceID,
+				spanID:     spanID,
+				startNanos: start,
+			}})
+			rs, _ := DecodeTraces(payload)
+			var gotReason string
+			IterSpans(rs, func(r *resourcepb.Resource, s *tracepb.Span) {
+				_, _, gotReason = validateOpenClawEnvelope(r, s)
+			})
+			if gotReason != tc.wantReason {
+				t.Fatalf("reason=%q, want %q", gotReason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestGetSpanIntOrDoubleAsIntAttr(t *testing.T) {
+	span := &tracepb.Span{
+		Attributes: []*commonpb.KeyValue{
+			{Key: "int_attr", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 42}}},
+			{Key: "double_attr", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 42.0}}},
+			{Key: "fractional", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 42.5}}},
+		},
+	}
+	if v, ok := getSpanIntOrDoubleAsIntAttr(span, "int_attr"); !ok || v != 42 {
+		t.Fatalf("int_attr: got (%d,%v)", v, ok)
+	}
+	if v, ok := getSpanIntOrDoubleAsIntAttr(span, "double_attr"); !ok || v != 42 {
+		t.Fatalf("double_attr: got (%d,%v)", v, ok)
+	}
+	if _, ok := getSpanIntOrDoubleAsIntAttr(span, "fractional"); ok {
+		t.Fatalf("fractional: want !ok (fractional values rejected)")
+	}
+	if _, ok := getSpanIntOrDoubleAsIntAttr(span, "missing"); ok {
+		t.Fatalf("missing: want !ok")
 	}
 }
 
@@ -331,13 +478,91 @@ func TestParseOpenClawSpans_NegativeTokens(t *testing.T) {
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: -1}},
 				})
 			}
-			turns, q, _ := ParseOpenClawSpans(rs)
-			if len(turns) != 0 || len(q) != 1 {
-				t.Fatalf("want 0/1, got %d/%d", len(turns), len(q))
+			spans, q, _ := ParseOpenClawSpans(rs)
+			if len(spans) != 0 || len(q) != 1 {
+				t.Fatalf("want 0/1, got %d/%d", len(spans), len(q))
 			}
 			if q[0].Reason != tc.reason {
 				t.Errorf("reason: got %q, want %q", q[0].Reason, tc.reason)
 			}
 		})
+	}
+}
+
+func TestParseOpenClawSpans_RoutesAllFourSpanTypes(t *testing.T) {
+	start, end := sampleTs(0)
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name:       "openclaw.model.usage",
+			traceID:    sampleTraceID(0x01),
+			spanID:     sampleSpanID(0x01),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{
+				"openclaw.provider": "ollama",
+				"openclaw.model":    "qwen2.5:0.5b",
+			},
+			intAttrs: map[string]int64{
+				"openclaw.tokens.input":  10,
+				"openclaw.tokens.output": 20,
+			},
+		},
+		{
+			name:       "openclaw.webhook.processed",
+			traceID:    sampleTraceID(0x02),
+			spanID:     sampleSpanID(0x02),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{
+				"openclaw.channel": "telegram",
+				"openclaw.webhook": "message",
+			},
+		},
+		{
+			name:       "openclaw.webhook.error",
+			traceID:    sampleTraceID(0x03),
+			spanID:     sampleSpanID(0x03),
+			startNanos: start, endNanos: start,
+			stringAttrs: map[string]string{
+				"openclaw.channel": "telegram",
+				"openclaw.webhook": "message",
+				"openclaw.error":   "boom",
+			},
+		},
+		{
+			name:       "openclaw.session.stuck",
+			traceID:    sampleTraceID(0x04),
+			spanID:     sampleSpanID(0x04),
+			startNanos: start, endNanos: start,
+			stringAttrs: map[string]string{"openclaw.state": "awaiting_model"},
+			intAttrs:   map[string]int64{"openclaw.ageMs": 120000},
+		},
+		{
+			name:       "openclaw.message.processed", // unmapped — should quarantine
+			traceID:    sampleTraceID(0x05),
+			spanID:     sampleSpanID(0x05),
+			startNanos: start, endNanos: end,
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, err := ParseOpenClawSpans(rs)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(spans) != 4 {
+		t.Fatalf("spans=%d, want 4", len(spans))
+	}
+	if len(quarantined) != 1 || quarantined[0].Reason != "unmapped_span_name:openclaw.message.processed" {
+		t.Fatalf("quarantined=%+v", quarantined)
+	}
+
+	types := map[string]int{}
+	for _, s := range spans {
+		types[s.EventType()]++
+	}
+	want := map[string]int{"model_turn": 1, "webhook_received": 1, "webhook_failed": 1, "session_stuck": 1}
+	for k, v := range want {
+		if types[k] != v {
+			t.Fatalf("event_type %q count=%d, want %d (all counts: %+v)", k, types[k], v, types)
+		}
 	}
 }

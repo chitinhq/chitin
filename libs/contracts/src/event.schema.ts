@@ -10,6 +10,9 @@ import {
   ExecutedPayloadSchema,
   FailedPayloadSchema,
   ModelTurnPayloadSchema,
+  WebhookReceivedPayloadSchema,
+  WebhookFailedPayloadSchema,
+  SessionStuckPayloadSchema,
 } from './payloads.schema';
 
 const envShape = EnvelopeSchema.shape;
@@ -24,6 +27,9 @@ export const EventSchema = z.discriminatedUnion('event_type', [
   z.object({ ...envShape, event_type: z.literal('executed'), payload: ExecutedPayloadSchema }),
   z.object({ ...envShape, event_type: z.literal('failed'), payload: FailedPayloadSchema }),
   z.object({ ...envShape, event_type: z.literal('model_turn'), payload: ModelTurnPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('webhook_received'), payload: WebhookReceivedPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('webhook_failed'), payload: WebhookFailedPayloadSchema }),
+  z.object({ ...envShape, event_type: z.literal('session_stuck'), payload: SessionStuckPayloadSchema }),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

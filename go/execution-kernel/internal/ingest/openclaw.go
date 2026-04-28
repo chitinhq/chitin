@@ -23,170 +23,199 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// ModelTurn is the parse-stage output for one openclaw.model.usage span.
-type ModelTurn struct {
-	TraceID           string
-	SpanID            string
-	Ts                string
-	Surface           string
-	Provider          string
-	ModelName         string
-	InputTokens       int64
-	OutputTokens      int64
-	SessionIDExternal string
-	DurationMs        int64
-	CacheReadTokens   int64
-	CacheWriteTokens  int64
-}
-
-// Quarantine records an unmappable span for audit.
+// Quarantine records an unmappable span for audit. JSON tags are
+// stable parse-only-mode contract — see cmdIngestOTEL.
 type Quarantine struct {
-	Reason   string
-	SpanName string
-	TraceID  string
-	SpanID   string
-	SpanRaw  json.RawMessage
+	Reason   string          `json:"reason"`
+	SpanName string          `json:"span_name"`
+	TraceID  string          `json:"trace_id"`
+	SpanID   string          `json:"span_id"`
+	SpanRaw  json.RawMessage `json:"span_raw"`
 }
 
-// openclawModelUsageSpanName is the one span name the v1 translator maps.
-const openclawModelUsageSpanName = "openclaw.model.usage"
+// buildChainID is the single source of truth for OTEL-ingest chain-id
+// construction. Every translator calls this helper; no other code
+// assembles "otel:..." strings. Uniform across event types so chain-ids
+// never collide across spans in a trace.
+//
+// Invariant: the returned string has exactly one ":" prefix after "otel",
+// one full-length (32 hex char) trace portion, and one full-length
+// (16 hex char) span portion. Callers must have already validated
+// trace/span length; this function does not re-check.
+func buildChainID(traceID, spanID []byte) string {
+	return "otel:" + hex.EncodeToString(traceID) + ":" + hex.EncodeToString(spanID)
+}
 
-// ParseOpenClawSpans classifies every span into either turns (mappable
-// openclaw.model.usage spans) or quarantined (everything else). Never
+// buildOtelLabels constructs the label map every OTEL-ingest event gets.
+// Single source of truth for the label vocabulary: source, dialect,
+// otel_trace_id, otel_span_id, and (when non-empty) otel_parent_span_id.
+// parentSpanIDHex is "" when the span has no parent (root span).
+func buildOtelLabels(traceIDHex, spanIDHex, parentSpanIDHex string) map[string]string {
+	m := map[string]string{
+		"source":        "otel",
+		"dialect":       "openclaw",
+		"otel_trace_id": traceIDHex,
+		"otel_span_id":  spanIDHex,
+	}
+	if parentSpanIDHex != "" {
+		m["otel_parent_span_id"] = parentSpanIDHex
+	}
+	return m
+}
+
+// validateOpenClawEnvelope runs the shared envelope-validation prefix that
+// every openclaw translator needs: trace_id + span_id length/zero checks,
+// service.name presence, start_time_unix_nano presence, and RFC3339 ts
+// formatting. Returns (surface, ts, "") on success; ("", "", reason) with
+// a typed quarantine reason on any failure.
+//
+// This is the single source of truth for the "valid openclaw span envelope"
+// invariant. Translators call this first, then validate their own
+// dialect-specific attributes.
+func validateOpenClawEnvelope(resource *resourcepb.Resource, span *tracepb.Span) (surface string, ts string, reason string) {
+	if len(span.TraceId) != 16 {
+		return "", "", "invalid_trace_id_length"
+	}
+	if isAllZero(span.TraceId) {
+		return "", "", "invalid_trace_id_zero"
+	}
+	if len(span.SpanId) != 8 {
+		return "", "", "invalid_span_id_length"
+	}
+	if isAllZero(span.SpanId) {
+		return "", "", "invalid_span_id_zero"
+	}
+
+	surface = getResourceStringAttr(resource, "service.name")
+	if surface == "" {
+		return "", "", "missing_required_attr:service.name"
+	}
+
+	if span.StartTimeUnixNano == 0 {
+		return "", "", "missing_required_attr:start_time_unix_nano"
+	}
+	ts = time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
+
+	return surface, ts, ""
+}
+
+// parentSpanIDHex returns the hex-encoded parent_span_id when the span has
+// a real parent (8-byte non-zero). Returns "" for root spans (missing or
+// all-zero parent_span_id). Used by every openclaw translator when
+// populating ParentSpanIDHex.
+func parentSpanIDHex(span *tracepb.Span) string {
+	if len(span.ParentSpanId) == 8 && !isAllZero(span.ParentSpanId) {
+		return hex.EncodeToString(span.ParentSpanId)
+	}
+	return ""
+}
+
+// TranslatedSpan is the polymorphic output of every per-span translator.
+// EmitEvents walks []TranslatedSpan without branching on concrete type.
+// The interface is deliberately narrow: envelope fields + payload bytes
+// + labels. Chain-id is always built via buildChainID; the interface
+// hides the trace_id/span_id bytes behind ChainID().
+type TranslatedSpan interface {
+	EventType() string // "model_turn" | "webhook_received" | "webhook_failed" | "session_stuck"
+	ChainID() string
+	Ts() string
+	Surface() string
+	SpanID() string // hex, used for the deterministic sort tie-breaker
+	Payload() (json.RawMessage, error)
+	Labels() map[string]string
+}
+
+// seenKey is the (trace_id, span_id) pair used to detect duplicates within
+// a single ingest batch. The pair — not just span_id — preserves the
+// possibility that two distinct traces share a span_id by coincidence
+// (OTEL only guarantees span_id uniqueness within a trace).
+type seenKey struct {
+	trace [16]byte
+	span  [8]byte
+}
+
+// ParseOpenClawSpans classifies every span into either translated
+// (mappable openclaw spans) or quarantined (everything else). Never
 // errors mid-walk; a returned error is reserved for structural failures.
-func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]ModelTurn, []Quarantine, error) {
-	var turns []ModelTurn
+// The returned slice is unsorted; EmitEvents is responsible for the
+// deterministic (ts asc, span_id asc) ordering before emission.
+//
+// Dispatch invariant: every span lands in exactly one of translated or
+// quarantined. The switch on span.Name routes well-formed openclaw spans
+// to their per-type translator; unknown names quarantine with
+// unmapped_span_name:<name>. Within a single batch, the second (and any
+// later) occurrence of a (trace_id, span_id) pair quarantines with
+// duplicate_span_id — dedup runs BEFORE translation so malformed
+// envelopes (wrong length OR all-zero ids) quarantine with their
+// length/zero-specific reason rather than the duplicate reason.
+//
+// Cross-batch scope: dedup here is single-batch only. A (trace_id,
+// span_id) pair re-emitted in a later batch is silently dropped by the
+// chain index in EmitEvents (em.Index.Get) for idempotent replay — it
+// does NOT produce a duplicate_span_id quarantine. If you need
+// cross-batch collision *detection*, that's a separate signal layered
+// on top of the chain index, not this function.
+func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]TranslatedSpan, []Quarantine, error) {
+	var translated []TranslatedSpan
 	var quarantined []Quarantine
+	seen := map[seenKey]bool{}
 
 	IterSpans(rs, func(resource *resourcepb.Resource, span *tracepb.Span) {
-		if span.Name != openclawModelUsageSpanName {
+		// Duplicate detection runs BEFORE translation so malformed spans
+		// (wrong trace/span length, all-zero ids) quarantine with the
+		// length/zero-specific reason rather than duplicate_span_id. Only
+		// well-formed AND non-zero pairs enter the seen set; otherwise a
+		// second all-zero span would collide with the first on the zero
+		// key and lose its specific invalid_*_zero reason.
+		if len(span.TraceId) == 16 && len(span.SpanId) == 8 &&
+			!isAllZero(span.TraceId) && !isAllZero(span.SpanId) {
+			var key seenKey
+			copy(key.trace[:], span.TraceId)
+			copy(key.span[:], span.SpanId)
+			if seen[key] {
+				quarantined = append(quarantined, makeQuarantine("duplicate_span_id", span))
+				return
+			}
+			seen[key] = true
+		}
+
+		switch span.Name {
+		case openclawModelUsageSpanName:
+			mt, reason := translateModelUsage(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, mt)
+		case openclawWebhookProcessedSpanName:
+			w, reason := translateWebhookProcessed(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, w)
+		case openclawWebhookErrorSpanName:
+			w, reason := translateWebhookError(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, w)
+		case openclawSessionStuckSpanName:
+			s, reason := translateSessionStuck(resource, span)
+			if reason != "" {
+				quarantined = append(quarantined, makeQuarantine(reason, span))
+				return
+			}
+			translated = append(translated, s)
+		default:
 			quarantined = append(quarantined, makeQuarantine(
 				fmt.Sprintf("unmapped_span_name:%s", span.Name), span,
 			))
-			return
 		}
-		mt, reason := translateModelUsage(resource, span)
-		if reason != "" {
-			quarantined = append(quarantined, makeQuarantine(reason, span))
-			return
-		}
-		turns = append(turns, mt)
 	})
 
-	// Deterministic order: timestamp ascending, span_id tie-break.
-	sort.SliceStable(turns, func(i, j int) bool {
-		if turns[i].Ts != turns[j].Ts {
-			return turns[i].Ts < turns[j].Ts
-		}
-		return turns[i].SpanID < turns[j].SpanID
-	})
-
-	return turns, quarantined, nil
-}
-
-// translateModelUsage is the per-span required+optional extraction. Returns
-// (ModelTurn, "") on success, or (zero-ModelTurn, reason) with a typed
-// reason on any required-attr failure.
-func translateModelUsage(resource *resourcepb.Resource, span *tracepb.Span) (ModelTurn, string) {
-	// Required: trace_id must be exactly 16 bytes per OTEL wire format and
-	// non-zero. A too-short trace_id would produce a truncated hex chain_id
-	// that violates the spec's 32-hex-char expectation.
-	if len(span.TraceId) != 16 {
-		return ModelTurn{}, "invalid_trace_id_length"
-	}
-	if isAllZero(span.TraceId) {
-		return ModelTurn{}, "invalid_trace_id_zero"
-	}
-	// Required: span_id must be exactly 8 bytes per OTEL wire format.
-	if len(span.SpanId) != 8 {
-		return ModelTurn{}, "invalid_span_id_length"
-	}
-	traceIDHex := hex.EncodeToString(span.TraceId)
-
-	// Required: resource service.name
-	surface := getResourceStringAttr(resource, "service.name")
-	if surface == "" {
-		return ModelTurn{}, "missing_required_attr:service.name"
-	}
-
-	// Required: start_time_unix_nano non-zero
-	if span.StartTimeUnixNano == 0 {
-		return ModelTurn{}, "missing_required_attr:start_time_unix_nano"
-	}
-	ts := time.Unix(0, int64(span.StartTimeUnixNano)).UTC().Format(time.RFC3339)
-
-	// Required: openclaw.provider non-empty, ≠ "unknown".
-	// The literal "unknown" is openclaw's in-source fallback for degraded
-	// paths (diagnostics-otel@2026.4.15-beta.1 emits it when the provider
-	// is unresolved). Comparison is case-sensitive because the plugin
-	// source emits the exact lowercase literal; if a future openclaw
-	// version introduces case variants, extend this to strings.EqualFold.
-	provider := getSpanStringAttr(span, "openclaw.provider")
-	if provider == "" {
-		return ModelTurn{}, "missing_required_attr:openclaw.provider"
-	}
-	if provider == "unknown" {
-		return ModelTurn{}, "unknown_value:openclaw.provider"
-	}
-
-	// Required: openclaw.model non-empty, ≠ "unknown". Same case-sensitivity
-	// note as openclaw.provider above.
-	modelName := getSpanStringAttr(span, "openclaw.model")
-	if modelName == "" {
-		return ModelTurn{}, "missing_required_attr:openclaw.model"
-	}
-	if modelName == "unknown" {
-		return ModelTurn{}, "unknown_value:openclaw.model"
-	}
-
-	// Required: input + output token counts, both non-negative. The model_turn
-	// Zod contract enforces non-negative int; quarantine at translation time
-	// so a buggy emitter can't produce payloads that fail validation downstream.
-	inputTokens, inputPresent := getSpanIntAttr(span, "openclaw.tokens.input")
-	if !inputPresent {
-		return ModelTurn{}, "missing_required_attr:openclaw.tokens.input"
-	}
-	if inputTokens < 0 {
-		return ModelTurn{}, "invalid_value:openclaw.tokens.input"
-	}
-	outputTokens, outputPresent := getSpanIntAttr(span, "openclaw.tokens.output")
-	if !outputPresent {
-		return ModelTurn{}, "missing_required_attr:openclaw.tokens.output"
-	}
-	if outputTokens < 0 {
-		return ModelTurn{}, "invalid_value:openclaw.tokens.output"
-	}
-
-	// Optional attributes
-	mt := ModelTurn{
-		TraceID:      traceIDHex,
-		SpanID:       hex.EncodeToString(span.SpanId),
-		Ts:           ts,
-		Surface:      surface,
-		Provider:     provider,
-		ModelName:    modelName,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}
-	if sid := getSpanStringAttr(span, "openclaw.sessionId"); sid != "" {
-		mt.SessionIDExternal = sid
-	}
-	if span.EndTimeUnixNano != 0 && span.EndTimeUnixNano >= span.StartTimeUnixNano {
-		mt.DurationMs = int64((span.EndTimeUnixNano - span.StartTimeUnixNano) / 1_000_000)
-	}
-	if cr, ok := getSpanIntAttr(span, "openclaw.tokens.cache_read"); ok {
-		if cr < 0 {
-			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_read"
-		}
-		mt.CacheReadTokens = cr
-	}
-	if cw, ok := getSpanIntAttr(span, "openclaw.tokens.cache_write"); ok {
-		if cw < 0 {
-			return ModelTurn{}, "invalid_value:openclaw.tokens.cache_write"
-		}
-		mt.CacheWriteTokens = cw
-	}
-	return mt, ""
+	return translated, quarantined, nil
 }
 
 // --- attribute helpers ---
@@ -213,6 +242,38 @@ func getSpanIntAttr(s *tracepb.Span, key string) (int64, bool) {
 		if v, ok := kv.Value.GetValue().(*commonpb.AnyValue_IntValue); ok {
 			last = v.IntValue
 			found = true
+		}
+	}
+	return last, found
+}
+
+// getSpanIntOrDoubleAsIntAttr returns the attribute value as int64.
+// Accepts IntValue or DoubleValue (if the double has no fractional part).
+// Returns (0, false) for missing, wrong-type, or fractional doubles.
+// Duplicate-key handling: last write wins (matches getSpanIntAttr).
+//
+// OTEL JS SDK can emit numeric attributes as either IntValue or
+// DoubleValue depending on whether the JS number has a fractional part.
+// openclaw uses JS, so ageMs/queueDepth may arrive either way; this
+// helper unifies the read path.
+func getSpanIntOrDoubleAsIntAttr(s *tracepb.Span, key string) (int64, bool) {
+	var found bool
+	var last int64
+	for _, kv := range s.Attributes {
+		if kv.Key != key || kv.Value == nil {
+			continue
+		}
+		switch v := kv.Value.GetValue().(type) {
+		case *commonpb.AnyValue_IntValue:
+			last = v.IntValue
+			found = true
+		case *commonpb.AnyValue_DoubleValue:
+			if v.DoubleValue == float64(int64(v.DoubleValue)) {
+				last = int64(v.DoubleValue)
+				found = true
+			} else {
+				found = false
+			}
 		}
 	}
 	return last, found
@@ -257,97 +318,78 @@ func makeQuarantine(reason string, span *tracepb.Span) Quarantine {
 	}
 }
 
-// modelTurnPayload is the typed shape of the model_turn event payload.
-type modelTurnPayload struct {
-	ModelName         string `json:"model_name"`
-	Provider          string `json:"provider"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	SessionIDExternal string `json:"session_id_external,omitempty"`
-	DurationMs        int64  `json:"duration_ms,omitempty"`
-	CacheReadTokens   int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens,omitempty"`
-}
-
-// EmitModelTurns validates the envelope template, writes every quarantine
-// side-car first (crash-safety: quarantine complete before any event is
-// emitted), then emits one model_turn event per ModelTurn through the
-// transactional Emitter. Returns the number of NEW events emitted.
+// EmitEvents validates the envelope template, writes every quarantine
+// side-car first (crash-safety), then emits one chitin event per
+// TranslatedSpan in deterministic order.
 //
-// Invariant: ValidateEnvelopeTemplate is called before any side-effects.
-// Invariant: quarantine files are written before the first Emit call.
-// Invariant: a turn whose chain_id already exists in the index is skipped
+// Invariants: ValidateEnvelopeTemplate called first; quarantine written
+// before the first Emit call; events sorted by (ts asc, span_id asc)
+// before emit; a chain_id already present in the index is skipped
+// (idempotent replay).
+//   - Each event gets a fresh labels map; template labels merge with
+//     span-provided OTEL labels, with OTEL labels taking precedence on
+//     key collision.
 //
-//	(idempotent replay — re-emitting the same trace produces no new events).
-//
-// Assumption: one openclaw.model.usage span per trace_id. SP-0's static
-// inventory of diagnostics-otel@2026.4.15-beta.1 confirms the plugin
-// emits exactly one openclaw.model.usage span per successful model call,
-// and each model call creates its own trace. If a future openclaw version
-// emits multiple model-usage spans sharing a trace_id within one batch,
-// this loop would emit the first and silently skip the rest — because
-// they'd share chain_id = "otel:"+trace_id and the second Get would
-// find the chain already populated. Revisit the chain_id scheme (e.g.
-// include span_id) when that assumption breaks.
-//
-// Not safe for concurrent invocation: the em.Index.Get / em.Emit pair is
-// not atomic, so overlapping calls with the same chain_id may race. SP-1
-// uses single-process, sequential invocation only; concurrency safety is
-// deferred to a follow-up if SP-3's push receiver requires it.
-func EmitModelTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []ModelTurn, quarantined []Quarantine) (int, error) {
+// Not safe for concurrent invocation: the em.Index.Get / em.Emit pair
+// is not atomic. SP-2 preserves SP-1's single-process sequential
+// assumption; push-mode concurrency is SP-3's problem.
+func EmitEvents(em *emit.Emitter, dir string, tmpl *event.Event, spans []TranslatedSpan, quarantined []Quarantine) (int, error) {
 	if err := ValidateEnvelopeTemplate(tmpl); err != nil {
 		return 0, fmt.Errorf("invalid_envelope_template: %w", err)
 	}
-	// Write quarantine side-cars BEFORE any event is emitted — crash-safety.
+
 	for _, q := range quarantined {
 		if err := WriteQuarantine(dir, q); err != nil {
 			return 0, fmt.Errorf("write_quarantine: %w", err)
 		}
 	}
 
-	emitted := 0
-	for i, turn := range turns {
-		chainID := "otel:" + turn.TraceID
+	sort.SliceStable(spans, func(i, j int) bool {
+		if spans[i].Ts() != spans[j].Ts() {
+			return spans[i].Ts() < spans[j].Ts()
+		}
+		return spans[i].SpanID() < spans[j].SpanID()
+	})
 
-		// Idempotency: if this chain already has any event, skip it.
+	emitted := 0
+	for i, span := range spans {
+		chainID := span.ChainID()
+
 		existing, err := em.Index.Get(chainID)
 		if err != nil {
-			return emitted, fmt.Errorf("index lookup for turn %d: %w", i, err)
+			return emitted, fmt.Errorf("index lookup for span %d: %w", i, err)
 		}
 		if existing != nil {
-			// Chain already populated — this turn was already emitted.
 			continue
 		}
 
 		ev := cloneTemplate(tmpl)
-		ev.EventType = "model_turn"
-		ev.Ts = turn.Ts
-		ev.Surface = turn.Surface
+		ev.EventType = span.EventType()
+		ev.Ts = span.Ts()
+		ev.Surface = span.Surface()
 		ev.ChainID = chainID
-		if ev.Labels == nil {
-			ev.Labels = map[string]string{}
-		}
-		ev.Labels["source"] = "otel"
-		ev.Labels["dialect"] = "openclaw"
 
-		payload := modelTurnPayload{
-			ModelName:         turn.ModelName,
-			Provider:          turn.Provider,
-			InputTokens:       turn.InputTokens,
-			OutputTokens:      turn.OutputTokens,
-			SessionIDExternal: turn.SessionIDExternal,
-			DurationMs:        turn.DurationMs,
-			CacheReadTokens:   turn.CacheReadTokens,
-			CacheWriteTokens:  turn.CacheWriteTokens,
+		// Allocate a fresh labels map per event so we never mutate the caller's
+		// template. OTEL labels (source, dialect, otel_*) take precedence over
+		// template labels on key collision — documented in the EmitEvents
+		// invariants above.
+		otelLabels := span.Labels()
+		ev.Labels = make(map[string]string, len(tmpl.Labels)+len(otelLabels))
+		for k, v := range tmpl.Labels {
+			ev.Labels[k] = v
 		}
-		raw, err := json.Marshal(payload)
+		for k, v := range otelLabels {
+			ev.Labels[k] = v
+		}
+
+		raw, err := span.Payload()
 		if err != nil {
-			return emitted, fmt.Errorf("marshal payload for turn %d: %w", i, err)
+			return emitted, fmt.Errorf("payload for span %d: %w", i, err)
 		}
-		ev.Payload = json.RawMessage(raw)
+		ev.Payload = raw
 
 		if err := em.Emit(&ev); err != nil {
-			return emitted, fmt.Errorf("emit turn %d: %w", i, err)
+			return emitted, fmt.Errorf("emit span %d: %w", i, err)
 		}
 		emitted++
 	}

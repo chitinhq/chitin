@@ -99,10 +99,10 @@ func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
 	// arrival order already, but sorting cements determinism across
 	// re-ingests and concatenated-file inputs.
 	sort.SliceStable(turns, func(i, j int) bool {
-		if turns[i].Ts != turns[j].Ts {
-			return turns[i].Ts < turns[j].Ts
+		if turns[i].TsStr != turns[j].TsStr {
+			return turns[i].TsStr < turns[j].TsStr
 		}
-		return turns[i].SpanID < turns[j].SpanID
+		return turns[i].SpanIDHex < turns[j].SpanIDHex
 	})
 	sort.SliceStable(quarantined, func(i, j int) bool {
 		// Quarantined entries may lack Ts if JSON parsing failed; fall back
@@ -230,9 +230,9 @@ func translatePostAPIRequest(ev *HermesEvent) (ModelTurn, string) {
 
 	return ModelTurn{
 		TraceID:           traceHex,
-		SpanID:            spanHex,
-		Ts:                ev.Ts,
-		Surface:           "hermes",
+		SpanIDHex:         spanHex,
+		TsStr:             ev.Ts,
+		SurfaceStr:        "hermes",
 		Provider:          provider,
 		ModelName:         modelName,
 		InputTokens:       inputTokens,
@@ -320,7 +320,7 @@ func EmitHermesTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mo
 
 	emitted := 0
 	for i, turn := range turns {
-		chainID := buildHermesChainID(turn.TraceID, turn.SpanID)
+		chainID := buildHermesChainID(turn.TraceID, turn.SpanIDHex)
 
 		existing, err := em.Index.Get(chainID)
 		if err != nil {
@@ -332,8 +332,8 @@ func EmitHermesTurns(em *emit.Emitter, dir string, tmpl *event.Event, turns []Mo
 
 		ev := cloneTemplate(tmpl)
 		ev.EventType = "model_turn"
-		ev.Ts = turn.Ts
-		ev.Surface = turn.Surface
+		ev.Ts = turn.TsStr
+		ev.Surface = turn.SurfaceStr
 		ev.ChainID = chainID
 		if ev.Labels == nil {
 			ev.Labels = map[string]string{}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -24,16 +25,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: mkdir temp:", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmp)
 	testBinary = filepath.Join(tmp, "chitin-kernel")
 	build := exec.Command("go", "build", "-o", testBinary, ".")
 	build.Stderr = os.Stderr
 	build.Stdout = os.Stdout
 	if err := build.Run(); err != nil {
+		os.RemoveAll(tmp)
 		fmt.Fprintln(os.Stderr, "TestMain: go build failed:", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(tmp)
+	os.Exit(code)
 }
 
 // runCLI invokes the built chitin-kernel binary with the given args, inside
@@ -107,8 +110,31 @@ func TestCLI_IngestOTEL_ParseOnly(t *testing.T) {
 	if out["ok"] != true {
 		t.Errorf("ok: %v", out["ok"])
 	}
-	if _, ok := out["turns"]; !ok {
-		t.Error("turns absent from parse-only output")
+	// Old "turns" key is retired — the parse-only contract emits "events"
+	// with a stable per-event shape regardless of span type.
+	if _, ok := out["turns"]; ok {
+		t.Errorf("legacy 'turns' key must not appear in parse-only output")
+	}
+	events, ok := out["events"].([]any)
+	if !ok {
+		t.Fatalf("events absent or wrong type in parse-only output: %T", out["events"])
+	}
+	if len(events) == 0 {
+		t.Fatal("events empty in parse-only output")
+	}
+	for i, ev := range events {
+		m, ok := ev.(map[string]any)
+		if !ok {
+			t.Fatalf("events[%d] not an object: %T", i, ev)
+		}
+		for _, k := range []string{"event_type", "ts", "surface", "chain_id", "payload"} {
+			if _, ok := m[k]; !ok {
+				t.Errorf("events[%d] missing key %q", i, k)
+			}
+		}
+	}
+	if _, ok := out["quarantined"]; !ok {
+		t.Error("quarantined absent from parse-only output")
 	}
 }
 
@@ -155,6 +181,104 @@ func TestCLI_IngestOTEL_UnsupportedDialect(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `"error":"unsupported_dialect"`) {
 		t.Errorf(`want stderr to contain "error":"unsupported_dialect", got %q`, stderr)
+	}
+}
+
+// TestCLI_IngestOTEL_SP2MixedFixture is the SP-2 end-to-end golden test.
+//
+// Invariant (what this test proves):
+//
+//	Given a 5-span fixture — one of each mapped openclaw span-type
+//	(model.usage, webhook.processed, webhook.error, session.stuck) plus
+//	one unmapped span name — `chitin-kernel ingest-otel` in emit mode
+//	produces EXACTLY the committed golden events (4 lines, byte-for-byte)
+//	AND EXACTLY the committed quarantine manifest (1 file, sanitized
+//	filename, deterministic ordering).
+//
+// Determinism: every input is static (fixture bytes, template bytes,
+// fixed ts, per-span chain_id derived from fixture bytes). Output is a
+// pure function of inputs — including this_hash, which is the SHA-256
+// of the canonical-JSON event. If the golden comparison fails after a
+// translator or hash change, inspect the diff against
+// testdata/sp2-golden-events.jsonl.actual (written on mismatch) and
+// regenerate the golden only after confirming the change is intended.
+//
+// Sort order: all four mapped spans share the same start_time, so the
+// tie-breaker is span_id hex-ascending (0101… < 0202… < 0303… < 0404…).
+func TestCLI_IngestOTEL_SP2MixedFixture(t *testing.T) {
+	wd := t.TempDir()
+	tmplPath := writeTemplate(t, wd)
+
+	fixtureAbs, err := filepath.Abs(filepath.Join("testdata", "sp2-mixed-fixture.pb"))
+	if err != nil {
+		t.Fatalf("abs fixture: %v", err)
+	}
+
+	chitinDir := filepath.Join(wd, ".chitin")
+	stdout, stderr, code := runCLI(t, wd,
+		"ingest-otel",
+		"--from", fixtureAbs,
+		"--dialect", "openclaw",
+		"--envelope-template", tmplPath,
+		"--dir", chitinDir,
+	)
+
+	// Exit code 2 is the documented "some spans quarantined" signal from
+	// cmdIngestOTEL. Any other code is a hard failure.
+	if code != 2 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	// --- events JSONL: byte-for-byte golden compare ---
+
+	runID := "550e8400-e29b-41d4-a716-446655441000" // matches writeTemplate
+	gotEventsPath := filepath.Join(chitinDir, fmt.Sprintf("events-%s.jsonl", runID))
+	gotEvents, err := os.ReadFile(gotEventsPath)
+	if err != nil {
+		t.Fatalf("read emitted events: %v", err)
+	}
+
+	goldenEventsPath, err := filepath.Abs(filepath.Join("testdata", "sp2-golden-events.jsonl"))
+	if err != nil {
+		t.Fatalf("abs golden events: %v", err)
+	}
+	wantEvents, err := os.ReadFile(goldenEventsPath)
+	if err != nil {
+		t.Fatalf("read golden events: %v", err)
+	}
+	if string(gotEvents) != string(wantEvents) {
+		// Write actual output next to the golden so a reviewer can diff
+		// and regenerate if the change is intentional.
+		_ = os.WriteFile(goldenEventsPath+".actual", gotEvents, 0o644)
+		t.Fatalf("events JSONL mismatch; actual written to %s.actual", goldenEventsPath)
+	}
+
+	// --- quarantine manifest: sorted filename list compare ---
+
+	qdir := filepath.Join(chitinDir, "otel-quarantine")
+	entries, err := os.ReadDir(qdir)
+	if err != nil {
+		t.Fatalf("read quarantine dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	gotManifest := strings.Join(names, "\n") + "\n"
+
+	goldenManifestPath, err := filepath.Abs(filepath.Join("testdata", "sp2-golden-quarantine-manifest.txt"))
+	if err != nil {
+		t.Fatalf("abs golden manifest: %v", err)
+	}
+	wantManifest, err := os.ReadFile(goldenManifestPath)
+	if err != nil {
+		t.Fatalf("read golden manifest: %v", err)
+	}
+	if gotManifest != string(wantManifest) {
+		_ = os.WriteFile(goldenManifestPath+".actual", []byte(gotManifest), 0o644)
+		t.Fatalf("quarantine manifest mismatch; actual written to %s.actual\ngot:\n%swant:\n%s",
+			goldenManifestPath, gotManifest, string(wantManifest))
 	}
 }
 
