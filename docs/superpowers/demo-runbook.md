@@ -218,8 +218,12 @@ The next `chitin-kernel drive copilot ...` invocation works normally again — o
 
 Close with:
 1. **What chitin actually is:** open-source Go kernel, agent-agnostic gate, works with Copilot CLI TODAY (Option Y in-kernel) and is portable to other coding agents via the same tool-boundary primitive (Option X external plugin path used for hermes historically).
-2. **Where next:** OpenClaw plugin, Claude Code plugin are on the roadmap post-talk. The OTEL GenAI ingest direction aligns the governance layer with other observability primitives.
-3. **Links:** `github.com/chitinhq/chitin`, spec + plan visible in `docs/superpowers/`, spike findings at `docs/superpowers/specs/2026-04-25-copilot-sdk-spike-findings.md`.
+2. **Two postures, two patterns.** GitHub's posture (Copilot SDK MIT public preview, 2026-04-02) is "embed me in your orchestrator" — open extensibility, BYOK including Anthropic models. Anthropic's posture (Claude Code closed binary, subagents-inside, recent 3rd-party-subscription block) is "stay inside my platform." Chitin's two-driver design matches this: **open vendors** get an in-process extension (`~/.copilot/extensions/chitin/extension.mjs` riding inside every session via `joinSession`/`onPreToolUse` — v2, post-talk); **closed vendors** get a wrapping orchestrator (today's v1 demo path). Same governance API, vendor-shaped shim.
+3. **Where next:**
+   - **v2 Copilot driver as a Copilot CLI extension** — same governance, no orchestrator wrapper, rides inside the user's normal `copilot "..."` invocation. Spike spec drafted at `docs/superpowers/specs/2026-04-27-copilot-extension-spike-design.md`; 2-day go/no-go starts the day after this talk.
+   - Claude Code driver via the wrapping-orchestrator pattern v1 just demoed.
+   - OTEL GenAI ingest aligns the governance layer with other observability primitives.
+4. **Links:** `github.com/chitinhq/chitin`; spec + plan in `docs/superpowers/`; v1 spike findings at `docs/superpowers/specs/2026-04-25-copilot-sdk-spike-findings.md`; openclaw/Copilot research at `docs/observations/2026-04-27-copilot-openclaw-research.md`.
 
 ## Contingency paths
 
