@@ -72,6 +72,7 @@ type Decision struct {
 	CorrectedCommand string `json:"corrected_command,omitempty"`
 	Escalation       string `json:"escalation,omitempty"` // normal | elevated | high | lockdown
 	Action           Action `json:"-"`
+	Agent            string `json:"agent,omitempty"`
 	Ts               string `json:"ts"`
 }
 

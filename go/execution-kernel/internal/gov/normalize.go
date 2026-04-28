@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// Package-level regexes for infra.destroy detection and shape annotation.
+// Compiled once at init time; not recompiled per call.
+var (
+	reTerraformDestroy = regexp.MustCompile(`^terraform\s+destroy\b`)
+	reKubectlDeleteNS  = regexp.MustCompile(`^kubectl\s+delete\s+(ns|namespace)\b`)
+	reCurlPipeBash     = regexp.MustCompile(`\bcurl\b[^|]*\|\s*(bash|sh)\b`)
+)
+
 // Normalize maps a raw tool call to a canonical Action. Closed enum:
 // unknown tools produce ActUnknown (fail-closed at the policy layer).
 //
@@ -140,8 +148,28 @@ func classifyShellCommand(cmd string) Action {
 		return Action{Type: ActGithubAPI, Target: trimmed}
 	}
 
-	// Default: generic shell.exec — all other commands (including rm -rf)
-	return Action{Type: ActShellExec, Target: trimmed}
+	// Infra-destroy patterns: re-tag from shell.exec to infra.destroy so
+	// policy rules can match the intent-class, not the shell string.
+	// Invariant: every command matching these patterns produces exactly one
+	// ActInfraDestroy action with Params["tool"] naming the CLI tool.
+	if reTerraformDestroy.MatchString(trimmed) {
+		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "terraform"}}
+	}
+	if reKubectlDeleteNS.MatchString(trimmed) {
+		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "kubectl"}}
+	}
+
+	// Default: generic shell.exec — all other commands (including rm -rf).
+	// Annotate curl-pipe-bash shape: action stays shell.exec, but policy can
+	// target Params["shape"] = "curl-pipe-bash" to match this dangerous pattern.
+	// Invariant: every curl ... | bash/sh command produces exactly one
+	// ActShellExec action with Params["shape"] = "curl-pipe-bash".
+	// wget pipe bash and curl without pipe intentionally do not match.
+	action := Action{Type: ActShellExec, Target: trimmed}
+	if reCurlPipeBash.MatchString(trimmed) {
+		action.Params = map[string]any{"shape": "curl-pipe-bash"}
+	}
+	return action
 }
 
 // extractShellIntent scans Python code for anything that would execute
@@ -216,15 +244,40 @@ func joinQuotedList(inside string) string {
 	return strings.Join(parts, " ")
 }
 
-// extractPushBranch parses `git push [remote] [branch|HEAD:branch]`
-// and returns the destination branch name, or "" if it can't be parsed.
+// extractPushBranch parses `git push [flags...] [remote] [branch|HEAD:branch]`
+// and returns the destination branch name, or "" if no branch arg is present
+// (bare `git push`, `git push origin`, etc.).
+//
+// Invariant: for any input where `git push` is followed by a remote and a
+// branch arg with any number of flag tokens (-x, --xxx, --xxx=val) anywhere
+// before the remote, the return value is the branch name with HEAD: prefix
+// stripped. For inputs without an explicit branch arg, returns "" — the
+// caller is responsible for resolving the current branch from cwd if needed
+// (driver/copilot/normalize.go does this for the bare-push case).
+//
+// Closes #52, #62.
 func extractPushBranch(cmd string) string {
-	// Match "git push origin branch" or "git push origin HEAD:branch"
-	re := regexp.MustCompile(`\bgit\s+push\s+\S+\s+(?:HEAD:)?([A-Za-z0-9_./\-]+)`)
-	if m := re.FindStringSubmatch(cmd); len(m) > 1 {
-		return m[1]
+	after := regexp.MustCompile(`^\s*git\s+push\b\s*`).ReplaceAllString(strings.TrimSpace(cmd), "")
+	var positional []string
+	for _, tok := range strings.Fields(after) {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		positional = append(positional, tok)
 	}
-	return ""
+	// Forms after dropping flags:
+	//   []                       bare push: branch unknown, return ""
+	//   ["origin"]               remote without branch: return ""
+	//   ["origin", "main"]       standard: return "main"
+	//   ["origin", "HEAD:main"]  HEAD prefix: strip, return "main"
+	if len(positional) < 2 {
+		return ""
+	}
+	target := positional[1]
+	if strings.HasPrefix(target, "HEAD:") {
+		return target[len("HEAD:"):]
+	}
+	return target
 }
 
 func stringArg(args map[string]any, key string) string {

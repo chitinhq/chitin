@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteLog_AppendsOneJSONLine(t *testing.T) {
@@ -40,6 +42,27 @@ func TestWriteLog_AppendsOneJSONLine(t *testing.T) {
 	}
 	if lines != 1 {
 		t.Errorf("expected 1 line, got %d", lines)
+	}
+}
+
+func TestDecision_JSONL_CarriesAgent(t *testing.T) {
+	dir := t.TempDir()
+	d := Decision{
+		Allowed: true,
+		Agent:   "copilot-cli",
+		Action:  Action{Type: "shell.exec", Target: "ls /tmp"},
+		Ts:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := WriteLog(d, dir); err != nil {
+		t.Fatalf("WriteLog: %v", err)
+	}
+	path := filepath.Join(dir, "gov-decisions-"+time.Now().UTC().Format("2006-01-02")+".jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), `"agent":"copilot-cli"`) {
+		t.Errorf("expected agent field in JSONL, got: %s", string(data))
 	}
 }
 
