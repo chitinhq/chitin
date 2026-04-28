@@ -172,6 +172,51 @@ describe('model_turn event', () => {
     };
     expect(() => EventSchema.parse(ev)).toThrow();
   });
+
+  // SP-2: confirm the discriminated union accepts the three new payload
+  // types end-to-end (not just the standalone payload schemas). Without
+  // these, a payload type wired into payloads.schema.ts but missing from
+  // event.schema.ts would slip through the standalone tests.
+  it('accepts webhook_received envelope+payload', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'webhook_received' as const,
+      payload: {
+        channel: 'telegram',
+        webhook_type: 'message',
+        duration_ms: 42,
+        chat_id: 'abc',
+      },
+    };
+    expect(() => EventSchema.parse(ev)).not.toThrow();
+  });
+
+  it('accepts webhook_failed envelope+payload', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'webhook_failed' as const,
+      payload: {
+        channel: 'telegram',
+        webhook_type: 'message',
+        error_message: 'boom',
+      },
+    };
+    expect(() => EventSchema.parse(ev)).not.toThrow();
+  });
+
+  it('accepts session_stuck envelope+payload', () => {
+    const ev = {
+      ...validEnvelopeBase,
+      event_type: 'session_stuck' as const,
+      payload: {
+        state: 'awaiting_model',
+        age_ms: 120000,
+        session_id_external: 'sess-123',
+        queue_depth: 5,
+      },
+    };
+    expect(() => EventSchema.parse(ev)).not.toThrow();
+  });
 });
 
 describe('WebhookReceivedPayloadSchema', () => {

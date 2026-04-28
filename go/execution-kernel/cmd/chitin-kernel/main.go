@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -334,6 +335,16 @@ func cmdIngestOTEL(args []string) {
 		// interface — never serialize the concrete translator structs
 		// directly, which would leak CamelCase field names and
 		// per-type-divergent shapes.
+		//
+		// Apply the same (ts asc, span_id asc) ordering that EmitEvents
+		// uses, so parse-only output is deterministic across runs and
+		// matches what emit mode would produce for the same input.
+		sort.SliceStable(spans, func(i, j int) bool {
+			if spans[i].Ts() != spans[j].Ts() {
+				return spans[i].Ts() < spans[j].Ts()
+			}
+			return spans[i].SpanID() < spans[j].SpanID()
+		})
 		type parseOnlySpan struct {
 			EventType string          `json:"event_type"`
 			Ts        string          `json:"ts"`
