@@ -116,8 +116,8 @@ func TestParseHermesEvents_HappyPath(t *testing.T) {
 		t.Fatalf("want 1 turn, got %d", len(turns))
 	}
 	mt := turns[0]
-	if mt.Surface != "hermes" {
-		t.Errorf("Surface: got %q want \"hermes\"", mt.Surface)
+	if mt.SurfaceStr != "hermes" {
+		t.Errorf("SurfaceStr: got %q want \"hermes\"", mt.SurfaceStr)
 	}
 	if mt.Provider != "custom" {
 		t.Errorf("Provider: got %q want \"custom\" (hermes normalizes custom-endpoint providers)", mt.Provider)
@@ -144,16 +144,16 @@ func TestParseHermesEvents_HappyPath(t *testing.T) {
 	if mt.DurationMs != 2345 {
 		t.Errorf("DurationMs: got %d (want 2345 from api_duration=2.345)", mt.DurationMs)
 	}
-	if mt.Ts != "2026-04-21T19:00:00+00:00" {
-		t.Errorf("Ts: got %q (line-level ts passthrough)", mt.Ts)
+	if mt.TsStr != "2026-04-21T19:00:00+00:00" {
+		t.Errorf("TsStr: got %q (line-level ts passthrough)", mt.TsStr)
 	}
 	wantTrace := hermesSyntheticTraceID("s1")
 	wantSpan := hermesSyntheticSpanID("s1", "2026-04-21T19:00:00+00:00")
 	if mt.TraceID != wantTrace {
 		t.Errorf("TraceID: got %q want %q", mt.TraceID, wantTrace)
 	}
-	if mt.SpanID != wantSpan {
-		t.Errorf("SpanID: got %q want %q", mt.SpanID, wantSpan)
+	if mt.SpanIDHex != wantSpan {
+		t.Errorf("SpanIDHex: got %q want %q", mt.SpanIDHex, wantSpan)
 	}
 }
 
@@ -201,13 +201,13 @@ func TestParseHermesEvents_DeterministicOrdering(t *testing.T) {
 		t.Fatalf("want 2 turns, got %d", len(turnsA))
 	}
 	// Turns should be sorted by Ts ascending even though input was Ts descending.
-	if turnsA[0].Ts >= turnsA[1].Ts {
-		t.Errorf("turns not sorted by Ts ascending: [0]=%q [1]=%q", turnsA[0].Ts, turnsA[1].Ts)
+	if turnsA[0].TsStr >= turnsA[1].TsStr {
+		t.Errorf("turns not sorted by TsStr ascending: [0]=%q [1]=%q", turnsA[0].TsStr, turnsA[1].TsStr)
 	}
 	// Determinism check.
 	for i := range turnsA {
-		if turnsA[i].SpanID != turnsB[i].SpanID {
-			t.Errorf("turn %d span diverges: A=%q B=%q", i, turnsA[i].SpanID, turnsB[i].SpanID)
+		if turnsA[i].SpanIDHex != turnsB[i].SpanIDHex {
+			t.Errorf("turn %d span diverges: A=%q B=%q", i, turnsA[i].SpanIDHex, turnsB[i].SpanIDHex)
 		}
 	}
 	if len(quarA) != len(quarB) {
