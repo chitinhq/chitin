@@ -23,13 +23,14 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Quarantine records an unmappable span for audit.
+// Quarantine records an unmappable span for audit. JSON tags are
+// stable parse-only-mode contract — see cmdIngestOTEL.
 type Quarantine struct {
-	Reason   string
-	SpanName string
-	TraceID  string
-	SpanID   string
-	SpanRaw  json.RawMessage
+	Reason   string          `json:"reason"`
+	SpanName string          `json:"span_name"`
+	TraceID  string          `json:"trace_id"`
+	SpanID   string          `json:"span_id"`
+	SpanRaw  json.RawMessage `json:"span_raw"`
 }
 
 // buildChainID is the single source of truth for OTEL-ingest chain-id
@@ -145,8 +146,15 @@ type seenKey struct {
 // unmapped_span_name:<name>. Within a single batch, the second (and any
 // later) occurrence of a (trace_id, span_id) pair quarantines with
 // duplicate_span_id — dedup runs BEFORE translation so malformed
-// envelopes quarantine with their length-specific reason rather than
-// the duplicate reason.
+// envelopes (wrong length OR all-zero ids) quarantine with their
+// length/zero-specific reason rather than the duplicate reason.
+//
+// Cross-batch scope: dedup here is single-batch only. A (trace_id,
+// span_id) pair re-emitted in a later batch is silently dropped by the
+// chain index in EmitEvents (em.Index.Get) for idempotent replay — it
+// does NOT produce a duplicate_span_id quarantine. If you need
+// cross-batch collision *detection*, that's a separate signal layered
+// on top of the chain index, not this function.
 func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]TranslatedSpan, []Quarantine, error) {
 	var translated []TranslatedSpan
 	var quarantined []Quarantine
@@ -154,10 +162,13 @@ func ParseOpenClawSpans(rs []*tracepb.ResourceSpans) ([]TranslatedSpan, []Quaran
 
 	IterSpans(rs, func(resource *resourcepb.Resource, span *tracepb.Span) {
 		// Duplicate detection runs BEFORE translation so malformed spans
-		// (wrong trace/span length) quarantine with the length reason
-		// rather than the duplicate reason. Only well-formed pairs enter
-		// the seen set.
-		if len(span.TraceId) == 16 && len(span.SpanId) == 8 {
+		// (wrong trace/span length, all-zero ids) quarantine with the
+		// length/zero-specific reason rather than duplicate_span_id. Only
+		// well-formed AND non-zero pairs enter the seen set; otherwise a
+		// second all-zero span would collide with the first on the zero
+		// key and lose its specific invalid_*_zero reason.
+		if len(span.TraceId) == 16 && len(span.SpanId) == 8 &&
+			!isAllZero(span.TraceId) && !isAllZero(span.SpanId) {
 			var key seenKey
 			copy(key.trace[:], span.TraceId)
 			copy(key.span[:], span.SpanId)

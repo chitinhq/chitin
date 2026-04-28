@@ -300,6 +300,9 @@ func readEmittedEvents(t *testing.T, dir string) []*event.Event {
 		}
 		out = append(out, &ev)
 	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan events.jsonl: %v", err)
+	}
 	return out
 }
 
@@ -448,6 +451,77 @@ func TestOpenClawIngest_DuplicateSpanIDQuarantinesLaterSpans(t *testing.T) {
 	mt := spans[0].(ModelTurn)
 	if mt.InputTokens != 1 || mt.OutputTokens != 2 {
 		t.Fatalf("dedup kept wrong span: got tokens %d/%d, want 1/2 (first wins)", mt.InputTokens, mt.OutputTokens)
+	}
+}
+
+// TestOpenClawIngest_AllZeroIDsDoNotPoisonDupSet: two spans with all-zero
+// trace_id (or span_id) must each quarantine with their length/zero-specific
+// reason (invalid_trace_id_zero / invalid_span_id_zero), NOT with
+// duplicate_span_id. Regression for the dup-detect ordering bug where the
+// zero key was inserted into the seen-set before the validate gate ran,
+// causing the second all-zero span to lose its specific reason.
+func TestOpenClawIngest_AllZeroIDsDoNotPoisonDupSet(t *testing.T) {
+	start, end := sampleTs(0)
+	zeroTrace := make([]byte, 16) // all zeros, length-valid
+	zeroSpan := make([]byte, 8)   // all zeros, length-valid
+
+	payload := buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name: "openclaw.model.usage", traceID: zeroTrace, spanID: sampleSpanID(0x01),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+		{
+			name: "openclaw.model.usage", traceID: zeroTrace, spanID: sampleSpanID(0x02),
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 3, "openclaw.tokens.output": 4},
+		},
+	})
+
+	rs, _ := DecodeTraces(payload)
+	spans, quarantined, _ := ParseOpenClawSpans(rs)
+	if len(spans) != 0 {
+		t.Fatalf("spans=%d, want 0 (both should quarantine on zero trace_id)", len(spans))
+	}
+	if len(quarantined) != 2 {
+		t.Fatalf("quarantined=%d, want 2", len(quarantined))
+	}
+	for i, q := range quarantined {
+		if q.Reason != "invalid_trace_id_zero" {
+			t.Errorf("quarantined[%d].Reason = %q, want invalid_trace_id_zero (NOT duplicate_span_id)", i, q.Reason)
+		}
+	}
+
+	// Symmetric case: zero span_id, distinct (real) trace_ids.
+	payload = buildFixture(t, "openclaw", []fixtureSpan{
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x01), spanID: zeroSpan,
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 1, "openclaw.tokens.output": 2},
+		},
+		{
+			name: "openclaw.model.usage", traceID: sampleTraceID(0x02), spanID: zeroSpan,
+			startNanos: start, endNanos: end,
+			stringAttrs: map[string]string{"openclaw.provider": "ollama", "openclaw.model": "qwen"},
+			intAttrs:    map[string]int64{"openclaw.tokens.input": 3, "openclaw.tokens.output": 4},
+		},
+	})
+
+	rs, _ = DecodeTraces(payload)
+	spans, quarantined, _ = ParseOpenClawSpans(rs)
+	if len(spans) != 0 {
+		t.Fatalf("spans=%d, want 0 (both should quarantine on zero span_id)", len(spans))
+	}
+	if len(quarantined) != 2 {
+		t.Fatalf("quarantined=%d, want 2", len(quarantined))
+	}
+	for i, q := range quarantined {
+		if q.Reason != "invalid_span_id_zero" {
+			t.Errorf("quarantined[%d].Reason = %q, want invalid_span_id_zero (NOT duplicate_span_id)", i, q.Reason)
+		}
 	}
 }
 

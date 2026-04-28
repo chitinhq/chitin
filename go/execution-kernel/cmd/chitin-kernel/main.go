@@ -278,7 +278,11 @@ func cmdIngestTranscript(args []string) {
 // <dir>/otel-quarantine/.
 //
 // Parse-only mode (no --envelope-template): prints JSON
-// {"ok":true,"turns":[...],"quarantined":[...]}. Useful for debugging.
+// {"ok":true,"events":[{event_type, ts, surface, chain_id, payload}, ...],
+// "quarantined":[{reason, span_name, trace_id, span_id, span_raw}, ...]}.
+// Useful for debugging. Shape is stable across all four span types — the
+// per-translator concrete struct is hidden behind the TranslatedSpan
+// interface.
 //
 // Emit mode (--envelope-template <file>): emits events via the
 // transactional Emitter. Exit codes:
@@ -320,10 +324,34 @@ func cmdIngestOTEL(args []string) {
 	absDir, _ := filepath.Abs(*dir)
 
 	if *envelopeTemplateFile == "" {
-		// Parse-only mode.
+		// Parse-only mode. Build a stable shape from the TranslatedSpan
+		// interface — never serialize the concrete translator structs
+		// directly, which would leak CamelCase field names and
+		// per-type-divergent shapes.
+		type parseOnlySpan struct {
+			EventType string          `json:"event_type"`
+			Ts        string          `json:"ts"`
+			Surface   string          `json:"surface"`
+			ChainID   string          `json:"chain_id"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		events := make([]parseOnlySpan, 0, len(spans))
+		for _, s := range spans {
+			payload, err := s.Payload()
+			if err != nil {
+				exitErr("payload_marshal", err.Error())
+			}
+			events = append(events, parseOnlySpan{
+				EventType: s.EventType(),
+				Ts:        s.Ts(),
+				Surface:   s.Surface(),
+				ChainID:   s.ChainID(),
+				Payload:   payload,
+			})
+		}
 		out, _ := json.Marshal(map[string]any{
 			"ok":          true,
-			"turns":       spans,
+			"events":      events,
 			"quarantined": quarantined,
 		})
 		fmt.Println(string(out))

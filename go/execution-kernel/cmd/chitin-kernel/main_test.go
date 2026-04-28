@@ -110,8 +110,31 @@ func TestCLI_IngestOTEL_ParseOnly(t *testing.T) {
 	if out["ok"] != true {
 		t.Errorf("ok: %v", out["ok"])
 	}
-	if _, ok := out["turns"]; !ok {
-		t.Error("turns absent from parse-only output")
+	// Old "turns" key is retired — the parse-only contract emits "events"
+	// with a stable per-event shape regardless of span type.
+	if _, ok := out["turns"]; ok {
+		t.Errorf("legacy 'turns' key must not appear in parse-only output")
+	}
+	events, ok := out["events"].([]any)
+	if !ok {
+		t.Fatalf("events absent or wrong type in parse-only output: %T", out["events"])
+	}
+	if len(events) == 0 {
+		t.Fatal("events empty in parse-only output")
+	}
+	for i, ev := range events {
+		m, ok := ev.(map[string]any)
+		if !ok {
+			t.Fatalf("events[%d] not an object: %T", i, ev)
+		}
+		for _, k := range []string{"event_type", "ts", "surface", "chain_id", "payload"} {
+			if _, ok := m[k]; !ok {
+				t.Errorf("events[%d] missing key %q", i, k)
+			}
+		}
+	}
+	if _, ok := out["quarantined"]; !ok {
+		t.Error("quarantined absent from parse-only output")
 	}
 }
 
