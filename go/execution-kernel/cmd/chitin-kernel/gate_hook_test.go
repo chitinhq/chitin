@@ -320,6 +320,200 @@ func TestEvalHookStdin_EnvelopePrecedence_FlagBeatsEnvAndFile(t *testing.T) {
 	}
 }
 
+// chitinAdminPolicy: like baselinePolicy but adds a deny rule targeting
+// `chitin-kernel envelope grant` so the policy-still-applies test can
+// fire a real deny.
+const chitinAdminPolicy = `
+id: hook-test-admin
+mode: enforce
+rules:
+  - id: deny-grant
+    action: shell.exec
+    effect: deny
+    target: "chitin-kernel envelope grant"
+    reason: "chitin-kernel envelope grant denied by operator policy"
+  - id: allow-shell
+    action: shell.exec
+    effect: allow
+    reason: shell ok
+  - id: allow-read
+    action: file.read
+    effect: allow
+    reason: read ok
+`
+
+// TestEvalHookStdin_ChitinAdmin_AllowedOnExhaustedEnvelope verifies the
+// recovery path: with a 1-call envelope already exhausted by a prior
+// Read, a chitin-kernel admin command still passes the gate. Without
+// the exemption, the hook would deny on envelope-closed and the
+// operator would have to leave the gated session to recover.
+func TestEvalHookStdin_ChitinAdmin_AllowedOnExhaustedEnvelope(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 1, 0))
+	store.Close()
+
+	// Burn the cap with a Read.
+	_, _, code1 := runHookCall(t, env, map[string]any{
+		"tool_name":  "Read",
+		"tool_input": map[string]any{"file_path": "/a"},
+	}, envelope.ID)
+	if code1 != 0 {
+		t.Fatalf("first call exit=%d want 0", code1)
+	}
+
+	// Confirm a non-admin Bash now denies (envelope-exhausted).
+	stdoutDeny, _, codeDeny := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "ls /"},
+	}, envelope.ID)
+	if codeDeny != 2 {
+		t.Fatalf("non-admin call exit=%d want 2 (envelope blocked); stdout=%q", codeDeny, stdoutDeny)
+	}
+
+	// chitin-kernel envelope grant should pass — exempt from spend.
+	stdoutAdmin, _, codeAdmin := runHookCall(t, env, map[string]any{
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "chitin-kernel envelope grant " + envelope.ID + " --calls=+10",
+		},
+	}, envelope.ID)
+	if codeAdmin != 0 {
+		t.Fatalf("chitin-admin call exit=%d want 0 (exempt); stdout=%q", codeAdmin, stdoutAdmin)
+	}
+}
+
+// TestEvalHookStdin_ChitinAdmin_NoEnvelopeSpend verifies that a
+// chitin-kernel command does NOT debit the envelope even when one is
+// healthy. Otherwise the agent could rack up spend on admin calls
+// while believing it's at zero cost.
+func TestEvalHookStdin_ChitinAdmin_NoEnvelopeSpend(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 100, 0))
+	store.Close()
+
+	for _, cmd := range []string{
+		"chitin-kernel envelope inspect " + envelope.ID,
+		"chitin-kernel envelope list",
+		"env CHITIN_HOME=/tmp chitin-kernel envelope list",
+		"FOO=1 BAR=2 chitin-kernel envelope list",
+	} {
+		_, _, code := runHookCall(t, env, map[string]any{
+			"tool_name":  "Bash",
+			"tool_input": map[string]any{"command": cmd},
+		}, envelope.ID)
+		if code != 0 {
+			t.Fatalf("cmd %q: exit=%d want 0", cmd, code)
+		}
+	}
+
+	store2, _ := openBudgetStoreForTest(t, dbPath)
+	defer store2.Close()
+	e2, _ := store2.Load(envelope.ID)
+	st, _ := e2.Inspect()
+	if st.SpentCalls != 0 {
+		t.Fatalf("SpentCalls=%d want 0 — admin commands debited envelope", st.SpentCalls)
+	}
+}
+
+// TestEvalHookStdin_ChitinAdmin_PolicyStillApplies verifies the
+// exemption is spend-only: a policy rule denying
+// `chitin-kernel envelope grant` still produces a block, even though
+// the envelope is healthy. Operators retain control over which admin
+// commands the agent may run.
+func TestEvalHookStdin_ChitinAdmin_PolicyStillApplies(t *testing.T) {
+	env := setupHookEnv(t, chitinAdminPolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 10, 0))
+	store.Close()
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "chitin-kernel envelope grant " + envelope.ID + " --calls=+10",
+		},
+	}, envelope.ID)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (policy denies admin grant); stdout=%q", code, stdout)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(parsed["reason"], "denied by operator policy") {
+		t.Fatalf("reason missing operator-deny text: %q", parsed["reason"])
+	}
+}
+
+// TestEvalHookStdin_ChitinAdmin_NotMatchingNotExempt verifies the
+// matcher's negative cases: lookalike commands don't get exempted.
+// Each of these should debit the envelope normally.
+func TestEvalHookStdin_ChitinAdmin_NotMatchingNotExempt(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"path-prefixed", "/usr/local/bin/chitin-kernel envelope list"},
+		{"echo prefix", "echo chitin-kernel envelope list"},
+		{"hyphen extension", "chitin-kernel-fake envelope list"},
+		{"compound", "chitin-kernelizer envelope list"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := setupHookEnv(t, baselinePolicy)
+			dbPath := filepath.Join(env.chitin, "gov.db")
+			store, _ := openBudgetStoreForTest(t, dbPath)
+			envelope, _ := store.Create(budgetLimits(t, 10, 0))
+			store.Close()
+
+			_, _, code := runHookCall(t, env, map[string]any{
+				"tool_name":  "Bash",
+				"tool_input": map[string]any{"command": c.cmd},
+			}, envelope.ID)
+			if code != 0 {
+				t.Fatalf("exit=%d want 0", code)
+			}
+
+			store2, _ := openBudgetStoreForTest(t, dbPath)
+			defer store2.Close()
+			e2, _ := store2.Load(envelope.ID)
+			st, _ := e2.Inspect()
+			if st.SpentCalls != 1 {
+				t.Fatalf("SpentCalls=%d want 1 — lookalike was incorrectly exempted", st.SpentCalls)
+			}
+		})
+	}
+}
+
+// TestEvalHookStdin_ChitinAdmin_ExemptInfoLogged verifies the
+// structured info line on stderr — operators auditing the hook should
+// see when an exemption fired.
+func TestEvalHookStdin_ChitinAdmin_ExemptInfoLogged(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 10, 0))
+	store.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel envelope list"},
+		"cwd":        env.cwd,
+	})
+	var out, errOut bytes.Buffer
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, false)
+	if code != 0 {
+		t.Fatalf("exit=%d want 0", code)
+	}
+	if !strings.Contains(errOut.String(), "chitin_admin_exempt") {
+		t.Fatalf("stderr missing chitin_admin_exempt info: %q", errOut.String())
+	}
+}
+
 func TestEvalHookStdin_BadEnvelopeIDBlocks(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	stdout, _, code := runHookCall(t, env, map[string]any{
