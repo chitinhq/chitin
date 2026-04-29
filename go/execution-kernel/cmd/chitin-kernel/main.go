@@ -573,6 +573,10 @@ func cmdUninstallHook(args []string) {
 }
 
 func cmdInstall(args []string) {
+	if len(args) > 0 && args[0] == "claude-code-hook" {
+		cmdInstallClaudeCodeHook(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	surface := fs.String("surface", "", "surface to install (claude-code)")
 	global := fs.Bool("global", false, "install into user-level settings (always-on)")
@@ -610,6 +614,10 @@ func cmdInstall(args []string) {
 }
 
 func cmdUninstall(args []string) {
+	if len(args) > 0 && args[0] == "claude-code-hook" {
+		cmdUninstallClaudeCodeHook(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	surface := fs.String("surface", "", "surface to uninstall (claude-code)")
 	global := fs.Bool("global", false, "uninstall from user-level settings")
@@ -694,7 +702,17 @@ func cmdGateEvaluate(args []string) {
 	argsJSON := fs.String("args-json", "{}", "tool args as JSON")
 	agent := fs.String("agent", "", "agent identifier (e.g. hermes)")
 	cwd := fs.String("cwd", ".", "cwd the action would execute against")
+	hookStdin := fs.Bool("hook-stdin", false, "read Claude Code PreToolUse JSON from stdin (hook driver mode)")
+	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
 	fs.Parse(args)
+
+	if *hookStdin {
+		if *agent == "" {
+			*agent = "claude-code"
+		}
+		runHookStdin(*agent, *envelopeID)
+		return
+	}
 
 	if *tool == "" || *agent == "" {
 		exitErr("gate_missing_args", "--tool and --agent required")
