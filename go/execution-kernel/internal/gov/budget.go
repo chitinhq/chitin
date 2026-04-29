@@ -81,6 +81,12 @@ func OpenBudgetStore(dbPath string) (*BudgetStore, error) {
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// foreign_keys is OFF by default in sqlite. Without this PRAGMA the
+	// envelope_grants → envelopes REFERENCES clause would be decorative
+	// and grants could leak past a deleted envelope. Enable per-connection.
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		return nil, fmt.Errorf("enable foreign_keys: %w", err)
+	}
 	if err := migrateBudget(db); err != nil {
 		return nil, err
 	}
@@ -89,10 +95,6 @@ func OpenBudgetStore(dbPath string) (*BudgetStore, error) {
 
 // Close the underlying DB.
 func (s *BudgetStore) Close() error { return s.db.Close() }
-
-// DB returns the underlying *sql.DB. Exported for tests and for callers
-// that want to share a single connection pool with the Counter.
-func (s *BudgetStore) DB() *sql.DB { return s.db }
 
 // migrateBudget is additive: adds envelope tables to an existing gov.db
 // next to the v1 escalation counter tables. Each CREATE is idempotent;

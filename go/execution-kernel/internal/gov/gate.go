@@ -20,8 +20,8 @@ type Gate struct {
 }
 
 // Evaluate is the single entry point: normalize-already-done Action →
-// Decision, with side effects (counter increment on deny, envelope
-// debit on allow, log append).
+// Decision, with side effects (counter increment on policy/bounds deny,
+// envelope debit on allow, log append).
 //
 // The envelope parameter is optional:
 //   - nil: v1 behavior — pure policy gate, no envelope plumbing, no
@@ -36,7 +36,9 @@ type Gate struct {
 //  3. Bounds check (push-shaped only).
 //  4. Monitor-mode override on policy decisions.
 //  5. Envelope.Spend on allow (if envelope != nil).
-//  6. Counter increment on deny.
+//  6. Counter increment on deny — but NOT on envelope-budget denials.
+//     Caps are operator-imposed, not agent misbehavior; counting them
+//     would lockdown a compliant agent for hitting its budget.
 //  7. Stamp envelope/tier/cost fields on Decision.
 //  8. Log append.
 //
@@ -52,7 +54,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 			Reason:     "agent in lockdown — contact operator",
 			Escalation: "lockdown", Action: a, Agent: agent, Ts: now,
 		}
-		stampEnvelope(&d, envelope, g, a, agent, false)
+		stampEnvelope(&d, envelope, g, a, agent)
 		_ = WriteLog(d, g.LogDir)
 		return d
 	}
@@ -102,7 +104,10 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 		}
 	}
 
-	// 6. Counter on deny. Allow policy override of weight via rule.
+	// 6. Counter on deny — but skip envelope-budget denials. Operators
+	// imposing caps is not the agent misbehaving; counting envelope hits
+	// against the lockdown ladder would force-lock a perfectly compliant
+	// agent after ~10 budget-denied calls.
 	weight := 1
 	for _, r := range g.Policy.Rules {
 		if r.ID == d.RuleID && r.EscalationWeight > 0 {
@@ -110,24 +115,18 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 			break
 		}
 	}
-	if !d.Allowed && g.Counter != nil {
+	envelopeDeny := d.RuleID == "envelope-exhausted"
+	if !d.Allowed && !envelopeDeny && g.Counter != nil {
 		g.Counter.RecordDenial(agent, a.Fingerprint(), weight)
 		d.Escalation = g.Counter.Level(agent)
 	} else if g.Counter != nil {
 		d.Escalation = g.Counter.Level(agent)
 	}
 
-	// 7. Stamp envelope/tier/cost fields. We do this for both allow and
-	// deny so audit-log analytics can join cost-classified decisions
-	// regardless of outcome.
-	if envelope != nil {
-		d.EnvelopeID = envelope.ID
-		d.Tier = tier
-		d.CostUSD = delta.USD
-		d.InputBytes = delta.InputBytes
-		d.OutputBytes = delta.OutputBytes
-		d.ToolCalls = delta.ToolCalls
-	}
+	// 7. Stamp envelope/tier/cost fields on the Decision row. We do this
+	// for both allow and deny so audit-log analytics can join cost-
+	// classified decisions regardless of outcome.
+	stampEnvelopeWith(&d, envelope, tier, delta)
 
 	// 8. Log.
 	_ = WriteLog(d, g.LogDir)
@@ -135,22 +134,36 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	return d
 }
 
-// stampEnvelope is the lockdown-path helper: lockdown returns early
-// before the normal stamp step, but we still want EnvelopeID/Tier on the
-// audit row so post-hoc envelope-scoped queries see the lockdown event.
-func stampEnvelope(d *Decision, envelope *BudgetEnvelope, g *Gate, a Action, agent string, _ bool) {
+// stampEnvelope is the lockdown-path helper: it does its own classify +
+// estimate because the lockdown short-circuit returns before the main
+// flow's classify/estimate runs. We still want EnvelopeID/Tier on the
+// audit row so post-hoc envelope-scoped queries see lockdown events.
+func stampEnvelope(d *Decision, envelope *BudgetEnvelope, g *Gate, a Action, agent string) {
+	if envelope == nil {
+		return
+	}
+	var tier Tier
+	var delta CostDelta
+	if g.ClassifyTier != nil {
+		tier = g.ClassifyTier(a)
+	}
+	if g.EstimateCost != nil {
+		delta = g.EstimateCost(a, agent)
+	}
+	stampEnvelopeWith(d, envelope, tier, delta)
+}
+
+// stampEnvelopeWith writes the envelope/tier/cost fields onto d. Single
+// source of truth for the field layout — the lockdown path and the main
+// flow both go through this so they can never drift.
+func stampEnvelopeWith(d *Decision, envelope *BudgetEnvelope, tier Tier, delta CostDelta) {
 	if envelope == nil {
 		return
 	}
 	d.EnvelopeID = envelope.ID
-	if g.ClassifyTier != nil {
-		d.Tier = g.ClassifyTier(a)
-	}
-	if g.EstimateCost != nil {
-		delta := g.EstimateCost(a, agent)
-		d.CostUSD = delta.USD
-		d.InputBytes = delta.InputBytes
-		d.OutputBytes = delta.OutputBytes
-		d.ToolCalls = delta.ToolCalls
-	}
+	d.Tier = tier
+	d.CostUSD = delta.USD
+	d.InputBytes = delta.InputBytes
+	d.OutputBytes = delta.OutputBytes
+	d.ToolCalls = delta.ToolCalls
 }

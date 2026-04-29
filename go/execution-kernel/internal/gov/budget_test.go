@@ -1,6 +1,7 @@
 package gov
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -239,7 +240,7 @@ func TestEnvelope_ConcurrentSpend_CrossProcessExact(t *testing.T) {
 					"CHITIN_TEST_ENVELOPE="+envID,
 				)
 				out, _ := cmd.CombinedOutput()
-				if len(out) >= 3 && string(out[:3]) == "ok\n" || string(out) == "ok\n" {
+				if bytes.HasPrefix(out, []byte("ok\n")) {
 					oks.Add(1)
 				} else {
 					fails.Add(1)

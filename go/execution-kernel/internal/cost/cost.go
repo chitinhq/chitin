@@ -29,6 +29,10 @@ import (
 // URL — whichever applies). For richer estimates that include payload
 // size, the caller should pre-populate Action.Params and the rate map
 // can scale via BytesPerToken.
+//
+// OutputBytes is intentionally always 0 here. PreToolUse fires before
+// the model has seen tool output, so output size is unknowable at gate
+// time. Post-hoc OTEL ingest of model.usage will populate it later.
 func Estimate(action gov.Action, executor string, rates RateTable) gov.CostDelta {
 	delta := gov.CostDelta{
 		ToolCalls:  1,
