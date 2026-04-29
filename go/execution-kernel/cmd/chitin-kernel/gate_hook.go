@@ -19,8 +19,8 @@ import (
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
 // evalHookStdin core. The split keeps evalHookStdin testable in-process
 // while production gets the full os-level behavior.
-func runHookStdin(agent, envelopeFlag string) {
-	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag)
+func runHookStdin(agent, envelopeFlag string, requirePolicy bool) {
+	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy)
 	os.Exit(code)
 }
 
@@ -32,10 +32,23 @@ func runHookStdin(agent, envelopeFlag string) {
 //	2 — block (out is `{"decision":"block","reason":"..."}`)
 //	1 — non-blocking error (out empty; errOut has the diagnostic)
 //
+// requirePolicy controls the no-chitin.yaml-in-cwd behavior:
+//   - false (default): fail open with a stderr warning. Convenient but
+//     means an operator running `claude` in any directory without a
+//     policy gets ungoverned tool calls.
+//   - true: fail closed (exit 2 block) so chitin governance is never
+//     silently absent. Operators who want the strict guarantee
+//     install with --require-policy.
+//
 // Latency-sensitive: every Claude Code tool call cold-starts this code.
 // The acceptance gate is p95 ≤ 100ms cold-start; if not met, daemon
 // mode (gate.sock) is the next step.
-func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string) int {
+//
+// PERF NOTE: this opens two sqlite handles against ~/.chitin/gov.db
+// (Counter + BudgetStore). Sharing one *sql.DB would halve cold-start
+// open cost. Deferred until Milestone D's 8-shim stress test surfaces
+// real contention numbers — at 3ms p95 today the headroom is ample.
+func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -57,6 +70,12 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	}
 	absCwd, _ := filepath.Abs(cwd)
 
+	// Route normalize warnings (wrong-type fields, etc.) to the same
+	// stderr stream so operators see malformed payloads explicitly
+	// rather than via a silent default-deny.
+	claudecode.SetWarnSink(errOut)
+	defer claudecode.SetWarnSink(nil)
+
 	action, err := claudecode.Normalize(payload)
 	if err != nil {
 		writeJSONLine(errOut, map[string]string{"error": "hook_normalize", "message": err.Error()})
@@ -70,18 +89,25 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 			writeBlockReason(out, "policy_invalid: "+errMsg)
 			return claudecode.ExitBlock
 		}
-		// No policy in cwd: cannot govern, fail open with a warning.
-		// The model proceeds; the operator sees the diagnostic.
+		// No policy in cwd. Default behavior is fail-open with a stderr
+		// warning so operators running `claude` in arbitrary dirs aren't
+		// blocked on every tool. With --require-policy, fail closed —
+		// the operator chose strict-mode and must scaffold a chitin.yaml
+		// (or run from a policy-covered cwd) before claude works.
+		if requirePolicy {
+			writeBlockReason(out, "chitin: no chitin.yaml found from cwd up; --require-policy refuses to allow ungoverned tool calls")
+			return claudecode.ExitBlock
+		}
 		writeJSONLine(errOut, map[string]string{
 			"warning": "no_policy_found",
-			"note":    "chitin governance hook fired in cwd without chitin.yaml; allowing",
+			"note":    "chitin governance hook fired in cwd without chitin.yaml; allowing (install with --require-policy to fail closed)",
 		})
 		return claudecode.ExitAllow
 	}
 
-	chitinDir := chitinDirFor(envelopeFlag)
-	_ = os.MkdirAll(chitinDir, 0o755)
-	dbPath := filepath.Join(chitinDir, "gov.db")
+	cdir := chitinDir()
+	_ = os.MkdirAll(cdir, 0o755)
+	dbPath := filepath.Join(cdir, "gov.db")
 
 	counter, err := gov.OpenCounter(dbPath)
 	if err != nil {
@@ -90,7 +116,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	}
 	defer counter.Close()
 
-	envelope, store, err := resolveEnvelope(chitinDir, dbPath, envelopeFlag)
+	envelope, store, err := resolveEnvelope(cdir, dbPath, envelopeFlag)
 	if err != nil {
 		writeBlockReason(out, "chitin: "+err.Error())
 		return claudecode.ExitBlock
@@ -103,7 +129,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 
 	gate := &gov.Gate{
 		Policy: policy, Counter: counter,
-		LogDir: chitinDir, Cwd: absCwd,
+		LogDir: cdir, Cwd: absCwd,
 		ClassifyTier: tier.Route,
 		EstimateCost: func(a gov.Action, _ string) gov.CostDelta {
 			return cost.Estimate(a, agent, rates)
@@ -119,10 +145,10 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	return code
 }
 
-// chitinDirFor returns the chitin state dir. The CHITIN_HOME env var
+// chitinDir returns the chitin state dir. The CHITIN_HOME env var
 // override exists primarily for tests to redirect ~/.chitin to a temp
 // dir without root-touching real state.
-func chitinDirFor(_ string) string {
+func chitinDir() string {
 	if v := os.Getenv("CHITIN_HOME"); v != "" {
 		return v
 	}

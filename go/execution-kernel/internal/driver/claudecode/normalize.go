@@ -2,9 +2,24 @@ package claudecode
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
+
+// warnSink is the destination for non-fatal warnings emitted during
+// Normalize (e.g., wrong-type fields). nil → silent. Set by tests and
+// by the cmd-layer to capture warnings on stderr.
+//
+// Package-global because Normalize's signature is committed by the
+// hook protocol, but the additional channel is operator-facing
+// telemetry the tests want to verify. A field on a future struct-form
+// Normalizer would be cleaner; defer until we have multiple call sites.
+var warnSink io.Writer
+
+// SetWarnSink directs Normalize's non-fatal warnings (wrong-type
+// fields, etc.) to w. Call from cmd-layer wiring. Pass nil to silence.
+func SetWarnSink(w io.Writer) { warnSink = w }
 
 // Normalize maps a Claude Code PreToolUse payload to a canonical gov.Action.
 //
@@ -127,14 +142,27 @@ func Normalize(in HookInput) (gov.Action, error) {
 	}, nil
 }
 
+// stringField extracts a string field from a tool_input map. Three
+// paths:
+//
+//	missing key             → "", silent (caller decides if it's required)
+//	present + string        → the value, silent
+//	present + non-string    → "", warning to warnSink (operator telemetry
+//	                          for malformed payloads — silent empty
+//	                          would let policy default-deny mask the bug)
 func stringField(m map[string]any, key string) string {
 	if m == nil {
 		return ""
 	}
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if warnSink != nil {
+		fmt.Fprintf(warnSink, `{"warning":"tool_input_wrong_type","key":%q,"actual":%q}`+"\n", key, fmt.Sprintf("%T", v))
 	}
 	return ""
 }

@@ -217,6 +217,10 @@ func settingsPath(scope Scope, cwd string) (string, error) {
 // already existed and we didn't overwrite). The backup is the operator's
 // pre-chitin restore point and must NOT be overwritten by reinstalls —
 // that would erase the original state on second touch.
+//
+// File mode is preserved from the original — a 0o644 settings.json
+// stays 0o644 in the backup. Defaults to 0o600 if the original is
+// missing (shouldn't happen since we only call after stat succeeds).
 func ensureBackup(path string) (string, error) {
 	if _, exists := existingBackup(path); exists {
 		return "", nil
@@ -225,8 +229,12 @@ func ensureBackup(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read for backup: %w", err)
 	}
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
 	backup := backupNameFor(path)
-	if err := os.WriteFile(backup, src, 0o600); err != nil {
+	if err := os.WriteFile(backup, src, mode); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 	return backup, nil

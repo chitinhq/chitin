@@ -704,13 +704,14 @@ func cmdGateEvaluate(args []string) {
 	cwd := fs.String("cwd", ".", "cwd the action would execute against")
 	hookStdin := fs.Bool("hook-stdin", false, "read Claude Code PreToolUse JSON from stdin (hook driver mode)")
 	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
+	requirePolicy := fs.Bool("require-policy", false, "fail closed when no chitin.yaml is found from cwd (default: fail open with stderr warning)")
 	fs.Parse(args)
 
 	if *hookStdin {
 		if *agent == "" {
 			*agent = "claude-code"
 		}
-		runHookStdin(*agent, *envelopeID)
+		runHookStdin(*agent, *envelopeID, *requirePolicy)
 		return
 	}
 
