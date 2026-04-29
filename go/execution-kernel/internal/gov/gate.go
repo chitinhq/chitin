@@ -1,6 +1,9 @@
 package gov
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Gate orchestrates policy evaluation, bounds check, escalation counting,
 // envelope spend, and decision logging. One instance per gate subprocess
@@ -95,9 +98,21 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 		}
 		if d.Allowed {
 			if err := envelope.Spend(delta); err != nil {
+				// Distinguish RuleID by error class so audit-log
+				// analytics can split exhausted (over cap) from closed
+				// (operator-closed envelope) from not-found (caller bug
+				// or data race). All three deny, but they mean different
+				// things downstream.
+				ruleID := "envelope-exhausted"
+				switch {
+				case errors.Is(err, ErrEnvelopeClosed):
+					ruleID = "envelope-closed"
+				case errors.Is(err, ErrEnvelopeNotFound):
+					ruleID = "envelope-not-found"
+				}
 				reason := "envelope " + envelope.ID + ": " + err.Error()
 				d = Decision{
-					Allowed: false, Mode: g.Policy.Mode, RuleID: "envelope-exhausted",
+					Allowed: false, Mode: g.Policy.Mode, RuleID: ruleID,
 					Reason: reason, Action: a, Agent: agent, Ts: now,
 				}
 			}
@@ -107,7 +122,8 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	// 6. Counter on deny — but skip envelope-budget denials. Operators
 	// imposing caps is not the agent misbehaving; counting envelope hits
 	// against the lockdown ladder would force-lock a perfectly compliant
-	// agent after ~10 budget-denied calls.
+	// agent after ~10 budget-denied calls. All envelope-* RuleIDs
+	// (exhausted, closed, not-found) are budget-class and exempt.
 	weight := 1
 	for _, r := range g.Policy.Rules {
 		if r.ID == d.RuleID && r.EscalationWeight > 0 {
@@ -115,7 +131,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 			break
 		}
 	}
-	envelopeDeny := d.RuleID == "envelope-exhausted"
+	envelopeDeny := d.RuleID == "envelope-exhausted" ||
+		d.RuleID == "envelope-closed" ||
+		d.RuleID == "envelope-not-found"
 	if !d.Allowed && !envelopeDeny && g.Counter != nil {
 		g.Counter.RecordDenial(agent, a.Fingerprint(), weight)
 		d.Escalation = g.Counter.Level(agent)
@@ -138,15 +156,20 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 // estimate because the lockdown short-circuit returns before the main
 // flow's classify/estimate runs. We still want EnvelopeID/Tier on the
 // audit row so post-hoc envelope-scoped queries see lockdown events.
+//
+// Defaults match the main-flow Evaluate path exactly so audit
+// telemetry is consistent: nil EstimateCost yields {ToolCalls:1}, not
+// the zero CostDelta — otherwise lockdown rows would have ToolCalls=0
+// while ordinary denials have ToolCalls=1, breaking analytics joins.
 func stampEnvelope(d *Decision, envelope *BudgetEnvelope, g *Gate, a Action, agent string) {
 	if envelope == nil {
 		return
 	}
 	var tier Tier
-	var delta CostDelta
 	if g.ClassifyTier != nil {
 		tier = g.ClassifyTier(a)
 	}
+	delta := CostDelta{ToolCalls: 1}
 	if g.EstimateCost != nil {
 		delta = g.EstimateCost(a, agent)
 	}

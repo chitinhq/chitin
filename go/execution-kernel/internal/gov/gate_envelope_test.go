@@ -120,15 +120,22 @@ func TestGate_EnvelopeExhausted_ConvertsAllowToDeny(t *testing.T) {
 // TestGate_EnvelopeExhausted_DoesNotIncrementCounter is the regression
 // test for the review finding: hitting an operator-imposed budget cap
 // is not agent misbehavior, so it must not feed the lockdown ladder.
+//
+// After the bug fix that distinguishes RuleIDs by error class, the
+// FIRST budget-denied call returns envelope-exhausted (the spend that
+// breached the cap), and subsequent calls return envelope-closed (the
+// envelope is now sticky-closed). All envelope-* RuleIDs are
+// budget-class and must be exempt from counter accounting.
 func TestGate_EnvelopeExhausted_DoesNotIncrementCounter(t *testing.T) {
 	g, env := gateWithEnvelope(t, BudgetLimits{MaxToolCalls: 1})
 	g.Evaluate(Action{Type: ActFileRead, Target: "/a"}, "agent1", env) // burns the cap
 	for i := 0; i < 15; i++ {
-		// Each of these returns envelope-exhausted. Without the fix,
-		// counter would tick to 15 and the agent would lock at 10.
+		// First iter sees envelope-exhausted (the call that breaches +
+		// triggers sticky-close). Subsequent iters see envelope-closed.
+		// Both are envelope-class denials and must be exempt.
 		d := g.Evaluate(Action{Type: ActFileRead, Target: "/x"}, "agent1", env)
-		if d.RuleID != "envelope-exhausted" {
-			t.Fatalf("iter %d: RuleID=%q want envelope-exhausted", i, d.RuleID)
+		if d.RuleID != "envelope-exhausted" && d.RuleID != "envelope-closed" {
+			t.Fatalf("iter %d: RuleID=%q want envelope-exhausted or envelope-closed", i, d.RuleID)
 		}
 	}
 	if lv := g.Counter.Level("agent1"); lv != "normal" {
@@ -171,6 +178,30 @@ func TestGate_MonitorMode_DoesNotOverrideEnvelope(t *testing.T) {
 	}
 	if d2.RuleID != "envelope-exhausted" {
 		t.Fatalf("RuleID=%q want envelope-exhausted", d2.RuleID)
+	}
+}
+
+// TestGate_EnvelopeClosedYieldsClosedRuleID is the regression test for
+// the audit-analytics ambiguity that Copilot review surfaced: an
+// operator-closed envelope must produce RuleID=envelope-closed, not
+// envelope-exhausted. They mean different things downstream.
+func TestGate_EnvelopeClosedYieldsClosedRuleID(t *testing.T) {
+	g, env := gateWithEnvelope(t, BudgetLimits{MaxToolCalls: 100})
+	// Operator closes the envelope explicitly (not budget-driven).
+	if err := env.CloseEnvelope(); err != nil {
+		t.Fatalf("CloseEnvelope: %v", err)
+	}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/x"}, "agent1", env)
+	if d.Allowed {
+		t.Fatalf("expected deny on closed envelope")
+	}
+	if d.RuleID != "envelope-closed" {
+		t.Fatalf("RuleID=%q want envelope-closed", d.RuleID)
+	}
+	// Counter must not bump for envelope-class denials (existing
+	// invariant — re-asserted here for the closed sub-class).
+	if lv := g.Counter.Level("agent1"); lv != "normal" {
+		t.Fatalf("envelope-closed must not feed counter; level=%q", lv)
 	}
 }
 

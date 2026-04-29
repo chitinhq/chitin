@@ -44,9 +44,11 @@ type EnvelopeState struct {
 	LastSpendAt  string
 }
 
-// BudgetStore wraps a *sql.DB pinned at ~/.chitin/gov.db with the
-// envelope-specific tables migrated. Cross-process atomicity comes from
-// sqlite WAL; no flock at the application level.
+// BudgetStore wraps a *sql.DB (typically against ~/.chitin/gov.db) with
+// the envelope-specific tables migrated. Cross-process atomicity comes
+// from sqlite WAL; no flock at the application level. The store is not
+// path-pinned — tests open against temp dirs and other call sites can
+// open against any sqlite path.
 type BudgetStore struct {
 	db *sql.DB
 }
@@ -67,27 +69,36 @@ var (
 	ErrEnvelopeNotFound  = errors.New("envelope not found")
 )
 
-// OpenBudgetStore opens or creates ~/.chitin/gov.db with WAL mode and
-// ensures the envelope tables exist. Safe to call concurrently with
+// OpenBudgetStore opens or creates the sqlite db at dbPath with WAL mode
+// and ensures the envelope tables exist. Safe to call concurrently with
 // OpenCounter on the same dbPath; both use WAL.
-func OpenBudgetStore(dbPath string) (*BudgetStore, error) {
+//
+// Closes the underlying *sql.DB on any error after sql.Open succeeds —
+// pragma failures, foreign-key enable failures, and migration failures
+// all unwind the handle so file descriptors and sqlite locks don't leak.
+func OpenBudgetStore(dbPath string) (_ *BudgetStore, err error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+	defer func() {
+		if err != nil {
+			_ = db.Close()
+		}
+	}()
+	if _, err = db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err = db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	// foreign_keys is OFF by default in sqlite. Without this PRAGMA the
 	// envelope_grants → envelopes REFERENCES clause would be decorative
 	// and grants could leak past a deleted envelope. Enable per-connection.
-	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+	if _, err = db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		return nil, fmt.Errorf("enable foreign_keys: %w", err)
 	}
-	if err := migrateBudget(db); err != nil {
+	if err = migrateBudget(db); err != nil {
 		return nil, err
 	}
 	return &BudgetStore{db: db}, nil
@@ -184,7 +195,8 @@ func (s *BudgetStore) Load(id string) (*BudgetEnvelope, error) {
 //   - nil on success
 //   - ErrEnvelopeClosed if closed_at is set (sticky)
 //   - ErrEnvelopeExhausted if the debit would breach MaxToolCalls or
-//     MaxInputBytes (and atomically sets closed_at)
+//     MaxInputBytes (and atomically sets closed_at if still exhausted)
+//   - ErrEnvelopeNotFound if the row vanished between handle and spend
 //
 // Cross-process correctness: a single `UPDATE … WHERE id=? AND
 // closed_at IS NULL AND new_calls<=cap AND new_bytes<=cap` returns
@@ -192,9 +204,22 @@ func (s *BudgetStore) Load(id string) (*BudgetEnvelope, error) {
 // distinguish "closed" from "would exhaust" so the caller gets a precise
 // error. The cap check is in the same statement as the increment, so
 // two concurrent processes cannot both succeed past the cap.
+//
+// All four CostDelta dimensions must be non-negative. USD is
+// informational and stored verbatim — but a negative USD would silently
+// reduce spent_usd and corrupt audit accounting, so it's rejected too.
+// OutputBytes is recorded into Decision but NOT applied to the bytes cap
+// (the cap is on InputBytes only — output is unknowable at PreToolUse
+// time). Validation matches even so future stricter modes can opt in.
+//
+// Sticky-close is conditional: we only set closed_at if the envelope is
+// STILL exhausted at the moment of close. A concurrent Grant that
+// cleared closed_at and raised the cap between our UPDATE-fail and our
+// close-attempt would be erroneously closed otherwise (race surfaced in
+// adversarial review of the original implementation).
 func (e *BudgetEnvelope) Spend(d CostDelta) error {
-	if d.ToolCalls < 0 || d.InputBytes < 0 {
-		return fmt.Errorf("negative spend: %+v", d)
+	if d.ToolCalls < 0 || d.InputBytes < 0 || d.OutputBytes < 0 || d.USD < 0 {
+		return fmt.Errorf("negative spend dimension: %+v", d)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -243,15 +268,30 @@ func (e *BudgetEnvelope) Spend(d CostDelta) error {
 	if closedAt.Valid {
 		return ErrEnvelopeClosed
 	}
-	// Cap breach — sticky-close so siblings deny on next call without
-	// having to recompute the breach themselves.
+	// Cap breach. Sticky-close ONLY if still exhausted at the moment of
+	// close — a concurrent Grant could have raised caps and cleared
+	// closed_at between our failed UPDATE and this point. The conditional
+	// predicate ensures we don't erroneously close a now-uncapped envelope.
 	if _, err := e.store.db.Exec(`
-		UPDATE envelopes SET closed_at = ? WHERE id = ? AND closed_at IS NULL
+		UPDATE envelopes SET closed_at = ?
+		WHERE id = ? AND closed_at IS NULL
+		  AND ((max_tool_calls > 0 AND spent_calls >= max_tool_calls)
+		    OR (max_input_bytes > 0 AND spent_bytes >= max_input_bytes))
 	`, now, e.ID); err != nil {
 		return fmt.Errorf("envelope sticky-close: %w", err)
 	}
-	return fmt.Errorf("%w: id=%s calls=%d/%d bytes=%d/%d",
-		ErrEnvelopeExhausted, e.ID, calls, maxCalls, bytes, maxBytes)
+	return fmt.Errorf("%w: id=%s calls=%s bytes=%s",
+		ErrEnvelopeExhausted, e.ID,
+		formatCapStatus(calls, maxCalls), formatCapStatus(bytes, maxBytes))
+}
+
+// formatCapStatus renders "spent/cap" or "spent/uncapped" so audit-log
+// readers don't see the misleading "calls=3/0" when 0 means "no cap".
+func formatCapStatus(spent, max int64) string {
+	if max <= 0 {
+		return fmt.Sprintf("%d/uncapped", spent)
+	}
+	return fmt.Sprintf("%d/%d", spent, max)
 }
 
 // Inspect returns a read-only snapshot.

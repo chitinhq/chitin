@@ -190,10 +190,99 @@ func TestEnvelope_CloseEnvelope_StickyAcrossSpend(t *testing.T) {
 func TestEnvelope_Spend_NegativeRejected(t *testing.T) {
 	store := tmpStore(t)
 	env, _ := store.Create(BudgetLimits{MaxToolCalls: 100})
-	err := env.Spend(CostDelta{ToolCalls: -1})
-	if err == nil {
-		t.Fatalf("expected error on negative spend")
+	cases := []CostDelta{
+		{ToolCalls: -1},
+		{InputBytes: -1},
+		{OutputBytes: -1},
+		{USD: -0.01},
 	}
+	for _, d := range cases {
+		if err := env.Spend(d); err == nil {
+			t.Errorf("expected error on negative spend %+v", d)
+		}
+	}
+	// Sanity: state untouched after rejected spends.
+	st, _ := env.Inspect()
+	if st.SpentCalls != 0 || st.SpentBytes != 0 || st.SpentUSD != 0 {
+		t.Fatalf("rejected spends mutated state: %+v", st)
+	}
+}
+
+// TestEnvelope_StickyClose_RaceWithGrant is the regression test for the
+// TOCTOU surfaced in adversarial review: if a concurrent Grant clears
+// closed_at and raises caps between Spend's UPDATE-fail and its
+// sticky-close, the close UPDATE must NOT fire — otherwise we'd close
+// an envelope that was just reopened with room to spend.
+//
+// Sequence simulated:
+//  1. Envelope at cap (calls=N, max=N), closed_at=NULL.
+//  2. Spend(1) — UPDATE predicate fails (n=0).
+//  3. Spend reads state: closed_at=NULL, spent=N, max=N (still exhausted).
+//  4. EXTERNAL: Grant raises max to N+5 and clears closed_at (already null).
+//  5. Spend's sticky-close UPDATE runs.
+//
+// Old code: closed_at IS NULL → close. ❌ closes a now-uncapped envelope.
+// New code: closed_at IS NULL AND still exhausted (spent >= max) → does
+// nothing because spent < max+5. ✓
+func TestEnvelope_StickyClose_RaceWithGrant(t *testing.T) {
+	store := tmpStore(t)
+	env, _ := store.Create(BudgetLimits{MaxToolCalls: 1})
+	// Burn cap: spent=1, max=1.
+	if err := env.Spend(CostDelta{ToolCalls: 1}); err != nil {
+		t.Fatalf("burn: %v", err)
+	}
+	// Grant +5 BEFORE the next spend, simulating "operator raised caps
+	// during a window where Spend would have failed". This is the same
+	// state that would appear if a concurrent Grant landed between
+	// Spend's UPDATE-fail and its close-attempt.
+	if err := env.Grant(5, 0, 0, "race-test"); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	// Now max=6, spent=1, closed_at cleared by Grant. A Spend(1) should
+	// succeed (room exists). The fix's predicate prevents the spurious
+	// close that the old code would have done in this window.
+	if err := env.Spend(CostDelta{ToolCalls: 1}); err != nil {
+		t.Fatalf("post-grant spend: %v", err)
+	}
+	st, _ := env.Inspect()
+	if st.ClosedAt != "" {
+		t.Fatalf("envelope closed despite room (race regression): %+v", st)
+	}
+	if st.SpentCalls != 2 {
+		t.Fatalf("SpentCalls=%d want 2", st.SpentCalls)
+	}
+}
+
+// TestEnvelope_Spend_ErrorMessageRespectsUncapped confirms the audit
+// reason text doesn't print misleading "calls=N/0" when 0 means
+// uncapped — it should say "calls=N/uncapped" instead.
+func TestEnvelope_Spend_ErrorMessageRespectsUncapped(t *testing.T) {
+	store := tmpStore(t)
+	// calls capped, bytes uncapped.
+	env, _ := store.Create(BudgetLimits{MaxToolCalls: 1, MaxInputBytes: 0})
+	_ = env.Spend(CostDelta{ToolCalls: 1})
+	err := env.Spend(CostDelta{ToolCalls: 1})
+	if err == nil {
+		t.Fatalf("expected exhausted")
+	}
+	msg := err.Error()
+	if !contains(msg, "calls=1/1") {
+		t.Errorf("error should report calls=1/1, got: %s", msg)
+	}
+	if !contains(msg, "bytes=0/uncapped") {
+		t.Errorf("error should report bytes=0/uncapped, got: %s", msg)
+	}
+}
+
+// contains is strings.Contains with a shorter import surface — used
+// only by error-text assertions.
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // TestEnvelope_ConcurrentSpend_CrossProcessExact spawns N subprocess

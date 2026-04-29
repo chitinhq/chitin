@@ -33,6 +33,12 @@ import (
 // OutputBytes is intentionally always 0 here. PreToolUse fires before
 // the model has seen tool output, so output size is unknowable at gate
 // time. Post-hoc OTEL ingest of model.usage will populate it later.
+//
+// USDPerOutputKtok on the rate row is currently unused by Estimate for
+// the same reason: we have no OutputBytes to apply it to. The field is
+// kept on ExecutorRate so chitin.yaml authors can pin output pricing
+// alongside input pricing in one place; OTEL ingest will start
+// honoring it once it can supply OutputBytes per Decision.
 func Estimate(action gov.Action, executor string, rates RateTable) gov.CostDelta {
 	delta := gov.CostDelta{
 		ToolCalls:  1,
