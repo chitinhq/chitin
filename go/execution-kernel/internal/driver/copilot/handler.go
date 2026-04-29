@@ -19,7 +19,7 @@ import (
 // the agent is in lockdown). The caller detects lockdown via RuleID,
 // not a separate IsLocked call.
 type Gate interface {
-	Evaluate(a gov.Action, agent string) gov.Decision
+	Evaluate(a gov.Action, agent string, envelope *gov.BudgetEnvelope) gov.Decision
 }
 
 // LockdownError is returned when the agent has hit the escalation lockdown
@@ -94,7 +94,7 @@ func (h *Handler) OnPermissionRequest(
 	inv copilotsdk.PermissionInvocation,
 ) (copilotsdk.PermissionRequestResult, error) {
 	action := Normalize(req, h.Cwd)
-	decision := h.Gate.Evaluate(action, h.Agent)
+	decision := h.Gate.Evaluate(action, h.Agent, nil)
 
 	if h.Verbose {
 		_ = json.NewEncoder(os.Stderr).Encode(decision)

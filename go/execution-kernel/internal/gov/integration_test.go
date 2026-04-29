@@ -40,7 +40,7 @@ rules:
     correctedCommand: "git rm"
 `)
 	a, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
-	d := g.Evaluate(a, "hermes")
+	d := g.Evaluate(a, "hermes", nil)
 	if d.Allowed {
 		t.Fatalf("expected deny, got %+v", d)
 	}
@@ -63,14 +63,14 @@ rules:
 `)
 	// Via terminal
 	aTerm, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
-	dTerm := g.Evaluate(aTerm, "hermes")
+	dTerm := g.Evaluate(aTerm, "hermes", nil)
 
 	// Via execute_code subprocess
 	aExec, _ := Normalize("execute_code", map[string]any{
 		"code": `import subprocess
 subprocess.run(["rm", "-rf", "go/"])`,
 	})
-	dExec := g.Evaluate(aExec, "hermes")
+	dExec := g.Evaluate(aExec, "hermes", nil)
 
 	if dTerm.Allowed || dExec.Allowed {
 		t.Fatalf("both should be denied; got term=%+v exec=%+v", dTerm, dExec)
@@ -98,14 +98,14 @@ rules:
 `)
 	a, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
 	for i := 0; i < 10; i++ {
-		_ = g.Evaluate(a, "hermes")
+		_ = g.Evaluate(a, "hermes", nil)
 	}
 	if lv := g.Counter.Level("hermes"); lv != "lockdown" {
 		t.Fatalf("after 10 denials, level=%q want lockdown", lv)
 	}
 	// Once in lockdown, even allowed actions are denied.
 	okA, _ := Normalize("read_file", map[string]any{"path": "README.md"})
-	dOK := g.Evaluate(okA, "hermes")
+	dOK := g.Evaluate(okA, "hermes", nil)
 	if dOK.Allowed {
 		t.Errorf("locked agent should be denied even for allow-shaped actions")
 	}

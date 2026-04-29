@@ -33,23 +33,31 @@ func WriteLog(d Decision, dir string) error {
 	defer f.Close()
 
 	line, err := json.Marshal(struct {
-		Allowed          bool   `json:"allowed"`
-		Mode             string `json:"mode"`
-		RuleID           string `json:"rule_id"`
-		Reason           string `json:"reason,omitempty"`
-		Suggestion       string `json:"suggestion,omitempty"`
-		CorrectedCommand string `json:"corrected_command,omitempty"`
-		Escalation       string `json:"escalation,omitempty"`
-		Agent            string `json:"agent,omitempty"`
-		ActionType       string `json:"action_type"`
-		ActionTarget     string `json:"action_target"`
-		Ts               string `json:"ts"`
+		Allowed          bool    `json:"allowed"`
+		Mode             string  `json:"mode"`
+		RuleID           string  `json:"rule_id"`
+		Reason           string  `json:"reason,omitempty"`
+		Suggestion       string  `json:"suggestion,omitempty"`
+		CorrectedCommand string  `json:"corrected_command,omitempty"`
+		Escalation       string  `json:"escalation,omitempty"`
+		Agent            string  `json:"agent,omitempty"`
+		ActionType       string  `json:"action_type"`
+		ActionTarget     string  `json:"action_target"`
+		Ts               string  `json:"ts"`
+		EnvelopeID       string  `json:"envelope_id,omitempty"`
+		Tier             Tier    `json:"tier,omitempty"`
+		CostUSD          float64 `json:"cost_usd,omitempty"`
+		InputBytes       int64   `json:"input_bytes,omitempty"`
+		OutputBytes      int64   `json:"output_bytes,omitempty"`
+		ToolCalls        int64   `json:"tool_calls,omitempty"`
 	}{
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
 		CorrectedCommand: d.CorrectedCommand, Escalation: d.Escalation,
 		Agent: d.Agent, ActionType: string(d.Action.Type), ActionTarget: d.Action.Target,
-		Ts: d.Ts,
+		Ts:         d.Ts,
+		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
+		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal decision: %w", err)
