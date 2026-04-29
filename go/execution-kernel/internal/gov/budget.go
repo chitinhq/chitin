@@ -27,21 +27,21 @@ type CostDelta struct {
 // BudgetUSD is informational only — it is recorded and surfaced by
 // `envelope inspect`/`envelope tail --stats` but never causes denial.
 type BudgetLimits struct {
-	MaxToolCalls  int64
-	MaxInputBytes int64
-	BudgetUSD     float64
+	MaxToolCalls  int64   `json:"max_tool_calls"`
+	MaxInputBytes int64   `json:"max_input_bytes"`
+	BudgetUSD     float64 `json:"budget_usd"`
 }
 
 // EnvelopeState is a read-only snapshot of an envelope row.
 type EnvelopeState struct {
-	ID           string
-	CreatedAt    string
-	ClosedAt     string
-	Limits       BudgetLimits
-	SpentCalls   int64
-	SpentBytes   int64
-	SpentUSD     float64
-	LastSpendAt  string
+	ID          string       `json:"id"`
+	CreatedAt   string       `json:"created_at"`
+	ClosedAt    string       `json:"closed_at,omitempty"`
+	Limits      BudgetLimits `json:"limits"`
+	SpentCalls  int64        `json:"spent_calls"`
+	SpentBytes  int64        `json:"spent_bytes"`
+	SpentUSD    float64      `json:"spent_usd"`
+	LastSpendAt string       `json:"last_spend_at,omitempty"`
 }
 
 // BudgetStore wraps a *sql.DB (typically against ~/.chitin/gov.db) with
@@ -86,11 +86,17 @@ func OpenBudgetStore(dbPath string) (_ *BudgetStore, err error) {
 			_ = db.Close()
 		}
 	}()
-	if _, err = db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
+	// busy_timeout BEFORE journal_mode=WAL: the WAL transition needs an
+	// exclusive lock on the db file. If another process is mid-open with
+	// the same db, the WAL pragma returns SQLITE_BUSY (261) immediately
+	// unless the connection has a busy_timeout configured. Setting timeout
+	// first lets the WAL pragma wait the full 5s rather than failing the
+	// open under N-process race (`envelope use` race test, Milestone E).
 	if _, err = db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
+	if _, err = db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 	// foreign_keys is OFF by default in sqlite. Without this PRAGMA the
 	// envelope_grants → envelopes REFERENCES clause would be decorative
