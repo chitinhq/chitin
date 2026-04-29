@@ -41,7 +41,7 @@ func runHookCall(t *testing.T, env *hookTestEnv, payload map[string]any, envelop
 	}
 	in := bytes.NewReader(body)
 	var out, errOut bytes.Buffer
-	exitCode = evalHookStdin(in, &out, &errOut, "claude-code", envelopeFlag)
+	exitCode = evalHookStdin(in, &out, &errOut, "claude-code", envelopeFlag, false)
 	return out.String(), errOut.String(), exitCode
 }
 
@@ -121,8 +121,15 @@ func TestEvalHookStdin_NoPolicyInCwdAllowsWithWarning(t *testing.T) {
 	// chitin.yaml absent — fail-open with stderr warning.
 	cwd := t.TempDir()
 	chitin := t.TempDir()
+	prev, hadPrev := os.LookupEnv("CHITIN_HOME")
 	_ = os.Setenv("CHITIN_HOME", chitin)
-	t.Cleanup(func() { _ = os.Unsetenv("CHITIN_HOME") })
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv("CHITIN_HOME", prev)
+		} else {
+			_ = os.Unsetenv("CHITIN_HOME")
+		}
+	})
 
 	body, _ := json.Marshal(map[string]any{
 		"tool_name":  "Read",
@@ -130,7 +137,7 @@ func TestEvalHookStdin_NoPolicyInCwdAllowsWithWarning(t *testing.T) {
 		"cwd":        cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "")
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", false)
 	if code != 0 {
 		t.Fatalf("exit=%d want 0 (fail-open)", code)
 	}
@@ -142,11 +149,65 @@ func TestEvalHookStdin_NoPolicyInCwdAllowsWithWarning(t *testing.T) {
 	}
 }
 
+func TestEvalHookStdin_NoPolicyInCwd_RequirePolicy_Blocks(t *testing.T) {
+	// Same setup as the fail-open case, but with requirePolicy=true.
+	// Expectation: exit 2 block + a chitin: reason in stdout.
+	cwd := t.TempDir()
+	chitin := t.TempDir()
+	prev, hadPrev := os.LookupEnv("CHITIN_HOME")
+	_ = os.Setenv("CHITIN_HOME", chitin)
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv("CHITIN_HOME", prev)
+		} else {
+			_ = os.Unsetenv("CHITIN_HOME")
+		}
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Read",
+		"tool_input": map[string]any{"file_path": "/x"},
+		"cwd":        cwd,
+	})
+	var out, errOut bytes.Buffer
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", true)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (--require-policy → block)", code)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, out.String())
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("decision=%q want block", parsed["decision"])
+	}
+	if !strings.Contains(parsed["reason"], "require-policy") {
+		t.Fatalf("reason missing require-policy mention: %q", parsed["reason"])
+	}
+}
+
+func TestEvalHookStdin_WrongTypeField_WarnsAndProceeds(t *testing.T) {
+	// file_path: 42 instead of a string. Normalize emits empty Target;
+	// stderr gets a tool_input_wrong_type warning so an operator
+	// debugging a malformed payload sees it.
+	env := setupHookEnv(t, baselinePolicy)
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Read",
+		"tool_input": map[string]any{"file_path": 42},
+		"cwd":        env.cwd,
+	})
+	var out, errOut bytes.Buffer
+	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", false)
+	if !strings.Contains(errOut.String(), "tool_input_wrong_type") {
+		t.Fatalf("stderr missing wrong-type warning: %q", errOut.String())
+	}
+}
+
 func TestEvalHookStdin_MalformedJSONIsExit1(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	in := bytes.NewReader([]byte("not json"))
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(in, &out, &errOut, "claude-code", "")
+	code := evalHookStdin(in, &out, &errOut, "claude-code", "", false)
 	_ = env
 	if code != 1 {
 		t.Fatalf("exit=%d want 1 (non-blocking error)", code)
@@ -268,7 +329,17 @@ func TestEvalHookStdin_BadEnvelopeIDBlocks(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (block on bad envelope)", code)
 	}
-	if !strings.Contains(stdout, "load envelope") {
-		t.Fatalf("missing envelope-load error: %q", stdout)
+	// Assert structurally on the parsed JSON shape rather than a brittle
+	// substring of the human-readable error text — the message can be
+	// reworded without needing to update tests.
+	var parsed map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace([]byte(stdout)), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout)
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("decision=%q want block", parsed["decision"])
+	}
+	if !strings.HasPrefix(parsed["reason"], "chitin: ") {
+		t.Fatalf("reason missing chitin: prefix: %q", parsed["reason"])
 	}
 }
