@@ -489,6 +489,55 @@ func TestEvalHookStdin_ChitinAdmin_NotMatchingNotExempt(t *testing.T) {
 	}
 }
 
+// TestEvalHookStdin_ChitinAdmin_ChainedRmRfStillBlocked verifies that
+// the exemption only bypasses envelope spend, not policy. A chained
+// command like `chitin-kernel ... && rm -rf X` matches the admin matcher
+// (so the envelope isn't debited), but the policy's rm-rf rule
+// evaluates against the full Target and still denies. Belt-and-suspenders
+// proof that exempting spend doesn't open a destructive-operation
+// bypass through the chitin-kernel prefix.
+func TestEvalHookStdin_ChitinAdmin_ChainedRmRfStillBlocked(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 10, 0))
+	store.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "chitin-kernel envelope list && rm -rf /",
+		},
+		"cwd": env.cwd,
+	})
+	var out, errOut bytes.Buffer
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, false)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (rm-rf rule should still apply); stdout=%q", code, out.String())
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(parsed["reason"], "rm -rf") {
+		t.Fatalf("reason missing rm-rf policy text: %q", parsed["reason"])
+	}
+	// Confirm the exemption did fire — otherwise this would only test
+	// that policy denies, not that the exemption preserves policy
+	// enforcement on the chained command.
+	if !strings.Contains(errOut.String(), "chitin_admin_exempt") {
+		t.Fatalf("stderr missing chitin_admin_exempt info; exemption may not have fired: %q", errOut.String())
+	}
+	// Denial path should not have debited.
+	store2, _ := openBudgetStoreForTest(t, dbPath)
+	defer store2.Close()
+	e2, _ := store2.Load(envelope.ID)
+	st, _ := e2.Inspect()
+	if st.SpentCalls != 0 {
+		t.Fatalf("SpentCalls=%d want 0 — denial should not debit", st.SpentCalls)
+	}
+}
+
 // TestEvalHookStdin_ChitinAdmin_ExemptInfoLogged verifies the
 // structured info line on stderr — operators auditing the hook should
 // see when an exemption fired.
