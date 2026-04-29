@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/cost"
@@ -14,6 +15,33 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/tier"
 )
+
+// reChitinAdminCmd matches a shell command whose first executable token
+// is the bare `chitin-kernel` binary, optionally preceded by `env VAR=val`
+// or inline `VAR=val` env prefixes. Path-prefixed forms
+// (`/usr/local/bin/chitin-kernel`) intentionally don't match — install
+// puts chitin-kernel on PATH, and operators using literal paths have
+// explicit invocation control. See isChitinAdminCommand for rationale.
+var reChitinAdminCmd = regexp.MustCompile(
+	`^(?:\s*(?:env\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+))*chitin-kernel(?:\s|$)`,
+)
+
+// isChitinAdminCommand returns true when action is a shell command
+// invoking chitin-kernel directly. Such commands bypass envelope spend
+// (so an exhausted/closed envelope can be recovered from inside the
+// gated session via `envelope grant`) but are still subject to policy
+// evaluation — an operator who wants to deny chitin-kernel invocations
+// from the agent can add a shell.exec policy rule.
+//
+// The matcher only fires on Type=ActShellExec, so a chitin-kernel
+// command re-classified to a more specific type (none today, but
+// future re-tagging is possible) won't match.
+func isChitinAdminCommand(a gov.Action) bool {
+	if a.Type != gov.ActShellExec {
+		return false
+	}
+	return reChitinAdminCmd.MatchString(strings.TrimSpace(a.Target))
+}
 
 // runHookStdin is the production entry point for the Claude Code
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
@@ -135,7 +163,26 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 			return cost.Estimate(a, agent, rates)
 		},
 	}
-	d := gate.Evaluate(action, agent, envelope)
+	// Operator-recovery commands (chitin-kernel envelope grant, use, etc.)
+	// pass nil envelope so policy still evaluates but no spend is debited.
+	// Without this, an exhausted/closed envelope deadlocks the operator's
+	// own recovery surface — the agent's gate hook denies the very
+	// `envelope grant` call that would reopen the envelope. Decision is
+	// logged without envelope stamping (the call doesn't belong to any
+	// envelope's spend); a structured info line goes to errOut so
+	// operators auditing the hook see when an exemption fired.
+	spendEnvelope := envelope
+	if isChitinAdminCommand(action) {
+		spendEnvelope = nil
+		if envelope != nil {
+			writeJSONLine(errOut, map[string]string{
+				"info":    "chitin_admin_exempt",
+				"command": action.Target,
+				"note":    "envelope spend skipped; policy still evaluated",
+			})
+		}
+	}
+	d := gate.Evaluate(action, agent, spendEnvelope)
 
 	body, code := claudecode.Format(d)
 	if len(body) > 0 {
