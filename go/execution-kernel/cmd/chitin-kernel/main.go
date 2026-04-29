@@ -750,7 +750,7 @@ func cmdGateEvaluate(args []string) {
 		Policy: policy, Counter: counter,
 		LogDir: chitinDir, Cwd: absCwd,
 	}
-	d := gate.Evaluate(action, *agent)
+	d := gate.Evaluate(action, *agent, nil)
 
 	// Include action metadata in the CLI output. The Decision struct tags
 	// Action as json:"-" to keep the chain-event payload lean, but the CLI

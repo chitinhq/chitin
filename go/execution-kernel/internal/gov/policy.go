@@ -63,6 +63,11 @@ type EscalationConfig struct {
 }
 
 // Decision is the result of evaluating an Action against a Policy.
+//
+// Cost-governance fields (EnvelopeID, Tier, CostUSD, InputBytes,
+// OutputBytes, ToolCalls) are populated when Gate.Evaluate is called
+// with a non-nil *BudgetEnvelope. All are `,omitempty` so audit-log
+// readers built against the v1 schema tolerate the v3 extension.
 type Decision struct {
 	Allowed          bool   `json:"allowed"`
 	Mode             string `json:"mode"` // monitor | enforce | guide
@@ -74,6 +79,13 @@ type Decision struct {
 	Action           Action `json:"-"`
 	Agent            string `json:"agent,omitempty"`
 	Ts               string `json:"ts"`
+
+	EnvelopeID  string  `json:"envelope_id,omitempty"`
+	Tier        Tier    `json:"tier,omitempty"`
+	CostUSD     float64 `json:"cost_usd,omitempty"` // informational; cap fires on calls + bytes
+	InputBytes  int64   `json:"input_bytes,omitempty"`
+	OutputBytes int64   `json:"output_bytes,omitempty"`
+	ToolCalls   int64   `json:"tool_calls,omitempty"`
 }
 
 // ActionMatcher is a yaml.Unmarshaler that accepts either a single

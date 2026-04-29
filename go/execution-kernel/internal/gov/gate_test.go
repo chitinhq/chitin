@@ -42,7 +42,7 @@ rules:
 
 func TestGate_AllowsReadAction(t *testing.T) {
 	g, _ := newTestGate(t)
-	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1")
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if !d.Allowed {
 		t.Errorf("file.read should be allowed, got %+v", d)
 	}
@@ -50,7 +50,7 @@ func TestGate_AllowsReadAction(t *testing.T) {
 
 func TestGate_DeniesRmRfAndLogs(t *testing.T) {
 	g, dir := newTestGate(t)
-	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1")
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
 	if d.Allowed {
 		t.Errorf("rm -rf should be denied")
 	}
@@ -72,7 +72,7 @@ func TestGate_DeniesRmRfAndLogs(t *testing.T) {
 func TestGate_EscalationRecorded(t *testing.T) {
 	g, _ := newTestGate(t)
 	for i := 0; i < 3; i++ {
-		g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1")
+		g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
 	}
 	if lv := g.Counter.Level("agent1"); lv != "elevated" {
 		t.Errorf("after 3 denials, level=%q want elevated", lv)
@@ -83,7 +83,7 @@ func TestGate_LockdownDeniesEverything(t *testing.T) {
 	g, _ := newTestGate(t)
 	g.Counter.Lockdown("agent1")
 	// file.read would normally be allowed — but lockdown overrides
-	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1")
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if d.Allowed {
 		t.Errorf("agent in lockdown must be denied regardless of rule")
 	}
@@ -97,7 +97,7 @@ func TestGate_MonitorModeAllowsButLogs(t *testing.T) {
 	// Override policy to monitor mode
 	g.Policy.Mode = "monitor"
 	g.Policy.InvariantModes = nil
-	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1")
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
 	if !d.Allowed {
 		t.Errorf("monitor mode should allow (log-only), got denied: %+v", d)
 	}

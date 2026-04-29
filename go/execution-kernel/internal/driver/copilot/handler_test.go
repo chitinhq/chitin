@@ -48,7 +48,7 @@ type mockGate struct {
 	locked   bool
 }
 
-func (m *mockGate) Evaluate(a gov.Action, agent string) gov.Decision {
+func (m *mockGate) Evaluate(a gov.Action, agent string, _ *gov.BudgetEnvelope) gov.Decision {
 	if m.locked {
 		return gov.Decision{
 			Allowed:    false,
