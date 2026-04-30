@@ -105,6 +105,13 @@ func projectToSpan(ev *event.Event, idx *chain.Index) (otlpSpan, error) {
 			if dt, ok := payload["decision"].(string); ok && dt != "" {
 				attrs = append(attrs, otlpAttr{Key: "decision.type", Value: otlpValue{StringValue: dt}})
 			}
+			// duration_ms: int attribute; JSON numbers always unmarshal to float64.
+			// Spec promises this for post_tool_use; permissive extraction means any
+			// future event_type carrying the field projects it identically.
+			if dms, ok := payload["duration_ms"].(float64); ok {
+				s := strconv.FormatInt(int64(dms), 10)
+				attrs = append(attrs, otlpAttr{Key: "duration_ms", Value: otlpValue{IntValue: &s}})
+			}
 		}
 	}
 
@@ -259,5 +266,6 @@ type otlpAttr struct {
 }
 
 type otlpValue struct {
-	StringValue string `json:"stringValue,omitempty"`
+	StringValue string  `json:"stringValue,omitempty"`
+	IntValue    *string `json:"intValue,omitempty"` // OTLP/HTTP+JSON encodes int64 as decimal string
 }

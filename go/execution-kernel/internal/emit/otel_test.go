@@ -43,10 +43,11 @@ func TestProjectToSpan_Mapping(t *testing.T) {
 	wantSpanID := "abcdef0123456789"
 
 	cases := []struct {
-		name      string
-		ev        *event.Event
-		wantName  string
-		wantAttrs map[string]string
+		name         string
+		ev           *event.Event
+		wantName     string
+		wantAttrs    map[string]string // stringValue attrs
+		wantIntAttrs map[string]string // intValue attrs (decimal string per OTLP)
 	}{
 		{
 			name: "session_start",
@@ -97,6 +98,22 @@ func TestProjectToSpan_Mapping(t *testing.T) {
 				"tool.name": "Bash",
 			},
 		},
+		{
+			name: "post_tool_use with duration_ms (spec attribute)",
+			ev: &event.Event{
+				EventType: "post_tool_use", ChainID: chainID, ThisHash: thisHash,
+				AgentInstanceID: "claude-code-1", Ts: ts,
+				Payload: json.RawMessage(`{"tool_name":"Bash","duration_ms":42}`),
+			},
+			wantName: "post_tool_use",
+			wantAttrs: map[string]string{
+				"agent.id":  "claude-code-1",
+				"tool.name": "Bash",
+			},
+			wantIntAttrs: map[string]string{
+				"duration_ms": "42",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -126,13 +143,23 @@ func TestProjectToSpan_Mapping(t *testing.T) {
 			if span.StartTimeUnixNano == "" {
 				t.Errorf("StartTimeUnixNano empty")
 			}
-			gotAttrs := map[string]string{}
+			gotStrAttrs := map[string]string{}
+			gotIntAttrs := map[string]string{}
 			for _, a := range span.Attributes {
-				gotAttrs[a.Key] = a.Value.StringValue
+				if a.Value.IntValue != nil {
+					gotIntAttrs[a.Key] = *a.Value.IntValue
+				} else {
+					gotStrAttrs[a.Key] = a.Value.StringValue
+				}
 			}
 			for k, want := range tc.wantAttrs {
-				if got := gotAttrs[k]; got != want {
-					t.Errorf("attr %s: got %q, want %q", k, got, want)
+				if got := gotStrAttrs[k]; got != want {
+					t.Errorf("string attr %s: got %q, want %q", k, got, want)
+				}
+			}
+			for k, want := range tc.wantIntAttrs {
+				if got := gotIntAttrs[k]; got != want {
+					t.Errorf("int attr %s: got %q, want %q", k, got, want)
 				}
 			}
 		})
@@ -205,17 +232,19 @@ func TestParentSpanIdRules(t *testing.T) {
 // the spec: lowerCamelCase field names, hex traceId/spanId not base64, decimal
 // nano string. We marshal a single span and parse the JSON back to assert keys.
 func TestEncodeRequest_Shape(t *testing.T) {
+	durStr := "42"
 	span := otlpSpan{
 		TraceID:           "550e8400e29b41d4a716446655440000",
 		SpanID:            "abcdef0123456789",
 		ParentSpanID:      "1111222233334444",
-		Name:              "pre_tool_use",
+		Name:              "post_tool_use",
 		Kind:              1,
 		StartTimeUnixNano: "1714521577000000000",
 		EndTimeUnixNano:   "1714521577000000000",
 		Attributes: []otlpAttr{
 			{Key: "agent.id", Value: otlpValue{StringValue: "claude-code-1"}},
 			{Key: "tool.name", Value: otlpValue{StringValue: "Bash"}},
+			{Key: "duration_ms", Value: otlpValue{IntValue: &durStr}},
 		},
 	}
 	body, err := encodeRequest([]otlpSpan{span})
@@ -233,6 +262,10 @@ func TestEncodeRequest_Shape(t *testing.T) {
 		`"resourceSpans":`,
 		`"scopeSpans":`,
 		`"service.name"`,
+		// IntValue: per OTLP/HTTP+JSON, int64 attributes encode as decimal string
+		// inside an "intValue" key — distinct from "stringValue".
+		`"intValue":"42"`,
+		`"key":"duration_ms"`,
 	} {
 		if !strings.Contains(bodyStr, want) {
 			t.Errorf("body missing %q\nbody: %s", want, bodyStr)
