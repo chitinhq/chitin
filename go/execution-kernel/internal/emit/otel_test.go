@@ -366,3 +366,50 @@ func TestProjectAndPost_NilExporterIsNoOp(t *testing.T) {
 	x.ProjectAndPost(ev, idx)
 	// Pass = no panic
 }
+
+// TestKernelSurvivesOTELFailure verifies the F4 failure invariant: when the
+// configured OTEL endpoint is unreachable, Emit must still return nil, the
+// JSONL line must be written, and the chain index must be updated. The OTEL
+// goroutine fires-and-forgets, errors are logged and dropped.
+//
+// This is the "kernel-write-survives-OTEL-failure" invariant from the spec.
+func TestKernelSurvivesOTELFailure(t *testing.T) {
+	dir, idx := newEnv(t)
+
+	// Refused port (no listener at :1) — the goroutine will get connection refused.
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1/v1/traces")
+
+	logPath := filepath.Join(dir, "events.jsonl")
+	em := Emitter{LogPath: logPath, Index: idx}
+	em.EnableOTELFromEnv()
+	if em.OTEL == nil {
+		t.Fatal("expected OTEL enabled from env, got nil exporter")
+	}
+
+	ev := minimalSessionStart("550e8400-e29b-41d4-a716-446655440000", 0)
+	if err := em.Emit(ev); err != nil {
+		t.Fatalf("Emit must return nil even when OTEL fails: got %v", err)
+	}
+
+	// JSONL line written?
+	lines := readLines(t, logPath)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 JSONL line, got %d", len(lines))
+	}
+	if got, _ := lines[0]["event_type"].(string); got != "session_start" {
+		t.Errorf("event_type: got %q, want session_start", got)
+	}
+
+	// Chain index updated?
+	info, err := idx.Get(ev.ChainID)
+	if err != nil {
+		t.Fatalf("idx.Get: %v", err)
+	}
+	if info == nil || info.LastSeq != 0 || info.LastHash != ev.ThisHash {
+		t.Errorf("chain index not updated: %+v want seq=0 hash=%q", info, ev.ThisHash)
+	}
+
+	// Wait briefly so the goroutine completes (and logs its failure) before
+	// the test exits and t.Setenv unwinds. Avoids noise on test stderr.
+	time.Sleep(100 * time.Millisecond)
+}

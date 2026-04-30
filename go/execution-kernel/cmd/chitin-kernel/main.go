@@ -124,6 +124,7 @@ func cmdEmit(args []string) {
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", ev.RunID)),
 		Index:   idx,
 	}
+	em.EnableOTELFromEnv() // F4: opt-in via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 	if err := em.Emit(&ev); err != nil {
 		exitErr("emit", err.Error())
 	}
