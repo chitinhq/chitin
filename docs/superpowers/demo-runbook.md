@@ -246,7 +246,7 @@ chitin-kernel drive copilot --cwd="$(pwd)" \
 
 - Pane 1 (driver): Copilot session runs, allowed shell command executes, exits 0.
 - Pane 2 (`tail -f gov-decisions`): one `allow` line for the shell call.
-- Pane 3 (receiver): `[recv] POST /v1/traces ct=application/json bytes=… → /tmp/otel-capture/…json` lines stream in — one per kernel event in the session.
+- Pane 3 (receiver): `[recv] POST /v1/traces ct=application/json bytes=… → /tmp/otel-capture/…json` lines stream in — one **`decision`** span per gate evaluation, fired automatically from `gov.Gate.Evaluate` via the F4 OnDecision hook (no per-driver wiring required).
 
 Then drop the most recent capture file into `jq` to show the projection:
 
@@ -254,9 +254,18 @@ Then drop the most recent capture file into `jq` to show the projection:
 cat $(ls -t /tmp/otel-capture/v1-traces-*.json | head -1) | jq '.resourceSpans[0].scopeSpans[0].spans[0]'
 ```
 
-Highlight: `traceId` is the chain_id (hyphens stripped), `spanId` is the first 16 hex chars of the chain hash, `parentSpanId` links events within the chain, `name` is the event_type. Same chain on disk, just projected as OTLP/HTTP JSON.
+Highlight: `traceId` is the chain_id (hyphens stripped), `spanId` is the first 16 hex chars of the chain hash, `parentSpanId` links events within the chain, `name` is the event_type (`decision`), `attributes.decision.type` is `allow|deny|guide`, `attributes.tool.name` is the closed-enum action_type. Same chain on disk, just projected as OTLP/HTTP JSON.
 
-**Audience takeaway:** "The chain is the source of truth. OTEL is a one-way projection — your existing collector, dashboards, and SLOs all work, and the canonical chain on disk is what you replay against. No policy depends on OTEL data."
+**Audience takeaway:** "The chain is the source of truth. OTEL is a one-way projection — your existing collector, dashboards, and SLOs all work, and the canonical chain on disk is what you replay against. No policy depends on OTEL data. **Every gated tool call across every driver projects automatically — gov.Gate fires the chain emit, F4 projects, your collector sees it.**"
+
+**Cross-driver verification (optional):** the same OTEL beat works against the openclaw acpx → Copilot path with no chitin-side changes. If the openclaw config-override at `~/.config/openclaw/acpx.yaml` is wired (per [governance-setup.md](../governance-setup.md#3-openclaw-acpx-config-override)), run:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces \
+  openclaw acpx copilot --acp --stdio "<prompt>"
+```
+
+The audience sees `decision` spans landing for openclaw-driven Copilot tool calls — same span shape, same attributes, different `surface` attribute. The "open vendor → in-process extension" pattern produces the same OTEL signal as the "closed vendor → wrapping orchestrator" pattern. One gate, two drivers, one collector.
 
 **Contingency:**
 

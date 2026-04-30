@@ -759,8 +759,7 @@ func cmdGateEvaluate(args []string) {
 		os.Exit(exitCode)
 	}
 
-	home, _ := os.UserHomeDir()
-	chitinDir := filepath.Join(home, ".chitin")
+	chitinDir := chitinDir() // honors CHITIN_HOME for tests; defaults to ~/.chitin
 	_ = os.MkdirAll(chitinDir, 0o755)
 	counter, err := gov.OpenCounter(filepath.Join(chitinDir, "gov.db"))
 	if err != nil {
@@ -771,6 +770,17 @@ func cmdGateEvaluate(args []string) {
 	gate := &gov.Gate{
 		Policy: policy, Counter: counter,
 		LogDir: chitinDir, Cwd: absCwd,
+	}
+	// F4 addendum: wire gov.Gate's OnDecision to emit a `decision` chain
+	// event via the canonical path (which fires OTEL projection if
+	// configured). For the bare CLI path we don't have a session_id, so
+	// each evaluation gets a fresh UUID — single-event chain, valid OTEL
+	// span via F4's "root event of root chain" parent-rule branch.
+	chainID := newChainID()
+	de, deClose, err := newDecisionEmitter(chitinDir, chainID, *agent, func() string { return chainID })
+	if err == nil {
+		defer deClose()
+		gate.OnDecision = de.emitDecision
 	}
 	d := gate.Evaluate(action, *agent, nil)
 

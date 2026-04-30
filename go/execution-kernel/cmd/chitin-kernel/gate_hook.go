@@ -163,6 +163,19 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 			return cost.Estimate(a, agent, rates)
 		},
 	}
+	// F4 addendum: wire OnDecision to emit a `decision` chain event via
+	// the canonical path. chain_id = HookInput.SessionID when available
+	// (Claude Code provides one); otherwise a fresh UUID. F4 OTEL
+	// projection picks up the event automatically when configured.
+	hookChainID := payload.SessionID
+	if hookChainID == "" {
+		hookChainID = newChainID()
+	}
+	de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, agent, func() string { return hookChainID })
+	if deErr == nil {
+		defer deClose()
+		gate.OnDecision = de.emitDecision
+	}
 	// Operator-recovery commands (chitin-kernel envelope grant, use, etc.)
 	// pass nil envelope so policy still evaluates but no spend is debited.
 	// Without this, an exhausted/closed envelope deadlocks the operator's

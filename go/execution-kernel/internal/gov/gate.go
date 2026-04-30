@@ -13,6 +13,12 @@ import (
 // gov package from internal/cost and internal/tier (which import gov for
 // Action). Wire them in at the cmd layer; nil means "default behavior":
 // tier=Unset, delta={ToolCalls:1}.
+//
+// OnDecision is the F4-addendum callback that fires after WriteLog with
+// the final Decision. The CLI layer wires it to emit a `decision` chain
+// event via the canonical emit path, so F4's OTEL projection picks up
+// every gated action across every driver. Optional; nil preserves the
+// pre-F4 audit-log-only behavior.
 type Gate struct {
 	Policy       Policy
 	Counter      *Counter
@@ -20,6 +26,7 @@ type Gate struct {
 	Cwd          string
 	EstimateCost func(a Action, agent string) CostDelta
 	ClassifyTier func(a Action) Tier
+	OnDecision   func(d *Decision)
 }
 
 // Evaluate is the single entry point: normalize-already-done Action →
@@ -59,6 +66,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
 		_ = WriteLog(d, g.LogDir)
+		if g.OnDecision != nil {
+			g.OnDecision(&d)
+		}
 		return d
 	}
 
@@ -148,6 +158,14 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 
 	// 8. Log.
 	_ = WriteLog(d, g.LogDir)
+
+	// 9. F4 addendum: emit a `decision` chain event via the wired callback,
+	// if any. Fires after WriteLog so the audit log is durable first; the
+	// callback's failure (if any) is the CLI layer's concern, never affects
+	// the Decision returned to the caller.
+	if g.OnDecision != nil {
+		g.OnDecision(&d)
+	}
 
 	return d
 }

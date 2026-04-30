@@ -171,7 +171,57 @@ Each of these has a likely follow-up sub-spec post-talk. Do not pull them forwar
 3. **Trace_id encoding.** UUID-without-hyphens fits 32 hex chars exactly, but assumes UUID v4. Other chain_id formats (post-v1.5) would need re-encoding. Documented as an assumption.
 4. **Timestamp precision.** `unixNano` requires int64 nanoseconds. Go's `time.UnixNano()` returns int64 — fine. JSON encoding must wrap in string to avoid precision loss. Standard OTLP/HTTP+JSON convention.
 
-## Open questions for the user
+## Decision events on the chain (addendum, 2026-04-29)
+
+Discovered during PR #71 review while answering "can openclaw dispatch Copilot and chitin observe?" The shipped openclaw → Copilot path produces gate decisions in `gov-decisions-*.jsonl` (audit log), but `gov.Gate.Evaluate` doesn't emit a chain event. F4 OTEL projection runs from the chain, so today no OTEL spans fire for openclaw-driven sessions. `docs/event-model.md` already promises `decision` is a chain `event_type` "produced by gov.Gate" — the rewrite landed without verifying the implementation.
+
+### What the addendum changes
+
+- `gov.Gate` gains an optional `OnDecision func(d *Decision)` callback.
+- `Evaluate` fires the callback after `WriteLog` (both the main-flow path and the lockdown short-circuit).
+- The CLI layer (`cmd/chitin-kernel/main.go`) wires the callback to construct a v2 `Event` with `event_type: "decision"` and call `Emit`. Same `Emit` path means F4's OTEL projection picks up the new event automatically.
+- For the Claude Code hook path (`evalHookStdin`), `chain_id = HookInput.SessionID` — the existing session chain.
+- For the gate-evaluate CLI path (operators, openclaw acpx config, future drivers), `chain_id` is generated per-call (chain length 1, no parent). Single-event spans still project; cross-call linkage is a follow-up.
+
+### Decision event payload
+
+```json
+{
+  "envelope": {
+    "schema_version": "2",
+    "event_type": "decision",
+    "chain_id": "<from HookInput.SessionID or per-call UUID>",
+    "chain_type": "session",
+    "agent_instance_id": "<agent>",
+    "surface": "claude-code | openclaw | operator",
+    "ts": "...",
+    ...
+  },
+  "payload": {
+    "decision": "allow | deny | guide",
+    "rule_id": "...",
+    "reason": "...",
+    "suggestion": "...",
+    "corrected_command": "...",
+    "tool_name": "<from Action>",
+    "action_type": "<closed-enum value>"
+  }
+}
+```
+
+The `tool.name` and `decision.type` OTEL attributes are populated from this payload by the existing F4 mapping (no projector change needed).
+
+### Why callback (not direct Emitter dependency)
+
+`gov` is currently a leaf package — `emit` imports `event` and `chain`, neither imports `gov`. Wiring an `Emitter` field onto `Gate` would require either making `gov` import `emit` (creates a deep dependency) or moving `emit` into `gov` (architectural drift). A callback keeps `gov` clean: the CLI layer composes the two, callers can opt in with `gate.OnDecision = ...` or leave it nil for audit-log-only behavior (preserving today's tests).
+
+### Out of scope (still deferred)
+
+- Linking `decision` to its parent `pre_tool_use` via `prev_hash` within a session — would require session-state bookkeeping in `runHookStdin`. Per-call chains are correct (length 1) just unlinked. v2 cleanup.
+- Backfill: existing `gov-decisions-*.jsonl` lines do not become chain events retroactively. Forward-only.
+- Full unification (deprecating `gov-decisions-*.jsonl` in favor of the chain). The two logs serve different audiences for now (operator audit vs replay/projection).
+
+
 
 - **Within-chain parent rule** — accept the spec's prev_hash → parentSpanId expansion, or restrict to cross-chain only?
 - **Endpoint resolution** — env-var-only is OTEL-idiomatic; do we want a fallback chitin.yaml `otel.endpoint:` key for in-repo demo runbook simplicity?
