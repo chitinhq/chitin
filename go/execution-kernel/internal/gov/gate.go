@@ -108,11 +108,15 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	d.CallerOrigin = callerOrigin
 
 	// 3. Bounds — only for push-shaped when policy allows the action so far.
+	// Caught in PR #79 review: overwriting d with bd dropped both Agent and
+	// CallerOrigin from the bounds-deny audit row. Preserve them explicitly.
 	if d.Allowed && (a.Type == ActGitPush || a.Type == ActGithubPRCreate) {
 		bd := CheckBounds(a, g.Policy, g.Cwd)
 		if !bd.Allowed {
 			d = bd
 			d.Ts = now
+			d.Agent = agent
+			d.CallerOrigin = callerOrigin
 		}
 	}
 
