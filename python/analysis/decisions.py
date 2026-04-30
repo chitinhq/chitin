@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     distinct_rule_ids = len(Counter(d.rule_id for d in decisions))
     denies = sum(1 for d in decisions if not d.allowed)
     allows = len(decisions) - denies
+    missing_envelope_id = sum(1 for d in decisions if not d.envelope_id)
     summary = {
         "total_decisions": len(decisions),
         "denies": denies,
@@ -107,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         "files_read": load_result.files_read,
         "parse_errors": load_result.parse_errors,
         "distinct_rule_ids": distinct_rule_ids,
+        "decisions_missing_envelope_id": missing_envelope_id,
     }
 
     date_str = now.date().isoformat()
@@ -117,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json(json_path, findings=findings, no_template=no_template,
                    input_summary=summary, generated_at=now,
                    window_since=window.since, window_until=window.until,
-                   window_days=int((window.until - window.since).total_seconds() // 86400) or 1)
+                   window_size=args.window)
         write_markdown_from_json(json_path, md_path)
     except OSError as e:
         print(f"Error writing output: {e}", file=sys.stderr)

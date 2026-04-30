@@ -9,7 +9,7 @@ import json
 import urllib.request
 from typing import Iterable, Optional
 
-from analysis.types import Pattern, RuleDraft
+from analysis.types import Pattern, PredictedImpact, RuleDraft
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen3-coder"
@@ -70,12 +70,18 @@ def enrich_with_llm(
             response = _call_ollama(prompt)
             if not response.strip():
                 raise RuntimeError("empty LLM response")
+            inherited = PredictedImpact(
+                samples_evaluated=heuristic.predicted_impact.samples_evaluated,
+                would_allow=heuristic.predicted_impact.would_allow,
+                would_still_deny=heuristic.predicted_impact.would_still_deny,
+                method=f"{heuristic.predicted_impact.method} (inherited; LLM yaml not re-evaluated)",
+            )
             out.append(RuleDraft(
                 kind="llm",
                 template=heuristic.template,
                 confidence="medium",
                 rule_yaml=response.strip() + "\n",
-                predicted_impact=heuristic.predicted_impact,
+                predicted_impact=inherited,
                 notes=f"LLM-enriched (ollama {OLLAMA_MODEL}). Heuristic was: {heuristic.template}",
             ))
         except Exception as e:

@@ -37,6 +37,11 @@ def test_cli_runs_end_to_end_on_fixture(tmp_path, fixtures_dir):
     assert body["stream"] == "decisions"
     rule_ids = {p["rule_id"] for p in body["patterns"]}
     assert "no-destructive-rm" in rule_ids
+    # New schema (post-review): window stores size + total_seconds, not days.
+    assert body["window"]["size"] == "100d"
+    assert body["window"]["total_seconds"] == 100 * 86400
+    # New summary metric: decisions missing envelope_id.
+    assert "decisions_missing_envelope_id" in body["input_summary"]
 
 
 def test_cli_handles_missing_decisions_dir(tmp_path):

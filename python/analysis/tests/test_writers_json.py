@@ -56,20 +56,21 @@ def test_write_json_produces_deterministic_output(tmp_path):
     out = tmp_path / "out.json"
     write_json(out, findings=findings, no_template=[], input_summary=summary,
                generated_at=now, window_since=window_since,
-               window_until=now, window_days=7)
+               window_until=now, window_size="7d")
     a = out.read_bytes()
 
     out2 = tmp_path / "out2.json"
     write_json(out2, findings=findings, no_template=[], input_summary=summary,
                generated_at=now, window_since=window_since,
-               window_until=now, window_days=7)
+               window_until=now, window_size="7d")
     b = out2.read_bytes()
 
     assert a == b
     parsed = json.loads(a)
     assert parsed["schema_version"] == "1"
     assert parsed["stream"] == "decisions"
-    assert parsed["window"]["days"] == 7
+    assert parsed["window"]["size"] == "7d"
+    assert parsed["window"]["total_seconds"] == 7 * 86400
     assert parsed["input_summary"]["total_decisions"] == 1225
     assert len(parsed["patterns"]) == 1
     assert parsed["patterns"][0]["rank"] == 1
@@ -83,10 +84,26 @@ def test_write_json_handles_empty_findings(tmp_path):
                input_summary={"total_decisions": 0, "denies": 0, "allows": 0,
                               "files_read": 0, "parse_errors": 0,
                               "distinct_rule_ids": 0},
-               generated_at=now, window_since=now, window_until=now, window_days=7)
+               generated_at=now, window_since=now, window_until=now, window_size="7d")
     parsed = json.loads(out.read_bytes())
     assert parsed["patterns"] == []
     assert parsed["no_template_patterns"] == []
+
+
+def test_write_json_records_sub_day_windows_precisely(tmp_path):
+    """Regression: --window 60m must not record window.size as '1d'."""
+    out = tmp_path / "subday.json"
+    now = datetime(2026, 4, 30, 12, 0, tzinfo=timezone.utc)
+    since = datetime(2026, 4, 30, 11, 0, tzinfo=timezone.utc)
+    write_json(out, findings=[], no_template=[],
+               input_summary={"total_decisions": 0, "denies": 0, "allows": 0,
+                              "files_read": 0, "parse_errors": 0,
+                              "distinct_rule_ids": 0},
+               generated_at=now, window_since=since,
+               window_until=now, window_size="60m")
+    parsed = json.loads(out.read_bytes())
+    assert parsed["window"]["size"] == "60m"
+    assert parsed["window"]["total_seconds"] == 3600
 
 
 def test_write_json_creates_parent_dirs(tmp_path):
@@ -96,5 +113,5 @@ def test_write_json_creates_parent_dirs(tmp_path):
                input_summary={"total_decisions": 0, "denies": 0, "allows": 0,
                               "files_read": 0, "parse_errors": 0,
                               "distinct_rule_ids": 0},
-               generated_at=now, window_since=now, window_until=now, window_days=7)
+               generated_at=now, window_since=now, window_until=now, window_size="7d")
     assert out.exists()

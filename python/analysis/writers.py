@@ -71,19 +71,25 @@ def write_json(
     generated_at: datetime,
     window_since: datetime,
     window_until: datetime,
-    window_days: int,
+    window_size: str,
 ) -> None:
-    """Write the canonical analysis JSON. Deterministic given fixed inputs (I4)."""
+    """Write the canonical analysis JSON. Deterministic given fixed inputs (I4).
+
+    `window_size` is the original CLI string (e.g. "7d", "60m"). `total_seconds`
+    is the precise span; consumers that need numeric width should use that.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    total_seconds = int((window_until - window_since).total_seconds())
     body = {
         "schema_version": "1",
         "stream": "decisions",
         "generated_at": generated_at.isoformat(),
         "window": {
-            "days": window_days,
+            "size": window_size,
             "since": window_since.isoformat(),
             "until": window_until.isoformat(),
+            "total_seconds": total_seconds,
         },
         "input_summary": dict(input_summary),
         "patterns": [_finding_to_json(f) for f in findings],
@@ -109,13 +115,15 @@ def write_markdown_from_json(json_path: Path, md_path: Path) -> None:
     until = data["window"]["until"][:10]
     lines.append(f"# Decisions Analysis — {until}")
     lines.append("")
-    lines.append(f"**Window:** {data['window']['days']}d "
+    lines.append(f"**Window:** {data['window']['size']} "
                  f"({data['window']['since'][:10]} → {until})")
     summary = data["input_summary"]
+    missing_id = summary.get("decisions_missing_envelope_id", 0)
+    missing_str = f", {missing_id} missing envelope_id" if missing_id else ""
     lines.append(f"**Input:** {summary['total_decisions']} decisions "
                  f"({summary['allows']} allowed, {summary['denies']} denied), "
                  f"{summary['distinct_rule_ids']} distinct rule_ids, "
-                 f"{summary['parse_errors']} parse errors")
+                 f"{summary['parse_errors']} parse errors{missing_str}")
     lines.append("")
     lines.append("---")
     lines.append("")

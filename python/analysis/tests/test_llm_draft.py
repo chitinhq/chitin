@@ -50,6 +50,9 @@ def test_llm_success_returns_llm_draft():
     assert len(out) == 1
     assert out[0].kind == "llm"
     assert "llm-drafted" in out[0].rule_yaml
+    # Impact prediction is INHERITED (not re-evaluated against LLM yaml).
+    # Method tag must say so, so consumers don't conflate.
+    assert "inherited" in out[0].predicted_impact.method.lower()
 
 
 def test_no_heuristic_passes_through():

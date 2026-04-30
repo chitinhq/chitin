@@ -12,9 +12,10 @@ def _sample_json(tmp_path: Path) -> Path:
         "stream": "decisions",
         "generated_at": "2026-04-30T12:00:00+00:00",
         "window": {
-            "days": 7,
+            "size": "7d",
             "since": "2026-04-23T12:00:00+00:00",
             "until": "2026-04-30T12:00:00+00:00",
+            "total_seconds": 604800,
         },
         "input_summary": {
             "total_decisions": 1225, "denies": 62, "allows": 1163,
@@ -85,14 +86,37 @@ def test_markdown_deterministic(tmp_path):
     assert a.read_bytes() == b.read_bytes()
 
 
+def test_markdown_surfaces_missing_envelope_id(tmp_path):
+    p = tmp_path / "missing.json"
+    body = {
+        "schema_version": "1",
+        "stream": "decisions",
+        "generated_at": "2026-04-30T12:00:00+00:00",
+        "window": {"size": "7d", "since": "2026-04-23T00:00:00+00:00",
+                   "until": "2026-04-30T12:00:00+00:00", "total_seconds": 649800},
+        "input_summary": {"total_decisions": 100, "denies": 5, "allows": 95,
+                          "files_read": 1, "parse_errors": 0,
+                          "distinct_rule_ids": 3,
+                          "decisions_missing_envelope_id": 17},
+        "patterns": [],
+        "no_template_patterns": [],
+    }
+    p.write_text(json.dumps(body, sort_keys=True))
+    md_path = tmp_path / "missing.md"
+    write_markdown_from_json(p, md_path)
+    md = md_path.read_text()
+    assert "17 missing envelope_id" in md
+
+
 def test_markdown_with_no_patterns(tmp_path):
     p = tmp_path / "empty.json"
     body = {
         "schema_version": "1",
         "stream": "decisions",
         "generated_at": "2026-04-30T12:00:00+00:00",
-        "window": {"days": 7, "since": "2026-04-23T00:00:00+00:00",
-                   "until": "2026-04-30T12:00:00+00:00"},
+        "window": {"size": "7d", "since": "2026-04-23T00:00:00+00:00",
+                   "until": "2026-04-30T12:00:00+00:00",
+                   "total_seconds": 649800},
         "input_summary": {"total_decisions": 0, "denies": 0, "allows": 0,
                           "files_read": 0, "parse_errors": 0,
                           "distinct_rule_ids": 0},

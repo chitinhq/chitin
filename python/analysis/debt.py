@@ -39,9 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     write_json(json_path, findings=[], no_template=[],
                input_summary={"total_decisions": 0, "denies": 0, "allows": 0,
                               "files_read": 0, "parse_errors": 0,
-                              "distinct_rule_ids": 0},
+                              "distinct_rule_ids": 0,
+                              "decisions_missing_envelope_id": 0},
                generated_at=now, window_since=now, window_until=now,
-               window_days=7)
+               window_size="7d")
     body = _json.loads(json_path.read_text())
     body["stream"] = "debt"
     json_path.write_text(_json.dumps(body, indent=2, sort_keys=True) + "\n")
