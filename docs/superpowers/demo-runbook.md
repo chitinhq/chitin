@@ -251,10 +251,16 @@ chitin-kernel drive copilot --cwd="$(pwd)" \
 Then drop the most recent capture file into `jq` to show the projection:
 
 ```bash
-cat $(ls -t /tmp/otel-capture/v1-traces-*.json | head -1) | jq '.resourceSpans[0].scopeSpans[0].spans[0]'
+cat $(ls -t /tmp/otel-capture/v1-traces-*.json | head -1) | jq '
+  .resourceSpans[0].scopeSpans[0].spans[0] |
+  {
+    traceId, spanId, parentSpanId, name,
+    decision: (.attributes[] | select(.key=="decision.type") | .value.stringValue),
+    tool:     (.attributes[] | select(.key=="tool.name")     | .value.stringValue)
+  }'
 ```
 
-Highlight: `traceId` is the chain_id (hyphens stripped), `spanId` is the first 16 hex chars of the chain hash, `parentSpanId` links events within the chain, `name` is the event_type (`decision`), `attributes.decision.type` is `allow|deny|guide`, `attributes.tool.name` is the closed-enum action_type. Same chain on disk, just projected as OTLP/HTTP JSON.
+Highlight: `traceId` is the chain_id (hyphens stripped), `spanId` is the first 16 hex chars of the chain hash, `parentSpanId` links events within the chain, `name` is the event_type (`decision`). The `attributes` field is an OTLP array of `{key,value}` entries (not an object), so the `decision.type` and `tool.name` attrs are extracted by `select(.key==…)`. `decision.type` is `allow|deny|guide`; `tool.name` is the closed-enum action_type. Same chain on disk, just projected as OTLP/HTTP JSON.
 
 **Audience takeaway:** "The chain is the source of truth. OTEL is a one-way projection — your existing collector, dashboards, and SLOs all work, and the canonical chain on disk is what you replay against. No policy depends on OTEL data. **Every gated tool call across every driver projects automatically — gov.Gate fires the chain emit, F4 projects, your collector sees it.**"
 

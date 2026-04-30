@@ -67,7 +67,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 		stampEnvelope(&d, envelope, g, a, agent)
 		_ = WriteLog(d, g.LogDir)
 		if g.OnDecision != nil {
-			g.OnDecision(&d)
+			// Pass a copy so callbacks can't mutate the Decision the caller sees.
+			dCopy := d
+			g.OnDecision(&dCopy)
 		}
 		return d
 	}
@@ -162,9 +164,11 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	// 9. F4 addendum: emit a `decision` chain event via the wired callback,
 	// if any. Fires after WriteLog so the audit log is durable first; the
 	// callback's failure (if any) is the CLI layer's concern, never affects
-	// the Decision returned to the caller.
+	// the Decision returned to the caller. Pass a copy so callbacks can't
+	// mutate the Decision the caller sees.
 	if g.OnDecision != nil {
-		g.OnDecision(&d)
+		dCopy := d
+		g.OnDecision(&dCopy)
 	}
 
 	return d

@@ -2,6 +2,7 @@ package emit
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -331,8 +332,10 @@ func TestProjectAndPost_RoundtripToTestServer(t *testing.T) {
 		gotPath string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("server read body: %v", err)
+		}
 		mu.Lock()
 		gotBody = string(buf)
 		gotPath = r.URL.Path
@@ -390,14 +393,15 @@ func TestProjectAndPost_NilExporterIsNoOp(t *testing.T) {
 
 // TestKernelSurvivesOTELFailure verifies the F4 failure invariant: when the
 // configured OTEL endpoint is unreachable, Emit must still return nil, the
-// JSONL line must be written, and the chain index must be updated. The OTEL
-// goroutine fires-and-forgets, errors are logged and dropped.
+// JSONL line must be written, and the chain index must be updated. OTEL
+// export happens synchronously after the durable JSONL/index commit; export
+// errors are logged and dropped.
 //
 // This is the "kernel-write-survives-OTEL-failure" invariant from the spec.
 func TestKernelSurvivesOTELFailure(t *testing.T) {
 	dir, idx := newEnv(t)
 
-	// Refused port (no listener at :1) — the goroutine will get connection refused.
+	// Refused port (no listener at :1) makes the synchronous OTEL POST fail fast.
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1/v1/traces")
 
 	logPath := filepath.Join(dir, "events.jsonl")

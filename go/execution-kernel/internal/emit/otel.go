@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -195,7 +196,11 @@ func (x *otelExporter) post(ctx context.Context, body []byte) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// Drain body before close so the connection can be reused (keep-alive).
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("otlp http %d", resp.StatusCode)
 	}

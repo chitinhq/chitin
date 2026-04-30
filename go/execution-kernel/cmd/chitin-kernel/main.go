@@ -776,11 +776,15 @@ func cmdGateEvaluate(args []string) {
 	// configured). For the bare CLI path we don't have a session_id, so
 	// each evaluation gets a fresh UUID — single-event chain, valid OTEL
 	// span via F4's "root event of root chain" parent-rule branch.
+	// Surface is the operator-CLI origin, not the agent identifier
+	// (agent flows separately into AgentInstanceID).
 	chainID := newChainID()
-	de, deClose, err := newDecisionEmitter(chitinDir, chainID, *agent, func() string { return chainID })
-	if err == nil {
-		defer deClose()
-		gate.OnDecision = de.emitDecision
+	if chainID != "" {
+		de, deClose, err := newDecisionEmitter(chitinDir, chainID, "operator", func() string { return chainID })
+		if err == nil {
+			defer deClose()
+			gate.OnDecision = de.emitDecision
+		}
 	}
 	d := gate.Evaluate(action, *agent, nil)
 

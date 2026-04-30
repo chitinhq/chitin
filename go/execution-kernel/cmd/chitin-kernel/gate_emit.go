@@ -70,6 +70,11 @@ func (e *decisionEmitter) emitDecision(d *gov.Decision) {
 	if chainID == "" {
 		chainID = newChainID()
 	}
+	if chainID == "" {
+		// crypto/rand failed; skip emit rather than write a degenerate event.
+		log.Printf("decision-emit: skipped (no chain_id available)")
+		return
+	}
 	ev := buildDecisionEvent(d, chainID, e.surface)
 	if err := e.em.Emit(ev); err != nil {
 		log.Printf("decision-emit: %v", err)
@@ -132,9 +137,15 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 // callers that have no session context (gate-evaluate CLI, openclaw
 // acpx without session passthrough). The format matches Phase 1.5 chain
 // IDs so traceID encoding (32 hex without hyphens) works unchanged.
+//
+// Returns "" if crypto/rand fails — caller treats empty as "skip OTEL/
+// decision-emit wiring" rather than risk a deterministic all-zero
+// collision-prone UUID across processes.
 func newChainID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
 	// Set version (4) and variant (10) per RFC 4122
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80

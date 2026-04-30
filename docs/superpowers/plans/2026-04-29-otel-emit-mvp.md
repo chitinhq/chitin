@@ -14,7 +14,7 @@
 | 2 | Implement `projectToSpan(*event.Event) span` for 4 event types | `otel.go` | yes |
 | 3 | Implement parent-rule logic (within-chain + cross-chain + root) | `otel.go` (helper `parentSpanID`) | yes |
 | 4 | OTLP/HTTP JSON body encoder (`encodeRequest([]span) []byte`) | `otel.go` | yes |
-| 5 | HTTP POST with timeout, fire-and-forget goroutine | `otel.go` (helper `postSpan`) | yes |
+| 5 | HTTP POST with timeout, synchronous send (sync chosen post-integration; see spec §"Sync vs async") | `otel.go` (helper `post`) | yes |
 | 6 | Wire into `emit.Emit` after `tx.Commit` (config-gated) | `emit.go` | yes |
 | 7 | Configuration via `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` env | `otel.go` (helper `endpointFromEnv`) | yes |
 | 8 | Test 1 — `TestProjectToSpan_Mapping` (table-driven, 4 event types) | `otel_test.go` | yes |

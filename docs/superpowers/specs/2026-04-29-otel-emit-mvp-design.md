@@ -13,7 +13,7 @@ This spec is small on purpose. Full `gen_ai.*` semconv compliance, OTLP-grpc, ba
 
 ## What F4 ships
 
-A `go/execution-kernel/internal/emit/otel.go` projector that fires after the canonical event chain commit succeeds, projects 4 event types onto OTEL spans, and POSTs them via OTLP/HTTP JSON to a configured endpoint. Async, fire-and-forget, kernel-write-survives-OTEL-failure.
+A `go/execution-kernel/internal/emit/otel.go` projector that fires after the canonical event chain commit succeeds, projects 4 event types onto OTEL spans, and POSTs them via OTLP/HTTP JSON to a configured endpoint. Synchronous post-commit, best-effort POST per event, kernel-write-survives-OTEL-failure. (Sync because the kernel is a short-lived CLI per emit; daemon-mode async is deferred — see "Sync vs async" below.)
 
 ## Locked decisions (from framing v1)
 

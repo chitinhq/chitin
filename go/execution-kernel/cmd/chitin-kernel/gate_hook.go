@@ -167,14 +167,19 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	// the canonical path. chain_id = HookInput.SessionID when available
 	// (Claude Code provides one); otherwise a fresh UUID. F4 OTEL
 	// projection picks up the event automatically when configured.
+	// Skip wiring if chain_id can't be resolved (rand failure) — agent name
+	// is preserved separately as AgentInstanceID; surface is the driver
+	// origin ("claude-code"), not the agent identifier.
 	hookChainID := payload.SessionID
 	if hookChainID == "" {
 		hookChainID = newChainID()
 	}
-	de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, agent, func() string { return hookChainID })
-	if deErr == nil {
-		defer deClose()
-		gate.OnDecision = de.emitDecision
+	if hookChainID != "" {
+		de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, "claude-code", func() string { return hookChainID })
+		if deErr == nil {
+			defer deClose()
+			gate.OnDecision = de.emitDecision
+		}
 	}
 	// Operator-recovery commands (chitin-kernel envelope grant, use, etc.)
 	// pass nil envelope so policy still evaluates but no spend is debited.
