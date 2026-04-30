@@ -105,3 +105,72 @@ func TestGate_MonitorModeAllowsButLogs(t *testing.T) {
 		t.Errorf("Mode: got %q want monitor", d.Mode)
 	}
 }
+
+// TestGate_OnDecisionFiresOnAllow / Deny / Lockdown verify the F4 addendum
+// callback is invoked exactly once per Evaluate call, with the final
+// Decision (post-bounds, post-monitor-override, post-stamp). Three cases
+// cover the three exit paths through Evaluate.
+func TestGate_OnDecisionFiresOnAllow(t *testing.T) {
+	g, _ := newTestGate(t)
+	var calls []Decision
+	g.OnDecision = func(d *Decision) { calls = append(calls, *d) }
+
+	g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+
+	if len(calls) != 1 {
+		t.Fatalf("OnDecision: got %d calls, want 1", len(calls))
+	}
+	if !calls[0].Allowed {
+		t.Errorf("OnDecision callback received Decision.Allowed=false, want true")
+	}
+	if calls[0].Action.Type != ActFileRead {
+		t.Errorf("OnDecision Action.Type: got %q want %q", calls[0].Action.Type, ActFileRead)
+	}
+}
+
+func TestGate_OnDecisionFiresOnDeny(t *testing.T) {
+	g, _ := newTestGate(t)
+	var calls []Decision
+	g.OnDecision = func(d *Decision) { calls = append(calls, *d) }
+
+	g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+
+	if len(calls) != 1 {
+		t.Fatalf("OnDecision: got %d calls, want 1", len(calls))
+	}
+	if calls[0].Allowed {
+		t.Errorf("OnDecision callback received Allowed=true, want false")
+	}
+	if calls[0].RuleID != "no-rm" {
+		t.Errorf("OnDecision RuleID: got %q want no-rm", calls[0].RuleID)
+	}
+}
+
+func TestGate_OnDecisionFiresOnLockdown(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Counter.Lockdown("agent1")
+
+	var calls []Decision
+	g.OnDecision = func(d *Decision) { calls = append(calls, *d) }
+
+	g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+
+	if len(calls) != 1 {
+		t.Fatalf("OnDecision (lockdown path): got %d calls, want 1", len(calls))
+	}
+	if calls[0].RuleID != "lockdown" {
+		t.Errorf("OnDecision lockdown RuleID: got %q want lockdown", calls[0].RuleID)
+	}
+}
+
+// TestGate_OnDecisionNilIsSafe ensures pre-F4 behavior is preserved when
+// the callback is not wired — Evaluate must not panic and the audit log
+// path must still run.
+func TestGate_OnDecisionNilIsSafe(t *testing.T) {
+	g, _ := newTestGate(t)
+	// g.OnDecision left nil
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if !d.Allowed {
+		t.Errorf("Evaluate with nil OnDecision must still produce a Decision: %+v", d)
+	}
+}
