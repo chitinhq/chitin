@@ -1,0 +1,40 @@
+# Chitin
+
+> Chitin is an execution kernel for AI coding agents. Every tool call across Claude Code, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack.
+
+A small Go kernel sits between AI coding agents and the operating system. The kernel owns all side effects — capture, normalize, gate, emit. TypeScript libraries and adapters are read-only against the filesystem except via the kernel binary.
+
+Three drivers are gated through it today: Claude Code (PreToolUse hook, PR #66), Copilot CLI (in-kernel SDK driver, PR #51), and openclaw (acpx config-override). Same `gov.Gate` API across all three. Same canonical event chain on disk. Same OTEL projection out the back. The chain is the source of truth; OTEL is a one-way projection — no policy depends on OTEL data.
+
+## Start here
+
+- [README](README.md): orientation — install commands, top-level layout, where state lives on disk
+- [docs/thesis.md](docs/thesis.md): what chitin is and why it exists
+- [docs/architecture.md](docs/architecture.md): layer map, data flow diagram, the side-effect rule
+- [docs/event-model.md](docs/event-model.md): canonical event schema (the contract every adapter conforms to)
+- [docs/operating-model.md](docs/operating-model.md): how phases ship, governance posture
+
+## Where state lives on disk
+
+- [docs/observations/runbooks/health.md](docs/observations/runbooks/health.md): authoritative source for `.chitin/` paths, file conventions, and `chitin health` row meanings
+
+## Specs and plans
+
+- [docs/superpowers/specs/](docs/superpowers/specs/): design docs, one per feature, dated
+- [docs/superpowers/plans/](docs/superpowers/plans/): execution plans, one per shipped initiative, dated
+- [docs/architecture/layer-contracts.md](docs/architecture/layer-contracts.md): contracts between layers
+
+## Observations and research
+
+- [docs/observations/](docs/observations/): dated capture/finding logs from real runs
+- [docs/observations/research/](docs/observations/research/): soul archetype surveys, factor analyses
+- [docs/observations/quorums/](docs/observations/quorums/): quorum decision records
+- [docs/observations/governance-debt-ledger.md](docs/observations/governance-debt-ledger.md): tracked governance debt
+
+## Optional
+
+- [docs/roadmap.md](docs/roadmap.md): roadmap (changes frequently — verify before quoting)
+- [docs/toolchain.md](docs/toolchain.md): Nx + Vite+ + Go toolchain rationale
+- [docs/governance-setup.md](docs/governance-setup.md): how the governance gate is wired
+- [docs/archive-map.md](docs/archive-map.md): pointers to archived predecessors (clawta, hermes)
+- [docs/superpowers/demo-runbook.md](docs/superpowers/demo-runbook.md): demo procedure
