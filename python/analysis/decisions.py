@@ -88,6 +88,15 @@ def main(argv: list[str] | None = None) -> int:
             "reason_no_template": "below top-N cutoff",
         })
 
+    if args.llm_draft and findings:
+        from analysis.llm_draft import enrich_with_llm
+        pairs = [(f.pattern, f.draft) for f in findings]
+        enriched = enrich_with_llm(pairs)
+        findings = [
+            build_finding(f.pattern, new_draft, rank=f.rank)
+            for f, new_draft in zip(findings, enriched)
+        ]
+
     distinct_rule_ids = len(Counter(d.rule_id for d in decisions))
     denies = sum(1 for d in decisions if not d.allowed)
     allows = len(decisions) - denies
