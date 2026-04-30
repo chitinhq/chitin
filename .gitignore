@@ -52,3 +52,11 @@ Thumbs.db
 
 # Go kernel build artifacts
 /go/execution-kernel/chitin-kernel
+
+# Graphify intermediate state (only wiki/ + GRAPH_REPORT.md are tracked; the rest regenerates)
+graphify-out/.graphify_*
+graphify-out/cache/
+graphify-out/cost.json
+graphify-out/manifest.json
+graphify-out/graph.html
+graphify-out/graph.json
