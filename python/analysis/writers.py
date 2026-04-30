@@ -91,3 +91,90 @@ def write_json(
     }
     text = json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False)
     path.write_text(text + "\n")
+
+
+def write_markdown_from_json(json_path: Path, md_path: Path) -> None:
+    """Render the markdown projection from a canonical JSON file (I2).
+
+    Markdown is non-authoritative — JSON is the contract. Reads the JSON and
+    produces a deterministic markdown rendering.
+    """
+    json_path = Path(json_path)
+    md_path = Path(md_path)
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = json.loads(json_path.read_text())
+    lines: list[str] = []
+
+    until = data["window"]["until"][:10]
+    lines.append(f"# Decisions Analysis — {until}")
+    lines.append("")
+    lines.append(f"**Window:** {data['window']['days']}d "
+                 f"({data['window']['since'][:10]} → {until})")
+    summary = data["input_summary"]
+    lines.append(f"**Input:** {summary['total_decisions']} decisions "
+                 f"({summary['allows']} allowed, {summary['denies']} denied), "
+                 f"{summary['distinct_rule_ids']} distinct rule_ids, "
+                 f"{summary['parse_errors']} parse errors")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    if not data["patterns"]:
+        lines.append("_No deny patterns in this window._")
+        lines.append("")
+    else:
+        lines.append("## Top patterns")
+        lines.append("")
+        for p in data["patterns"]:
+            _render_pattern(p, lines)
+
+    if data.get("no_template_patterns"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## Patterns without a template")
+        lines.append("")
+        lines.append("These deny patterns were observed but no heuristic template "
+                     "knew how to draft a candidate rule. Surfaced for human review.")
+        lines.append("")
+        for nt in data["no_template_patterns"]:
+            lines.append(f"- **{nt['rule_id']}** × {nt['action_type']} × "
+                         f"{nt['agent_id']} — {nt['count']} denies "
+                         f"({nt['reason_no_template']})")
+        lines.append("")
+
+    md_path.write_text("\n".join(lines))
+
+
+def _render_pattern(p: dict[str, Any], lines: list[str]) -> None:
+    header = (f"### #{p['rank']} — {p['rule_id']} × {p['action_type']} × "
+              f"{p['agent_id']} ({p['count']} denies)")
+    lines.append(header)
+    lines.append("")
+    lines.append(f"First seen: {p['first_seen']}. Last seen: {p['last_seen']}.")
+    lines.append("")
+    if p["draft"] is None:
+        lines.append("_No candidate rule drafted._")
+        lines.append("")
+        return
+
+    d = p["draft"]
+    lines.append(f"**Candidate rule** ({d['kind']}, {d['confidence']} confidence, "
+                 f"template `{d['template']}`):")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append(d["rule_yaml"].rstrip())
+    lines.append("```")
+    lines.append("")
+    impact = d["predicted_impact"]
+    lines.append(f"**Predicted impact:** samples_evaluated: {impact['samples_evaluated']}, "
+                 f"would_allow: {impact['would_allow']}, "
+                 f"would_still_deny: {impact['would_still_deny']} "
+                 f"(method: {impact['method']})")
+    lines.append("")
+    if d["notes"]:
+        lines.append(f"_Notes: {d['notes']}_")
+        lines.append("")
+    sample_ids = ", ".join(p["sample_envelope_ids"])
+    lines.append(f"_Sample envelope ids:_ {sample_ids}")
+    lines.append("")
