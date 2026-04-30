@@ -13,9 +13,26 @@ import (
 )
 
 // Emitter appends events to a JSONL log and updates the chain index.
+//
+// OTEL (optional, F4): if non-nil, after a successful chain commit the emitter
+// synchronously projects the event onto an OTLP/HTTP JSON span and POSTs it to
+// the configured collector. OTEL emit failures are logged and dropped — they
+// never affect the canonical chain write. Use EnableOTELFromEnv to wire it up.
+// v1 is sync because the kernel runs as a short-lived CLI per emit; daemon-mode
+// async is deferred. See otel.go ProjectAndPost.
 type Emitter struct {
 	LogPath string
 	Index   *chain.Index
+	OTEL    *otelExporter
+}
+
+// EnableOTELFromEnv configures OTEL projection from environment:
+// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (preferred) or OTEL_EXPORTER_OTLP_ENDPOINT
+// (with /v1/traces appended). When neither is set, OTEL stays disabled.
+//
+// Idempotent. Re-call after env changes if needed.
+func (e *Emitter) EnableOTELFromEnv() {
+	e.OTEL = newOTELExporter()
 }
 
 // Emit appends ev to the log. Recomputes Seq, PrevHash, ThisHash using the chain index.
@@ -77,5 +94,13 @@ func (e *Emitter) Emit(ev *event.Event) error {
 		return fmt.Errorf("close log: %w", cerr)
 	}
 
-	return tx.Commit(ev.Seq, ev.ThisHash)
+	if err := tx.Commit(ev.Seq, ev.ThisHash); err != nil {
+		return err
+	}
+
+	// F4: project to OTEL span and POST synchronously after commit.
+	// Kernel JSONL/index commit is already complete; OTEL failures cannot
+	// affect canonical state. Safe when OTEL is nil (no-op).
+	e.OTEL.ProjectAndPost(ev, e.Index)
+	return nil
 }
