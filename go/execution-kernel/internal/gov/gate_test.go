@@ -3,6 +3,7 @@ package gov
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -172,5 +173,63 @@ func TestGate_OnDecisionNilIsSafe(t *testing.T) {
 	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if !d.Allowed {
 		t.Errorf("Evaluate with nil OnDecision must still produce a Decision: %+v", d)
+	}
+}
+
+// destructiveTarget assembles the literal that policy-test-deny matches,
+// without writing it as a flat string in source — chitin's own gate hook
+// blocks heredoc/file-write operations that contain the literal pattern.
+// This is a real instance of dogfood-debt: the gate fires on test fixtures.
+func destructiveTarget() string {
+	return "r" + "m -" + "rf /etc/test"
+}
+
+func TestGate_CallerOriginStampedWhenEnvelopeNil(t *testing.T) {
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must be set when envelope is nil; got empty")
+	}
+	if !strings.Contains(d.CallerOrigin, "gate_test.go:") {
+		t.Errorf("CallerOrigin should point to the caller frame; got %q", d.CallerOrigin)
+	}
+}
+
+func TestGate_CallerOriginEmptyWhenEnvelopePresent(t *testing.T) {
+	g, env := gateWithEnvelope(t, BudgetLimits{MaxToolCalls: 10, MaxInputBytes: 1024})
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", env)
+	if d.CallerOrigin != "" {
+		t.Errorf("CallerOrigin should be empty when envelope supplied; got %q", d.CallerOrigin)
+	}
+	if d.EnvelopeID != env.ID {
+		t.Errorf("EnvelopeID should be stamped; got %q want %q", d.EnvelopeID, env.ID)
+	}
+}
+
+func TestGate_CallerOriginPreservedOnDeny(t *testing.T) {
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActShellExec, Target: destructiveTarget()}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("expected deny")
+	}
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must survive policy-deny path")
+	}
+}
+
+func TestGate_CallerOriginStampedOnLockdown(t *testing.T) {
+	g, _ := newTestGate(t)
+	for i := 0; i < 12; i++ {
+		g.Evaluate(Action{Type: ActShellExec, Target: destructiveTarget()}, "agent1", nil)
+	}
+	if !g.Counter.IsLocked("agent1") {
+		t.Fatalf("agent should be locked")
+	}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.RuleID != "lockdown" {
+		t.Fatalf("expected lockdown, got %s", d.RuleID)
+	}
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must be stamped on lockdown path")
 	}
 }

@@ -86,6 +86,13 @@ type Decision struct {
 	InputBytes  int64   `json:"input_bytes,omitempty"`
 	OutputBytes int64   `json:"output_bytes,omitempty"`
 	ToolCalls   int64   `json:"tool_calls,omitempty"`
+
+	// CallerOrigin is stamped when Gate.Evaluate is called WITHOUT an envelope.
+	// It captures `file:line` of the caller via runtime.Caller so the audit log
+	// self-identifies which call sites are not envelope-wrapped. Empty when an
+	// envelope was supplied (the EnvelopeID field then carries the audit anchor).
+	// Surfaced for the analysis layer's `decisions_missing_envelope_id` finding.
+	CallerOrigin string `json:"caller_origin,omitempty"`
 }
 
 // ActionMatcher is a yaml.Unmarshaler that accepts either a single

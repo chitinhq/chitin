@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+func TestWriteLog_PersistsCallerOrigin(t *testing.T) {
+	// Regression: WriteLog had its own inline struct that dropped CallerOrigin
+	// at log-write time, so the field was set on Decision but absent from JSONL.
+	// The analysis layer's `decisions_missing_envelope_id` finding would then
+	// over-count silently. This test enforces parity: every JSON tag on
+	// Decision that's audit-relevant must round-trip through WriteLog.
+	dir := t.TempDir()
+	d := Decision{
+		Allowed: true, Mode: "enforce", RuleID: "default-allow-reads",
+		Ts: "2026-04-30T12:00:00Z",
+		CallerOrigin: "main.go:42",
+	}
+	if err := WriteLog(d, dir); err != nil {
+		t.Fatalf("WriteLog: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log file")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if !strings.Contains(string(data), `"caller_origin":"main.go:42"`) {
+		t.Errorf("caller_origin not persisted to log; got: %s", string(data))
+	}
+}
+
 func TestWriteLog_AppendsOneJSONLine(t *testing.T) {
 	dir := t.TempDir()
 	d := Decision{
