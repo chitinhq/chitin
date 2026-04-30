@@ -2,8 +2,26 @@ package gov
 
 import (
 	"errors"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"time"
 )
+
+// captureCallerOrigin returns "file.go:line" of the caller skip frames up
+// the stack, or "" if runtime.Caller fails. Used to self-identify gate
+// callers that don't pass a *BudgetEnvelope, so the audit log stops being
+// silent about which paths bypass cost-governance.
+//
+// skip=2 means: skip captureCallerOrigin's own frame and Gate.Evaluate's
+// frame, returning the frame of Evaluate's caller.
+func captureCallerOrigin(skip int) string {
+	_, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return ""
+	}
+	return filepath.Base(file) + ":" + strconv.Itoa(line)
+}
 
 // Gate orchestrates policy evaluation, bounds check, escalation counting,
 // envelope spend, and decision logging. One instance per gate subprocess
@@ -57,12 +75,21 @@ type Gate struct {
 func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decision {
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	// Capture caller_origin once, up front — used only when envelope == nil
+	// so we can identify which call sites bypass cost-governance plumbing.
+	// skip=2: captureCallerOrigin's own frame + Evaluate's frame → caller.
+	var callerOrigin string
+	if envelope == nil {
+		callerOrigin = captureCallerOrigin(2)
+	}
+
 	// 1. Lockdown takes precedence over any rule.
 	if g.Counter != nil && g.Counter.IsLocked(agent) {
 		d := Decision{
 			Allowed: false, Mode: "enforce", RuleID: "lockdown",
 			Reason:     "agent in lockdown — contact operator",
 			Escalation: "lockdown", Action: a, Agent: agent, Ts: now,
+			CallerOrigin: callerOrigin,
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
 		_ = WriteLog(d, g.LogDir)
@@ -78,13 +105,18 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	d := g.Policy.Evaluate(a)
 	d.Ts = now
 	d.Agent = agent
+	d.CallerOrigin = callerOrigin
 
 	// 3. Bounds — only for push-shaped when policy allows the action so far.
+	// Caught in PR #79 review: overwriting d with bd dropped both Agent and
+	// CallerOrigin from the bounds-deny audit row. Preserve them explicitly.
 	if d.Allowed && (a.Type == ActGitPush || a.Type == ActGithubPRCreate) {
 		bd := CheckBounds(a, g.Policy, g.Cwd)
 		if !bd.Allowed {
 			d = bd
 			d.Ts = now
+			d.Agent = agent
+			d.CallerOrigin = callerOrigin
 		}
 	}
 
@@ -126,6 +158,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 				d = Decision{
 					Allowed: false, Mode: g.Policy.Mode, RuleID: ruleID,
 					Reason: reason, Action: a, Agent: agent, Ts: now,
+					CallerOrigin: callerOrigin,
 				}
 			}
 		}

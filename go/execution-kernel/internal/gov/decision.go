@@ -50,6 +50,7 @@ func WriteLog(d Decision, dir string) error {
 		InputBytes       int64   `json:"input_bytes,omitempty"`
 		OutputBytes      int64   `json:"output_bytes,omitempty"`
 		ToolCalls        int64   `json:"tool_calls,omitempty"`
+		CallerOrigin     string  `json:"caller_origin,omitempty"`
 	}{
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
@@ -58,6 +59,7 @@ func WriteLog(d Decision, dir string) error {
 		Ts:         d.Ts,
 		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
 		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
+		CallerOrigin: d.CallerOrigin,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal decision: %w", err)

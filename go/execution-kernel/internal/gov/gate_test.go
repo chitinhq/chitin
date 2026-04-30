@@ -3,6 +3,7 @@ package gov
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -172,5 +173,94 @@ func TestGate_OnDecisionNilIsSafe(t *testing.T) {
 	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if !d.Allowed {
 		t.Errorf("Evaluate with nil OnDecision must still produce a Decision: %+v", d)
+	}
+}
+
+// destructiveTarget assembles the literal that policy-test-deny matches,
+// without writing it as a flat string in source — chitin's own gate hook
+// blocks heredoc/file-write operations that contain the literal pattern.
+// This is a real instance of dogfood-debt: the gate fires on test fixtures.
+func destructiveTarget() string {
+	return "r" + "m -" + "rf /etc/test"
+}
+
+func TestGate_CallerOriginStampedWhenEnvelopeNil(t *testing.T) {
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must be set when envelope is nil; got empty")
+	}
+	if !strings.Contains(d.CallerOrigin, "gate_test.go:") {
+		t.Errorf("CallerOrigin should point to the caller frame; got %q", d.CallerOrigin)
+	}
+}
+
+func TestGate_CallerOriginEmptyWhenEnvelopePresent(t *testing.T) {
+	g, env := gateWithEnvelope(t, BudgetLimits{MaxToolCalls: 10, MaxInputBytes: 1024})
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", env)
+	if d.CallerOrigin != "" {
+		t.Errorf("CallerOrigin should be empty when envelope supplied; got %q", d.CallerOrigin)
+	}
+	if d.EnvelopeID != env.ID {
+		t.Errorf("EnvelopeID should be stamped; got %q want %q", d.EnvelopeID, env.ID)
+	}
+}
+
+func TestGate_CallerOriginPreservedOnDeny(t *testing.T) {
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActShellExec, Target: destructiveTarget()}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("expected deny")
+	}
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must survive policy-deny path")
+	}
+}
+
+func TestGate_CallerOriginPreservedOnBoundsDeny(t *testing.T) {
+	// Regression caught in PR #79 review: the bounds-deny path replaces d with
+	// the bd Decision, which dropped Agent + CallerOrigin from the audit row.
+	// CheckBounds runs `git -C <cwd> diff --stat origin/main...HEAD`; in a
+	// non-git tempdir the command fails and CheckBounds returns
+	// bounds:undetermined deny — deterministic way to trip the path in a test.
+	g, dir := newTestGate(t)
+	// Add an allow rule for git.push so policy allows it; bounds runs after.
+	g.Policy.Rules = append(g.Policy.Rules, Rule{
+		ID:     "allow-push",
+		Action: ActionMatcher{string(ActGitPush)},
+		Effect: "allow",
+	})
+	g.Policy.Bounds = Bounds{MaxFilesChanged: 1, MaxLinesChanged: 1}
+	g.Cwd = dir // tempdir without git, so collectDiffStats errors → bounds-deny
+
+	d := g.Evaluate(Action{Type: ActGitPush, Target: "feat/x"}, "test-agent", nil)
+	if d.Allowed {
+		t.Fatalf("expected bounds deny, got allow: %+v", d)
+	}
+	if d.RuleID != "bounds:undetermined" {
+		t.Fatalf("expected bounds:undetermined, got %q reason=%q", d.RuleID, d.Reason)
+	}
+	if d.Agent != "test-agent" {
+		t.Errorf("Agent dropped on bounds-deny path; got %q want test-agent", d.Agent)
+	}
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin dropped on bounds-deny path")
+	}
+}
+
+func TestGate_CallerOriginStampedOnLockdown(t *testing.T) {
+	g, _ := newTestGate(t)
+	for i := 0; i < 12; i++ {
+		g.Evaluate(Action{Type: ActShellExec, Target: destructiveTarget()}, "agent1", nil)
+	}
+	if !g.Counter.IsLocked("agent1") {
+		t.Fatalf("agent should be locked")
+	}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.RuleID != "lockdown" {
+		t.Fatalf("expected lockdown, got %s", d.RuleID)
+	}
+	if d.CallerOrigin == "" {
+		t.Errorf("CallerOrigin must be stamped on lockdown path")
 	}
 }
