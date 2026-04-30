@@ -49,6 +49,42 @@ def test_parse_malformed_ts_returns_none():
     assert parse_decision_line(line) is None
 
 
+def test_parse_handles_non_numeric_cost_without_raising():
+    """Regression for Copilot review: int()/float() coercion must not abort the line (I5)."""
+    line = '{"ts":"2026-04-29T10:15:32Z","allowed":false,"cost_usd":"not-a-number","input_bytes":null,"tool_calls":"abc"}'
+    d = parse_decision_line(line)
+    assert d is not None
+    assert d.cost_usd == 0.0
+    assert d.input_bytes == 0
+    assert d.tool_calls == 0
+
+
+def test_parse_escalation_as_string_preserved():
+    """gov/policy.go emits escalation as 'elevated'/'lockdown' — must not coerce to bool."""
+    line = '{"ts":"2026-04-29T10:15:32Z","allowed":false,"escalation":"lockdown"}'
+    d = parse_decision_line(line)
+    assert d is not None
+    assert d.escalation == "lockdown"
+
+
+def test_parse_escalation_legacy_bool_true_marked_elevated():
+    line = '{"ts":"2026-04-29T10:15:32Z","allowed":false,"escalation":true}'
+    d = parse_decision_line(line)
+    assert d is not None
+    assert d.escalation == "elevated"
+
+
+def test_parse_escalation_false_or_missing_is_none():
+    for raw in [
+        '{"ts":"2026-04-29T10:15:32Z","allowed":true}',
+        '{"ts":"2026-04-29T10:15:32Z","allowed":true,"escalation":false}',
+        '{"ts":"2026-04-29T10:15:32Z","allowed":true,"escalation":""}',
+    ]:
+        d = parse_decision_line(raw)
+        assert d is not None
+        assert d.escalation is None
+
+
 def test_decision_is_frozen():
     d = Decision(ts=datetime(2026, 1, 1, tzinfo=timezone.utc), allowed=True)
     import dataclasses

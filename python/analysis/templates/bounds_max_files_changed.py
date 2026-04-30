@@ -27,30 +27,37 @@ def draft(pattern: Pattern) -> Optional[RuleDraft]:
     if doc_count == 0:
         return None
 
+    # The kernel's Bounds (gov/policy.go) is GLOBAL — there is no per-rule
+    # bounds override in v1 schema. So this template suggests raising the
+    # global ceiling, which has broader effect than just doc-batches. Per-rule
+    # bounds with a path predicate would require a kernel change (Issue #70).
     rule_yaml = (
-        "rules:\n"
-        "  - id: bounds-max-files-doc-batch\n"
-        "    when:\n"
-        "      action_type: git.push\n"
-        "      changed_paths_all_match: '^(docs/|wiki/|graphify-out/)'\n"
-        "    bounds:\n"
-        "      max_files_changed: 200\n"
-        "      max_lines_changed: 10000\n"
-        "    reason: 'doc-batch ceiling override (analysis-suggested)'\n"
+        "# Replace the top-level `bounds:` block in chitin.yaml.\n"
+        "# WARNING: Bounds is global — this raises the ceiling for ALL git.push,\n"
+        "# not just doc-batches. Per-rule bounds with changed_paths predicate\n"
+        "# requires kernel work (see Issue #70).\n"
+        "bounds:\n"
+        "  max_files_changed: 200\n"
+        "  max_lines_changed: 10000\n"
     )
     impact = PredictedImpact(
         samples_evaluated=pattern.count,
         would_allow=doc_count,
         would_still_deny=pattern.count - doc_count,
-        method="reason-mentions-doc-keyword",
+        method="reason-mentions-doc-keyword (global Bounds raise — broader than doc-only)",
     )
     return RuleDraft(
         kind="heuristic",
         template="bounds_max_files_changed",
-        confidence="medium",
+        confidence="low",
         rule_yaml=rule_yaml,
         predicted_impact=impact,
-        notes="Doc-batch detected via reason text; tighten with changed_paths inspection in v2.",
+        notes=(
+            "Global Bounds raise. Doc-batch detected via reason text; "
+            "for per-path-predicate bounds, the kernel needs a Rule.Bounds "
+            "field (Issue #70). Confidence is low because the global raise "
+            "affects all git.push actions, not just doc batches."
+        ),
     )
 
 

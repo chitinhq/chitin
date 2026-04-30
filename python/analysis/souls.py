@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json as _json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,10 +37,7 @@ def main(argv: list[str] | None = None) -> int:
                               "distinct_rule_ids": 0,
                               "decisions_missing_envelope_id": 0},
                generated_at=now, window_since=now, window_until=now,
-               window_size="7d")
-    body = _json.loads(json_path.read_text())
-    body["stream"] = "souls"
-    json_path.write_text(_json.dumps(body, indent=2, sort_keys=True) + "\n")
+               window_size="7d", stream="souls")
 
     md_path.write_text(
         "# Souls Analysis — " + date_str + "\n\n"

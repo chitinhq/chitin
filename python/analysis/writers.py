@@ -72,18 +72,21 @@ def write_json(
     window_since: datetime,
     window_until: datetime,
     window_size: str,
+    stream: str = "decisions",
 ) -> None:
     """Write the canonical analysis JSON. Deterministic given fixed inputs (I4).
 
     `window_size` is the original CLI string (e.g. "7d", "60m"). `total_seconds`
     is the precise span; consumers that need numeric width should use that.
+    `stream` defaults to "decisions"; debt/souls stubs override it directly so
+    they don't have to post-patch the written JSON.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     total_seconds = int((window_until - window_since).total_seconds())
     body = {
         "schema_version": "1",
-        "stream": "decisions",
+        "stream": stream,
         "generated_at": generated_at.isoformat(),
         "window": {
             "size": window_size,

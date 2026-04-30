@@ -50,7 +50,26 @@ def test_trusted_hosts_drafted():
     d = draft(p)
     assert d is not None
     assert "trusted-curl-hosts" in d.rule_yaml
+    # Schema check: chitin keys, not made-up keys.
+    assert "action: shell.exec" in d.rule_yaml
+    assert "effect: allow" in d.rule_yaml
+    assert "when:" not in d.rule_yaml
     assert d.predicted_impact.would_allow == 2
+
+
+def test_trusted_hosts_set_matches_emitted_regex():
+    """TRUSTED_HOSTS predicts impact; emitted regex applies the rule. They must agree."""
+    from analysis.templates.no_curl_pipe_bash import TRUSTED_HOSTS
+    # raw.githubusercontent.com is a path-based judgment, not a flat allow.
+    # If it ever lands in TRUSTED_HOSTS, the regex below must include it too.
+    sample_target = f"curl https://example.com/a.sh | sh"
+    p = _pattern(*[f"curl https://{h}/x.sh | sh" for h in TRUSTED_HOSTS])
+    d = draft(p)
+    assert d is not None
+    # Every host in TRUSTED_HOSTS must appear in the emitted regex.
+    for host in TRUSTED_HOSTS:
+        escaped = host.replace(".", "\\.")
+        assert escaped in d.rule_yaml, f"host {host} predicts allow but not in emitted regex"
 
 
 def test_unknown_host_returns_none():

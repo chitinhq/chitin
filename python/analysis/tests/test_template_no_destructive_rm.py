@@ -43,6 +43,13 @@ def test_safe_dirs_are_drafted_as_allow_exception():
     assert d.kind == "heuristic"
     assert d.template == "no_destructive_rm"
     assert "no-destructive-rm-safe-dirs" in d.rule_yaml
+    # Schema check: must use real chitin keys (action/effect/target_regex),
+    # not made-up keys (when/decide/action_type).
+    assert "action: shell.exec" in d.rule_yaml
+    assert "effect: allow" in d.rule_yaml
+    assert "target_regex:" in d.rule_yaml
+    assert "when:" not in d.rule_yaml
+    assert "decide:" not in d.rule_yaml
     assert d.predicted_impact.samples_evaluated == 4
     assert d.predicted_impact.would_allow == 4
     assert d.predicted_impact.would_still_deny == 0

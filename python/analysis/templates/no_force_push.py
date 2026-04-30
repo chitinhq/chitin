@@ -31,13 +31,12 @@ def draft(pattern: Pattern) -> Optional[RuleDraft]:
         return None
 
     rule_yaml = (
-        "rules:\n"
-        "  - id: no-force-push-feature-branches\n"
-        "    when:\n"
-        "      action_type: git.force-push\n"
-        "      action_target_regex: '^(feat|fix|spike|feature|bugfix|wip|draft)/'\n"
-        "    decide: allow\n"
-        "    reason: 'force-push allowed on personal/feature branches (analysis-suggested)'\n"
+        "# Insert ABOVE the existing no-force-push rule in chitin.yaml.\n"
+        "- id: no-force-push-feature-branches\n"
+        "  action: git.force-push\n"
+        "  effect: allow\n"
+        "  target_regex: '^(feat|fix|spike|feature|bugfix|wip|draft)/'\n"
+        "  reason: 'Force-push allowed on personal/feature branches (analysis-suggested)'\n"
     )
     impact = PredictedImpact(
         samples_evaluated=pattern.count,

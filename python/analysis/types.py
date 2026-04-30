@@ -16,7 +16,9 @@ class Decision:
     mode: Optional[str] = None
     rule_id: Optional[str] = None
     reason: Optional[str] = None
-    escalation: bool = False
+    # gov/policy.go emits escalation as a string ("normal"/"elevated"/"high"/"lockdown")
+    # — keep as Optional[str] not bool so we don't lose that signal.
+    escalation: Optional[str] = None
     agent: Optional[str] = None
     action_type: Optional[str] = None
     action_target: Optional[str] = None
@@ -27,10 +29,42 @@ class Decision:
     tool_calls: int = 0
 
 
+def _coerce_float(v, default: float = 0.0) -> float:
+    """Best-effort float coercion. Returns default on any failure (I5)."""
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(v, default: int = 0) -> int:
+    """Best-effort int coercion. Returns default on any failure (I5)."""
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_escalation(v) -> Optional[str]:
+    """Accept either string ('elevated') or bool/legacy. Returns Optional[str]."""
+    if v is None or v is False:
+        return None
+    if v is True:
+        return "elevated"  # legacy bool=true → mark as elevated, not silently dropped
+    if isinstance(v, str):
+        return v if v else None
+    return None
+
+
 def parse_decision_line(line: str) -> Optional[Decision]:
     """Parse a single JSONL line. Returns None on any error.
 
     Bad input never raises — analysis tolerates audit-log corruption (I5).
+    Numeric coercion failures default to 0 rather than abort the line.
     """
     line = line.strip()
     if not line:
@@ -54,15 +88,15 @@ def parse_decision_line(line: str) -> Optional[Decision]:
         mode=raw.get("mode"),
         rule_id=raw.get("rule_id"),
         reason=raw.get("reason"),
-        escalation=bool(raw.get("escalation", False)),
+        escalation=_coerce_escalation(raw.get("escalation")),
         agent=raw.get("agent"),
         action_type=raw.get("action_type"),
         action_target=raw.get("action_target"),
         envelope_id=raw.get("envelope_id"),
         tier=raw.get("tier"),
-        cost_usd=float(raw.get("cost_usd", 0.0)),
-        input_bytes=int(raw.get("input_bytes", 0)),
-        tool_calls=int(raw.get("tool_calls", 0)),
+        cost_usd=_coerce_float(raw.get("cost_usd")),
+        input_bytes=_coerce_int(raw.get("input_bytes")),
+        tool_calls=_coerce_int(raw.get("tool_calls")),
     )
 
 

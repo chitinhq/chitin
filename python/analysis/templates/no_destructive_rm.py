@@ -31,14 +31,17 @@ def draft(pattern: Pattern) -> Optional[RuleDraft]:
     if safe_count == 0:
         return None
 
+    # chitin policy schema (gov/policy.go Rule): id/action/effect/target_regex/reason.
+    # Allow exception MUST be ordered BEFORE the existing no-destructive-rm deny
+    # in chitin.yaml — first-match-wins evaluation.
     rule_yaml = (
-        "rules:\n"
-        "  - id: no-destructive-rm-safe-dirs\n"
-        "    when:\n"
-        "      action_type: shell.exec\n"
-        "      action_target_regex: '\\brm\\s+-rf?\\s+(?:[^/\\s]*?/)?(?:tmp|test|out|graphify-out|build|dist|node_modules)(?:/|$)'\n"
-        "    decide: allow\n"
-        "    reason: 'cleanup of known-temp dirs (analysis-suggested)'\n"
+        "# Insert ABOVE the existing no-destructive-rm rule in chitin.yaml.\n"
+        "# Rules are evaluated top-to-bottom; first match wins.\n"
+        "- id: no-destructive-rm-safe-dirs\n"
+        "  action: shell.exec\n"
+        "  effect: allow\n"
+        "  target_regex: '\\brm\\s+-rf?\\s+(?:[^/\\s]*?/)?(?:tmp|test|out|graphify-out|build|dist|node_modules)(?:/|$)'\n"
+        "  reason: 'Cleanup of known-temp dirs (analysis-suggested)'\n"
     )
     impact = PredictedImpact(
         samples_evaluated=pattern.count,

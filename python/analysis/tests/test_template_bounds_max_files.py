@@ -38,7 +38,12 @@ def test_doc_batch_drafted():
     d = draft(p)
     assert d is not None
     assert d.template == "bounds_max_files_changed"
-    assert "doc-batch" in d.rule_yaml
+    # Schema check: emits valid chitin global Bounds block, not a fake per-rule field.
+    assert "bounds:" in d.rule_yaml
+    assert "max_files_changed" in d.rule_yaml
+    # Per-rule bounds with path predicate requires kernel change (Issue #70).
+    assert "Issue #70" in d.notes
+    assert d.confidence == "low"
     assert d.predicted_impact.would_allow == 2
 
 

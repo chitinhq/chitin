@@ -57,6 +57,21 @@ def test_load_with_missing_dir(tmp_path):
     assert result.decisions == []
 
 
+def test_load_skips_directory_whose_name_matches_pattern(tmp_path, fixtures_dir):
+    """Regression for Copilot review: a dir named like a JSONL file must not crash."""
+    src = fixtures_dir / "gov-decisions-fixture.jsonl"
+    (tmp_path / "gov-decisions-2026-04-25.jsonl").write_text(src.read_text())
+    # Adversarial: a directory whose name matches the pattern.
+    (tmp_path / "gov-decisions-2026-04-26.jsonl").mkdir()
+    window = Window(
+        since=datetime(2026, 4, 25, tzinfo=timezone.utc),
+        until=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+    result = load_gov_decisions(tmp_path, window)
+    # Only the real file is read; the directory is silently skipped.
+    assert result.files_read == 1
+
+
 def test_load_skips_non_matching_filenames(tmp_path, fixtures_dir):
     src = fixtures_dir / "gov-decisions-fixture.jsonl"
     (tmp_path / "gov-decisions-2026-04-25.jsonl").write_text(src.read_text())

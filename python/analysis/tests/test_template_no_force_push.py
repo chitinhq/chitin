@@ -35,6 +35,10 @@ def test_personal_branches_drafted():
     d = draft(p)
     assert d is not None
     assert "no-force-push-feature-branches" in d.rule_yaml
+    # Schema check: real chitin keys.
+    assert "action: git.force-push" in d.rule_yaml
+    assert "effect: allow" in d.rule_yaml
+    assert "when:" not in d.rule_yaml
     assert d.predicted_impact.would_allow == 3
 
 

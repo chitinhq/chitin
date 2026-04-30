@@ -42,6 +42,11 @@ def load_gov_decisions(decisions_dir: Path, window: Window) -> LoadResult:
     for path in sorted(decisions_dir.iterdir()):
         if not GOV_DECISIONS_PATTERN.match(path.name):
             continue
+        if not path.is_file():
+            # A directory whose name happens to match the pattern would crash
+            # path.open() — skip non-files to keep loaders.load_gov_decisions
+            # tolerant of weird filesystem state (I5 spirit).
+            continue
         files_read += 1
         with path.open("r") as f:
             for line in f:

@@ -11,11 +11,12 @@ from typing import Optional
 from analysis.templates import register
 from analysis.types import Pattern, PredictedImpact, RuleDraft
 
+# MUST stay in sync with the regex in `draft()` below. predicted_impact uses
+# this set, so any host added here must also appear in the emitted regex.
 TRUSTED_HOSTS = frozenset({
     "get.deno.land",
     "sh.rustup.rs",
     "install.python-poetry.org",
-    "raw.githubusercontent.com",
 })
 
 URL_RE = re.compile(r"https?://([^/\s|]+)")
@@ -38,13 +39,12 @@ def draft(pattern: Pattern) -> Optional[RuleDraft]:
         return None
 
     rule_yaml = (
-        "rules:\n"
-        "  - id: trusted-curl-hosts\n"
-        "    when:\n"
-        "      action_type: shell.exec\n"
-        "      action_target_regex: 'curl[^|]*https?://(get\\.deno\\.land|sh\\.rustup\\.rs|install\\.python-poetry\\.org)/'\n"
-        "    decide: allow\n"
-        "    reason: 'official installer from trusted host (analysis-suggested)'\n"
+        "# Insert ABOVE the existing no-curl-pipe-bash rule in chitin.yaml.\n"
+        "- id: trusted-curl-hosts\n"
+        "  action: shell.exec\n"
+        "  effect: allow\n"
+        "  target_regex: 'curl[^|]*https?://(get\\.deno\\.land|sh\\.rustup\\.rs|install\\.python-poetry\\.org)/'\n"
+        "  reason: 'Official installer from trusted host (analysis-suggested)'\n"
     )
     impact = PredictedImpact(
         samples_evaluated=pattern.count,
