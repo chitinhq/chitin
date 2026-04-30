@@ -3,7 +3,11 @@
 // OTEL is non-authoritative projection.
 //
 // Failure invariant: OTEL emit failure must not affect kernel JSONL/index commit.
-// All errors are logged and dropped; ProjectAndPost is detached.
+// The chain commit completes before the OTEL POST begins, so any subsequent
+// OTEL error is logged and dropped — Emit returns nil regardless.
+//
+// v1 is synchronous (kernel runs as a short-lived CLI per emit; a detached
+// goroutine would not survive process exit). Daemon-mode async is deferred.
 //
 // Spec: docs/superpowers/specs/2026-04-29-otel-emit-mvp-design.md
 package emit
@@ -44,30 +48,35 @@ func newOTELExporter() *otelExporter {
 	}
 }
 
-// ProjectAndPost projects ev to a span and POSTs it asynchronously. Returns
-// immediately; the goroutine logs and drops any errors. Safe to call when x
-// is nil — it's a no-op.
+// ProjectAndPost projects ev to a span and POSTs it to the configured collector.
+// Errors are logged and dropped — never propagated to the kernel write path.
+// Safe to call when x is nil (no-op).
+//
+// Synchronous in v1: the kernel runs as a short-lived CLI process per emit
+// (Claude Code hook → chitin-kernel emit → exit). A detached goroutine would
+// not survive process exit, dropping every span. Sync POST after a successful
+// chain commit preserves the failure invariant — chain state is durable before
+// the network call begins. Latency cost: one round-trip per emit, capped at
+// 2s by the http.Client timeout. v2 (daemon-mode kernel) can revisit async.
 func (x *otelExporter) ProjectAndPost(ev *event.Event, idx *chain.Index) {
 	if x == nil {
 		return
 	}
-	go func() {
-		span, err := projectToSpan(ev, idx)
-		if err != nil {
-			log.Printf("otel: project: %v", err)
-			return
-		}
-		body, err := encodeRequest([]otlpSpan{span})
-		if err != nil {
-			log.Printf("otel: encode: %v", err)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := x.post(ctx, body); err != nil {
-			log.Printf("otel: post: %v", err)
-		}
-	}()
+	span, err := projectToSpan(ev, idx)
+	if err != nil {
+		log.Printf("otel: project: %v", err)
+		return
+	}
+	body, err := encodeRequest([]otlpSpan{span})
+	if err != nil {
+		log.Printf("otel: encode: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := x.post(ctx, body); err != nil {
+		log.Printf("otel: post: %v", err)
+	}
 }
 
 // projectToSpan maps a canonical event onto an OTLP/HTTP JSON span.

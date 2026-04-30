@@ -112,7 +112,7 @@ emit.Emit(event) {
   if !chainCommit succeeds: return error  // caller sees failure
   // F4 addition:
   if otelEnabled():
-    go projectAndPost(event)              // fire-and-forget
+    projectAndPost(event)                 // sync v1; see "Sync vs async" below
   return nil
 }
 
@@ -127,7 +127,15 @@ projectAndPost(event) {
 }
 ```
 
-Goroutine is detached. On process shutdown, in-flight POSTs may be dropped — that's acceptable for v1; the chain on disk is canonical. No queue, no flush, no retries.
+The chain commit completes before the OTEL POST begins, so any subsequent OTEL error is logged and dropped — `Emit` returns nil regardless. No queue, no flush, no retries.
+
+### Sync vs async (revised post-integration)
+
+The original framing memory said "async, fire-and-forget". The first integration run against a real OTLP receiver showed why async fails the v1 process model: **the kernel is a short-lived CLI per emit** (`Claude Code hook → chitin-kernel emit → exit`). A detached goroutine does not survive process exit, so every span gets dropped before the POST hits the wire.
+
+Da Vinci gate caught this — observation-over-dogma, the test fixture in `docs/observations/fixtures/2026-04-20-openclaw-otel-capture/receiver.py` showed an empty capture dir despite "successful" emit calls. Switched to sync POST after `tx.Commit`. The failure invariant still holds (chain state is durable before the network call begins). Latency cost: one round-trip per emit, capped at 2s by the http.Client timeout.
+
+**Daemon-mode async is deferred** — when the kernel grows a long-running mode (long-lived hook receiver, chain-of-emits on a single process), the goroutine + WaitGroup pattern can come back. v1 ships sync; the door stays open.
 
 ## Tests
 

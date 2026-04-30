@@ -214,6 +214,58 @@ The next `chitin-kernel drive copilot ...` invocation works normally again — o
 
 **After this demo runs:** Show the `~/.chitin/gov-decisions-$(date -u +%Y-%m-%d).jsonl` file tail — the full audit trail of every denial. Tie back to the opening point: every tool call the agent tried is recorded.
 
+### F4 OTEL trace beat (~3 min, between Demo 5 and the wrap)
+
+**Why this beat exists:** the closed-loop differentiator names *deterministic capture* as canonical and *OTEL emit* as a one-way projection. The talk's strategic argument lands harder when the audience sees that projection in a standard observability stack — not chitin's own dashboard, but `otelcol-contrib`-shaped JSON, the same wire format every collector parses.
+
+**Setup (T-30 in the preflight section, after Step 6):**
+
+```bash
+# Pane 3 — tiny OTLP/HTTP receiver. Already in the repo.
+mkdir -p /tmp/otel-capture
+python3 docs/observations/fixtures/2026-04-20-openclaw-otel-capture/receiver.py 4318
+```
+
+The receiver prints one line per POST and writes the body to `/tmp/otel-capture/v1-traces-<epoch_ms>.json`. Use a real `otelcol-contrib` instead if available — same wire, prettier UI. The fixture script is the zero-dependency fallback.
+
+**Setup (on stage, just before the beat):**
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+chitin-kernel gate reset --agent=copilot-cli
+```
+
+**Beat (one-line prompt; the demo IS the prompt + the receiver pane):**
+
+```bash
+chitin-kernel drive copilot --cwd="$(pwd)" \
+  "List the files in /tmp using the shell tool. Just run the command."
+```
+
+**What the audience sees:**
+
+- Pane 1 (driver): Copilot session runs, allowed shell command executes, exits 0.
+- Pane 2 (`tail -f gov-decisions`): one `allow` line for the shell call.
+- Pane 3 (receiver): `[recv] POST /v1/traces ct=application/json bytes=… → /tmp/otel-capture/…json` lines stream in — one per kernel event in the session.
+
+Then drop the most recent capture file into `jq` to show the projection:
+
+```bash
+cat $(ls -t /tmp/otel-capture/v1-traces-*.json | head -1) | jq '.resourceSpans[0].scopeSpans[0].spans[0]'
+```
+
+Highlight: `traceId` is the chain_id (hyphens stripped), `spanId` is the first 16 hex chars of the chain hash, `parentSpanId` links events within the chain, `name` is the event_type. Same chain on disk, just projected as OTLP/HTTP JSON.
+
+**Audience takeaway:** "The chain is the source of truth. OTEL is a one-way projection — your existing collector, dashboards, and SLOs all work, and the canonical chain on disk is what you replay against. No policy depends on OTEL data."
+
+**Contingency:**
+
+- If the receiver pane crashes (port busy, etc.): say "the receiver is doing what every OTEL collector does" and show a captured file from rehearsal.
+- If `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` isn't picked up: re-run `chitin-kernel emit ...` directly with a known-good event JSON instead of going through `drive copilot`. Same projection, no driver in the loop.
+- If the spans land but look wrong: don't try to fix on stage. Show the audit log (Pane 2) instead — that's the canonical record.
+
+**Why sync (if asked):** "v1 kernel runs as a short-lived CLI per emit, so a fire-and-forget goroutine wouldn't outlive the process. Sync POST after the chain commit preserves the failure invariant — chain state is durable before the network call. Daemon mode in v2 can revisit." See `docs/superpowers/specs/2026-04-29-otel-emit-mvp-design.md` §"Sync vs async".
+
 ## Post-demos wrap (5-10 min)
 
 Close with:

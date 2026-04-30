@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
@@ -325,18 +324,7 @@ func TestProjectAndPost_RoundtripToTestServer(t *testing.T) {
 		Payload:         json.RawMessage(`{"tool_name":"Bash"}`),
 	}
 
-	x.ProjectAndPost(ev, idx)
-	// Wait for the detached goroutine to land. 500ms is plenty for localhost.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		done := gotBody != ""
-		mu.Unlock()
-		if done {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	x.ProjectAndPost(ev, idx) // sync — returns after the POST completes
 
 	mu.Lock()
 	body, path := gotBody, gotPath
@@ -387,6 +375,9 @@ func TestKernelSurvivesOTELFailure(t *testing.T) {
 	}
 
 	ev := minimalSessionStart("550e8400-e29b-41d4-a716-446655440000", 0)
+	// Emit blocks for the OTEL POST (sync v1) — the http.Client timeout caps
+	// this at 2s. Connection refused is faster than that, so this returns
+	// quickly. The chain commit ran before the OTEL POST began.
 	if err := em.Emit(ev); err != nil {
 		t.Fatalf("Emit must return nil even when OTEL fails: got %v", err)
 	}
@@ -408,8 +399,4 @@ func TestKernelSurvivesOTELFailure(t *testing.T) {
 	if info == nil || info.LastSeq != 0 || info.LastHash != ev.ThisHash {
 		t.Errorf("chain index not updated: %+v want seq=0 hash=%q", info, ev.ThisHash)
 	}
-
-	// Wait briefly so the goroutine completes (and logs its failure) before
-	// the test exits and t.Setenv unwinds. Avoids noise on test stderr.
-	time.Sleep(100 * time.Millisecond)
 }
