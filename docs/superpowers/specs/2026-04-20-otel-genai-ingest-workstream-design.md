@@ -1,9 +1,11 @@
 # OTEL-Transport Ingest Workstream — Meta-Spec
 
-**Date:** 2026-04-20 (amended 2026-04-20 post-SP-0)
+> **⚠ SUPERSEDED 2026-04-29.** Direction reversed by C2 framing v1: chitin **emits** OTEL spans as a one-way projection of the canonical event chain, it does **not** ingest. See [`2026-04-29-otel-emit-mvp-design.md`](./2026-04-29-otel-emit-mvp-design.md) for the active spec. This document is retained for historical context — the four-station architecture, the OTLP-at-the-boundary framing, and the openclaw vendor-namespace findings remain useful prior art for any future ingest-side workstream (e.g. post-hoc audit of non-instrumented surfaces). Do not implement against this spec.
+
+**Date:** 2026-04-20 (amended 2026-04-20 post-SP-0; superseded 2026-04-29)
 **Supplements:** `docs/superpowers/specs/2026-04-19-dogfood-debt-ledger-design.md` (Phase F)
 **Supersedes (as active workstream):** `docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md` (retained as historical record of the v1a/v1b cost analysis that tripped the Socrates gate)
-**Status:** Meta-spec. Names sub-projects, sequences them, scopes the first. Each sub-project SP-1+ gets its own brainstorm → spec → plan cycle.
+**Status:** SUPERSEDED — see header.
 
 > **Amendment — 2026-04-20, post-SP-0.** SP-0's empirical observation
 > (`docs/observations/2026-04-20-openclaw-otel-capture.md`) found
