@@ -60,3 +60,12 @@ graphify-out/cost.json
 graphify-out/manifest.json
 graphify-out/graph.html
 graphify-out/graph.json
+
+# Analysis stream outputs
+python/analysis/out/
+
+# Python build / venv artifacts
+python/analysis/*.egg-info/
+python/analysis/.pytest_cache/
+__pycache__/
+*.pyc
