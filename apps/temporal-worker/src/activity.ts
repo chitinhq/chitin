@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionRequest, DriverId } from '@chitin/contracts';
@@ -37,6 +37,11 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
   const taskRoot = mkdtempSync(join(tmpdir(), `chitin-worker-${req.workflow_id}-`));
   mkdirSync(join(taskRoot, '.claude'), { recursive: true });
   writeFileSync(join(taskRoot, '.claude', 'settings.json'), JSON.stringify(GATE_HOOK_SETTINGS, null, 2));
+
+  const policySrc = process.env.CHITIN_POLICY_FILE ?? '/home/red/workspace/chitin-temporal-worker/chitin.yaml';
+  if (existsSync(policySrc)) {
+    copyFileSync(policySrc, join(taskRoot, 'chitin.yaml'));
+  }
 
   const args = [
     '--print',
