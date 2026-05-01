@@ -47,7 +47,7 @@ export async function evaluateGate(input, opts) {
   let timedOut = false;
 
   try {
-    const result = await new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       const child = spawn(opts.kernelPath, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -57,9 +57,9 @@ export async function evaluateGate(input, opts) {
       }, opts.timeoutMs);
       child.stdout.on('data', (b) => (stdout += b.toString()));
       child.stderr.on('data', (b) => (stderr += b.toString()));
-      child.on('close', (code) => {
+      child.on('close', () => {
         clearTimeout(killTimer);
-        resolve({ code });
+        resolve(undefined);
       });
       child.on('error', reject);
     });

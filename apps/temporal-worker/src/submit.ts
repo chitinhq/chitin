@@ -1,6 +1,11 @@
 import { Connection, Client } from '@temporalio/client';
 import { ExecutionRequestSchema, type ExecutionRequest } from '@chitin/contracts';
-import { executeRequestWorkflow } from './workflow.ts';
+// Workflow code is type-only here. A runtime import would pull
+// `@temporalio/workflow` into the client process, which is meant to run
+// only inside the Temporal V8 isolate. The workflow is dispatched by name.
+import type { executeRequestWorkflow } from './workflow.ts';
+
+const WORKFLOW_NAME = 'executeRequestWorkflow';
 
 const TASK_QUEUE = 'chitin-worker-q';
 
@@ -28,7 +33,7 @@ async function main() {
   const client = new Client({ connection: conn, namespace: 'default' });
 
   console.log(`[submit] starting workflow_id=${workflowId}`);
-  const handle = await client.workflow.start(executeRequestWorkflow, {
+  const handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
     args: [req],
     taskQueue: TASK_QUEUE,
     workflowId,

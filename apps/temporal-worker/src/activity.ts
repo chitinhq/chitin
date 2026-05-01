@@ -5,6 +5,11 @@ import { join, resolve } from 'node:path';
 import type { ExecutionRequest, DriverId } from '@chitin/contracts';
 import type { ActivityResult } from './activity-types.ts';
 
+// Bytes of stdout/stderr returned to Temporal in ActivityResult. Buffers
+// during the run are bounded at 2x this value (see runAgentTurn), so
+// chatty drivers can't OOM the 24/7 worker.
+const TAIL_BYTES = 2000;
+
 interface DriverInvocation {
   command: string;
   args: string[];
@@ -84,18 +89,24 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
+      // Bounded ring buffers — only the tail is reported, so growing strings
+      // unboundedly would just burn memory in a 24/7 worker that hits chatty
+      // drivers. Cap at 2x the reported tail to absorb boundary chunks.
+      const tail = (cur: string, chunk: string, cap: number) =>
+        (cur + chunk).slice(-cap);
+      const TAIL_CAP = TAIL_BYTES * 2;
       let stdout = '';
       let stderr = '';
-      child.stdout.on('data', (b) => (stdout += b.toString()));
-      child.stderr.on('data', (b) => (stderr += b.toString()));
+      child.stdout.on('data', (b) => (stdout = tail(stdout, b.toString(), TAIL_CAP)));
+      child.stderr.on('data', (b) => (stderr = tail(stderr, b.toString(), TAIL_CAP)));
 
       const killTimer = setTimeout(() => child.kill('SIGKILL'), req.bounds.wall_timeout_s * 1000);
       child.on('close', (code) => {
         clearTimeout(killTimer);
         resolvePromise({
           exit_code: code ?? -1,
-          stdout_tail: stdout.slice(-2000),
-          stderr_tail: stderr.slice(-2000),
+          stdout_tail: stdout.slice(-TAIL_BYTES),
+          stderr_tail: stderr.slice(-TAIL_BYTES),
           duration_ms: Date.now() - start,
         });
       });

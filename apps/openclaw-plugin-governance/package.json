@@ -19,7 +19,7 @@
     "openclaw": ">=2026.4.25"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "vitest run test/"
   },
   "license": "MIT",
   "repository": {
