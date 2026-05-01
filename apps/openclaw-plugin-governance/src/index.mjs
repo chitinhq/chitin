@@ -12,12 +12,15 @@ const plugin = {
     additionalProperties: false,
     properties: {
       kernelPath: { type: 'string', minLength: 1, default: 'chitin-kernel' },
-      // Default 'observe' matches openclaw.plugin.json (single source of truth).
-      // Slice 2 ships observe-default because chitin's normalizer doesn't
-      // recognize openclaw chat-domain tools yet — enforce would deadlock
-      // small agents on every unknown tool. Slice 3 extends the normalizer
-      // and flips the default.
-      mode: { type: 'string', enum: ['enforce', 'observe'], default: 'observe' },
+      // Slice 3: default flipped from 'observe' to 'enforce'. Safe because
+      // chitin's normalizer now covers all 19 tools the openclaw `main`
+      // agent exposes (PR #83 + this slice) — every tool call lands a
+      // policy-meaningful action_type instead of ActUnknown, which means
+      // each call hits a real chitin.yaml rule (default-allow-* for safe
+      // ops; specific deny rules for dangerous ones). Operators can opt
+      // back to observe via the manifest config — it's flagged as
+      // dangerous in openclaw.plugin.json's configContracts.dangerousFlags.
+      mode: { type: 'string', enum: ['enforce', 'observe'], default: 'enforce' },
       workerMode: { type: 'boolean', default: false },
       denyOnError: { type: 'boolean', default: true },
       timeoutMs: { type: 'number', minimum: 100, default: 5000 },
@@ -124,13 +127,17 @@ export function isClaudeCodeAgent(agentId) {
 }
 
 /**
+ * Apply config defaults and coerce types for the plugin runtime. Exported
+ * for direct test of the slice 3 default-enforce flip.
+ *
  * @param {Record<string, unknown> | undefined} raw
  */
-function resolveConfig(raw) {
+export function resolveConfig(raw) {
   const r = raw ?? {};
   return {
     kernelPath: typeof r.kernelPath === 'string' && r.kernelPath ? r.kernelPath : 'chitin-kernel',
-    mode: r.mode === 'enforce' ? 'enforce' : 'observe',
+    // Slice 3: default-enforce. Only explicit 'observe' opts out.
+    mode: r.mode === 'observe' ? 'observe' : 'enforce',
     workerMode: r.workerMode === true,
     denyOnError: r.denyOnError !== false,
     timeoutMs: typeof r.timeoutMs === 'number' && r.timeoutMs >= 100 ? r.timeoutMs : 5000,

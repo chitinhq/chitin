@@ -16,6 +16,26 @@ interface DriverInvocation {
   env?: Record<string, string>;
 }
 
+// Per-driver openclaw agent mapping (slice 3). Each local-* driver routes to
+// a distinct openclaw agent so reasoning and mechanical models can be
+// configured independently — the spec calls for qwen3-coder for mechanical
+// (local-qwen), glm-5.1:cloud for reasoning (local-glm), deepseek for code
+// (local-deepseek). Override per driver via env var, e.g.
+// CHITIN_AGENT_LOCAL_QWEN=my-agent. Falls back to `main` if neither env var
+// nor the default mapping resolves the driver — `main` always exists.
+const DRIVER_AGENT_MAP: Record<string, string> = {
+  'local-qwen': 'qwen-agent',
+  'local-glm': 'glm-agent',
+  'local-deepseek': 'deepseek-agent',
+};
+
+function resolveAgent(driver: DriverId): string {
+  const envVar = `CHITIN_AGENT_${driver.toUpperCase().replace(/-/g, '_')}`;
+  const override = process.env[envVar];
+  if (override && override.trim()) return override.trim();
+  return DRIVER_AGENT_MAP[driver] ?? 'main';
+}
+
 function planInvocation(req: ExecutionRequest): DriverInvocation {
   const driver: DriverId = req.allowed_drivers[0];
   switch (driver) {
@@ -27,20 +47,18 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
     case 'local-qwen':
     case 'local-glm':
     case 'local-deepseek':
-      // Slice 2: dispatch through openclaw + chitin-governance plugin.
-      // The plugin is loaded at openclaw startup (~/.openclaw/openclaw.json
-      // plugins.allow includes "chitin-governance"); every tool call the
-      // local agent dispatches passes through before_tool_call → chitin gate.
-      // Per-driver model selection is owned by the openclaw agent config
-      // (`agents.defaults.model.primary` or per-agent override). Slice 3
-      // adds a `--agent <id>` mapping per driver tier (local-qwen →
-      // qwen-agent, etc.) — for slice 2 the default `main` agent ships.
+      // Dispatch through openclaw + chitin-governance plugin. The plugin
+      // is loaded at openclaw startup (~/.openclaw/openclaw.json plugins.allow
+      // includes "chitin-governance"); every tool call the local agent
+      // dispatches passes through before_tool_call → chitin gate. The per-
+      // driver agent mapping (slice 3) routes to distinct openclaw agents so
+      // each local tier runs its own model.
       return {
         command: 'openclaw',
         args: [
           'agent',
           '--local',
-          '--agent', 'main',
+          '--agent', resolveAgent(driver),
           '--json',
           '--timeout', String(req.bounds.wall_timeout_s),
           '--message', req.prompt,
@@ -117,4 +135,4 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
   }
 }
 
-export const __test__ = { planInvocation, resolvePolicySrc };
+export const __test__ = { planInvocation, resolvePolicySrc, resolveAgent, DRIVER_AGENT_MAP };

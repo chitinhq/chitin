@@ -405,3 +405,152 @@ func TestNormalize_OpenclawTools_NoLongerUnknown(t *testing.T) {
 		}
 	}
 }
+
+// openclaw chat-domain tools — slice 3 normalizer coverage. These are the
+// tools openclaw's pi-runtime registers via memory-core, sessions, image,
+// ollama-web, and cron extensions. Without these mappings, they fall into
+// ActUnknown and trip default-deny-unknown — which would make `mode=enforce`
+// on the openclaw-governance plugin deadlock the agent on every tool call.
+//
+// The openclaw plugin's default-mode flip from `observe` → `enforce` is
+// only safe once these mappings exist AND the policy has rules covering
+// the resulting action types (file.read, delegate.task, http.request —
+// all already in chitin.yaml as default-allow-* rules).
+
+func TestNormalize_OpenclawMemorySearch(t *testing.T) {
+	a, _ := Normalize("memory_search", map[string]any{"query": "chitin governance"})
+	if a.Type != ActFileRead {
+		t.Errorf("Type: got %q want file.read", a.Type)
+	}
+	if a.Target != "chitin governance" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawMemoryGet(t *testing.T) {
+	a, _ := Normalize("memory_get", map[string]any{"path": "MEMORY.md"})
+	if a.Type != ActFileRead {
+		t.Errorf("Type: got %q want file.read", a.Type)
+	}
+	if a.Target != "MEMORY.md" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawSessionReads(t *testing.T) {
+	// All session-read tools map to file.read with toolName as target.
+	for _, tool := range []string{"sessions_list", "sessions_history", "sessions_yield", "session_status"} {
+		a, _ := Normalize(tool, map[string]any{})
+		if a.Type != ActFileRead {
+			t.Errorf("%s: Type got %q want file.read", tool, a.Type)
+		}
+		if a.Target != tool {
+			t.Errorf("%s: Target got %q want %q", tool, a.Target, tool)
+		}
+	}
+}
+
+func TestNormalize_OpenclawSessionMutates(t *testing.T) {
+	// All session-mutate tools map to delegate.task.
+	for _, tool := range []string{"sessions_send", "sessions_spawn", "subagents", "cron"} {
+		a, _ := Normalize(tool, map[string]any{})
+		if a.Type != ActDelegateTask {
+			t.Errorf("%s: Type got %q want delegate.task", tool, a.Type)
+		}
+	}
+}
+
+func TestNormalize_OpenclawSessionsSpawn_TargetExtracted(t *testing.T) {
+	// Spawn carries the target agent id. Surface it for policy targeting.
+	a, _ := Normalize("sessions_spawn", map[string]any{"agentId": "qwen-agent"})
+	if a.Type != ActDelegateTask {
+		t.Errorf("Type: got %q", a.Type)
+	}
+	if a.Target != "qwen-agent" {
+		t.Errorf("Target: got %q want qwen-agent", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawDelegateBypassClosure(t *testing.T) {
+	// Bypass closure with the existing `delegate_task` mapping: any rule
+	// matching delegate.task catches sessions_spawn, subagents, cron
+	// equivalently. Verify type identity (not target — different schemas
+	// surface different fields).
+	canonical, _ := Normalize("delegate_task", map[string]any{"goal": "build"})
+	for _, tool := range []string{"sessions_send", "sessions_spawn", "subagents", "cron"} {
+		a, _ := Normalize(tool, map[string]any{})
+		if a.Type != canonical.Type {
+			t.Errorf("%s diverges from delegate_task: got %q want %q",
+				tool, a.Type, canonical.Type)
+		}
+	}
+}
+
+func TestNormalize_OpenclawImageTools(t *testing.T) {
+	for _, tool := range []string{"image", "image_generate"} {
+		a, _ := Normalize(tool, map[string]any{})
+		if a.Type != ActHTTPRequest {
+			t.Errorf("%s: Type got %q want http.request", tool, a.Type)
+		}
+	}
+}
+
+func TestNormalize_OpenclawOllamaWebSearch(t *testing.T) {
+	a, _ := Normalize("ollama_web_search", map[string]any{"query": "chitin governance"})
+	if a.Type != ActHTTPRequest {
+		t.Errorf("Type: got %q want http.request", a.Type)
+	}
+	if a.Target != "chitin governance" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawOllamaWebFetch(t *testing.T) {
+	a, _ := Normalize("ollama_web_fetch", map[string]any{"url": "https://example.com"})
+	if a.Type != ActHTTPRequest {
+		t.Errorf("Type: got %q want http.request", a.Type)
+	}
+	if a.Target != "https://example.com" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawWebTools_PlainAndPrefixed(t *testing.T) {
+	// Openclaw registers both plain (web_search, web_fetch) and
+	// provider-prefixed (ollama_web_*) names. Both must produce the same
+	// Action so policy rules don't depend on which provider is wired.
+	plainSearch, _ := Normalize("web_search", map[string]any{"query": "q"})
+	prefixedSearch, _ := Normalize("ollama_web_search", map[string]any{"query": "q"})
+	if plainSearch.Type != prefixedSearch.Type || plainSearch.Target != prefixedSearch.Target {
+		t.Errorf("web_search divergence: plain=%v prefixed=%v", plainSearch, prefixedSearch)
+	}
+	plainFetch, _ := Normalize("web_fetch", map[string]any{"url": "https://x"})
+	prefixedFetch, _ := Normalize("ollama_web_fetch", map[string]any{"url": "https://x"})
+	if plainFetch.Type != prefixedFetch.Type || plainFetch.Target != prefixedFetch.Target {
+		t.Errorf("web_fetch divergence: plain=%v prefixed=%v", plainFetch, prefixedFetch)
+	}
+	if plainSearch.Type != ActHTTPRequest {
+		t.Errorf("web_search: got %q want http.request", plainSearch.Type)
+	}
+}
+
+func TestNormalize_OpenclawChatDomain_NoneUnknown(t *testing.T) {
+	// Regression: every chat-domain tool the pi-runtime exposes for the
+	// `main` openclaw agent today must produce a non-Unknown action so
+	// the plugin can run in mode=enforce without deadlocking.
+	chatDomain := []string{
+		"memory_search", "memory_get",
+		"sessions_list", "sessions_history", "sessions_send", "sessions_spawn",
+		"sessions_yield", "subagents", "session_status",
+		"image", "image_generate",
+		"cron",
+		"web_search", "web_fetch",
+		"ollama_web_search", "ollama_web_fetch",
+	}
+	for _, tool := range chatDomain {
+		a, _ := Normalize(tool, map[string]any{})
+		if a.Type == ActUnknown {
+			t.Errorf("%s still maps to ActUnknown — normalizer mapping missing", tool)
+		}
+	}
+}
