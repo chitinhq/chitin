@@ -1,0 +1,62 @@
+{
+  "id": "chitin-governance",
+  "name": "Chitin Governance",
+  "description": "Execution kernel for AI coding agents — gate every tool call through chitin policy and record a hash-linked event chain.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "kernelPath": {
+        "type": "string",
+        "minLength": 1,
+        "default": "chitin-kernel"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["enforce", "observe"],
+        "default": "observe"
+      },
+      "workerMode": {
+        "type": "boolean",
+        "default": false
+      },
+      "denyOnError": {
+        "type": "boolean",
+        "default": true
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 100,
+        "default": 5000
+      }
+    }
+  },
+  "uiHints": {
+    "kernelPath": {
+      "label": "chitin-kernel binary",
+      "help": "Absolute path to the chitin-kernel binary. Defaults to PATH lookup."
+    },
+    "mode": {
+      "label": "Gate mode",
+      "help": "enforce = deny disallowed tool calls. observe = log only, never block."
+    },
+    "workerMode": {
+      "label": "Worker mode",
+      "help": "When enabled, applies chitin's worker bootstrap rules (no-trunk-write, no-pr-merge, no-recursive-delete, ToS-driver allowlist)."
+    },
+    "denyOnError": {
+      "label": "Fail closed on bridge error",
+      "help": "If the kernel binary is missing or times out, deny the tool call (true) or allow it (false)."
+    },
+    "timeoutMs": {
+      "label": "Gate timeout (ms)",
+      "advanced": true
+    }
+  },
+  "configContracts": {
+    "dangerousFlags": [
+      { "path": "mode", "equals": "observe" },
+      { "path": "denyOnError", "equals": false }
+    ]
+  }
+}

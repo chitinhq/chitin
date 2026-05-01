@@ -22,15 +22,29 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
     case 'local-qwen':
     case 'local-glm':
     case 'local-deepseek':
-      throw new Error(
-        `driver=${driver} not yet wired through chitin (no shim for ollama-direct agents). ` +
-          `Slice 1e: build chitin-kernel drive ollama --provider=<id> --model=<id> ` +
-          `or chitin MCP bridge for openclaw direct-model invocation.`,
-      );
+      // Slice 2: dispatch through openclaw + chitin-governance plugin.
+      // The plugin is loaded at openclaw startup (~/.openclaw/openclaw.json
+      // plugins.allow includes "chitin-governance"); every tool call the
+      // local agent dispatches passes through before_tool_call → chitin gate.
+      // Per-driver model selection is owned by the openclaw agent config
+      // (`agents.defaults.model.primary` or per-agent override). Slice 3
+      // adds a `--agent <id>` mapping per driver tier (local-qwen →
+      // qwen-agent, etc.) — for slice 2 the default `main` agent ships.
+      return {
+        command: 'openclaw',
+        args: [
+          'agent',
+          '--local',
+          '--agent', 'main',
+          '--json',
+          '--timeout', String(req.bounds.wall_timeout_s),
+          '--message', req.prompt,
+        ],
+      };
     case 'claude-code':
       throw new Error(
         `driver=claude-code is not a valid worker driver (Anthropic ToS — see ` +
-          `memory/project_anthropic_tos_constraints.md). Use copilot for orchestrated agent work.`,
+          `memory/project_anthropic_tos_constraints.md). Use copilot or local-* for orchestrated agent work.`,
       );
     default: {
       const exhaustive: never = driver;

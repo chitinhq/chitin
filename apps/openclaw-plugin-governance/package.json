@@ -1,0 +1,32 @@
+{
+  "name": "@chitinhq/openclaw-plugin-governance",
+  "version": "0.1.0",
+  "description": "Chitin Governance — openclaw plugin that gates every tool call through chitin policy.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.mjs"]
+  },
+  "files": [
+    "src/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.4.25"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chitinhq/chitin"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
