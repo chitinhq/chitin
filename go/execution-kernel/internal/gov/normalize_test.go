@@ -515,6 +515,25 @@ func TestNormalize_OpenclawOllamaWebFetch(t *testing.T) {
 	}
 }
 
+func TestNormalize_OpenclawWebTools_PlainAndPrefixed(t *testing.T) {
+	// Openclaw registers both plain (web_search, web_fetch) and
+	// provider-prefixed (ollama_web_*) names. Both must produce the same
+	// Action so policy rules don't depend on which provider is wired.
+	plainSearch, _ := Normalize("web_search", map[string]any{"query": "q"})
+	prefixedSearch, _ := Normalize("ollama_web_search", map[string]any{"query": "q"})
+	if plainSearch.Type != prefixedSearch.Type || plainSearch.Target != prefixedSearch.Target {
+		t.Errorf("web_search divergence: plain=%v prefixed=%v", plainSearch, prefixedSearch)
+	}
+	plainFetch, _ := Normalize("web_fetch", map[string]any{"url": "https://x"})
+	prefixedFetch, _ := Normalize("ollama_web_fetch", map[string]any{"url": "https://x"})
+	if plainFetch.Type != prefixedFetch.Type || plainFetch.Target != prefixedFetch.Target {
+		t.Errorf("web_fetch divergence: plain=%v prefixed=%v", plainFetch, prefixedFetch)
+	}
+	if plainSearch.Type != ActHTTPRequest {
+		t.Errorf("web_search: got %q want http.request", plainSearch.Type)
+	}
+}
+
 func TestNormalize_OpenclawChatDomain_NoneUnknown(t *testing.T) {
 	// Regression: every chat-domain tool the pi-runtime exposes for the
 	// `main` openclaw agent today must produce a non-Unknown action so
@@ -525,6 +544,7 @@ func TestNormalize_OpenclawChatDomain_NoneUnknown(t *testing.T) {
 		"sessions_yield", "subagents", "session_status",
 		"image", "image_generate",
 		"cron",
+		"web_search", "web_fetch",
 		"ollama_web_search", "ollama_web_fetch",
 	}
 	for _, tool := range chatDomain {

@@ -81,12 +81,15 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 		}
 		return Action{Type: ActDelegateTask, Target: target}, nil
 	// External-call tools: image analysis/generation, web search/fetch.
-	// All make network requests under the hood → http.request.
+	// All make network requests under the hood → http.request. Both the
+	// plain forms (web_search, web_fetch) and the provider-prefixed forms
+	// (ollama_web_*) get registered by openclaw; map them identically so
+	// the policy doesn't depend on which provider is wired.
 	case "image", "image_generate":
 		return Action{Type: ActHTTPRequest, Target: toolName}, nil
-	case "ollama_web_search":
+	case "web_search", "ollama_web_search":
 		return Action{Type: ActHTTPRequest, Target: stringArg(args, "query")}, nil
-	case "ollama_web_fetch":
+	case "web_fetch", "ollama_web_fetch":
 		return Action{Type: ActHTTPRequest, Target: stringArg(args, "url")}, nil
 	case "delegate_task":
 		return Action{Type: ActDelegateTask, Target: stringArg(args, "goal")}, nil
