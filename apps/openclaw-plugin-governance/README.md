@@ -9,9 +9,10 @@ This plugin attaches **chitin** to openclaw's lifecycle hooks. Once enabled, eve
 - **`before_tool_call` gate** — every tool call dispatched by openclaw's pi-agent-core harness is run past `chitin-kernel gate evaluate` before execution. Block / allow / params-rewrite all supported.
 - **`subagent_spawning` gate** — block disallowed subagents (e.g., enforce that `claude-code` cannot be spawned as a worker driver under Anthropic ToS).
 - **`before_install` gate** — block plugin/skill installs by class (e.g., `git`-kind installs in worker mode).
-- **Post-tool capture** — `registerAgentToolResultMiddleware` writes a tool-result chain row tagged with the runtime (`pi` or `codex`).
 - **Hash-linked event chain** — chitin records every gate decision with a deterministic hash chain (audit-grade replay).
 - **OTEL projection** — if chitin is configured to emit OTEL, every gate decision becomes a span in your existing observability stack.
+
+> Slice 3: a post-tool-result emit path (`registerAgentToolResultMiddleware` → `chitin-kernel emit` v2 `post_tool_use`) lands once the kernel exposes a streaming emit subcommand. The slice 2 plugin only emits `gate.decision` events from `before_tool_call`.
 
 ## Install
 
@@ -41,7 +42,7 @@ Plugin config goes under `plugins.entries.chitin-governance` in `openclaw.json`:
       "chitin-governance": {
         "enabled": true,
         "kernelPath": "chitin-kernel",
-        "mode": "enforce",
+        "mode": "observe",
         "workerMode": false,
         "denyOnError": true,
         "timeoutMs": 5000
@@ -54,7 +55,7 @@ Plugin config goes under `plugins.entries.chitin-governance` in `openclaw.json`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `kernelPath` | `chitin-kernel` | Absolute path to the chitin-kernel binary. Defaults to a PATH lookup. |
-| `mode` | `enforce` | `enforce` — deny disallowed tool calls. `observe` — log only, never block. |
+| `mode` | `observe` | `enforce` — deny disallowed tool calls. `observe` — log only, never block. Slice 2 ships `observe` because chitin's normalizer doesn't recognize openclaw chat-domain tools yet; slice 3 flips the default. |
 | `workerMode` | `false` | Apply chitin's worker bootstrap rules (no-trunk-write, no-pr-merge, no-recursive-delete, ToS-driver allowlist). |
 | `denyOnError` | `true` | Fail-closed when the kernel binary is missing or times out. Set to `false` for fail-open (NOT recommended outside development). |
 | `timeoutMs` | `5000` | Per-call gate timeout in milliseconds. |
@@ -89,7 +90,7 @@ This plugin is one of three integration shapes. It's the cleanest one — but it
 ```bash
 # 1. Confirm plugin loads. Look for a "registering" log line on any openclaw command:
 openclaw agents list
-# expected: "[plugins] chitin-governance registering: kernelPath=chitin-kernel mode=enforce workerMode=false"
+# expected: "[plugins] chitin-governance registering: kernelPath=chitin-kernel mode=observe workerMode=false"
 
 # 2. Run a one-shot agent turn that triggers a tool call:
 openclaw agent --local --agent main --json --message "Use bash to run: pwd"

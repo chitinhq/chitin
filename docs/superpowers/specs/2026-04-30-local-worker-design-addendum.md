@@ -55,23 +55,26 @@ Invariant restated: **Temporal schedules. OpenClaw executes. Drivers (Claude Cod
 The wire-format between Temporal (control) and Chitin (enforcement) / OpenClaw (execution). Lives in `libs/contracts/` as zod, regenerated to Go.
 
 ```ts
-// libs/contracts/src/execution-request.ts
-export const ExecutionRequest = z.object({
-  workflow_id:   z.string(),                   // Temporal workflow id
-  run_id:        z.string(),                   // Temporal run id (per attempt)
-  repo:          z.string(),                   // e.g. "chitinhq/chitin"
-  files:         z.array(z.string()).optional(),// scope hint, not enforcement
-  action_class:  z.enum(['read','edit','rename','test','refactor','meta']),
-  risk_level:    z.enum(['low','medium','high','irreversible']),
-  allowed_drivers: z.array(z.enum(['claude-code','copilot','local-qwen','local-glm','local-deepseek'])),
-  network_policy:  z.enum(['none','allowlist','open']),
-  write_policy:    z.enum(['none','worktree','branch','main']),
+// libs/contracts/src/execution-request.schema.ts (shipped — slice 1a)
+export const ExecutionRequestSchema = z.object({
+  schema_version: z.literal('1'),
+  workflow_id:    TemporalIdSchema,            // Temporal workflow id
+  run_id:         TemporalIdSchema,            // Temporal run id (per attempt)
+  repo:           z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+  files:          z.array(z.string().min(1)).optional(),
+  task_class:     z.enum(['refactor','test_writing','doc_update','bug_fix','scaffolding','exploration']),
+  risk_level:     z.enum(['low','medium','high','irreversible']),
+  // claude-code intentionally absent — Anthropic ToS forbids it as a worker driver
+  // (see project_anthropic_tos_constraints.md). Interactive CLI / /schedule only.
+  allowed_drivers: z.array(z.enum(['copilot','local-qwen','local-glm','local-deepseek'])).min(1),
+  network_policy: z.enum(['none','allowlist','open']),
+  write_policy:   z.enum(['none','worktree','branch','main']),
   bounds: z.object({
     max_tool_calls: z.number().int().positive(),
     max_cost_usd:   z.number().nonnegative(),
     wall_timeout_s: z.number().int().positive(),
   }),
-  prompt: z.string(),
+  prompt: z.string().min(1),
 });
 ```
 

@@ -1,7 +1,7 @@
 # Chitin as an OpenClaw Plugin — Distribution & Integration Design
 
 **Date:** 2026-05-01
-**Status:** Investigation — written design. No code yet. Companion to `2026-04-30-local-worker-design-addendum.md` (three-plane reframe). Locks the answer to "should chitin ship as an openclaw plugin?" — yes, with a scope boundary that the plugin pivot **does not** dissolve.
+**Status:** Implemented and verified — slice 2 shipped at `apps/openclaw-plugin-governance/`, end-to-end verified 2026-05-01 (see `docs/superpowers/observations/2026-05-01-swarm-running-verification.md`). Companion to `2026-04-30-local-worker-design-addendum.md` (three-plane reframe). Locks the answer to "should chitin ship as an openclaw plugin?" — yes, with a scope boundary that the plugin pivot **does not** dissolve.
 **Active lens:** da Vinci (open-ended cross-surface architecture, no clear single invariant to prove yet — `souls/canonical/davinci.md`).
 **Constraints honored:** Anthropic ToS (`project_anthropic_tos_constraints.md`); chitin OSS boundary (`feedback_chitin_oss_boundary.md`); kernel-authority rule (`docs/architecture/layer-contracts.md` v1).
 **Supersedes:** the slice 1e plan ("ACP-server mode for the Copilot shim") **only for openclaw's native pi-runtime drivers** (local-coder / local-judge / local-glm). Slice 1e remains valid as the integration shape for acpx-subprocess drivers (Copilot CLI, future closed-vendor agents).

@@ -12,7 +12,12 @@ const plugin = {
     additionalProperties: false,
     properties: {
       kernelPath: { type: 'string', minLength: 1, default: 'chitin-kernel' },
-      mode: { type: 'string', enum: ['enforce', 'observe'], default: 'enforce' },
+      // Default 'observe' matches openclaw.plugin.json (single source of truth).
+      // Slice 2 ships observe-default because chitin's normalizer doesn't
+      // recognize openclaw chat-domain tools yet — enforce would deadlock
+      // small agents on every unknown tool. Slice 3 extends the normalizer
+      // and flips the default.
+      mode: { type: 'string', enum: ['enforce', 'observe'], default: 'observe' },
       workerMode: { type: 'boolean', default: false },
       denyOnError: { type: 'boolean', default: true },
       timeoutMs: { type: 'number', minimum: 100, default: 5000 },
@@ -89,31 +94,12 @@ const plugin = {
       return undefined;
     });
 
-    // ── post-tool capture (pi + codex runtimes) ─────────────────────────
-    api.registerAgentToolResultMiddleware(
-      async (event, mctx) => {
-        try {
-          await evaluateGate(
-            {
-              agent: mctx.agentId ?? 'openclaw-plugin',
-              tool: `_observe.post_tool_use.${event.toolName}`,
-              params: {
-                tool_call_id: event.toolCallId,
-                runtime: mctx.runtime,
-                is_error: event.isError ?? false,
-              },
-              cwd: process.cwd(),
-            },
-            { ...cfg, denyOnError: false },
-          );
-        } catch (err) {
-          log.warn(
-            `chitin post-tool emit failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      },
-      { runtimes: ['pi', 'codex'] },
-    );
+    // Post-tool capture (v2 post_tool_use chain emit) is slice 3 work — the
+    // current `chitin-kernel emit` path takes a JSON event file, not a flag-
+    // based call, so wiring it from here means writing+reading a temp file
+    // per tool call. Deferred until the kernel exposes a streaming emit
+    // subcommand. The before_tool_call gate already lands a gov-decisions
+    // row per call, which is the audit-grade record for slice 2.
   },
 };
 
