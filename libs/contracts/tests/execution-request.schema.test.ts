@@ -9,7 +9,7 @@ const validRequest: ExecutionRequest = {
   files: ['libs/contracts/src/index.ts'],
   task_class: 'refactor',
   risk_level: 'low',
-  allowed_drivers: ['claude-code'],
+  allowed_drivers: ['copilot'],
   network_policy: 'allowlist',
   write_policy: 'worktree',
   bounds: {
@@ -38,6 +38,11 @@ describe('ExecutionRequestSchema', () => {
 
   it('rejects unknown driver id in allowed_drivers', () => {
     const bad = { ...validRequest, allowed_drivers: ['gpt-5' as never] };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects claude-code as a worker driver (Anthropic ToS — interactive only)', () => {
+    const bad = { ...validRequest, allowed_drivers: ['claude-code' as never] };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 

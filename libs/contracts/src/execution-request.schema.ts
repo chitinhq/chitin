@@ -11,8 +11,9 @@ export const TaskClassSchema = z.enum([
 
 export const RiskLevelSchema = z.enum(['low', 'medium', 'high', 'irreversible']);
 
+// Anthropic ToS forbids Claude Code as a worker driver — interactive CLI / /schedule only.
+// Schema is the contract boundary; reject at parse, not at dispatch.
 export const DriverIdSchema = z.enum([
-  'claude-code',
   'copilot',
   'local-qwen',
   'local-glm',

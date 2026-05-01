@@ -41,11 +41,6 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
           '--message', req.prompt,
         ],
       };
-    case 'claude-code':
-      throw new Error(
-        `driver=claude-code is not a valid worker driver (Anthropic ToS — see ` +
-          `memory/project_anthropic_tos_constraints.md). Use copilot or local-* for orchestrated agent work.`,
-      );
     default: {
       const exhaustive: never = driver;
       throw new Error(`unknown driver: ${exhaustive as string}`);
