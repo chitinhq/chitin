@@ -2,6 +2,8 @@
 
 **Status:** spec draft. First articulation of the chitin-governed local worker shape; reference rig for the "safe local-LLM autonomy" thesis. Post-talk implementation candidate.
 
+> **PARTIALLY SUPERSEDED 2026-04-30 (same day).** The "openclaw owns the worker loop" framing in `## Positioning` (line 36), the openclaw-worker-loop-plugin component (`## Components in detail → Worker-loop plugin (openclaw)`), and the chitin-owned task queue + CLI (`## Components in detail → Task queue (chitin)`) are superseded by the three-plane decomposition recorded in `2026-04-30-local-worker-design-addendum.md`. Read the addendum first; treat the superseded sections of this spec as historical context for *why* the reframe was necessary. Invariants, bootstrap rules, observability loop, spike evidence, and acceptance criteria all stand.
+
 **Author:** in-session sketch, 2026-04-30. Spike-driven — verified end-to-end before writing (see "Spike evidence" below).
 
 **Trigger:** the user's question "we are not using the 3090 at all right now... how can we start leveraging it 24/7?" plus the thesis articulation later in the same session: chitin's real end goal is letting local LLMs run safely — determinism via policy gating, cloud calls for reasoning escalation. The 3090 is the reference rig for that thesis, currently idle.
