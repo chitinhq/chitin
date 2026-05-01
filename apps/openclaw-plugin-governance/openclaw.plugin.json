@@ -14,7 +14,7 @@
       "mode": {
         "type": "string",
         "enum": ["enforce", "observe"],
-        "default": "observe"
+        "default": "enforce"
       },
       "workerMode": {
         "type": "boolean",

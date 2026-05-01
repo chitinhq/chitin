@@ -49,6 +49,45 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 			path = stringArg(args, "file_path")
 		}
 		return Action{Type: ActFileRead, Target: path}, nil
+	// openclaw chat-domain tools — slice 3 normalizer coverage.
+	// Memory tools: read-only access to MEMORY.md / wiki content (memory-core
+	// extension). The query/path is the operative target.
+	case "memory_search":
+		return Action{Type: ActFileRead, Target: stringArg(args, "query")}, nil
+	case "memory_get":
+		target := stringArg(args, "path")
+		if target == "" {
+			target = stringArg(args, "file")
+		}
+		return Action{Type: ActFileRead, Target: target}, nil
+	// Session-read tools: list, transcript, status, end-turn. All side-
+	// effect-free from the policy's perspective.
+	case "sessions_list", "sessions_history", "sessions_yield", "session_status":
+		return Action{Type: ActFileRead, Target: toolName}, nil
+	// Session-mutate tools: spawn subagents, send to other sessions, manage
+	// subagents, schedule cron jobs. Cross-agent communication and scheduling
+	// → delegate.task. Bypass closure with `delegate_task`: any rule that
+	// catches one catches all forms.
+	case "sessions_send", "sessions_spawn", "subagents", "cron":
+		target := stringArg(args, "target")
+		if target == "" {
+			target = stringArg(args, "agentId")
+		}
+		if target == "" {
+			target = stringArg(args, "goal")
+		}
+		if target == "" {
+			target = toolName
+		}
+		return Action{Type: ActDelegateTask, Target: target}, nil
+	// External-call tools: image analysis/generation, web search/fetch.
+	// All make network requests under the hood → http.request.
+	case "image", "image_generate":
+		return Action{Type: ActHTTPRequest, Target: toolName}, nil
+	case "ollama_web_search":
+		return Action{Type: ActHTTPRequest, Target: stringArg(args, "query")}, nil
+	case "ollama_web_fetch":
+		return Action{Type: ActHTTPRequest, Target: stringArg(args, "url")}, nil
 	case "delegate_task":
 		return Action{Type: ActDelegateTask, Target: stringArg(args, "goal")}, nil
 	case "search_files":

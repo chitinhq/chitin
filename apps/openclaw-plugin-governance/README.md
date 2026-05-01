@@ -42,7 +42,7 @@ Plugin config goes under `plugins.entries.chitin-governance` in `openclaw.json`:
       "chitin-governance": {
         "enabled": true,
         "kernelPath": "chitin-kernel",
-        "mode": "observe",
+        "mode": "enforce",
         "workerMode": false,
         "denyOnError": true,
         "timeoutMs": 5000
@@ -55,7 +55,7 @@ Plugin config goes under `plugins.entries.chitin-governance` in `openclaw.json`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `kernelPath` | `chitin-kernel` | Absolute path to the chitin-kernel binary. Defaults to a PATH lookup. |
-| `mode` | `observe` | `enforce` — deny disallowed tool calls. `observe` — log only, never block. Slice 2 ships `observe` because chitin's normalizer doesn't recognize openclaw chat-domain tools yet; slice 3 flips the default. |
+| `mode` | `enforce` | `enforce` — deny disallowed tool calls. `observe` — log only, never block (flagged as a dangerous opt-out in `configContracts.dangerousFlags`). Default flipped to `enforce` in slice 3 once chitin's normalizer covered all 19 pi-runtime tools. |
 | `workerMode` | `false` | Apply chitin's worker bootstrap rules (no-trunk-write, no-pr-merge, no-recursive-delete, ToS-driver allowlist). |
 | `denyOnError` | `true` | Fail-closed when the kernel binary is missing or times out. Set to `false` for fail-open (NOT recommended outside development). |
 | `timeoutMs` | `5000` | Per-call gate timeout in milliseconds. |
@@ -90,7 +90,7 @@ This plugin is one of three integration shapes. It's the cleanest one — but it
 ```bash
 # 1. Confirm plugin loads. Look for a "registering" log line on any openclaw command:
 openclaw agents list
-# expected: "[plugins] chitin-governance registering: kernelPath=chitin-kernel mode=observe workerMode=false"
+# expected: "[plugins] chitin-governance registering: kernelPath=chitin-kernel mode=enforce workerMode=false"
 
 # 2. Run a one-shot agent turn that triggers a tool call:
 openclaw agent --local --agent main --json --message "Use bash to run: pwd"
