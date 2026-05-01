@@ -24,10 +24,16 @@ export const NetworkPolicySchema = z.enum(['none', 'allowlist', 'open']);
 
 export const WritePolicySchema = z.enum(['none', 'worktree', 'branch', 'main']);
 
+// 24h cap on wall_timeout_s. setTimeout truncates timeouts > ~2^31 ms (~24.85 days)
+// to 1ms in Node, which would SIGKILL the activity child immediately. 24h is
+// a sensible upper bound for any single agent turn — anything longer is a
+// modeling problem, not a timeout problem.
+const WALL_TIMEOUT_MAX_S = 24 * 60 * 60;
+
 export const BoundsSchema = z.object({
   max_tool_calls: z.number().int().positive(),
   max_cost_usd: z.number().nonnegative(),
-  wall_timeout_s: z.number().int().positive(),
+  wall_timeout_s: z.number().int().positive().max(WALL_TIMEOUT_MAX_S),
 });
 
 const TemporalIdSchema = z.string().regex(/^[a-zA-Z0-9_\-:.]{1,128}$/);

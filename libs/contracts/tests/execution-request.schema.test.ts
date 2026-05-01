@@ -66,6 +66,16 @@ describe('ExecutionRequestSchema', () => {
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 
+  it('rejects wall_timeout_s > 24h (setTimeout truncates beyond 2^31 ms)', () => {
+    const bad = { ...validRequest, bounds: { ...validRequest.bounds, wall_timeout_s: 24 * 60 * 60 + 1 } };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts wall_timeout_s = 24h (boundary)', () => {
+    const ok = { ...validRequest, bounds: { ...validRequest.bounds, wall_timeout_s: 24 * 60 * 60 } };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
   it('rejects max_tool_calls = 0', () => {
     const bad = { ...validRequest, bounds: { ...validRequest.bounds, max_tool_calls: 0 } };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();

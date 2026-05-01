@@ -64,16 +64,23 @@ const plugin = {
       };
     });
 
-    // ── subagent gate: enforces ToS + worker driver allowlist ────────────
+    // ── subagent gate: ToS-driven Claude-Code denylist ───────────────────
+    // Anthropic ToS forbids spawning Claude Code as a subagent under any
+    // orchestrator. The constraint is a hard rule, not a workerMode toggle —
+    // workerMode is a separate concept (worker bootstrap rules) and was
+    // previously gating this check, allowing default-config openclaw to spawn
+    // claude-code freely. Match is case-insensitive against the family name
+    // so 'Claude-Code', 'claude_code', 'claude-code-2', '@anthropic/claude-code'
+    // are all caught — the check is on the category, not one literal id.
     api.on('subagent_spawning', async (event, _ctx) => {
-      if (cfg.workerMode && event.agentId === 'claude-code') {
+      if (isClaudeCodeAgent(event.agentId)) {
         log.info(
-          `chitin denied subagent spawn agent=claude-code (Anthropic ToS — claude-code is interactive-only, not a worker driver)`,
+          `chitin denied subagent spawn agent=${event.agentId} (Anthropic ToS — Claude Code is interactive-only, not a worker subagent)`,
         );
         return {
           status: 'error',
           error:
-            'claude-code is not allowed as a worker subagent (Anthropic ToS — see chitin/memory/project_anthropic_tos_constraints.md)',
+            'Claude Code is not allowed as a subagent (Anthropic ToS — see chitin/memory/project_anthropic_tos_constraints.md)',
         };
       }
       return { status: 'ok' };
@@ -102,6 +109,19 @@ const plugin = {
     // row per call, which is the audit-grade record for slice 2.
   },
 };
+
+/**
+ * Match the Claude Code agent family. Catches 'claude-code', 'Claude-Code',
+ * 'claude_code', 'claude-code-2', '@anthropic/claude-code', etc. The category
+ * is what's ToS-restricted — the literal id is not a stable identifier.
+ *
+ * @param {unknown} agentId
+ * @returns {boolean}
+ */
+export function isClaudeCodeAgent(agentId) {
+  if (typeof agentId !== 'string') return false;
+  return /claude[-_ ]?code/i.test(agentId);
+}
 
 /**
  * @param {Record<string, unknown> | undefined} raw

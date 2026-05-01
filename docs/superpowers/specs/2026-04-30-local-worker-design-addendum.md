@@ -80,7 +80,7 @@ export const ExecutionRequestSchema = z.object({
 
 Two enforcement points use this contract:
 
-1. **Pre-activity gate.** Before Temporal dispatches the activity, chitin validates the request — `chitin-kernel task validate <req.json>` — and may narrow `allowed_drivers` (policy can shrink, never expand). The orchestrator may *choose within* the allowed set; it cannot expand it.
+1. **Pre-activity gate** (DEFERRED — not in slice 1/2). Will validate the request via `chitin-kernel task validate <req.json>` and narrow `allowed_drivers` (policy can shrink, never expand) before Temporal dispatches the activity. Slice 1 ships zod-parse-only at the submit boundary (`apps/temporal-worker/src/submit.ts`); the kernel-side validate + narrow path is a future slice. Tracking item: implement `chitin-kernel task validate` and route submit through it.
 2. **Per-tool-call gate (existing).** Inside the agent session, every tool call still passes `gov.Gate.Evaluate()` via the PreToolUse hook. The contract carried at session-start tags every gov-decision row with `workflow_id` so the analysis layer can group decisions by workflow.
 
 ## Locked sub-decisions (this session)
