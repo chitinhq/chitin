@@ -329,10 +329,12 @@ func TestNormalize_OpenclawExec(t *testing.T) {
 	}
 }
 
-func TestNormalize_OpenclawExec_RmRfIsDangerous(t *testing.T) {
+func TestNormalize_OpenclawExec_BypassClosure(t *testing.T) {
 	// Bypass closure: openclaw `exec` and `terminal` must produce the same
-	// Action for the same command. If a future rule denies `rm -rf` via
-	// terminal, it must also deny it via exec — same fingerprint.
+	// Action (Type + Fingerprint) for the same command, so one policy rule
+	// catches both surfaces. This test does NOT assert the resulting type
+	// is "dangerous" — `rm -rf` is just a representative command. The
+	// invariant under test is parity, not classification.
 	terminalA, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
 	execA, _ := Normalize("exec", map[string]any{"cmd": "rm -rf go/"})
 	if terminalA.Type != execA.Type {
