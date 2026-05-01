@@ -15,7 +15,7 @@ async function main() {
     repo: 'chitinhq/chitin',
     task_class: 'exploration',
     risk_level: 'low',
-    allowed_drivers: ['claude-code'],
+    allowed_drivers: [(process.env.DRIVER ?? 'copilot') as 'copilot' | 'local-qwen' | 'local-glm' | 'local-deepseek'],
     network_policy: 'allowlist',
     write_policy: 'none',
     bounds: { max_tool_calls: 5, max_cost_usd: 0, wall_timeout_s: 120 },
