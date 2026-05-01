@@ -127,9 +127,12 @@ export function isClaudeCodeAgent(agentId) {
 }
 
 /**
+ * Apply config defaults and coerce types for the plugin runtime. Exported
+ * for direct test of the slice 3 default-enforce flip.
+ *
  * @param {Record<string, unknown> | undefined} raw
  */
-function resolveConfig(raw) {
+export function resolveConfig(raw) {
   const r = raw ?? {};
   return {
     kernelPath: typeof r.kernelPath === 'string' && r.kernelPath ? r.kernelPath : 'chitin-kernel',

@@ -122,9 +122,9 @@ describe('resolveAgent', () => {
   });
 
   it('routes each local-* driver to its dedicated agent by default', () => {
-    expect(resolveAgent('local-qwen' as never)).toBe('qwen-agent');
-    expect(resolveAgent('local-glm' as never)).toBe('glm-agent');
-    expect(resolveAgent('local-deepseek' as never)).toBe('deepseek-agent');
+    expect(resolveAgent('local-qwen')).toBe('qwen-agent');
+    expect(resolveAgent('local-glm')).toBe('glm-agent');
+    expect(resolveAgent('local-deepseek')).toBe('deepseek-agent');
   });
 
   it('falls back to main for any driver not in the map', () => {
@@ -132,29 +132,29 @@ describe('resolveAgent', () => {
     // resolveAgent isn't called on it in normal use — but the fallback
     // contract still needs to be 'main' for any future driver added to
     // the schema before its mapping lands.
-    expect(resolveAgent('copilot' as never)).toBe('main');
+    expect(resolveAgent('copilot')).toBe('main');
   });
 
   it('honors CHITIN_AGENT_LOCAL_QWEN env override', () => {
     process.env.CHITIN_AGENT_LOCAL_QWEN = 'custom-qwen-agent';
-    expect(resolveAgent('local-qwen' as never)).toBe('custom-qwen-agent');
+    expect(resolveAgent('local-qwen')).toBe('custom-qwen-agent');
   });
 
   it('treats whitespace-only env override as unset', () => {
     process.env.CHITIN_AGENT_LOCAL_QWEN = '   ';
-    expect(resolveAgent('local-qwen' as never)).toBe('qwen-agent');
+    expect(resolveAgent('local-qwen')).toBe('qwen-agent');
   });
 
   it('trims env override value', () => {
     process.env.CHITIN_AGENT_LOCAL_QWEN = '  trimmed-agent  ';
-    expect(resolveAgent('local-qwen' as never)).toBe('trimmed-agent');
+    expect(resolveAgent('local-qwen')).toBe('trimmed-agent');
   });
 
   it('does not return the same agent for different local-* drivers (no model collision)', () => {
     const agents = new Set([
-      resolveAgent('local-qwen' as never),
-      resolveAgent('local-glm' as never),
-      resolveAgent('local-deepseek' as never),
+      resolveAgent('local-qwen'),
+      resolveAgent('local-glm'),
+      resolveAgent('local-deepseek'),
     ]);
     expect(agents.size).toBe(3);
   });
