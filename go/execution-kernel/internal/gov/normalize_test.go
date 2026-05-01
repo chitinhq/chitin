@@ -310,3 +310,96 @@ func TestNormalize_TerminalReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// openclaw pi-runtime tool names — closes the "exec/process/read/write/edit
+// fall through to ActUnknown" gap that left the openclaw plugin gating with
+// default-deny-unknown instead of policy-meaningful action types.
+//
+// Invariant: an exec/process call with the same command as a terminal call
+// produces the same Action — one rule catches all routes (bypass closure).
+
+func TestNormalize_OpenclawExec(t *testing.T) {
+	// Same shape as terminal: passes cmd, lands on shell.exec.
+	a, _ := Normalize("exec", map[string]any{"cmd": "echo gate-fired"})
+	if a.Type != ActShellExec {
+		t.Errorf("Type: got %q want shell.exec", a.Type)
+	}
+	if a.Target != "echo gate-fired" {
+		t.Errorf("Target: got %q want %q", a.Target, "echo gate-fired")
+	}
+}
+
+func TestNormalize_OpenclawExec_RmRfIsDangerous(t *testing.T) {
+	// Bypass closure: openclaw `exec` and `terminal` must produce the same
+	// Action for the same command. If a future rule denies `rm -rf` via
+	// terminal, it must also deny it via exec — same fingerprint.
+	terminalA, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})
+	execA, _ := Normalize("exec", map[string]any{"cmd": "rm -rf go/"})
+	if terminalA.Type != execA.Type {
+		t.Errorf("terminal/exec divergence: terminal=%q exec=%q", terminalA.Type, execA.Type)
+	}
+	if terminalA.Fingerprint() != execA.Fingerprint() {
+		t.Errorf("fingerprint divergence: terminal=%s exec=%s",
+			terminalA.Fingerprint(), execA.Fingerprint())
+	}
+}
+
+func TestNormalize_OpenclawProcess(t *testing.T) {
+	// `process` is openclaw's long-running/backgrounded shell tool —
+	// same command shape, same gate decision.
+	a, _ := Normalize("process", map[string]any{"cmd": "tail -f /var/log/syslog"})
+	if a.Type != ActShellExec {
+		t.Errorf("Type: got %q want shell.exec", a.Type)
+	}
+}
+
+func TestNormalize_OpenclawWrite(t *testing.T) {
+	a, _ := Normalize("write", map[string]any{"path": "/tmp/foo.txt", "content": "hi"})
+	if a.Type != ActFileWrite {
+		t.Errorf("Type: got %q want file.write", a.Type)
+	}
+	if a.Target != "/tmp/foo.txt" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawEdit(t *testing.T) {
+	// `edit` is in-place mutation; same policy class as `write`.
+	a, _ := Normalize("edit", map[string]any{"path": "/etc/hosts"})
+	if a.Type != ActFileWrite {
+		t.Errorf("Type: got %q want file.write (edit is mutation)", a.Type)
+	}
+	if a.Target != "/etc/hosts" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawRead(t *testing.T) {
+	a, _ := Normalize("read", map[string]any{"path": "/etc/passwd"})
+	if a.Type != ActFileRead {
+		t.Errorf("Type: got %q want file.read", a.Type)
+	}
+	if a.Target != "/etc/passwd" {
+		t.Errorf("Target: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawRead_FilePathAlias(t *testing.T) {
+	// Some openclaw schemas use file_path; both should be accepted.
+	a, _ := Normalize("read", map[string]any{"file_path": "/etc/hostname"})
+	if a.Target != "/etc/hostname" {
+		t.Errorf("file_path alias not honored: got %q", a.Target)
+	}
+}
+
+func TestNormalize_OpenclawTools_NoLongerUnknown(t *testing.T) {
+	// Regression: each of these used to fall into ActUnknown and trip
+	// default-deny-unknown. After the openclaw mappings, none should be
+	// ActUnknown — they get policy-meaningful types.
+	for _, tool := range []string{"exec", "process", "read", "write", "edit"} {
+		a, _ := Normalize(tool, map[string]any{"cmd": "noop", "path": "/tmp/x"})
+		if a.Type == ActUnknown {
+			t.Errorf("%s still maps to ActUnknown — normalizer mapping missing", tool)
+		}
+	}
+}

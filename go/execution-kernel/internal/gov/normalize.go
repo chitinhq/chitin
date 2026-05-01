@@ -24,12 +24,31 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	switch toolName {
 	case "terminal", "bash", "shell":
 		return normalizeShell(args), nil
+	// openclaw pi-runtime core tools — same shape as terminal/bash/shell.
+	// `exec` runs a shell command via the gateway; `process` is the same
+	// surface for backgrounded/long-running commands. Both carry `cmd` (or
+	// `command`) so normalizeShell handles them uniformly.
+	case "exec", "process":
+		return normalizeShell(args), nil
 	case "execute_code":
 		return normalizeExecuteCode(args), nil
 	case "write_file", "patch":
 		return normalizeWriteFile(args), nil
+	// openclaw pi-runtime file tools. `write` creates/overwrites; `edit`
+	// modifies in-place. Both end at file.write because both are mutations
+	// from the policy's perspective — the existing `write_file` mapping
+	// already encodes that policy.
+	case "write", "edit":
+		return normalizeWriteFile(args), nil
 	case "read_file":
 		return Action{Type: ActFileRead, Target: stringArg(args, "path")}, nil
+	case "read":
+		// openclaw pi-runtime read tool — path-based file read.
+		path := stringArg(args, "path")
+		if path == "" {
+			path = stringArg(args, "file_path")
+		}
+		return Action{Type: ActFileRead, Target: path}, nil
 	case "delegate_task":
 		return Action{Type: ActDelegateTask, Target: stringArg(args, "goal")}, nil
 	case "search_files":
