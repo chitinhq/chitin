@@ -81,6 +81,11 @@ describe('isT5Shape', () => {
     ['apps/some/chitin.yaml', true],
     ['.chitin/policy.yaml', true],
     ['some/.chitin/anything.txt', true],
+    // The chitin.yaml `no-governance-self-modification` regex covers
+    // `.hermes/plugins/chitin-governance/` too; mirror that here so a
+    // hole in one is a hole in the other.
+    ['.hermes/plugins/chitin-governance/manifest.json', true],
+    ['some/.hermes/plugins/chitin-governance/anything.ts', true],
   ])('matches %s as T5-shape', (path, expected) => {
     expect(isT5Shape(path)).toBe(expected);
   });
@@ -324,7 +329,11 @@ describe('shouldEscalateToOperator', () => {
     expect(shouldEscalateToOperator(out({ decision: 'escalate' }))).toBe(true);
   });
 
-  it('returns true on confidence: low + at least one 🔴 finding', () => {
+  it('returns true on confidence: low alone (R3 couldn\'t decide → operator)', () => {
+    expect(shouldEscalateToOperator(out({ confidence: 'low' }))).toBe(true);
+  });
+
+  it('returns true on confidence: low + 🔴 finding', () => {
     expect(
       shouldEscalateToOperator(
         out({
@@ -335,25 +344,36 @@ describe('shouldEscalateToOperator', () => {
     ).toBe(true);
   });
 
-  it('returns false on confidence: low + only 🟡/🟢 findings (low confidence on nits is fine)', () => {
+  it('returns true on confidence: low + only 🟡/🟢 findings (low alone fires regardless of finding severity)', () => {
     expect(
       shouldEscalateToOperator(
         out({
           confidence: 'low',
           findings: [
             { severity: '🟡', file: 'x.ts', category: 'design', summary: 'nit' },
-            { severity: '🟢', file: 'x.ts', category: 'doc', summary: 'typo' },
           ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false on confidence: medium + 🔴 finding (medium = trust the reviewer; implementor re-runs)', () => {
+    expect(
+      shouldEscalateToOperator(
+        out({
+          confidence: 'medium',
+          findings: [{ severity: '🔴', file: 'x.ts', category: 'bug', summary: 's' }],
         }),
       ),
     ).toBe(false);
   });
 
-  it('returns false on confidence: medium + 🔴 finding (medium = trust the reviewer)', () => {
+  it('returns false on confidence: high + 🔴 finding + request_changes (request_changes loops to implementor, not operator)', () => {
     expect(
       shouldEscalateToOperator(
         out({
-          confidence: 'medium',
+          decision: 'request_changes',
+          confidence: 'high',
           findings: [{ severity: '🔴', file: 'x.ts', category: 'bug', summary: 's' }],
         }),
       ),

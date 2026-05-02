@@ -18,7 +18,6 @@
 // workflow runtime — and a future change to the matrix is one PR
 // against this file with new test rows, not a workflow rewrite.
 
-import type { Tier } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 
 // Review-tier ordinal vocabulary. R0 = "Copilot bot review only"
@@ -116,20 +115,20 @@ export interface ReviewTierDecision {
 // they're load-bearing surfaces — a bug in normalize.go or in the
 // ExecutionRequest schema cascades broadly. Worth a heavy reviewer
 // even on small diffs.
-
-const T5_PATH_PREFIXES: readonly string[] = [
-  // chitin.yaml at any level (root + any subdir)
-  // .chitin/ directory at any level
-  // The kernel's gov hook installer (writes to live settings.json)
-  // — covered by R3 bump too, but T5 flag fires regardless of
-  // tier outcome since these are governance config.
-];
+//
+// T5 path coverage mirrors the `no-governance-self-modification`
+// regex in `chitin.yaml` (see id: no-governance-self-modification):
+//   target_regex: '(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)'
+// Keep this list in sync with that regex; both are governance-
+// self-modification guards and a hole in either is a hole in both.
 
 const T5_FILENAMES: readonly string[] = ['chitin.yaml'];
 
 const T5_PATH_FRAGMENTS: readonly string[] = [
   '/.chitin/',
   '.chitin/',
+  '/.hermes/plugins/chitin-governance/',
+  '.hermes/plugins/chitin-governance/',
 ];
 
 const KERNEL_INTERNAL_PREFIXES: readonly string[] = [
@@ -149,9 +148,6 @@ function isT5Shape(file: string): boolean {
   if (file === 'chitin.yaml' || file.endsWith('/chitin.yaml')) return true;
   for (const frag of T5_PATH_FRAGMENTS) {
     if (file.includes(frag)) return true;
-  }
-  for (const pre of T5_PATH_PREFIXES) {
-    if (file.startsWith(pre)) return true;
   }
   return false;
 }
@@ -186,8 +182,14 @@ function isSchemaFile(file: string): boolean {
  * | Touches kernel internals | R3 minimum | always |
  * | Implementor was tier T3+ | R2 minimum | always |
  *
- * The "previous-attempt history" rule is deferred — it requires a
- * state-store lookup; future enhancement.
+ * Two §5 rules are intentionally deferred:
+ *   - "Touches public API exports (top-level `export`s in `apps/*`)
+ *     → R2 minimum" — requires reading the diff content (not just
+ *     paths) to detect `+export ...` lines. The path-only signal is
+ *     too noisy (every TS module has exports). Encode this when the
+ *     workflow has the diff body in hand (step 3).
+ *   - "Previous-attempt history" — requires a state-store lookup;
+ *     future enhancement that consumes `parent_workflow_id` chains.
  */
 export function computeStartingTier(prMeta: PrMeta, entry: BacklogEntry): ReviewTierDecision {
   let tier: ReviewTier = 'R0';
@@ -291,11 +293,25 @@ export interface ReviewerFinding {
  * Decide whether the review-graph should stop and ping the
  * operator (R4) instead of merging or escalating to the next tier.
  *
- * Rules (any one fires → escalate):
- *   - reviewer explicitly returned `decision: 'escalate'`
- *   - reviewer returned `confidence: 'low'` AND found at least one
- *     🔴 finding (low confidence on a real bug means don't trust the
- *     fix the reviewer suggested — get a human eye)
+ * Called specifically when the chain is at R3 (the heaviest
+ * dispatchable reviewer) and needs to decide R3-resolves-here vs.
+ * R4-escalate-to-human. Rules (any one fires → escalate):
+ *
+ *   - reviewer explicitly returned `decision: 'escalate'` — they
+ *     self-flagged something they can't decide at this tier.
+ *   - reviewer returned `confidence: 'low'` — at R3, low confidence
+ *     means "the heaviest reviewer in the graph couldn't fully
+ *     evaluate this PR." Per design §5 + the operator's stated rule
+ *     ("if Headless Claude Opus can't figure it out, escalate it up
+ *     to me"), low confidence at R3 is the operator's signal.
+ *
+ * Note that `decision: 'request_changes'` with high/medium
+ * confidence does NOT trigger operator escalation — that path
+ * loops back to the implementor with the reviewer's findings (the
+ * implementor either fixes and re-pushes, or the apply step errors
+ * and the chain ends naturally). 🔴 findings on their own don't
+ * block the operator's time when the reviewer is confident in the
+ * fix; the implementor-rerun handles them.
  *
  * NOT covered here (handled at the gatekeeper layer):
  *   - T5-shape paths (escalate regardless of reviewer approval)
@@ -309,7 +325,7 @@ export interface ReviewerFinding {
  */
 export function shouldEscalateToOperator(out: ReviewerOutput): boolean {
   if (out.decision === 'escalate') return true;
-  if (out.confidence === 'low' && out.findings.some((f) => f.severity === '🔴')) return true;
+  if (out.confidence === 'low') return true;
   return false;
 }
 
