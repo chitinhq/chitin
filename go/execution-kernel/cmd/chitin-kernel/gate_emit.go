@@ -99,12 +99,31 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 	if ts == "" {
 		ts = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	decisionStr := "allow"
-	if !d.Allowed {
+	// decisionStr is the OUTCOME (allow/deny/guide), not the policy mode.
+	// Closes #77 audit: `Allowed && Mode=guide` IS reachable (every allow
+	// under a guide-mode policy), but the right semantic is to report the
+	// outcome — the action proceeded, so decision.type=allow regardless
+	// of whether the policy was in guide mode. The policy.mode info is a
+	// separate attribute (added below) so consumers wanting it don't
+	// overload decision.type.
+	//
+	// Invariants (six reachable (Allowed, Mode) combinations):
+	//   true,  enforce → "allow"  (action proceeded)
+	//   true,  guide   → "allow"  (action proceeded; mode only matters
+	//                              on the deny branch)
+	//   true,  monitor → "allow"  (monitor flipped a soft deny to allow;
+	//                              decision.type tracks the outcome)
+	//   false, enforce → "deny"   (hard block)
+	//   false, guide   → "guide"  (soft deny — model can retry)
+	//   false, monitor → unreachable (monitor would have flipped to allow)
+	var decisionStr string
+	switch {
+	case d.Allowed:
+		decisionStr = "allow"
+	case d.Mode == "guide":
+		decisionStr = "guide"
+	default:
 		decisionStr = "deny"
-		if d.Mode == "guide" {
-			decisionStr = "guide"
-		}
 	}
 	payload := map[string]any{
 		"decision":    decisionStr,

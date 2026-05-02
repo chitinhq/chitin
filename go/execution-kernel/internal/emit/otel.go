@@ -38,6 +38,14 @@ type otelExporter struct {
 // newOTELExporter constructs an exporter from the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 // (or OTEL_EXPORTER_OTLP_ENDPOINT) env var. Returns nil if neither is set —
 // caller treats nil as "OTEL disabled" and skips projection.
+//
+// Timeout: 500ms. Tightened from 2s in #74. The kernel's per-hook
+// latency budget is ~100ms (gate_hook.go), and 3 hooks × 10 tool calls
+// per session = up to 60s of dead time on a slow/hung collector at the
+// old 2s timeout. 500ms catches a healthy localhost RTT (sub-50ms)
+// with margin while bounding the worst case to ≤15s per session.
+// Sync POST is still correct for v1 (kernel is short-lived per emit);
+// daemon-mode async is the v2 path.
 func newOTELExporter() *otelExporter {
 	ep := endpointFromEnv()
 	if ep == "" {
@@ -45,9 +53,16 @@ func newOTELExporter() *otelExporter {
 	}
 	return &otelExporter{
 		endpoint: ep,
-		client:   &http.Client{Timeout: 2 * time.Second},
+		client:   &http.Client{Timeout: otelHTTPTimeout},
 	}
 }
+
+// otelHTTPTimeout bounds both the http.Client timeout and the
+// context.WithTimeout in ProjectAndPost. Single source of truth so
+// they can never drift (drift would mean either context fires first
+// and leaks an in-flight request, or client fires first and leaks the
+// context goroutine).
+const otelHTTPTimeout = 500 * time.Millisecond
 
 // allowedEventTypes is the F4 v1 scope set per the spec. Other event
 // types still write to the canonical chain (which is authoritative);
@@ -95,7 +110,7 @@ func (x *otelExporter) ProjectAndPost(ev *event.Event, idx *chain.Index) {
 		log.Printf("otel: encode: %v", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), otelHTTPTimeout)
 	defer cancel()
 	if err := x.post(ctx, body); err != nil {
 		log.Printf("otel: post: %v", err)
