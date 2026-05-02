@@ -40,6 +40,13 @@ function resolveAgent(driver: DriverId): string {
   return DRIVER_AGENT_MAP[driver] ?? 'main';
 }
 
+// Tools the headless Claude Code session is allowed to dispatch. Mirrors
+// the chat-domain coverage chitin's normalizer recognizes (read/edit/write/
+// bash) so every tool call still hits a policy-meaningful action_type.
+// Override per request via CHITIN_CLAUDE_ALLOWED_TOOLS env var if you need
+// a tighter scope (e.g., 'Read,Edit' only).
+const DEFAULT_CLAUDE_ALLOWED_TOOLS = 'Read,Edit,Write,Bash,Glob,Grep';
+
 function planInvocation(req: ExecutionRequest): DriverInvocation {
   const driver: DriverId = req.allowed_drivers[0];
   switch (driver) {
@@ -47,6 +54,26 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       return {
         command: 'chitin-kernel',
         args: ['drive', 'copilot', req.prompt],
+      };
+    case 'claude-code-headless':
+      // Anthropic publishes this as the supported pattern for unattended
+      // runs (see code.claude.com/docs/en/headless). Spawned in the
+      // worktree (when base_ref is set on the request) so edits land on
+      // a real branch. The existing claude-code adapter PreToolUse hook
+      // (PR #66) gates every tool call — same enforcement plane as the
+      // interactive surface, just no human in the loop. The
+      // --dangerously-skip-permissions flag bypasses Claude Code's own
+      // interactive permission prompts; chitin's gate is the actual
+      // policy boundary.
+      return {
+        command: 'claude',
+        args: [
+          '-p', req.prompt,
+          '--dangerously-skip-permissions',
+          '--allowedTools', process.env.CHITIN_CLAUDE_ALLOWED_TOOLS ?? DEFAULT_CLAUDE_ALLOWED_TOOLS,
+          '--output-format', 'stream-json',
+          '--verbose',
+        ],
       };
     case 'local-qwen':
     case 'local-glm':

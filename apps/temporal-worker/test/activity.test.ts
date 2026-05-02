@@ -58,6 +58,38 @@ describe('planInvocation', () => {
     const bad = { ...baseReq, allowed_drivers: ['gpt-5'] } as unknown as ExecutionRequest;
     expect(() => planInvocation(bad)).toThrow(/unknown driver/);
   });
+
+  // Slice 5b: claude-code-headless dispatch.
+  it('dispatches claude-code-headless via the `claude` CLI in headless mode', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['claude-code-headless'] });
+    expect(plan.command).toBe('claude');
+    expect(plan.args).toContain('-p');
+    expect(plan.args).toContain(baseReq.prompt);
+    expect(plan.args).toContain('--dangerously-skip-permissions');
+    expect(plan.args).toContain('--output-format');
+    expect(plan.args).toContain('stream-json');
+  });
+
+  it('claude-code-headless includes a default --allowedTools scope', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['claude-code-headless'] });
+    const idx = plan.args.indexOf('--allowedTools');
+    expect(idx).toBeGreaterThan(-1);
+    const value = plan.args[idx + 1];
+    expect(value).toMatch(/Read|Edit|Bash/);
+  });
+
+  it('honors CHITIN_CLAUDE_ALLOWED_TOOLS env override for tighter scope', () => {
+    const saved = process.env.CHITIN_CLAUDE_ALLOWED_TOOLS;
+    process.env.CHITIN_CLAUDE_ALLOWED_TOOLS = 'Read,Edit';
+    try {
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['claude-code-headless'] });
+      const idx = plan.args.indexOf('--allowedTools');
+      expect(plan.args[idx + 1]).toBe('Read,Edit');
+    } finally {
+      if (saved === undefined) delete process.env.CHITIN_CLAUDE_ALLOWED_TOOLS;
+      else process.env.CHITIN_CLAUDE_ALLOWED_TOOLS = saved;
+    }
+  });
 });
 
 describe('resolvePolicySrc', () => {

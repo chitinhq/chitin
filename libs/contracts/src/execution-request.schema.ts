@@ -11,10 +11,20 @@ export const TaskClassSchema = z.enum([
 
 export const RiskLevelSchema = z.enum(['low', 'medium', 'high', 'irreversible']);
 
-// Anthropic ToS forbids Claude Code as a worker driver — interactive CLI / /schedule only.
-// Schema is the contract boundary; reject at parse, not at dispatch.
+// Driver tiers for the swarm. The 2026-04-30 framing that excluded
+// `claude-code` was based on a misread of Anthropic's terms — verified
+// 2026-05-02 against code.claude.com/docs/en/headless that headless mode
+// (`claude -p ... --dangerously-skip-permissions`) is officially supported
+// for unattended/CI/cron use. The interactive CLI surface is a separate
+// thing and not represented in this enum (you don't programmatically
+// dispatch interactive sessions; they're always Jared-driven).
+//
+// claude-code-headless joins as the strongest programmatic tier (T4 in
+// swarm-backlog.md), distinct from `copilot` (T1-T3 depending on Copilot
+// model) and the local-* drivers (T0/T2).
 export const DriverIdSchema = z.enum([
   'copilot',
+  'claude-code-headless',
   'local-qwen',
   'local-glm',
   'local-deepseek',
