@@ -4,15 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   appendLessons,
+  buildClaudeDistillPrompt,
   extractLessonHeuristic,
   getRecentLessonsSync,
+  parseClaudeLesson,
   parseLessons,
   runLessonsExtractor,
   __test__,
   type MergedPr,
 } from '../src/lessons.ts';
 
-const { ENTRY_RE, capLength, LESSONS_HEADER } = __test__;
+const { ENTRY_RE, capLength, LESSONS_HEADER, LESSON_MARKER } = __test__;
 
 function makePr(overrides: Partial<MergedPr> = {}): MergedPr {
   return {
@@ -333,5 +335,120 @@ describe('capLength', () => {
 
   it('collapses internal whitespace runs', () => {
     expect(capLength('a   b\n\tc', 100)).toBe('a b c');
+  });
+});
+
+// ─── LLM distillation: prompt + parser ────────────────────────────────────
+
+describe('buildClaudeDistillPrompt', () => {
+  it('includes PR title + body + diff in the prompt', () => {
+    const pr = makePr({
+      number: 142,
+      title: 'feat(debt): add ledger loader',
+      body: 'Loads docs/debt-ledger.md into typed records',
+    });
+    const out = buildClaudeDistillPrompt(pr, '+    return entries\n');
+    expect(out).toContain('feat(debt): add ledger loader');
+    expect(out).toContain('Loads docs/debt-ledger.md');
+    expect(out).toContain('return entries');
+  });
+
+  it('caps the diff at ~8k chars (tail-truncates)', () => {
+    const longDiff = 'a'.repeat(20000) + '\n+ relevant change near tail';
+    const out = buildClaudeDistillPrompt(makePr(), longDiff);
+    expect(out).toContain('truncated');
+    expect(out).toContain('relevant change near tail');
+    // Final prompt should be on the order of 10k chars, not 20k+.
+    expect(out.length).toBeLessThan(15000);
+  });
+
+  it('includes the structured-output marker and the SKIP escape hatch', () => {
+    const out = buildClaudeDistillPrompt(makePr(), '');
+    expect(out).toContain('<<<LESSON>>>');
+    expect(out).toContain('SKIP');
+  });
+
+  it('caps the body excerpt to 1500 chars', () => {
+    const longBody = 'b'.repeat(5000);
+    const out = buildClaudeDistillPrompt(makePr({ body: longBody }), '');
+    // 1500 chars of body + the rest of the prompt; the long body
+    // shouldn't appear in full.
+    expect(out).toContain('b'.repeat(100));
+    expect(out).not.toContain('b'.repeat(2000));
+  });
+});
+
+describe('parseClaudeLesson', () => {
+  it('extracts the line after the marker', () => {
+    const out = `Here's my answer:\n${LESSON_MARKER}Don't import contracts barrel from workflow code — pulls node:crypto.\n`;
+    expect(parseClaudeLesson(out)).toBe(
+      "Don't import contracts barrel from workflow code — pulls node:crypto.",
+    );
+  });
+
+  it('returns empty when the marker is missing (caller falls back to heuristic)', () => {
+    expect(parseClaudeLesson('Sorry, I have nothing to say about this PR.')).toBe('');
+  });
+
+  it("returns empty for the explicit SKIP token", () => {
+    expect(parseClaudeLesson(`${LESSON_MARKER}SKIP\n`)).toBe('');
+    expect(parseClaudeLesson(`${LESSON_MARKER}SKIP`)).toBe('');
+  });
+
+  it('takes the LAST marker when multiple are present (echoed examples vs real output)', () => {
+    const out = `Examples:\n${LESSON_MARKER}example one\nNow my answer:\n${LESSON_MARKER}real lesson here.\n`;
+    expect(parseClaudeLesson(out)).toBe('real lesson here.');
+  });
+
+  it('caps the lesson at 220 chars', () => {
+    const long = 'x'.repeat(400);
+    const out = `${LESSON_MARKER}${long}\n`;
+    expect(parseClaudeLesson(out).length).toBeLessThanOrEqual(220);
+  });
+
+  it("trims whitespace around the lesson", () => {
+    expect(parseClaudeLesson(`${LESSON_MARKER}   spaced lesson   \n`)).toBe('spaced lesson');
+  });
+});
+
+// ─── runLessonsExtractor with async distill ──────────────────────────────
+
+describe('runLessonsExtractor — async distill', () => {
+  let scratch: string;
+  let lessonsPath: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'lessons-async-test-'));
+    lessonsPath = join(scratch, 'swarm-lessons.md');
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('awaits a Promise<string>-returning distill (LLM swap shape)', async () => {
+    const r = await runLessonsExtractor({
+      lessonsPath,
+      scanLimit: 5,
+      distill: async (pr) => {
+        await new Promise((res) => setTimeout(res, 5));
+        return `LLM-distilled lesson #${pr.number}`;
+      },
+      fetchMergedPrs: async () => [makePr({ number: 100 }), makePr({ number: 99 })],
+    });
+    expect(r.new_entries).toBe(2);
+    const md = readFileSync(lessonsPath, 'utf8');
+    expect(md).toContain('LLM-distilled lesson #100');
+    expect(md).toContain('LLM-distilled lesson #99');
+  });
+
+  it('skips the row when async distill returns empty (LLM SKIP path)', async () => {
+    const r = await runLessonsExtractor({
+      lessonsPath,
+      scanLimit: 5,
+      distill: async () => '',  // simulates LLM emitting SKIP
+      fetchMergedPrs: async () => [makePr({ number: 100 })],
+    });
+    expect(r.new_entries).toBe(0);
   });
 });
