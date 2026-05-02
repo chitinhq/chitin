@@ -39,6 +39,13 @@ type PreflightOpts struct {
 // terminates it (lockdown is correct operation, not an error).
 // Returns non-nil for startup failures, SDK errors, or timeouts.
 func Run(ctx context.Context, prompt string, opts RunOpts) error {
+	// Wrap ctx so lockdown / error branches can cancel the SendAndWait
+	// goroutine explicitly rather than relying on session.Disconnect's
+	// implicit cleanup (issue #57: SDK contract doesn't guarantee
+	// Disconnect unblocks a parked SendAndWait).
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// 1. Load policy (chitin.yaml search from cwd upward).
 	policy, _, err := gov.LoadWithInheritance(opts.Cwd)
 	if err != nil {
@@ -46,7 +53,10 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 
 	// 2. Open Counter (SQLite escalation state in ~/.chitin/gov.db).
-	chitinDir := defaultChitinDir()
+	chitinDir, err := defaultChitinDir()
+	if err != nil {
+		return fmt.Errorf("chitin dir: %w", err)
+	}
 	if err := os.MkdirAll(chitinDir, 0755); err != nil {
 		return fmt.Errorf("chitin dir: %w", err)
 	}
@@ -71,7 +81,7 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 	defer client.Close()
 
-	if err := client.Start(ctx); err != nil {
+	if err := client.Start(runCtx); err != nil {
 		return fmt.Errorf("client start: %w", err)
 	}
 
@@ -88,19 +98,24 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 		LockdownCh: lockdownCh,
 	}
 
-	// 6. Create session with handler registered.
-	// Model: "gpt-4.1" is required for reliable tool-use in headless ACP mode.
-	// The spike's Rung 4 confirmed this model calls the shell tool in response
-	// to shell-action prompts; the default model applies its own safety filters
-	// and declines tool calls for risky prompts (rm -rf, curl|bash) without
-	// ever firing OnPermissionRequest, which bypasses chitin governance entirely.
-	// AvailableTools: nil = all built-in tools remain available so the model
-	// can call shell, file-read, file-write, and other Copilot built-ins.
+	// 6. Resolve model and verify it's on the Copilot CLI's whitelist BEFORE
+	// session create. Issue #53: the default fallback applies pre-filters
+	// that decline risky tool calls without firing OnPermissionRequest,
+	// silently bypassing chitin governance. If the requested model is
+	// missing from ListModels output, fail loud so the operator notices
+	// vs. silently routing through the default model.
 	model := opts.Model
 	if model == "" {
 		model = "gpt-4.1"
 	}
-	session, err := client.SDKClient().CreateSession(ctx, &copilotsdk.SessionConfig{
+	if err := verifyModelAvailable(runCtx, client.SDKClient(), model); err != nil {
+		return fmt.Errorf("model %q not available on this Copilot CLI: %w", model, err)
+	}
+
+	// 7. Create session with handler registered.
+	// AvailableTools: nil = all built-in tools remain available so the model
+	// can call shell, file-read, file-write, and other Copilot built-ins.
+	session, err := client.SDKClient().CreateSession(runCtx, &copilotsdk.SessionConfig{
 		Model:               model,
 		OnPermissionRequest: handler.OnPermissionRequest,
 	})
@@ -109,7 +124,7 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 	defer session.Disconnect() //nolint:errcheck
 
-	// 7. Subscribe to the event stream so model text, tool calls, and tool
+	// 8. Subscribe to the event stream so model text, tool calls, and tool
 	// results reach stdout. Without this, SendAndWait returns silently and
 	// the operator sees nothing — governance still runs, but the demo story
 	// ("model tried X; tool returned Y") is invisible. Registered before
@@ -119,9 +134,9 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	})
 	defer unsubscribe()
 
-	// 8. Dispatch.
+	// 9. Dispatch.
 	if opts.Interactive {
-		return runInteractive(ctx, session, lockdownCh)
+		return runInteractive(runCtx, cancel, session, lockdownCh)
 	}
 
 	// Run the prompt via SendAndWait. While it blocks, the permission
@@ -133,13 +148,15 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	}
 	sendDone := make(chan sendResult, 1)
 	go func() {
-		evt, err := session.SendAndWait(ctx, copilotsdk.MessageOptions{Prompt: prompt})
+		evt, err := session.SendAndWait(runCtx, copilotsdk.MessageOptions{Prompt: prompt})
 		sendDone <- sendResult{evt, err}
 	}()
 
 	select {
 	case lde := <-lockdownCh:
-		// Lockdown fired during the session — terminate cleanly.
+		// Lockdown fired during the session — cancel runCtx so SendAndWait
+		// unblocks promptly, then terminate cleanly.
+		cancel()
 		printLockdownSummary(lde)
 		return nil
 
@@ -156,6 +173,36 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 		}
 		return nil
 	}
+}
+
+// verifyModelAvailable calls ListModels and checks that the requested
+// model id is in the result. Returns nil iff the id is present.
+//
+// Issue #53: when a Copilot CLI release drops a model from its whitelist
+// (or the SDK substitutes a fallback that ALSO pre-filters tool calls),
+// chitin governance silently no-ops on those events. Failing loud at
+// session start gives the operator a clear signal vs. an audit log
+// showing zero events for a session that actually executed tools.
+func verifyModelAvailable(ctx context.Context, sdk *copilotsdk.Client, model string) error {
+	models, err := sdk.ListModels(ctx)
+	if err != nil {
+		// ListModels failure is recoverable — proceed with session create
+		// and let CreateSession surface a real error if the model is bad.
+		// Logging only, no return: we'd rather tolerate a transient list
+		// failure than block the session for a network blip.
+		fmt.Fprintf(os.Stderr, "warning: model whitelist check skipped: %v\n", err)
+		return nil
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return nil
+		}
+	}
+	available := make([]string, 0, len(models))
+	for _, m := range models {
+		available = append(available, m.ID)
+	}
+	return fmt.Errorf("not in available set %v", available)
 }
 
 // Preflight runs 5 startup validations in order.
@@ -189,7 +236,11 @@ func Preflight(opts PreflightOpts) (string, error) {
 	sb.WriteString("  [OK]   policy load\n")
 
 	// 4. ~/.chitin/ writable (create dir + probe file).
-	chitinDir := defaultChitinDir()
+	chitinDir, err := defaultChitinDir()
+	if err != nil {
+		sb.WriteString(fmt.Sprintf("  [FAIL] resolve ~/.chitin/: %v\n", err))
+		return sb.String(), fmt.Errorf("resolve ~/.chitin/: %w", err)
+	}
 	if err := os.MkdirAll(chitinDir, 0755); err != nil {
 		sb.WriteString(fmt.Sprintf("  [FAIL] ~/.chitin/ writable: %v\n", err))
 		return sb.String(), fmt.Errorf("~/.chitin/ writable: %w", err)
@@ -219,9 +270,21 @@ func Preflight(opts PreflightOpts) (string, error) {
 }
 
 // defaultChitinDir returns ~/.chitin, the runtime state directory.
-func defaultChitinDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".chitin")
+//
+// Issue #54: previously swallowed os.UserHomeDir errors and resolved to
+// relative ".chitin" when HOME was unset (CI containers, restrictive
+// sandboxes). gov.db then landed in CWD without warning, breaking
+// audit-log durability across runs. Returns the error so callers can
+// fail-loud at startup.
+func defaultChitinDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	if home == "" {
+		return "", fmt.Errorf("resolve home dir: empty (HOME unset?)")
+	}
+	return filepath.Join(home, ".chitin"), nil
 }
 
 func printLockdownSummary(lde *LockdownError) {
@@ -236,7 +299,10 @@ func printLockdownSummary(lde *LockdownError) {
 // Invariant: every non-empty, non-command line is dispatched exactly once.
 // SDK errors surface to stderr but do not kill the loop — only /quit, /exit,
 // EOF, ctx cancellation, or a lockdown signal terminates the REPL.
-func runInteractive(ctx context.Context, session *copilotsdk.Session, lockdownCh <-chan *LockdownError) error {
+//
+// cancel cancels ctx — call before lockdown / EOF returns so the
+// in-flight SendAndWait goroutine unblocks promptly (issue #57).
+func runInteractive(ctx context.Context, cancel context.CancelFunc, session *copilotsdk.Session, lockdownCh <-chan *LockdownError) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Fprintln(os.Stderr, "chitin/copilot interactive mode. Type /quit or /exit to leave; Ctrl-D for EOF.")
 	for {
@@ -266,6 +332,7 @@ func runInteractive(ctx context.Context, session *copilotsdk.Session, lockdownCh
 
 		select {
 		case lde := <-lockdownCh:
+			cancel()
 			printLockdownSummary(lde)
 			return nil
 		case sendErr := <-sendDone:

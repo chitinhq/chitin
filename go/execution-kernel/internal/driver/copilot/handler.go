@@ -45,6 +45,10 @@ func (e *LockdownError) Error() string {
 //
 // Wire-up: assign Handler.OnPermissionRequest as the OnPermissionRequest
 // field in copilotsdk.SessionConfig or copilotsdk.ClientOptions.
+//
+// The SDK calls OnPermissionRequest synchronously per the documented
+// contract ("Called synchronously by the SDK before each tool execution"),
+// so denials counts as a plain int — no atomic / mutex needed.
 type Handler struct {
 	Gate    Gate
 	Agent   string // "copilot-cli" for this driver
@@ -58,6 +62,13 @@ type Handler struct {
 	// the session cleanly. A capacity-1 buffered channel is recommended so the
 	// send never blocks (lockdown fires at most once per session).
 	LockdownCh chan<- *LockdownError
+
+	// denials counts non-lockdown denies seen by this Handler instance.
+	// Surfaced into LockdownError.Count when lockdown fires so the
+	// printLockdownSummary line ("denials=N") matches what the operator
+	// just watched. 0 when lockdown was detected from a pre-existing
+	// persisted state (no denies seen this session).
+	denials int
 }
 
 // OnPermissionRequest is the SDK PermissionHandlerFunc callback. Called
@@ -107,7 +118,7 @@ func (h *Handler) OnPermissionRequest(
 	}
 
 	if decision.RuleID == "lockdown" {
-		lde := &LockdownError{Agent: h.Agent}
+		lde := &LockdownError{Agent: h.Agent, Count: h.denials}
 		if h.LockdownCh != nil {
 			select {
 			case h.LockdownCh <- lde:
@@ -124,6 +135,7 @@ func (h *Handler) OnPermissionRequest(
 	// Regular deny — "user-not-available" invites the model to attempt a
 	// variation, which drives the escalation counter toward lockdown when
 	// the model keeps firing at the same rule.
+	h.denials++
 	return copilotsdk.PermissionRequestResult{
 		Kind: copilotsdk.PermissionRequestResultKind("user-not-available"),
 	}, nil
