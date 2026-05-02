@@ -593,6 +593,11 @@ function findMatchingOpenBrace(s: string, end: number): number {
   return -1;
 }
 
+// Re-export runGatekeeperNotify so the worker registers it as an
+// activity. Workflows can't make HTTP calls; reviewGraphWorkflow
+// proxies this for the terminal-state Slack digest.
+export { runGatekeeperNotify } from './gatekeeper.ts';
+
 export const __test__ = {
   parseToolSummary,
   planInvocation,

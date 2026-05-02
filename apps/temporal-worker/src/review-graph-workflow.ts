@@ -21,7 +21,7 @@
 // workflow itself so it's reviewable in isolation; the dispatcher edit
 // is the next step.
 
-import { executeChild } from '@temporalio/workflow';
+import { executeChild, proxyActivities } from '@temporalio/workflow';
 import {
   ExecutionRequestSchema,
   type ExecutionRequest,
@@ -404,22 +404,63 @@ function formatParseFailureForNextTier(
 
 // ─── Temporal wrapper ──────────────────────────────────────────────────────
 
+// Activity proxy for the gatekeeper Slack digest. 30s is generous
+// for an HTTP POST + 3s internal timeout; activity itself is
+// best-effort and never throws on Slack failure.
+const { runGatekeeperNotify } = proxyActivities<{
+  runGatekeeperNotify(input: {
+    result: ReviewGraphResult;
+    pr_meta: ReviewGraphInput['pr_meta'];
+    repo: string;
+    entry_id: string;
+  }): Promise<{
+    action: ReviewGraphAction;
+    notified: boolean;
+    reason: string;
+    digest: string;
+  }>;
+}>({
+  startToCloseTimeout: '30 seconds',
+  retry: { maximumAttempts: 1 },
+});
+
 /**
  * The Temporal workflow chitin's review-graph runs as. Thin shell —
  * dispatches each reviewer via `executeChild(executeRequestWorkflow,
- * ...)` and delegates loop logic to runReviewGraphLoop.
+ * ...)` and delegates loop logic to runReviewGraphLoop. After the
+ * loop terminates, fires the gatekeeper notify activity so the
+ * operator gets a Slack digest of the chain's terminal state.
  *
  * Register in worker.ts's workflowsPath module (workflow.ts re-export)
  * before the dispatcher can call `client.workflow.start(...)` with
  * this name.
  */
 export async function reviewGraphWorkflow(input: ReviewGraphInput): Promise<ReviewGraphResult> {
-  return runReviewGraphLoop(input, async (req) => {
+  const result = await runReviewGraphLoop(input, async (req) => {
     return await executeChild<typeof executeRequestWorkflow>('executeRequestWorkflow', {
       args: [req],
       workflowId: req.workflow_id,
     });
   });
+
+  // Fire-and-don't-fail the gatekeeper notify. A Slack outage shouldn't
+  // make the workflow look failed — the chain's audit trail is already
+  // captured in `result`. Errors here are silently swallowed; the
+  // activity itself returns notified=false rather than throwing.
+  try {
+    await runGatekeeperNotify({
+      result,
+      pr_meta: input.pr_meta,
+      repo: input.repo,
+      entry_id: input.entry.id,
+    });
+  } catch {
+    // Activity layer already swallows HTTP errors. This catch covers
+    // the rarer case where Temporal itself rejects the activity call
+    // (worker offline, etc.). The workflow still returns its result.
+  }
+
+  return result;
 }
 
 export const __test__ = {
