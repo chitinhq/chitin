@@ -21,6 +21,10 @@ type RunOpts struct {
 	Cwd         string
 	Interactive bool
 	Verbose     bool
+	// Slice 6c: tier-driven model passes through from
+	// `chitin-kernel drive copilot --model <id>`. Empty string falls
+	// back to the SDK driver default (gpt-4.1, see invariant note).
+	Model string
 }
 
 // PreflightOpts configures a Preflight check.
@@ -92,8 +96,12 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	// ever firing OnPermissionRequest, which bypasses chitin governance entirely.
 	// AvailableTools: nil = all built-in tools remain available so the model
 	// can call shell, file-read, file-write, and other Copilot built-ins.
+	model := opts.Model
+	if model == "" {
+		model = "gpt-4.1"
+	}
 	session, err := client.SDKClient().CreateSession(ctx, &copilotsdk.SessionConfig{
-		Model:               "gpt-4.1",
+		Model:               model,
 		OnPermissionRequest: handler.OnPermissionRequest,
 	})
 	if err != nil {

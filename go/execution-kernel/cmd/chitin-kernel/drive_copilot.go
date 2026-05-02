@@ -23,6 +23,10 @@ func cmdDriveCopilot(args []string) int {
 	interactive := fs.Bool("interactive", false, "launch REPL-style interactive session")
 	preflight := fs.Bool("preflight", false, "run startup validations and exit without starting session")
 	verbose := fs.Bool("verbose", false, "log every Decision JSON to stderr")
+	// Slice 6c: tier-driven model passes through from the activity dispatcher
+	// (CHITIN_MODEL_COPILOT_T0..T4 + COPILOT_TIER_MODEL defaults). Empty
+	// = SDK default (currently gpt-4.1, set in copilot.Run).
+	model := fs.String("model", "", "model id to pass to Copilot SDK SessionConfig (empty = driver default)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: chitin-kernel drive copilot [flags] [prompt]")
 		fs.PrintDefaults()
@@ -53,6 +57,7 @@ func cmdDriveCopilot(args []string) int {
 		Cwd:         *cwd,
 		Interactive: *interactive,
 		Verbose:     *verbose,
+		Model:       *model,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
