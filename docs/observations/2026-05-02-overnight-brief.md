@@ -17,7 +17,9 @@ purpose: One-page brief — what happened overnight, what to look at first.
 | #109 | feat(swarm): Slack notifier for dispatcher events + TimeoutStartSec fix | code | Wires `CHITIN_SLACK_WEBHOOK_URL` env so you see swarm activity in Slack. Also bumps `TimeoutStartSec` 900→2400 because slice-7-tuning's longer wall_timeouts opened a window where systemd killed the dispatcher mid-workflow. 9 unit tests, typecheck clean. |
 | #110 | docs(swarm-backlog): 9 research-informed in-design entries | docs | New entries derived from #107: role-typed-backlog-entries, lessons-learned-sidecar, eval-harness-wiring, multi-step-flows, openclaw-mission-control-otel-hookup, openclaw-temporal-issue-10164-public-comment, chitin-readme-positioning-rewrite, playwright-driver-prototype, notebooklm-ingest-via-playwright, soul-md-schema-alignment. All `in_design` — you promote what looks right. |
 
-**Swarm-produced PRs (6 — autonomous, while we worked):**
+**Swarm-produced PRs (7 — autonomous, while we worked):**
+
+> Latest count as of 2026-05-02 03:50 UTC. The dispatcher is still ticking every 5 min — run `gh pr list --state open --search "swarm:"` for the current set when you wake.
 
 | # | Title | Status | Notes |
 |---|-------|--------|-------|
@@ -27,6 +29,7 @@ purpose: One-page brief — what happened overnight, what to look at first.
 | #106 | swarm: dispatcher-prompt-scope-discipline | open | **Partial** — added the prompt constraint but skipped the post-run integration check (apply-step scope-drift detection). Entry was bigger than the agent delivered. |
 | #108 | swarm: activity-include-hook-events-flag | open | Adds `--include-hook-events` to spawn args + parses hook events from stream-json. Sloppy `any[]` typing for `hookEvents` field — would tighten before merge. |
 | #112 | swarm: qwen-ollama-stream-instability-investigation | open, CI green | **244-line investigation doc — substantive.** Identifies two distinct failure modes (KvSize=262144 forces CPU offload, qwen3coder.go XML parser rejects malformed tool calls) with actual ollama log excerpts. Haiku produced this in 4 min on T2. **CAVEAT:** the agent also overwrote `.claude/settings.json` (replaced `extraKnownMarketplaces`/`enabledPlugins` content with chitin gate hooks) — out of scope for the entry. Revert that file before merging or strip it after. |
+| #113 | swarm: read-vs-read_file-file_path-alias | open | Cleanest swarm PR yet. 5-line Go fix in `gov/normalize.go` (accept `file_path` as alias for `path`) + 16-line test. No scope drift. T1 copilot. |
 
 ## What to merge first (suggested order)
 
