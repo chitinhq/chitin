@@ -549,6 +549,134 @@ func TestNormalize_OpenclawWebTools_PlainAndPrefixed(t *testing.T) {
 	}
 }
 
+// Granular targets for cron / subagents / image — the slice this PR
+// targets. The Target is what policy rules match on, so format here
+// must be stable + tested.
+
+func TestNormalize_Cron_GranularActionName(t *testing.T) {
+	a, _ := Normalize("cron", map[string]any{"action": "create", "name": "rotate-logs"})
+	if a.Type != ActDelegateTask {
+		t.Errorf("cron Type: got %q want delegate.task", a.Type)
+	}
+	if a.Target != "create:rotate-logs" {
+		t.Errorf("cron Target: got %q want create:rotate-logs", a.Target)
+	}
+}
+
+func TestNormalize_Cron_FallbackWhenFieldsMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"target field set", map[string]any{"target": "rotate"}, "rotate"},
+		{"name field only", map[string]any{"name": "rotate"}, "rotate"},
+		{"action only without name", map[string]any{"action": "create"}, "cron"},
+		{"empty payload", map[string]any{}, "cron"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := Normalize("cron", tc.args)
+			if a.Type != ActDelegateTask {
+				t.Errorf("Type: got %q want delegate.task", a.Type)
+			}
+			if a.Target != tc.want {
+				t.Errorf("Target: got %q want %q", a.Target, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalize_Subagents_GranularActionAgentId(t *testing.T) {
+	a, _ := Normalize("subagents", map[string]any{"action": "spawn", "agentId": "review-bot"})
+	if a.Type != ActDelegateTask {
+		t.Errorf("subagents Type: got %q want delegate.task", a.Type)
+	}
+	if a.Target != "spawn:review-bot" {
+		t.Errorf("subagents Target: got %q want spawn:review-bot", a.Target)
+	}
+}
+
+func TestNormalize_Subagents_FallbackWhenFieldsMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"target field set", map[string]any{"target": "review"}, "review"},
+		{"agentId only", map[string]any{"agentId": "review"}, "review"},
+		{"action only without agentId", map[string]any{"action": "spawn"}, "subagents"},
+		{"empty payload", map[string]any{}, "subagents"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := Normalize("subagents", tc.args)
+			if a.Type != ActDelegateTask {
+				t.Errorf("Type: got %q want delegate.task", a.Type)
+			}
+			if a.Target != tc.want {
+				t.Errorf("Target: got %q want %q", a.Target, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalize_SessionsSendSpawn_PreservesActDelegateTask(t *testing.T) {
+	// Regression: an earlier rev of this PR removed sessions_send /
+	// sessions_spawn from the multi-label case, dropping them to
+	// ActUnknown. Both must continue to map to delegate.task with the
+	// most specific peer identifier as Target.
+	cases := []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"sessions_send", map[string]any{"agentId": "peer-a"}, "peer-a"},
+		{"sessions_send", map[string]any{"sessionId": "sess-1"}, "sess-1"},
+		{"sessions_send", map[string]any{"target": "fallback"}, "fallback"},
+		{"sessions_send", map[string]any{}, "sessions_send"},
+		{"sessions_spawn", map[string]any{"agentId": "spawnee"}, "spawnee"},
+		{"sessions_spawn", map[string]any{}, "sessions_spawn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool+"/"+tc.want, func(t *testing.T) {
+			a, _ := Normalize(tc.tool, tc.args)
+			if a.Type != ActDelegateTask {
+				t.Errorf("Type: got %q want delegate.task", a.Type)
+			}
+			if a.Target != tc.want {
+				t.Errorf("Target: got %q want %q", a.Target, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalize_Image_GranularPath(t *testing.T) {
+	cases := []struct {
+		name string
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"image with path", "image", map[string]any{"path": "/img/x.png"}, "/img/x.png"},
+		{"image with url fallback", "image", map[string]any{"url": "https://x/img.png"}, "https://x/img.png"},
+		{"image with neither", "image", map[string]any{}, "image"},
+		{"image_generate with prompt", "image_generate", map[string]any{"prompt": "a cat"}, "a cat"},
+		{"image_generate without prompt", "image_generate", map[string]any{}, "image_generate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := Normalize(tc.tool, tc.args)
+			if a.Type != ActHTTPRequest {
+				t.Errorf("Type: got %q want http.request", a.Type)
+			}
+			if a.Target != tc.want {
+				t.Errorf("Target: got %q want %q", a.Target, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalize_OpenclawChatDomain_NoneUnknown(t *testing.T) {
 	// Regression: every chat-domain tool the pi-runtime exposes for the
 	// `main` openclaw agent today must produce a non-Unknown action so
