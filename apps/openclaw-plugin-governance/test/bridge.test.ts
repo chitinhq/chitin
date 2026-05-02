@@ -5,6 +5,9 @@ import { join } from 'node:path';
 // @ts-expect-error — sibling .mjs without types
 import { evaluateGate } from '../src/chitin-bridge.mjs';
 
+// Plugin index for integration test
+import plugin from '../src/index.mjs';
+
 function makeFakeKernel(scriptBody: string): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'chitin-bridge-test-'));
   const path = join(dir, 'fake-kernel');
