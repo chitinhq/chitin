@@ -133,8 +133,8 @@ alias logic for parity. Add a test that `read_file({file_path: "/x"})` and
 ```yaml
 id: wall-timeout-sigkill-propagation
 tier: T2
-status: in_design
-estimated_loc: 30-60
+status: ready
+estimated_loc: 60
 blocks: []
 file: apps/temporal-worker/src/activity.ts
 references_issue: 82
@@ -158,13 +158,33 @@ confirms close fires within ~1s of the timer.
 
 ---
 
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear, two solution paths are given, and integration test requirements are explicit. T2 fits due to process management and test complexity.
+
+Implementation steps:
+- Update activity.ts to use spawn with { detached: true } for child processes.
+- Modify SIGKILL logic to use process.kill(-pid, 'SIGKILL') for group termination.
+- Add fallback to force-close stdout/stderr if needed.
+- Write an integration test that spawns a process with a hung grandchild.
+- Verify that the 'close' event fires within ~1s after the timer.
+- Document the chosen approach and rationale in code comments.
+
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear, two solution paths are given, and integration test requirements are explicit. T2 fits due to process management and test complexity.
+
+Implementation steps:
+- Update activity.ts to use spawn with { detached: true } for child processes.
+- Modify SIGKILL logic to use process.kill(-pid, 'SIGKILL') for group termination.
+- Add fallback to force-close stdout/stderr if needed.
+- Write an integration test that spawns a process with a hung grandchild.
+- Verify that the 'close' event fires within ~1s after the timer.
+- Document the chosen approach and rationale in code comments.
+
 ### `tools-summary-structured-result`
 
 ```yaml
 id: tools-summary-structured-result
 tier: T1
-status: in_design
-estimated_loc: 20
+status: ready
+estimated_loc: 40
 blocks: []
 file: apps/temporal-worker/src/activity-types.ts, src/activity.ts
 references_issue: 82
@@ -179,13 +199,31 @@ Surface in the workflow result so reviewers don't have to grep stderr.
 
 ---
 
+**Groomed 2026-05-02 (0.95 confidence):** The scope is clear: add a structured field, parse existing JSON, and surface it. Multi-file but straightforward, fits T1.
+
+Implementation steps:
+- Locate where ActivityResult is defined and used.
+- Add an optional tool_summary field to ActivityResult with the specified structure.
+- Update the code that parses openclaw JSON output to extract toolSummary and populate tool_summary.
+- Ensure tool_summary is surfaced in the workflow result object.
+- Write or update tests to verify tool_summary is correctly parsed and exposed.
+
+**Groomed 2026-05-02 (0.95 confidence):** The scope is clear: add a structured field, parse existing JSON, and surface it. Multi-file but straightforward, fits T1.
+
+Implementation steps:
+- Locate where ActivityResult is defined and used.
+- Add an optional tool_summary field to ActivityResult with the specified structure.
+- Update the code that parses openclaw JSON output to extract toolSummary and populate tool_summary.
+- Ensure tool_summary is surfaced in the workflow result object.
+- Write or update tests to verify tool_summary is correctly parsed and exposed.
+
 ### `cron-subagents-image-granular-targets`
 
 ```yaml
 id: cron-subagents-image-granular-targets
 tier: T1
-status: in_design
-estimated_loc: 30
+status: ready
+estimated_loc: 40
 blocks: []
 file: go/execution-kernel/internal/gov/normalize.go
 references_issue: 82
@@ -203,13 +241,31 @@ Read each tool's actual schema from openclaw dist before writing.
 
 ---
 
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear, multi-file but pattern-driven. Requires schema lookup and logic update, fits T1. No ambiguity or need for further breakdown.
+
+Implementation steps:
+- Review openclaw dist to obtain actual schemas for cron, subagents, image, and image_generate tools.
+- Update normalization logic to extract granular target fields per tool type as described.
+- Implement target formatting: cron as <action>:<name>, subagents as <action>:<agentId>, image/image_generate as path or prompt-prefix.
+- Refactor mapping logic to use new granular targets instead of toolName literal.
+- Add/adjust tests to verify correct extraction and mapping for each tool type.
+
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear, multi-file but pattern-driven. Requires schema lookup and logic update, fits T1. No ambiguity or need for further breakdown.
+
+Implementation steps:
+- Review openclaw dist to obtain actual schemas for cron, subagents, image, and image_generate tools.
+- Update normalization logic to extract granular target fields per tool type as described.
+- Implement target formatting: cron as <action>:<name>, subagents as <action>:<agentId>, image/image_generate as path or prompt-prefix.
+- Refactor mapping logic to use new granular targets instead of toolName literal.
+- Add/adjust tests to verify correct extraction and mapping for each tool type.
+
 ### `task-validate-command-pre-activity-gate`
 
 ```yaml
 id: task-validate-command-pre-activity-gate
 tier: T3
-status: in_design
-estimated_loc: 200+
+status: ready
+estimated_loc: 200
 blocks: []
 file: go/execution-kernel/cmd/chitin-kernel/main.go (new subcommand)
 references_spec: docs/superpowers/specs/2026-04-30-local-worker-design-addendum.md
@@ -232,12 +288,32 @@ alignment).
 
 ---
 
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear: new CLI subcommand, Go/TS integration, and test cases. Cross-cutting but well-defined; ready for T3 claim.
+
+Implementation steps:
+- Add new 'task' subcommand group to chitin-kernel CLI in Go
+- Implement 'validate' subcommand: read ExecutionRequest from stdin/file, apply policy narrowing logic
+- Output narrowed or rejected request to stdout in correct format
+- Update submit.ts to shell out to 'chitin-kernel task validate' before Temporal workflow start
+- Write tests for narrow, reject, and passthrough scenarios
+- Align implementation with referenced spec addendum
+
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear: new CLI subcommand, Go/TS integration, and test cases. Cross-cutting but well-defined; ready for T3 claim.
+
+Implementation steps:
+- Add new 'task' subcommand group to chitin-kernel CLI in Go
+- Implement 'validate' subcommand: read ExecutionRequest from stdin/file, apply policy narrowing logic
+- Output narrowed or rejected request to stdout in correct format
+- Update submit.ts to shell out to 'chitin-kernel task validate' before Temporal workflow start
+- Write tests for narrow, reject, and passthrough scenarios
+- Align implementation with referenced spec addendum
+
 ### `chitin-install-slice-3-agents`
 
 ```yaml
 id: chitin-install-slice-3-agents
 tier: T2
-status: in_design
+status: ready
 estimated_loc: 80
 blocks: []
 file: go/execution-kernel/cmd/chitin-kernel/main.go (extend install)
@@ -255,12 +331,34 @@ T2 because the right model per driver depends on local stack availability
 
 ---
 
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear: add a flag/command to automate agent setup, with logic for stack detection and idempotency. No further breakdown needed.
+
+Implementation steps:
+- Add a --slice-3-agents flag to chitin-kernel install (or a new bootstrap-agents command).
+- Detect local model stack availability (ollama, ollama-cloud, Copilot CLI, credentials).
+- For each agent (qwen, glm, deepseek), determine the correct model binding based on stack.
+- Check if each agent already exists; if not, create it with the correct model.
+- Ensure idempotency: re-running does not duplicate or misconfigure agents.
+- Add logging for actions taken and skipped.
+- Test with various stack configurations to verify correct agent setup.
+
+**Groomed 2026-05-02 (0.95 confidence):** Scope is clear: add a flag/command to automate agent setup, with logic for stack detection and idempotency. No further breakdown needed.
+
+Implementation steps:
+- Add a --slice-3-agents flag to chitin-kernel install (or a new bootstrap-agents command).
+- Detect local model stack availability (ollama, ollama-cloud, Copilot CLI, credentials).
+- For each agent (qwen, glm, deepseek), determine the correct model binding based on stack.
+- Check if each agent already exists; if not, create it with the correct model.
+- Ensure idempotency: re-running does not duplicate or misconfigure agents.
+- Add logging for actions taken and skipped.
+- Test with various stack configurations to verify correct agent setup.
+
 ### `openclaw-tool-coverage-audit`
 
 ```yaml
 id: openclaw-tool-coverage-audit
 tier: T1
-status: in_design
+status: ready
 estimated_loc: 40
 blocks: []
 file: docs/observations/2026-05-XX-openclaw-tool-coverage.md (new)
@@ -275,15 +373,31 @@ Run it as a CI check eventually.
 
 ---
 
-### `swarm-shared-memory-spike`
+**Groomed 2026-05-02 (0.95 confidence):** The scope is clear, single-purpose, and multi-file but not complex. Steps are concrete and fit T1. No further breakdown needed.
+
+Implementation steps:
+- Grep openclaw's dist for tool-registration call sites with name: "[a-z_]+"
+- Extract all tool names found in registration calls
+- Parse gov.Normalize's switch cases to collect mapped tool names
+- Diff the two sets to find unmapped tool names
+- Output a report listing missing mappings
+
+**Groomed 2026-05-02 (0.95 confidence):** The scope is clear, single-purpose, and multi-file but not complex. Steps are concrete and fit T1. No further breakdown needed.
+
+Implementation steps:
+- Grep openclaw's dist for tool-registration call sites with name: "[a-z_]+"
+- Extract all tool names found in registration calls
+- Parse gov.Normalize's switch cases to collect mapped tool names
+- Diff the two sets to find unmapped tool names
+- Output a report listing missing mappings
+
+### `swarm-shared-memory-spike` (decomposed)
 
 ```yaml
 id: swarm-shared-memory-spike
-tier: T2
-status: in_design
-estimated_loc: 100+
-blocks: []
-file: docs/superpowers/specs/2026-05-XX-swarm-shared-memory-spike.md (new)
+status: decomposed
+decomposed_into: [event-chain-query-api, session-context-injector, failure-mode-logging]
+decomposed_at: 2026-05-02
 ```
 
 Today's swarm: each workflow is a fresh agent with no memory of previous
@@ -296,6 +410,88 @@ right shape depends on what failure modes show up first — needs a week of
 real swarm runs before we know.
 
 ---
+
+**Groomed:** The spike's scope is cross-cutting and exploratory; needs decomposition into API, injection, and failure analysis before a concrete, claimable task emerges.
+
+**Groomed:** The spike's scope is cross-cutting and exploratory; needs decomposition into API, injection, and failure analysis before a concrete, claimable task emerges.
+
+### `event-chain-query-api`
+
+```yaml
+id: event-chain-query-api
+tier: T1
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Expose API to query event chain for agent/repo history
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+
+### `session-context-injector`
+
+```yaml
+id: session-context-injector
+tier: T1
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Inject retrieved memory into agent session start
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+
+### `failure-mode-logging`
+
+```yaml
+id: failure-mode-logging
+tier: T2
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Log and analyze failure modes from real swarm runs
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+
+### `event-chain-query-api`
+
+```yaml
+id: event-chain-query-api
+tier: T1
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Expose API to query event chain for agent/repo history
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+
+### `session-context-injector`
+
+```yaml
+id: session-context-injector
+tier: T1
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Inject retrieved memory into agent session start
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+
+### `failure-mode-logging`
+
+```yaml
+id: failure-mode-logging
+tier: T2
+status: in_design
+parent: swarm-shared-memory-spike
+```
+
+Log and analyze failure modes from real swarm runs
+
+(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
 
 ## Strategic / user-only (T4)
 
