@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error — sibling .mjs without types
 import { evaluateGate } from '../src/chitin-bridge.mjs';
-
-// Plugin index for integration test
+// @ts-expect-error — sibling .mjs without types
 import plugin from '../src/index.mjs';
 
 function makeFakeKernel(scriptBody: string): { path: string; cleanup: () => void } {
@@ -114,6 +113,54 @@ describe('evaluateGate (bridge → chitin-kernel subprocess)', () => {
       expect(decision.ruleId).toBe('bridge_error');
     } finally {
       fake.cleanup();
+    }
+  });
+});
+
+describe('plugin.before_tool_call params handling', () => {
+  type Handler = (event: { toolName: string; params?: unknown }, ctx: { agentId?: string }) => Promise<unknown>;
+
+  function captureBeforeToolCall(kernelStdoutJson: string): { handler: Handler; cleanup: () => void } {
+    const fake = makeFakeKernel(`echo '${kernelStdoutJson}'; exit 0`);
+    let handler: Handler | undefined;
+    const api = {
+      pluginConfig: { kernelPath: fake.path, timeoutMs: 2000, mode: 'enforce' },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      on: (event: string, fn: Handler) => {
+        if (event === 'before_tool_call') handler = fn;
+      },
+    };
+    plugin.register(api);
+    if (!handler) throw new Error('before_tool_call handler not registered');
+    return { handler, cleanup: fake.cleanup };
+  }
+
+  it('returns undefined when kernel allows with empty params object', async () => {
+    // Empty `{}` is truthy in JS — the pre-fix `decision.params ? ...` branch
+    // would return `{ params: {} }` and clobber the agent's actual args. The
+    // fix uses `Object.keys(...).length > 0` so {} now resolves to undefined.
+    const { handler, cleanup } = captureBeforeToolCall('{"allowed":true,"params":{}}');
+    try {
+      const result = await handler(
+        { toolName: 'shell.exec', params: { cmd: 'ls' } },
+        { agentId: 'test-agent' },
+      );
+      expect(result).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns the rewrite when kernel allows with non-empty params', async () => {
+    const { handler, cleanup } = captureBeforeToolCall('{"allowed":true,"params":{"cmd":"ls -la"}}');
+    try {
+      const result = await handler(
+        { toolName: 'shell.exec', params: { cmd: 'ls' } },
+        { agentId: 'test-agent' },
+      );
+      expect(result).toEqual({ params: { cmd: 'ls -la' } });
+    } finally {
+      cleanup();
     }
   });
 });
