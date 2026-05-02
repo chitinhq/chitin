@@ -13,6 +13,7 @@
 
 import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
+import { RESEARCHER_OUTPUT_INSTRUCTIONS } from './researcher-prompts.ts';
 
 export type RolePromptBuilder = (entry: BacklogEntry) => string;
 
@@ -47,10 +48,40 @@ CONSTRAINTS:
 REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
 }
 
-// Stub for non-programmer roles. Future entries replace these with
-// real per-role prompts (researcher reads HN/arxiv; reviewer reads
-// the PR's diff; etc.). For now the stub frames the role and points
-// at the entry — better than crashing, worse than the eventual
+// Researcher prompt for the BacklogEntry path. The richer runner-level
+// version (buildResearcherPrompt in researcher-prompts.ts) takes
+// pre-fetched source summaries + existing-candidate ids; that path is
+// invoked by the future external-signal-fetchers runner. When a
+// backlog entry just declares `role: researcher` without that runner
+// context, the entry itself describes the research task — the agent
+// reads source material itself rather than receiving summaries. Both
+// paths emit the same `<<<CANDIDATES>>>` marker so a single parser
+// (parseResearcherOutput) handles both.
+function buildResearcherEntryPrompt(entry: BacklogEntry): string {
+  return `You are playing the researcher role in chitin's autonomous swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3 for the role's scope.
+
+This research task came in as a backlog entry rather than via the periodic external-signal-fetchers runner, so no source summaries are pre-fetched. Read the entry detail to learn what to research, fetch the source material yourself (arxiv abstracts, GitHub READMEs, blog posts, etc.) using available tools, then synthesize candidates for \`docs/roadmap.md\`'s "Candidates from external signal" section.
+
+ENTRY ID: ${entry.id}
+ROLE: researcher
+
+ENTRY DETAIL:
+${entry.description}
+
+Synthesis rules:
+- One candidate per genuinely-new finding. Don't over-batch related items into one row; don't fragment one finding into multiple rows.
+- The "why" field is load-bearing — spend the words on chitin-specific implications, not generic novelty.
+- Skip restatements of existing chitin work. Skip pure marketing.
+- If you can't tell whether something matters, skip it. The roadmap reader trusts you to filter — false-positives are worse than false-negatives.
+- Do not edit roadmap.md directly from this prompt. The runner inserts candidates after parsing your structured emit.
+
+${RESEARCHER_OUTPUT_INSTRUCTIONS}`;
+}
+
+// Stub for the remaining non-programmer roles. Future entries replace
+// these with real per-role prompts (reviewer reads the PR's diff; qa
+// runs validation suites; etc.). For now the stub frames the role and
+// points at the entry — better than crashing, worse than the eventual
 // dedicated template.
 function buildStubPrompt(role: Role, entry: BacklogEntry): string {
   return `You are playing the ${role} role in the chitin swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3 for what this role owns.
@@ -72,8 +103,12 @@ CONSTRAINTS:
 const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   programmer: buildProgrammerPrompt,
 
+  // Researcher uses its dedicated entry-level template (the runner-
+  // level template lives in researcher-prompts.ts, called directly
+  // by the external-signal-fetchers runner with richer context).
+  researcher: buildResearcherEntryPrompt,
+
   // Stubs — replaced by dedicated templates in follow-up entries.
-  researcher: (entry) => buildStubPrompt('researcher', entry),
   product: (entry) => buildStubPrompt('product', entry),
   groomer: (entry) => buildStubPrompt('groomer', entry),
   architect: (entry) => buildStubPrompt('architect', entry),
@@ -127,4 +162,5 @@ export const __test__ = {
   ROLE_PROMPTS,
   ROLE_VOCAB,
   buildStubPrompt,
+  buildResearcherEntryPrompt,
 };
