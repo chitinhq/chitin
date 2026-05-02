@@ -125,13 +125,25 @@ the dispatcher, and locks in the review escalation policy in code.
 ```yaml
 id: agent-adversarial-review-pass
 tier: T3
-status: ready
+status: completed
+shipped_in: PR #134
 estimated_loc: 200
 blocks: [review-graph-executor]
-file: apps/temporal-worker/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
+file: apps/temporal-worker/src/reviewer-prompts.ts, apps/temporal-worker/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
 ```
+
+> **✅ COMPLETED 2026-05-02 in PR #134.** Real adversarial-review
+> prompt builder + structured-output parser shipped in
+> `apps/temporal-worker/src/reviewer-prompts.ts` (separate module
+> from `role-prompts.ts` for cleaner separation between dispatcher-
+> level role prompts and the review-graph's child-workflow
+> prompts). 35 tests cover the schema + parser + tier-tone
+> differences + every render-or-fallback branch. The backlog
+> dispatcher hasn't yet been taught to respect `blocks:` (known
+> gap), which is why the swarm self-dispatched the entry as PR #135
+> while #134 was in flight; #135 was closed.
 
 Phase 2 of the factory design. Replaces the `reviewer` role's stub
 prompt (placeholder shipped in PR #130) with a real adversarial-
