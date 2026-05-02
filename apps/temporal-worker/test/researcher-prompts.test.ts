@@ -57,11 +57,27 @@ describe('ResearcherCandidateSchema', () => {
     const bad = { source: 'arxiv', id: 'x', summary: 's' };
     expect(() => ResearcherCandidateSchema.parse(bad)).toThrow();
   });
+
+  it('rejects extra unknown keys (strict mode — surfaces agent-invented fields)', () => {
+    const bad = {
+      source: 'arxiv',
+      id: 'x',
+      summary: 's',
+      why: 'w',
+      priority: 'high', // not in schema; should fail rather than be silently dropped
+    };
+    expect(() => ResearcherCandidateSchema.parse(bad)).toThrow();
+  });
 });
 
 describe('ResearcherCandidatesSchema', () => {
   it('accepts an empty list (no findings is a valid output)', () => {
     expect(() => ResearcherCandidatesSchema.parse({ candidates: [] })).not.toThrow();
+  });
+
+  it('rejects extra unknown keys at the wrapper level (strict mode)', () => {
+    const bad = { candidates: [], notes: 'agent-added scratchpad' };
+    expect(() => ResearcherCandidatesSchema.parse(bad)).toThrow();
   });
 
   it('accepts multiple candidates', () => {

@@ -19,22 +19,31 @@ import { z } from 'zod';
 
 // ─── Zod schema for structured output ──────────────────────────────────────
 
-export const ResearcherCandidateSchema = z.object({
-  /** Which source the candidate came from — arxiv / reddit / hn / openclaw / ollama / etc. */
-  source: z.string().min(1),
-  /** Stable id for dedup against existing roadmap entries. Typically
-   *  the source's native id (arxiv id, reddit post id, gh release tag). */
-  id: z.string().min(1),
-  /** One-sentence summary the operator can grep through. */
-  summary: z.string().min(1),
-  /** Why this is worth surfacing as a candidate — the load-bearing
-   *  reasoning step. Empty/generic "why" rows feel like noise. */
-  why: z.string().min(1),
-});
+// .strict() rejects unknown keys: an agent that emits an extra field
+// (e.g., a `priority` it invented) is a contract violation, and
+// silently dropping it would let drift accumulate. Surface the
+// mismatch instead, so the runner logs it and we can decide whether
+// to extend the schema or tighten the prompt.
+export const ResearcherCandidateSchema = z
+  .object({
+    /** Which source the candidate came from — arxiv / reddit / hn / openclaw / ollama / etc. */
+    source: z.string().min(1),
+    /** Stable id for dedup against existing roadmap entries. Typically
+     *  the source's native id (arxiv id, reddit post id, gh release tag). */
+    id: z.string().min(1),
+    /** One-sentence summary the operator can grep through. */
+    summary: z.string().min(1),
+    /** Why this is worth surfacing as a candidate — the load-bearing
+     *  reasoning step. Empty/generic "why" rows feel like noise. */
+    why: z.string().min(1),
+  })
+  .strict();
 
-export const ResearcherCandidatesSchema = z.object({
-  candidates: z.array(ResearcherCandidateSchema),
-});
+export const ResearcherCandidatesSchema = z
+  .object({
+    candidates: z.array(ResearcherCandidateSchema),
+  })
+  .strict();
 
 export type ResearcherCandidate = z.infer<typeof ResearcherCandidateSchema>;
 export type ResearcherCandidates = z.infer<typeof ResearcherCandidatesSchema>;
