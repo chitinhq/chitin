@@ -1,13 +1,15 @@
 {
-  "extraKnownMarketplaces": {
-    "nx-claude-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "nrwl/nx-ai-agents-config"
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "chitin-kernel gate evaluate --hook-stdin --agent=claude-code"
+          }
+        ]
       }
-    }
-  },
-  "enabledPlugins": {
-    "nx@nx-claude-plugins": true
+    ]
   }
 }
