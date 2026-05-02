@@ -31,11 +31,36 @@ func SetWarnSink(w io.Writer) { warnSink = w }
 //	Edit, Write, NotebookEdit           → file.write
 //	Read                                → file.read
 //	WebFetch, WebSearch                 → http.request
-//	Task                                → delegate.task
+//	Task, Agent, Skill                  → delegate.task (subagent dispatch
+//	                                      + skill invocation are the same
+//	                                      shape: cede a tool budget to a
+//	                                      subordinate agent)
+//	TaskCreate, TaskUpdate              → file.write target="task-state"
+//	TaskGet, TaskList, TaskOutput,
+//	  ToolSearch, AskUserQuestion       → file.read (browse-shape; no
+//	                                      external side effect)
+//	TaskStop                            → delegate.task (terminating an
+//	                                      earlier delegation; same shape)
+//	Monitor                             → shell.exec (spawns subprocess)
+//	EnterPlanMode, ExitPlanMode         → file.read (mode toggle, no side
+//	                                      effect on the host)
+//	EnterWorktree, ExitWorktree         → git.worktree.add / .remove
+//	PushNotification, RemoteTrigger     → http.request (external send)
+//	CronCreate                          → file.write target="cron"
+//	CronDelete                          → file.delete target="cron"
+//	CronList, ScheduleWakeup            → file.read / file.write (schedule
+//	                                      state change is write-shape)
 //	Glob, Grep, LS                      → file.read (browse-shaped, default-allow)
 //	TodoWrite                           → file.write target="todo"
 //	                                      (matches existing gov.Normalize convention)
 //	<unknown>                           → ActUnknown (fail-closed at policy)
+//
+// Issue #69: closed-enum coverage gap. Pre-fix, modern Claude Code
+// tools (Agent, Skill, TaskCreate-family, etc.) all fell to ActUnknown
+// → fail-closed → blocked under enforce mode, forcing operators to
+// monitor mode globally. Now each name has a deliberate mapping; new
+// tools added by Anthropic still hit ActUnknown (correct fail-closed
+// behavior), but the common ones don't surprise the operator.
 //
 // The Glob/Grep/LS/TodoWrite resolution follows the plan's leaning
 // recommendation: read-shaped browse tools default-allow rather than
@@ -88,17 +113,128 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "Task":
-		// Task = subagent delegation. Use the description (human-readable
-		// goal) as the Target since policy rules and audit-log readers
-		// want the intent, not the verbose subagent_type or prompt.
+	case "Task", "Agent", "Skill":
+		// Subagent delegation OR skill invocation. Both cede a tool
+		// budget to a subordinate agent — same policy shape. Target
+		// is the human-readable intent (description / subagent_type /
+		// skill name) so audit-log readers see what the agent meant
+		// to do, not the verbose prompt.
 		target := stringField(in.ToolInput, "description")
 		if target == "" {
 			target = stringField(in.ToolInput, "subagent_type")
 		}
+		if target == "" {
+			target = stringField(in.ToolInput, "skill")
+		}
 		return gov.Action{
 			Type:   gov.ActDelegateTask,
 			Target: target,
+			Path:   in.Cwd,
+		}, nil
+
+	case "TaskStop":
+		// Terminating an earlier delegation — same delegate-task
+		// policy shape. Target is the task id being stopped.
+		return gov.Action{
+			Type:   gov.ActDelegateTask,
+			Target: stringField(in.ToolInput, "task_id"),
+			Path:   in.Cwd,
+		}, nil
+
+	case "TaskCreate", "TaskUpdate":
+		// Mutate a task-list entry. file.write target="task-state"
+		// matches the convention TodoWrite uses (single-target write
+		// the operator can scope-allow with one rule).
+		return gov.Action{
+			Type:   gov.ActFileWrite,
+			Target: "task-state",
+			Path:   in.Cwd,
+		}, nil
+
+	case "TaskGet", "TaskList", "TaskOutput", "ToolSearch", "AskUserQuestion":
+		// Browse-shape; no external side effect. Default-allow under
+		// the existing read policy.
+		return gov.Action{
+			Type:   gov.ActFileRead,
+			Target: in.ToolName,
+			Path:   in.Cwd,
+		}, nil
+
+	case "Monitor":
+		// Spawns a subprocess + streams events. shell.exec shape so
+		// the operator can scope-allow with the existing exec rules.
+		return gov.Action{
+			Type:   gov.ActShellExec,
+			Target: stringField(in.ToolInput, "command"),
+			Path:   in.Cwd,
+		}, nil
+
+	case "EnterPlanMode", "ExitPlanMode":
+		// Mode toggle — no host-visible side effect. Browse-shape.
+		return gov.Action{
+			Type:   gov.ActFileRead,
+			Target: in.ToolName,
+			Path:   in.Cwd,
+		}, nil
+
+	case "EnterWorktree":
+		return gov.Action{
+			Type:   gov.ActGitWorktreeAdd,
+			Target: stringField(in.ToolInput, "branch"),
+			Path:   in.Cwd,
+		}, nil
+
+	case "ExitWorktree":
+		return gov.Action{
+			Type:   gov.ActGitWorktreeRemove,
+			Target: stringField(in.ToolInput, "path"),
+			Path:   in.Cwd,
+		}, nil
+
+	case "PushNotification", "RemoteTrigger":
+		// Outbound network — http.request shape. Operator can
+		// allowlist by target host through the existing net rules.
+		target := stringField(in.ToolInput, "url")
+		if target == "" {
+			target = stringField(in.ToolInput, "endpoint")
+		}
+		if target == "" {
+			target = in.ToolName
+		}
+		return gov.Action{
+			Type:   gov.ActHTTPRequest,
+			Target: target,
+			Path:   in.Cwd,
+		}, nil
+
+	case "CronCreate":
+		return gov.Action{
+			Type:   gov.ActFileWrite,
+			Target: "cron",
+			Path:   in.Cwd,
+		}, nil
+
+	case "CronDelete":
+		return gov.Action{
+			Type:   gov.ActFileDelete,
+			Target: "cron",
+			Path:   in.Cwd,
+		}, nil
+
+	case "CronList":
+		return gov.Action{
+			Type:   gov.ActFileRead,
+			Target: "cron",
+			Path:   in.Cwd,
+		}, nil
+
+	case "ScheduleWakeup":
+		// Schedules a future agent-loop iteration — write-shape state
+		// mutation. Target = the wakeup id (delaySeconds + reason
+		// could go in payload but Target is the policy hook).
+		return gov.Action{
+			Type:   gov.ActFileWrite,
+			Target: "schedule-wakeup",
 			Path:   in.Cwd,
 		}, nil
 
