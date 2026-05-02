@@ -31,7 +31,7 @@ import { Connection, Client } from '@temporalio/client';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { DriverId, Tier } from '@chitin/contracts';
 import { execFileSync, execSync } from 'node:child_process';
-import { mkdirSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -194,31 +194,140 @@ async function findRunningSwarmWorkflow(client: Client): Promise<string | null> 
   return null;
 }
 
-function entryHasDispatchMarker(entryId: string): boolean {
-  const path = resolve(STATE_DIR, `${entryId}.json`);
-  return existsSync(path);
+// Implementor-side escalation: tier ladder mirrors review-graph's
+// R1→R2→R3→operator escalation. A failed dispatch (commits=0) gets
+// re-attempted at one tier higher; after exhausting T4, the marker
+// stays stuck and the operator picks up.
+//
+// The "junior dev" intuition: if a junior can't ship the work +
+// tests pass cleanly, escalate to senior. Don't throw away the
+// effort — but DO escalate before another junior tries the same
+// thing again.
+const TIER_LADDER: Tier[] = ['T0', 'T1', 'T2', 'T3', 'T4'];
+
+interface MarkerOutcome {
+  exit_code: number;
+  commits_added: number;
+  completed_at: string;
 }
 
-function writeDispatchMarker(entryId: string, workflowId: string, tier: Tier, driver: DriverId) {
+interface DispatchMarker {
+  entry_id: string;
+  workflow_id: string;
+  tier: Tier;
+  driver: DriverId;
+  dispatched_at: string;
+  /** Last completed result. Written by `recordDispatchOutcome` after
+   *  the workflow returns. Absent until then — caller must treat
+   *  marker-without-outcome as "still in flight, do not re-dispatch". */
+  last_result?: MarkerOutcome;
+  /** Tier ladder visited so far. The junior-dev escalation rule:
+   *  re-dispatch at the next-up tier, log every attempt. */
+  tier_attempts?: Tier[];
+}
+
+function readDispatchMarker(entryId: string): DispatchMarker | null {
+  const path = resolve(STATE_DIR, `${entryId}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as DispatchMarker;
+  } catch {
+    return null;
+  }
+}
+
+function entryHasDispatchMarker(entryId: string): boolean {
+  return readDispatchMarker(entryId) !== null;
+}
+
+function writeDispatchMarker(
+  entryId: string,
+  workflowId: string,
+  tier: Tier,
+  driver: DriverId,
+  prior?: DispatchMarker | null,
+) {
   mkdirSync(STATE_DIR, { recursive: true });
   const path = resolve(STATE_DIR, `${entryId}.json`);
-  writeFileSync(
-    path,
-    JSON.stringify(
-      {
-        entry_id: entryId,
-        workflow_id: workflowId,
-        tier,
-        driver,
-        dispatched_at: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
+  const tier_attempts: Tier[] = prior?.tier_attempts ?? (prior ? [prior.tier] : []);
+  if (!tier_attempts.includes(tier)) tier_attempts.push(tier);
+  const marker: DispatchMarker = {
+    entry_id: entryId,
+    workflow_id: workflowId,
+    tier,
+    driver,
+    dispatched_at: new Date().toISOString(),
+    tier_attempts,
+  };
+  writeFileSync(path, JSON.stringify(marker, null, 2));
 }
 
-function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
+/**
+ * Update the marker with the workflow's terminal outcome. Called
+ * after `handle.result()` returns. Idempotent re-writes are safe.
+ */
+function recordDispatchOutcome(
+  entryId: string,
+  result: { exit_code: number; commits_added: number },
+) {
+  const marker = readDispatchMarker(entryId);
+  if (!marker) return; // marker missing — don't synthesize one
+  marker.last_result = {
+    exit_code: result.exit_code,
+    commits_added: result.commits_added,
+    completed_at: new Date().toISOString(),
+  };
+  const path = resolve(STATE_DIR, `${entryId}.json`);
+  writeFileSync(path, JSON.stringify(marker, null, 2));
+}
+
+/**
+ * Implementor-side escalation rule. Reads the marker; decides
+ * whether the entry is re-dispatchable at a higher tier.
+ *
+ * Returns:
+ *   { kind: 'no-marker' }              — first dispatch, no escalation
+ *   { kind: 'in-flight' }              — workflow still running; skip
+ *   { kind: 'shipped' }                — commits made; chain handles it
+ *   { kind: 'exhausted' }              — last tier was T4; operator-only
+ *   { kind: 'escalate', nextTier: T }  — re-dispatch at nextTier
+ *
+ * The "shipped" case covers the user's "junior dev" point: if the
+ * agent committed work — even if tests then failed — the work is
+ * REAL, the reviewer chain catches the rest. Don't re-dispatch on
+ * top of an already-pushed branch.
+ */
+export function classifyDispatchEscalation(marker: DispatchMarker | null): {
+  kind: 'no-marker' | 'in-flight' | 'shipped' | 'exhausted' | 'escalate';
+  nextTier?: Tier;
+} {
+  if (!marker) return { kind: 'no-marker' };
+  if (!marker.last_result) return { kind: 'in-flight' };
+  if (marker.last_result.commits_added > 0) return { kind: 'shipped' };
+  // commits=0 → the work was lost. Escalate to the next-up tier.
+  const visited = new Set(marker.tier_attempts ?? [marker.tier]);
+  const lastTier = marker.tier_attempts?.[marker.tier_attempts.length - 1] ?? marker.tier;
+  const lastIdx = TIER_LADDER.indexOf(lastTier);
+  // Find the next tier we haven't tried; cap at T4.
+  for (let i = lastIdx + 1; i < TIER_LADDER.length; i++) {
+    const candidate = TIER_LADDER[i];
+    if (!visited.has(candidate)) return { kind: 'escalate', nextTier: candidate };
+  }
+  return { kind: 'exhausted' };
+}
+
+interface PickedEntry {
+  entry: BacklogEntry;
+  /** Tier to dispatch at. Equals entry.tier on first dispatch; one
+   *  step UP the ladder when re-dispatching after a commits=0 outcome
+   *  (junior-dev escalation rule). */
+  effectiveTier: Tier;
+  /** Prior marker, if escalating. Caller passes to writeDispatchMarker
+   *  so tier_attempts accumulates. */
+  priorMarker: DispatchMarker | null;
+}
+
+function pickEntryToDispatch(entries: BacklogEntry[]): PickedEntry | null {
   // One fetch per tick — entryHasOriginBranch reads cached refs after
   // this. Without the hoist, an N-entry × K-blocker scan would do N×K
   // network round trips per tick.
@@ -243,13 +352,32 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
       log('info', 'skip entry: swarm/<id> branch exists on origin', { entry_id: entry.id });
       continue;
     }
-    if (entryHasDispatchMarker(entry.id)) {
-      log('info', 'skip entry: dispatch marker present (operator must rm to retry)', {
+
+    // Implementor-side escalation: read the marker, decide whether
+    // a prior failed run is re-dispatchable at a higher tier.
+    const marker = readDispatchMarker(entry.id);
+    const escalation = classifyDispatchEscalation(marker);
+    if (escalation.kind === 'in-flight') {
+      log('info', 'skip entry: dispatch marker present, last run still in flight', {
         entry_id: entry.id,
-        marker: resolve(STATE_DIR, `${entry.id}.json`),
       });
       continue;
     }
+    if (escalation.kind === 'shipped') {
+      log('info', 'skip entry: prior run committed work — review chain handles the rest', {
+        entry_id: entry.id,
+        commits: marker?.last_result?.commits_added,
+      });
+      continue;
+    }
+    if (escalation.kind === 'exhausted') {
+      log('info', 'skip entry: tier ladder exhausted (T4 attempted) — operator-only now', {
+        entry_id: entry.id,
+        tier_attempts: marker?.tier_attempts,
+      });
+      continue;
+    }
+
     const unmetBlocker = findUnmetBlocker(entry, entryHasOriginBranch);
     if (unmetBlocker !== undefined) {
       log('info', 'skip entry: blocked-by', {
@@ -258,7 +386,19 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
       });
       continue;
     }
-    return entry;
+
+    let effectiveTier = entry.tier as Tier;
+    if (escalation.kind === 'escalate' && escalation.nextTier) {
+      effectiveTier = escalation.nextTier;
+      log('info', 'escalating entry to next tier (prior run produced no commits)', {
+        entry_id: entry.id,
+        prior_tier: marker?.tier,
+        next_tier: effectiveTier,
+        tier_attempts: marker?.tier_attempts,
+      });
+    }
+
+    return { entry, effectiveTier, priorMarker: marker };
   }
   return null;
 }
@@ -377,13 +517,14 @@ async function main() {
     }
 
     const entries = parseBacklog(BACKLOG_PATH);
-    const entry = pickEntryToDispatch(entries);
-    if (!entry) {
+    const picked = pickEntryToDispatch(entries);
+    if (!picked) {
       log('info', 'no ready entry to dispatch this tick');
       await notifyTickIdle('no ready entry to dispatch');
       return;
     }
-    const tier = entry.tier as Tier;
+    const { entry, effectiveTier, priorMarker } = picked;
+    const tier = effectiveTier;
     const driver = TIER_DRIVER[tier];
     const wallTimeout = TIER_WALL_TIMEOUT_S[tier];
     const maxToolCalls = TIER_MAX_TOOL_CALLS[tier];
@@ -430,10 +571,12 @@ async function main() {
     });
 
     // Write the marker BEFORE submit. If submit fails, marker still
-    // present → operator's intent is "this entry was attempted; don't
-    // auto-retry." Manual rm to retry. This is intentionally pessimistic:
-    // the swarm doesn't quietly retry without operator review.
-    writeDispatchMarker(entry.id, workflowId, tier, driver);
+    // present → next tick reads it via the escalation classifier.
+    // The new escalation logic supersedes the previous "operator must
+    // rm to retry" rule: a failed dispatch (commits=0) auto-escalates
+    // one tier up; only T4-exhausted entries stay stuck for operator
+    // pickup. priorMarker carries the tier_attempts ladder forward.
+    writeDispatchMarker(entry.id, workflowId, tier, driver, priorMarker);
 
     let handle;
     try {
@@ -459,8 +602,19 @@ async function main() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'workflow', error: msg });
+      // Record outcome so the next tick's escalation classifier knows
+      // the run terminated. exit_code=-1 + commits=0 is the SIGKILL
+      // signature; commits=0 alone signals re-dispatchable.
+      recordDispatchOutcome(entry.id, { exit_code: -1, commits_added: 0 });
       throw err;
     }
+    // Record terminal outcome on the marker so the next dispatcher
+    // tick's escalation classifier sees commits=N and decides shipped/
+    // re-dispatch correctly.
+    recordDispatchOutcome(entry.id, {
+      exit_code: result.exit_code,
+      commits_added: result.worktree?.commits_added ?? 0,
+    });
     mkdirSync(TMP_DIR, { recursive: true });
     const envelopePath = resolve(TMP_DIR, `result-${workflowId}.json`);
     writeFileSync(

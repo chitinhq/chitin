@@ -2061,3 +2061,90 @@ Operator action item: the dispatcher's branch + marker checks already
 keep these from re-dispatching. If you want a clean visual scan of
 "what's left", filter the file by `status: ready` lines that are NOT
 in the table above.
+
+## Strategic roadmap entries (filed 2026-05-02)
+
+These are not bite-sized backlog entries — they're substrate-level
+investments where the OUTCOME is "lower-tier agents succeed at tasks
+they'd otherwise need higher-tier (more expensive) agents for." The
+positioning bet: chitin's edge isn't smarter agents, it's a better
+HARNESS that makes cheaper agents succeed. Devin and Cursor make the
+agent better. Chitin makes the substrate better — the determinism,
+the tools, the memory, the recipes — so a copilot-tier agent solves
+problems an Opus-tier agent used to need.
+
+Each entry below is a roadmap seed: it should be groomed into smaller
+scopes before the swarm can claim them.
+
+### `agent-harness-substrate-roadmap`
+
+```yaml
+id: agent-harness-substrate-roadmap
+tier: T5
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD (multiple — substrate-level work spans apps/, libs/, kernel)
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md (positioning) + this commit's PR description
+role: architect
+```
+
+The strategic roadmap for "make lower-tier agents win." The
+operating bet: success rate of a tier-N agent is dominated by
+the harness it has, not the model. Concrete substrates worth
+investing in (each becomes its own scope-down entry once an
+architect prioritizes):
+
+1. **Pre-canned recipe library** (extending `analysis.investigate`)
+   - The analyst recipe pattern (#164) generalizes. Every role can
+     have a recipe library: `qa.replay-failed-test`,
+     `architect.draft-adr-from-entry`, `groomer.classify-tier`,
+     `programmer.scaffold-test-file`. Same shape: deterministic CLI,
+     structured emit, agent reports the result. The agent's job
+     collapses from "figure out what to do" to "pick the right
+     recipe and run it."
+
+2. **Shared memory layer** (ClaudeMem-shape OR a chitin-native
+   equivalent)
+   - Today the only cross-run memory is `swarm-lessons.md` (text
+     prepended to programmer prompts). That's lossy + LLM-distilled.
+     A typed memory store (key-value or vector or graph) lets:
+     - Reviewers cite past similar bugs by id
+     - Programmers retrieve the EXACT prior diff that matched the
+       current entry's pattern
+     - Analysts reuse cached analysis results within a window
+   - Open question: build it OR adopt? ClaudeMem exists but coupling
+     chitin to it has lock-in risk. A chitin-native event-chain-
+     backed memory might be the right substrate (the chain is
+     already a memory; the missing piece is the typed retrieval API).
+
+3. **MCP tool servers for the swarm's own workflows**
+   - Right now agents have shell + edit + read. They could have
+     typed MCP tools: `chitin.entry.read("<id>")`,
+     `chitin.lesson.cite("<lesson-id>")`,
+     `chitin.recipe.run("analyst.investigate", {...})`,
+     `chitin.gov.gate.test(<command>)`. Typed tools turn the
+     agent's prompt from "figure out the right shell command" into
+     "call the typed function." Determinism goes up, success rate
+     goes up.
+
+4. **Better entry shape**
+   - Today `BacklogEntry` is mostly free-form prose under a yaml
+     header. Higher-determinism shape would include:
+     `acceptance_criteria: ["test X passes", "no rule rendered changes"]`,
+     `read_first: ["./apps/foo.ts", "./docs/design/..."]`,
+     `prompt_examples: ["see how it was done in #142"]`. Closer to
+     a Lobster-style YAML-first task definition.
+
+5. **Implementor-side escalation telemetry**
+   - The escalation feature shipped in this PR fires re-dispatch on
+     commits=0. We need an observation pass after some soak: which
+     entries are NEVER cleared by escalation? Those are the entries
+     where ALL tiers (T1-T4) fail — meaning the entry itself is
+     malformed, not the agent. The pattern matters: groomers should
+     learn to spot those entry shapes before dispatch.
+
+The architect role (when shipped) is the right home for this entry.
+Operator: when picking up, decompose into 5+ T1-T2 scope-down
+entries with concrete files + LOC estimates. Each substrate piece
+ships independently; the "substrate" is the union, not a monolith.
