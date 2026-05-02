@@ -22,12 +22,15 @@
 // is the next step.
 
 import { executeChild, proxyActivities } from '@temporalio/workflow';
-import {
-  ExecutionRequestSchema,
-  type ExecutionRequest,
-  type DriverId,
-  type Tier,
-} from '@chitin/contracts';
+// Type-only imports — Temporal's workflow bundler (webpack) cannot
+// resolve `node:` imports, and @chitin/contracts/index.ts re-exports
+// from hash.ts (uses node:crypto) and chitindir-resolve.ts (uses
+// node:fs / node:path / node:os). A value import of ExecutionRequestSchema
+// pulls those in transitively and the bundle fails. We construct the
+// reviewer's ExecutionRequest as a plain object satisfying the type;
+// the schema check can run in the activity layer (where node: imports
+// are fine) if we ever need it.
+import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
 import type { ActivityResult } from './activity-types.ts';
 import type { executeRequestWorkflow } from './workflow.ts';
 import {
@@ -295,7 +298,13 @@ function buildReviewerRequest(
   // hint; the actual model lock-down lives in the env override.
   const reviewerWorkflowId = deriveReviewerWorkflowId(input.parent_workflow_id, tier);
 
-  return ExecutionRequestSchema.parse({
+  // Construct as a typed plain object — schema validation moved out of
+  // the workflow path because the bundler can't include @chitin/contracts'
+  // runtime exports (transitively pulls node:crypto / node:fs). The
+  // shape is enforced statically by ExecutionRequest's type. If/when
+  // we want a runtime validate hook, do it in the activity that
+  // consumes the request.
+  const req: ExecutionRequest = {
     schema_version: '1',
     workflow_id: reviewerWorkflowId,
     run_id: `${reviewerWorkflowId}-attempt-1`,
@@ -315,7 +324,8 @@ function buildReviewerRequest(
     role: 'reviewer',
     parent_workflow_id: input.parent_workflow_id,
     step_index: tierAsStepIndex(tier),
-  });
+  };
+  return req;
 }
 
 /**
