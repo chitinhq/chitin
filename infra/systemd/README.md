@@ -16,6 +16,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-swarm-rollup.timer` | timer | Fires the rollup once per day. |
 | `chitin-lessons.service` | oneshot | Daily lessons-learned extractor: scans merged swarm/* PRs, distills a one-sentence lesson per, appends to `docs/swarm-lessons.md`. The dispatcher prepends recent lessons to programmer prompts. |
 | `chitin-lessons.timer` | timer | Fires the lessons extractor once per day. |
+| `chitin-debt-curator.service` | oneshot | Daily debt-curator scan: greps the repo for TODO/FIXME/HACK/XXX markers, dedups, appends new finds to `docs/debt-ledger.md` at severity:'low' (operator promotes). |
+| `chitin-debt-curator.timer` | timer | Fires the debt-curator once per day. |
 
 ## Install
 
@@ -28,6 +30,7 @@ systemctl --user enable --now chitin-dispatcher.timer
 systemctl --user enable --now chitin-researcher.timer
 systemctl --user enable --now chitin-swarm-rollup.timer
 systemctl --user enable --now chitin-lessons.timer
+systemctl --user enable --now chitin-debt-curator.timer
 ```
 
 To survive logout (start at boot):
@@ -45,6 +48,7 @@ journalctl --user -u chitin-dispatcher -f
 journalctl --user -u chitin-researcher -f
 journalctl --user -u chitin-swarm-rollup -f
 journalctl --user -u chitin-lessons -f
+journalctl --user -u chitin-debt-curator -f
 
 # Status
 systemctl --user status chitin-worker

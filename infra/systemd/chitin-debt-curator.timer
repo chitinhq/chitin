@@ -1,0 +1,18 @@
+# Timer for chitin-debt-curator.service.
+# Daily — markers don't change minute-by-minute, and we want the
+# curator's noise bounded. Persistent so a missed tick from a
+# powered-off rig fires on the next boot. 45min boot offset stages
+# the daily scripts (rollup, lessons, debt-curator) so they don't
+# pile on the gh API or git tree at the same time.
+
+[Unit]
+Description=Chitin swarm debt-curator timer
+
+[Timer]
+OnUnitActiveSec=24h
+OnBootSec=45min
+Persistent=true
+Unit=chitin-debt-curator.service
+
+[Install]
+WantedBy=timers.target
