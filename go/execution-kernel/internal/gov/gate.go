@@ -72,8 +72,25 @@ type Gate struct {
 //
 // Envelope exhaustion is NOT subject to monitor-mode override — caps are
 // hard contracts even when policy is in monitor.
-func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decision {
+//
+// OnDecision is fired exactly once per Evaluate via a single defer-based
+// callsite (closes #76). Both the lockdown short-circuit and the normal
+// path now route through the same exit point, so a future short-circuit
+// (rate-limit, circuit-breaker) can't silently skip the callback.
+// Pass-by-copy preserves the existing contract that callbacks can't
+// mutate the Decision the caller sees.
+func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final Decision) {
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Single OnDecision callsite. Defer fires after the named-return
+	// `final` is set; reads `final` rather than capturing a per-branch
+	// variable so any branch's return value flows through.
+	defer func() {
+		if g.OnDecision != nil {
+			dCopy := final
+			g.OnDecision(&dCopy)
+		}
+	}()
 
 	// Capture caller_origin once, up front — used only when envelope == nil
 	// so we can identify which call sites bypass cost-governance plumbing.
@@ -93,12 +110,8 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
 		_ = WriteLog(d, g.LogDir)
-		if g.OnDecision != nil {
-			// Pass a copy so callbacks can't mutate the Decision the caller sees.
-			dCopy := d
-			g.OnDecision(&dCopy)
-		}
-		return d
+		final = d
+		return
 	}
 
 	// 2. Policy evaluate.
@@ -194,17 +207,13 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) Decisi
 	// 8. Log.
 	_ = WriteLog(d, g.LogDir)
 
-	// 9. F4 addendum: emit a `decision` chain event via the wired callback,
-	// if any. Fires after WriteLog so the audit log is durable first; the
-	// callback's failure (if any) is the CLI layer's concern, never affects
-	// the Decision returned to the caller. Pass a copy so callbacks can't
-	// mutate the Decision the caller sees.
-	if g.OnDecision != nil {
-		dCopy := d
-		g.OnDecision(&dCopy)
-	}
-
-	return d
+	// 9. F4 addendum: OnDecision callback fires from the deferred
+	// callsite at the top of Evaluate (single-source-of-truth so a
+	// future short-circuit can't skip the callback). Order is preserved:
+	// WriteLog runs before the deferred OnDecision because defers fire
+	// AFTER the function returns.
+	final = d
+	return
 }
 
 // stampEnvelope is the lockdown-path helper: it does its own classify +
