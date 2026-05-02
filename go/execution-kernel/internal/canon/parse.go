@@ -140,14 +140,31 @@ func parseOne(raw string) Command {
 		return Command{Tool: "unknown"}
 	}
 
-	// Handle env var prefix: KEY=val KEY2=val2 command args...
+	// Handle env var prefix: `KEY=val KEY2=val2 command args...` AND
+	// the literal-env form `env [flags] KEY=val command args...`. The
+	// classifier-bypass family in #62 (`env TF_LOG=1 terraform destroy`)
+	// hinged on the literal `env` token not being stripped — so callers
+	// landed at tool="env" instead of tool="terraform" with action="destroy".
 	cmdIdx := 0
+	sawEnv := false
 	for cmdIdx < len(tokens) {
-		if strings.Contains(tokens[cmdIdx], "=") && !strings.HasPrefix(tokens[cmdIdx], "-") {
+		tok := tokens[cmdIdx]
+		if tok == "env" && cmdIdx == 0 {
+			sawEnv = true
 			cmdIdx++
-		} else {
-			break
+			continue
 		}
+		// VAR=val (raw env-prefix form, no leading 'env' literal).
+		if strings.Contains(tok, "=") && !strings.HasPrefix(tok, "-") {
+			cmdIdx++
+			continue
+		}
+		// env's own flags: -i, -u, -0, etc. Only after seeing the literal `env`.
+		if sawEnv && strings.HasPrefix(tok, "-") {
+			cmdIdx++
+			continue
+		}
+		break
 	}
 	if cmdIdx >= len(tokens) {
 		return Command{Tool: "env", Args: tokens}
@@ -162,24 +179,73 @@ func parseOne(raw string) Command {
 		tool = alias
 	}
 
-	// Extract action (subcommand) for multi-level tools.
+	// Extract action (subcommand) for multi-level tools. The action is the
+	// FIRST NON-FLAG positional in `rest` — global flags before the action
+	// (e.g. `git -C /tmp status`, `terraform -chdir=./infra destroy`,
+	// `kubectl --context=prod delete ns foo`) are walked past so the
+	// classifier sees the verb. Without this walk, anchored regexes like
+	// `^terraform\s+destroy\b` were trivially evaded by leading flags or
+	// env-prefix tokens (issue #62 bypass family).
 	action := ""
 	argStart := 0
-	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		switch tool {
-		case "git", "docker", "kubectl", "gh", "cargo", "go", "pnpm", "npm", "uv":
-			action = rest[0]
-			argStart = 1
+	preActionEnd := 0
+	if isMultiLevelTool(tool) {
+		i := 0
+		for i < len(rest) {
+			tok := rest[i]
+			if !strings.HasPrefix(tok, "-") {
+				action = tok
+				preActionEnd = i
+				argStart = i + 1
+				break
+			}
+			// Value-taking flags like `git -C <path>` or `kubectl --context
+			// <ctx>` (without `=`-attached value) must consume the next
+			// token so we don't mis-treat the value as the action verb.
+			flagName, inlineVal := parseFlag(tok)
+			if inlineVal == "" && flagTakesValue(tool, "", flagName) &&
+				i+1 < len(rest) && !strings.HasPrefix(rest[i+1], "-") {
+				i++ // skip value
+			}
+			i++
+		}
+		if action == "" {
+			// All-flags rest (e.g. `git --version`) — no action verb.
+			preActionEnd = len(rest)
+			argStart = len(rest)
 		}
 	}
 
-	// Parse flags and positional args.
+	// Parse flags and positional args. Pre-action global flags (rest[:preActionEnd])
+	// and post-action flags+args (rest[argStart:]) both feed the same parser
+	// so canonical Command captures the full flag surface regardless of
+	// whether the operator put a flag before or after the verb.
 	flags := make(map[string]string)
 	var args []string
 
-	remaining := rest[argStart:]
-	for i := 0; i < len(remaining); i++ {
-		tok := remaining[i]
+	if preActionEnd > 0 {
+		parseFlagsAndArgs(tool, action, rest[:preActionEnd], flags, &args)
+	}
+	parseFlagsAndArgs(tool, action, rest[argStart:], flags, &args)
+
+	// Apply tool-specific normalizations.
+	normalizeToolSpecific(tool, cmdName, action, flags, &args)
+
+	return Command{
+		Tool:   tool,
+		Action: action,
+		Flags:  flags,
+		Args:   args,
+	}
+}
+
+// parseFlagsAndArgs walks `tokens` and writes each into either `flags`
+// (with normalization, value-binding, and masking) or `args` (positional).
+// Hoisted out of parseOne so the same logic runs over pre-action global
+// flags AND post-action flags+args without duplication.
+func parseFlagsAndArgs(tool, action string, tokens []string, flags map[string]string, args *[]string) {
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
 
 		if strings.HasPrefix(tok, "-") {
 			// Expand combined short flags: -rn → [-r, -n]
@@ -189,9 +255,9 @@ func parseOne(raw string) Command {
 
 				// If flag has no inline value, check if next token is the value.
 				// Only the last expanded flag can consume the next token.
-				if flagVal == "" && j == len(expanded)-1 && i+1 < len(remaining) && !strings.HasPrefix(remaining[i+1], "-") {
+				if flagVal == "" && j == len(expanded)-1 && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
 					if flagTakesValue(tool, action, flagName) {
-						flagVal = remaining[i+1]
+						flagVal = tokens[i+1]
 						i++
 					}
 				}
@@ -203,19 +269,21 @@ func parseOne(raw string) Command {
 				flags[canonical] = flagVal
 			}
 		} else {
-			args = append(args, maskSensitive(tok))
+			*args = append(*args, maskSensitive(tok))
 		}
 	}
+}
 
-	// Apply tool-specific normalizations.
-	normalizeToolSpecific(tool, cmdName, action, flags, &args)
-
-	return Command{
-		Tool:   tool,
-		Action: action,
-		Flags:  flags,
-		Args:   args,
+// isMultiLevelTool returns true for tools whose canonical form has a
+// subcommand verb (e.g. `git status`, `kubectl delete`, `terraform destroy`).
+// Single-level tools (rm, ls, curl) put their first non-flag token in args.
+func isMultiLevelTool(tool string) bool {
+	switch tool {
+	case "git", "docker", "kubectl", "gh", "cargo", "go",
+		"pnpm", "npm", "uv", "terraform":
+		return true
 	}
+	return false
 }
 
 // tokenize splits a command string into tokens, respecting quotes.

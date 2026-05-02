@@ -25,16 +25,16 @@ func newIntegrationGate(t *testing.T, policyYAML string) (*Gate, string) {
 	}, dir
 }
 
-// Flow A from spec §Data-flow: terminal rm -rf is denied.
+// Flow A from spec §Data-flow: terminal rm -rf is denied. Updated for
+// #58 closure: rule now matches the unified file.recursive_delete class.
 func TestIntegration_FlowA_DangerousShell(t *testing.T) {
 	g, _ := newIntegrationGate(t, `
 id: test
 mode: guide
 rules:
-  - id: no-destructive-rm
-    action: shell.exec
+  - id: no-rm-recursive
+    action: file.recursive_delete
     effect: deny
-    target: "rm -rf"
     reason: "blocked"
     suggestion: "use targeted"
     correctedCommand: "git rm"
@@ -44,21 +44,23 @@ rules:
 	if d.Allowed {
 		t.Fatalf("expected deny, got %+v", d)
 	}
-	if d.RuleID != "no-destructive-rm" {
+	if d.RuleID != "no-rm-recursive" {
 		t.Errorf("RuleID: got %q", d.RuleID)
 	}
 }
 
 // Flow B: execute_code subprocess.run bypass produces the same denial.
+// Both terminal `rm -rf` and execute_code-via-subprocess flow through
+// the same canon detector and land on the same Action class — one rule
+// catches both.
 func TestIntegration_FlowB_BypassClosure(t *testing.T) {
 	g, _ := newIntegrationGate(t, `
 id: test
 mode: guide
 rules:
-  - id: no-destructive-rm
-    action: shell.exec
+  - id: no-rm-recursive
+    action: file.recursive_delete
     effect: deny
-    target: "rm -rf"
     reason: "blocked"
 `)
 	// Via terminal
@@ -91,9 +93,8 @@ id: test
 mode: guide
 rules:
   - id: no-rm
-    action: shell.exec
+    action: file.recursive_delete
     effect: deny
-    target: "rm -rf"
     reason: "blocked"
 `)
 	a, _ := Normalize("terminal", map[string]any{"command": "rm -rf go/"})

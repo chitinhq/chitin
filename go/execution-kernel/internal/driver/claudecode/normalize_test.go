@@ -131,7 +131,7 @@ func TestNormalize_BashReclassifiesShellCommands(t *testing.T) {
 		{"git status", gov.ActGitStatus},
 		{"git push origin main", gov.ActGitPush},
 		{"gh pr create --title x", gov.ActGithubPRCreate},
-		{"rm -rf go/", gov.ActShellExec}, // re-tagged via Target match in policy, type stays shell.exec
+		{"rm -rf go/", gov.ActFileRecursiveDelete}, // #58 closure: unified class, no longer shell.exec
 		{"terraform destroy", gov.ActInfraDestroy},
 		{"ls -la", gov.ActShellExec},
 	}

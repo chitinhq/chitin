@@ -58,9 +58,8 @@ rules:
     effect: allow
     reason: write ok
   - id: no-rm
-    action: shell.exec
+    action: file.recursive_delete
     effect: deny
-    target: "rm -rf"
     reason: "no rm -rf"
     suggestion: "use git rm"
     correctedCommand: "git rm <files>"

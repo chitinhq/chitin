@@ -88,6 +88,22 @@ func flagTakesValue(tool, action, flag string) bool {
 		"docker:name":    true,
 		"docker:format":  true,
 		"docker:f":       true,
+
+		// Global pre-action value-taking flags. Used by parseOne's
+		// action-discovery walk so commands like `git -C /tmp status` or
+		// `kubectl --context prod delete ns x` correctly land on the
+		// action verb instead of treating the flag's value as the action.
+		"git:C":            true,
+		"git:c":            true, // git -c key=value (config override)
+		"git:git-dir":      true,
+		"git:work-tree":    true,
+		"kubectl:context":  true,
+		"kubectl:n":        true, // namespace
+		"kubectl:namespace": true,
+		"kubectl:s":        true, // server
+		"kubectl:server":   true,
+		"docker:H":         true, // host
+		"docker:host":      true,
 	}
 
 	// Check with action specificity first.

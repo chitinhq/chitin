@@ -55,13 +55,13 @@ func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
 			}
 		}
 
-		// Bare `git push` (or `git push origin` without branch arg) leaves
-		// Target empty because the gov-side parser is pure and can't run git.
-		// Resolve the current branch from cwd here so policy rules with
-		// explicit `branches:` lists (e.g. no-protected-push) can match.
-		// Closes #62 — without this, `git push` on an upstream-tracking main
-		// branch would fall through every protected-branch rule.
-		if action.Type == gov.ActGitPush && action.Target == "" && cwd != "" {
+		// Bare `git push` (or `git push origin` without branch arg) lands
+		// on the sentinel Target "<HEAD-implicit>" from gov.Normalize (#60
+		// closure). Resolve the current branch from cwd if we can — that
+		// gives the concrete protected-branch check. If resolution fails
+		// (detached HEAD, missing git, non-repo cwd), the sentinel survives
+		// so the no-protected-push rule's branches list still catches it.
+		if action.Type == gov.ActGitPush && action.Target == "<HEAD-implicit>" && cwd != "" {
 			if branch := resolveCurrentBranch(cwd); branch != "" {
 				action.Target = branch
 			}

@@ -3,14 +3,8 @@ package gov
 import (
 	"regexp"
 	"strings"
-)
 
-// Package-level regexes for infra.destroy detection and shape annotation.
-// Compiled once at init time; not recompiled per call.
-var (
-	reTerraformDestroy = regexp.MustCompile(`^terraform\s+destroy\b`)
-	reKubectlDeleteNS  = regexp.MustCompile(`^kubectl\s+delete\s+(ns|namespace)\b`)
-	reCurlPipeBash     = regexp.MustCompile(`\bcurl\b[^|]*\|\s*(bash|sh)\b`)
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/canon"
 )
 
 // Normalize maps a raw tool call to a canonical Action. Closed enum:
@@ -193,107 +187,199 @@ func normalizeWriteFile(args map[string]any) Action {
 	return Action{Type: ActFileWrite, Target: path}
 }
 
-// classifyShellCommand inspects a shell command string and returns
-// the most specific canonical Action. Ordering matters: check for
-// destructive / dangerous patterns before generic categories.
+// classifyShellCommand inspects a shell command string and returns the most
+// specific canonical Action. Routes through the canon package so detection
+// works against the *canonical* form of the command (env-prefix stripped,
+// global flags walked past, quotes/whitespace normalized) rather than a
+// raw-string substring/regex match. This closes the bypass-by-spelling
+// family (#58/#59/#60/#61/#62) where anchored regexes were trivially
+// evaded by leading flags, env-prefix tokens, double-spacing, quoted
+// flags, or split-flag forms.
+//
+// Invariants:
+//   - Every dangerous-pattern detection consults canon.Pipeline and the
+//     bypass-class detectors in canon (IsRecursiveDelete, IsBareGitPush,
+//     IsInfraDestroy, IsRemoteCodeExec, ContainsProcSubstFetch,
+//     WriteDestinations) — never a raw-string regex.
+//   - Each concrete dispatch (git.status, gh.pr.create, etc.) is keyed
+//     on canon.Command{Tool, Action} for the FIRST segment of the
+//     pipeline. Commands with no canon mapping fall through to ActShellExec.
+//   - Per-segment shape annotations (curl-pipe-bash, remote-code-exec)
+//     are set in Params for policy target_regex matching.
+//
+// Ordering matters: check destructive / re-tag-worthy patterns before
+// generic per-tool dispatch so a `terraform destroy` doesn't get caught
+// by a `terraform` pass-through rule first.
 func classifyShellCommand(cmd string) Action {
 	trimmed := strings.TrimSpace(cmd)
-
-	// git force-push before git push (force-push is a git.push superset)
-	if matched, _ := regexp.MatchString(`\bgit\s+push\b.*--force(-with-lease)?\b`, trimmed); matched {
-		return Action{Type: ActGitForcePush, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+push\s+-f\b`, trimmed); matched {
-		return Action{Type: ActGitForcePush, Target: trimmed}
-	}
-
-	// git push — capture branch if present
-	if matched, _ := regexp.MatchString(`\bgit\s+push\b`, trimmed); matched {
-		branch := extractPushBranch(trimmed)
-		return Action{Type: ActGitPush, Target: branch}
+	// Use the AST-grade canon parser so subshells `(rm -rf /)`, command
+	// substitution `$(rm -rf /)`, process substitution `bash <(curl)`,
+	// heredoc destinations, and `bash -c "<string>"` re-parse all land
+	// inner commands as their own pipeline segments. ParseAST auto-falls-
+	// back to the tokenizer-grade Parse on parse failure, so we never
+	// regress below the prior tokenizer behavior.
+	pipeline := canon.ParseAST(trimmed)
+	first := canon.Command{}
+	if len(pipeline.Segments) > 0 {
+		first = pipeline.Segments[0].Command
 	}
 
-	// Specific git read commands
-	if matched, _ := regexp.MatchString(`\bgit\s+status\b`, trimmed); matched {
-		return Action{Type: ActGitStatus, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+log\b`, trimmed); matched {
-		return Action{Type: ActGitLog, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+diff\b`, trimmed); matched {
-		return Action{Type: ActGitDiff, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+commit\b`, trimmed); matched {
-		return Action{Type: ActGitCommit, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+checkout\b`, trimmed); matched {
-		return Action{Type: ActGitCheckout, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+worktree\s+list\b`, trimmed); matched {
-		return Action{Type: ActGitWorktreeList, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+worktree\s+add\b`, trimmed); matched {
-		return Action{Type: ActGitWorktreeAdd, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgit\s+worktree\s+remove\b`, trimmed); matched {
-		return Action{Type: ActGitWorktreeRemove, Target: trimmed}
+	// === Destructive / re-tag patterns (consulted before per-tool dispatch) ===
+
+	// rm -rf class — re-tag from shell.exec so the no-rm-recursive rule
+	// matches regardless of flag spelling, whitespace, or quoting (#58).
+	for _, seg := range pipeline.Segments {
+		if canon.IsRecursiveDelete(seg.Command) {
+			return Action{
+				Type:   ActFileRecursiveDelete,
+				Target: trimmed,
+				Params: map[string]any{"tool": "rm"},
+			}
+		}
 	}
 
-	// gh CLI — PR / issue operations
-	if matched, _ := regexp.MatchString(`\bgh\s+pr\s+create\b`, trimmed); matched {
-		return Action{Type: ActGithubPRCreate, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+pr\s+view\b`, trimmed); matched {
-		return Action{Type: ActGithubPRView, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+pr\s+list\b`, trimmed); matched {
-		return Action{Type: ActGithubPRList, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+pr\s+merge\b`, trimmed); matched {
-		return Action{Type: ActGithubPRMerge, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+pr\s+close\b`, trimmed); matched {
-		return Action{Type: ActGithubPRClose, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+issue\s+view\b`, trimmed); matched {
-		return Action{Type: ActGithubIssueView, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+issue\s+list\b`, trimmed); matched {
-		return Action{Type: ActGithubIssueList, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+issue\s+create\b`, trimmed); matched {
-		return Action{Type: ActGithubIssueCreate, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+issue\s+close\b`, trimmed); matched {
-		return Action{Type: ActGithubIssueClose, Target: trimmed}
-	}
-	if matched, _ := regexp.MatchString(`\bgh\s+api\b`, trimmed); matched {
-		return Action{Type: ActGithubAPI, Target: trimmed}
+	// Self-modification via shell — extract write destinations and re-tag
+	// to file.write so the no-governance-self-modification rule fires
+	// (#59). The target_regex on that rule already handles the path
+	// patterns; we just need to set Action.Type=file.write and Target=path.
+	for _, dest := range canon.WriteDestinations(trimmed) {
+		if reSelfMod.MatchString(dest) {
+			return Action{
+				Type:   ActFileWrite,
+				Target: dest,
+				Params: map[string]any{"via": "shell-redirect"},
+			}
+		}
 	}
 
-	// Infra-destroy patterns: re-tag from shell.exec to infra.destroy so
-	// policy rules can match the intent-class, not the shell string.
-	// Invariant: every command matching these patterns produces exactly one
-	// ActInfraDestroy action with Params["tool"] naming the CLI tool.
-	if reTerraformDestroy.MatchString(trimmed) {
-		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "terraform"}}
-	}
-	if reKubectlDeleteNS.MatchString(trimmed) {
-		return Action{Type: ActInfraDestroy, Target: trimmed, Params: map[string]any{"tool": "kubectl"}}
+	// Infra-destroy — terraform destroy / kubectl delete ns/namespace,
+	// with leading global flags or env-prefix already stripped by canon (#62).
+	for _, seg := range pipeline.Segments {
+		if tool, ok := canon.IsInfraDestroy(seg.Command); ok {
+			return Action{
+				Type:   ActInfraDestroy,
+				Target: trimmed,
+				Params: map[string]any{"tool": tool},
+			}
+		}
 	}
 
-	// Default: generic shell.exec — all other commands (including rm -rf).
-	// Annotate curl-pipe-bash shape: action stays shell.exec, but policy can
-	// target Params["shape"] = "curl-pipe-bash" to match this dangerous pattern.
-	// Invariant: every curl ... | bash/sh command produces exactly one
-	// ActShellExec action with Params["shape"] = "curl-pipe-bash".
-	// wget pipe bash and curl without pipe intentionally do not match.
+	// === Per-tool dispatch (keyed on canon's Tool/Action) ===
+
+	switch first.Tool {
+	case "git":
+		return classifyGit(first, trimmed)
+	case "gh":
+		return classifyGh(first, trimmed)
+	}
+
+	// === Default: generic shell.exec with optional shape annotation ===
+
 	action := Action{Type: ActShellExec, Target: trimmed}
-	if reCurlPipeBash.MatchString(trimmed) {
-		action.Params = map[string]any{"shape": "curl-pipe-bash"}
+	// IsRemoteCodeExec sees both `curl | bash` AND `bash <(curl)` because
+	// ParseAST descends into ProcSubst. The previous regex band-aid
+	// (ContainsProcSubstFetch) is no longer needed.
+	if canon.IsRemoteCodeExec(pipeline) {
+		action.Params = map[string]any{"shape": "remote-code-exec"}
 	}
 	return action
 }
+
+// classifyGit dispatches the git family (force-push, push, status, log,
+// diff, commit, checkout, worktree list/add/remove) over canon's parsed
+// action verb. Bare `git push` (no explicit branch) gets the sentinel
+// Target value "<HEAD-implicit>" so the no-protected-push rule's
+// branches list can match it without driver-side cwd resolution (#60).
+func classifyGit(c canon.Command, raw string) Action {
+	switch c.Action {
+	case "push":
+		// Force push first (it's a push superset).
+		if _, force := c.Flags["force"]; force {
+			return Action{Type: ActGitForcePush, Target: raw}
+		}
+		if _, force := c.Flags["force-with-lease"]; force {
+			return Action{Type: ActGitForcePush, Target: raw}
+		}
+		if _, f := c.Flags["f"]; f {
+			return Action{Type: ActGitForcePush, Target: raw}
+		}
+		// Bare push: sentinel target so the no-protected-push rule fires
+		// even when the operator's branches list doesn't include "" (#60).
+		if canon.IsBareGitPush(c) {
+			return Action{Type: ActGitPush, Target: "<HEAD-implicit>"}
+		}
+		return Action{Type: ActGitPush, Target: extractPushBranch(raw)}
+	case "status":
+		return Action{Type: ActGitStatus, Target: raw}
+	case "log":
+		return Action{Type: ActGitLog, Target: raw}
+	case "diff":
+		return Action{Type: ActGitDiff, Target: raw}
+	case "commit":
+		return Action{Type: ActGitCommit, Target: raw}
+	case "checkout":
+		return Action{Type: ActGitCheckout, Target: raw}
+	case "worktree":
+		// canon doesn't sub-action worktree; inspect the raw string.
+		if matched, _ := regexp.MatchString(`\bworktree\s+list\b`, raw); matched {
+			return Action{Type: ActGitWorktreeList, Target: raw}
+		}
+		if matched, _ := regexp.MatchString(`\bworktree\s+add\b`, raw); matched {
+			return Action{Type: ActGitWorktreeAdd, Target: raw}
+		}
+		if matched, _ := regexp.MatchString(`\bworktree\s+remove\b`, raw); matched {
+			return Action{Type: ActGitWorktreeRemove, Target: raw}
+		}
+	}
+	return Action{Type: ActShellExec, Target: raw}
+}
+
+// classifyGh dispatches `gh pr create/view/list/merge/close`,
+// `gh issue create/view/list/close`, `gh api`. canon doesn't sub-action
+// gh past the first verb (`pr`, `issue`, `api`), so we re-inspect args
+// for the second-level verb.
+func classifyGh(c canon.Command, raw string) Action {
+	if c.Action == "api" {
+		return Action{Type: ActGithubAPI, Target: raw}
+	}
+	if len(c.Args) == 0 {
+		return Action{Type: ActShellExec, Target: raw}
+	}
+	verb := c.Args[0]
+	switch c.Action {
+	case "pr":
+		switch verb {
+		case "create":
+			return Action{Type: ActGithubPRCreate, Target: raw}
+		case "view":
+			return Action{Type: ActGithubPRView, Target: raw}
+		case "list":
+			return Action{Type: ActGithubPRList, Target: raw}
+		case "merge":
+			return Action{Type: ActGithubPRMerge, Target: raw}
+		case "close":
+			return Action{Type: ActGithubPRClose, Target: raw}
+		}
+	case "issue":
+		switch verb {
+		case "create":
+			return Action{Type: ActGithubIssueCreate, Target: raw}
+		case "view":
+			return Action{Type: ActGithubIssueView, Target: raw}
+		case "list":
+			return Action{Type: ActGithubIssueList, Target: raw}
+		case "close":
+			return Action{Type: ActGithubIssueClose, Target: raw}
+		}
+	}
+	return Action{Type: ActShellExec, Target: raw}
+}
+
+// reSelfMod matches the same path patterns as the chitin.yaml
+// no-governance-self-modification rule's target_regex. Compiled once.
+var reSelfMod = regexp.MustCompile(
+	`(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)`,
+)
 
 // extractShellIntent scans Python code for anything that would execute
 // a shell command or delete files, and returns the reconstructed shell

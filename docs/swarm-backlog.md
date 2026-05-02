@@ -2215,3 +2215,66 @@ Why T3: capability-encoding requires reading model metadata from
 each driver (claude-code, copilot, openclaw) — non-trivial cross-
 surface work. Decompose into per-surface entries when an architect
 prioritizes.
+
+### `canon-ast-upgrade-mvdan-sh`
+
+```yaml
+id: canon-ast-upgrade-mvdan-sh
+tier: T3
+status: shipped
+shipped_in: PR #173 (gov-bypass-hardening, follow-up commit)
+estimated_loc: ~600 actual (canon/ast.go + ast_test.go + IsRemoteCodeExec bidirectional update)
+blocks: []
+file: go/execution-kernel/internal/canon/ast.go, gov/normalize.go (uses ParseAST)
+references_design: gov-bypass-hardening PR + research finding mvdan.cc/sh/v3/syntax (BSD-3, 8.7k stars, active)
+role: architect
+```
+
+The current `canon` package is tokenizer-grade — it splits on shell
+separators (`&&`, `||`, `;`, `|`) and respects quotes, but has known
+blind spots that show up as governance bypasses:
+
+1. **Subshell descent** — `(rm -rf /)` is treated as a single token,
+   not parsed as a subshell. An agent can wrap any destructive command
+   in parentheses to evade detection.
+2. **Process substitution** — `bash <(curl ...)` mangles the proc-subst
+   tokens; `ContainsProcSubstFetch` is a regex-over-raw band-aid
+   (closes the common case for #61 but only the common case).
+3. **Command substitution** — `$(rm -rf /)` and backtick forms aren't
+   descended into.
+4. **Heredoc destinations** — `WriteDestinations` regex catches
+   redirects+heredocs but the parsing is approximate; multi-line
+   heredocs with quoted delimiters slip through.
+5. **`bash -c "<string>"`** — re-parsing the string-literal argument of
+   known shell-launchers requires recursive descent we don't do today.
+
+`mvdan.cc/sh/v3/syntax` is the only Go library that produces a real
+bash AST: typed `CmdSubst`, `ProcSubst`, `Subshell`, `Redirect`
+(heredocs as `Op == Hdoc`), `CallExpr.Assigns` for env-prefix.
+BSD-3-Clause, MIT/Apache-compatible.
+
+Plan when picked up:
+
+1. Vendor `mvdan.cc/sh/v3` as a kernel dep.
+2. Add `canon.ParseAST(raw string) Pipeline` — same return type as
+   existing `Parse`, different engine. AST walk recurses into every
+   `CmdSubst`/`ProcSubst`/`Subshell` and emits each as its own
+   pipeline segment so the bypass detectors fire on the inner command.
+3. For known shell-launchers (`bash -c`, `sh -c`, `eval`), re-parse
+   the string-literal argument and merge segments.
+4. Switch `gov.classifyShellCommand` from `canon.Parse` → `canon.ParseAST`.
+5. Re-run the bypass-detector test suite — every variation in
+   `detectors_test.go` should pass against the AST variant, plus new
+   cases for subshell, command-subst, proc-subst, heredoc, and `bash -c`.
+6. Benchmark before/after: AST parsing is ~3-5× slower than tokenize,
+   but per-call cost is microseconds, not milliseconds. Acceptable.
+
+Why T3: vendoring + AST walk + re-targeting all bypass detectors is
+~400 LOC plus integration. Worth doing because each bypass class the
+AST closes is a security regression today, but not blocking the talk
+demo (the regex/tokenizer-grade canon catches the demo cases).
+
+Operator note when picking up: confirm mvdan/sh#256 (heredoc-in-procsubst
+formatter bug) doesn't affect the parser path we use — only the
+formatter is buggy per the upstream issue, but verify with a fixture
+test before committing the upgrade.

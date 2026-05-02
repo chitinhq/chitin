@@ -70,8 +70,9 @@ func TestDemoScenario_ForcePushWarmup(t *testing.T) {
 
 // -------- Demo 2: rm -rf core --------
 //
-// Invariant: rm -rf → Action.Type == shell.exec → denied by no-destructive-rm,
-// and the guide-mode decision carries a corrected_command.
+// Invariant: rm -rf → Action.Type == file.recursive_delete → denied by
+// no-rm-recursive (the unified rm-recursive rule that closes the spelling-
+// bypass family in #58). The guide-mode decision carries a corrected_command.
 
 func TestDemoScenario_RmRfCore(t *testing.T) {
 	policy := loadRepoPolicy(t)
@@ -86,8 +87,8 @@ func TestDemoScenario_RmRfCore(t *testing.T) {
 	if d.Allowed {
 		t.Fatal("expected deny for rm -rf")
 	}
-	if d.RuleID != "no-destructive-rm" {
-		t.Errorf("RuleID: got %q, want no-destructive-rm", d.RuleID)
+	if d.RuleID != "no-rm-recursive" {
+		t.Errorf("RuleID: got %q, want no-rm-recursive", d.RuleID)
 	}
 	if d.CorrectedCommand == "" {
 		t.Error("expected corrected_command to be non-empty")
@@ -133,10 +134,12 @@ func TestDemoScenario_TerraformDestroy(t *testing.T) {
 	}
 }
 
-// -------- Demo 4: curl | bash --------
+// -------- Demo 4: curl | bash (and the broader remote-code-exec class) --------
 //
-// Invariant: curl ... | bash → Action.Type == shell.exec with Params["shape"]=="curl-pipe-bash"
-// → denied by no-curl-pipe-bash (target_regex on shell.exec).
+// Invariant (post-#61): curl|bash, wget|bash, two-stage curl/wget+bash, and
+// `bash <(curl ...)` proc-subst all → shape="remote-code-exec" → denied by
+// no-remote-code-exec. The shape is the unified class; specific spellings
+// no longer route to spelling-specific rules.
 
 func TestDemoScenario_CurlPipeBash(t *testing.T) {
 	policy := loadRepoPolicy(t)
@@ -148,19 +151,19 @@ func TestDemoScenario_CurlPipeBash(t *testing.T) {
 	action := Normalize(req, "/work")
 
 	if action.Type != gov.ActShellExec {
-		t.Errorf("Type: got %q, want shell.exec (curl-pipe-bash stays shell.exec with shape param)", action.Type)
+		t.Errorf("Type: got %q, want shell.exec (remote-code-exec stays shell.exec with shape param)", action.Type)
 	}
 	shape, _ := action.Params["shape"].(string)
-	if shape != "curl-pipe-bash" {
-		t.Errorf("Params[shape]: got %q, want curl-pipe-bash", shape)
+	if shape != "remote-code-exec" {
+		t.Errorf("Params[shape]: got %q, want remote-code-exec", shape)
 	}
 
 	d := policy.Evaluate(action)
 	if d.Allowed {
-		t.Fatal("expected deny for curl-pipe-bash")
+		t.Fatal("expected deny for remote-code-exec")
 	}
-	if d.RuleID != "no-curl-pipe-bash" {
-		t.Errorf("RuleID: got %q, want no-curl-pipe-bash", d.RuleID)
+	if d.RuleID != "no-remote-code-exec" {
+		t.Errorf("RuleID: got %q, want no-remote-code-exec", d.RuleID)
 	}
 }
 
