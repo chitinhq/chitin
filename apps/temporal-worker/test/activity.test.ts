@@ -90,6 +90,73 @@ describe('planInvocation', () => {
       else process.env.CHITIN_CLAUDE_ALLOWED_TOOLS = saved;
     }
   });
+
+  it('claude-code-headless includes --include-hook-events for chain visibility', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['claude-code-headless'] });
+    expect(plan.args).toContain('--include-hook-events');
+  });
+
+  it('local-* (openclaw) drivers include --include-hook-events for chain visibility', () => {
+    for (const driver of ['local-qwen', 'local-glm', 'local-deepseek'] as const) {
+      const plan = planInvocation({ ...baseReq, allowed_drivers: [driver] });
+      expect(plan.command).toBe('openclaw');
+      expect(plan.args).toContain('--include-hook-events');
+    }
+  });
+});
+
+describe('extractHookEvents', () => {
+  const { extractHookEvents } = __test__;
+
+  it('returns undefined when stdout has no hook_event lines', () => {
+    expect(extractHookEvents('')).toBeUndefined();
+    expect(extractHookEvents('not json\n{"type":"other"}\n')).toBeUndefined();
+  });
+
+  it('projects only the documented summary fields', () => {
+    const stdout = [
+      JSON.stringify({
+        type: 'hook_event',
+        hook_name: 'PreToolUse',
+        tool_name: 'Bash',
+        decision: 'allow',
+        reason: 'allowed',
+        // extra fields that should be dropped
+        agent_id: 'test',
+        timestamp: '2026-05-02T00:00:00Z',
+      }),
+      JSON.stringify({
+        type: 'hook_event',
+        hook_name: 'PreToolUse',
+        tool_name: 'Edit',
+        decision: 'deny',
+        reason: 'no-governance-self-modification',
+      }),
+    ].join('\n');
+    expect(extractHookEvents(stdout)).toEqual([
+      { hook_name: 'PreToolUse', tool_name: 'Bash', decision: 'allow', reason: 'allowed' },
+      {
+        hook_name: 'PreToolUse',
+        tool_name: 'Edit',
+        decision: 'deny',
+        reason: 'no-governance-self-modification',
+      },
+    ]);
+  });
+
+  it('skips non-JSON lines, JSON without type=hook_event, and unknown decisions', () => {
+    const stdout = [
+      'plain log line',
+      '{"type":"telemetry","value":1}',
+      JSON.stringify({ type: 'hook_event', hook_name: 'Stop' }),
+      JSON.stringify({ type: 'hook_event', tool_name: 'Read', decision: 'maybe' }),
+    ].join('\n');
+    const events = extractHookEvents(stdout);
+    expect(events).toEqual([
+      { hook_name: 'Stop' },
+      { tool_name: 'Read' }, // unknown decision dropped, kept the rest
+    ]);
+  });
 });
 
 describe('resolvePolicySrc', () => {
