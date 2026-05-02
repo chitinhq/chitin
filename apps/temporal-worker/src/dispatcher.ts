@@ -256,6 +256,7 @@ ${entry.description}
 CONSTRAINTS:
 - Do not modify chitin.yaml or anything under .chitin/ — governance is human-only and chitin's gate will deny those writes anyway.
 - Only edit files referenced in the entry. Do not invent scope.
+- Forbid editing files not named in the entry's \`file\` field, and instruct the agent to \`read\` ONLY the target file before editing.
 - If you decide the entry is misclassified or requires human judgment, exit without committing — empty worktrees are not pushed.
 
 REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
