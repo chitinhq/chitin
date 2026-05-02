@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { canonicalJSON, sha256Hex, hashEvent } from '../src/hash';
 
@@ -20,6 +22,19 @@ describe('canonicalJSON', () => {
 
   it('handles nulls', () => {
     expect(canonicalJSON({ a: null })).toBe('{"a":null}');
+  });
+
+  // Cross-language goldensuite: closes #7 + #15. Reads the same fixture
+  // pair the Go test reads (canonical.golden.json + canonical.golden.txt)
+  // and asserts byte-equal canonicalJSON output. A divergence on either
+  // side fails its own goldensuite — the two implementations can no
+  // longer drift silently while both pass their local sort/whitespace
+  // structural checks.
+  it('byte-equals the shared golden fixture (parity with Go)', () => {
+    const fixtureDir = __dirname;
+    const input = JSON.parse(readFileSync(join(fixtureDir, 'canonical.golden.json'), 'utf8'));
+    const want = readFileSync(join(fixtureDir, 'canonical.golden.txt'), 'utf8').replace(/\n+$/, '');
+    expect(canonicalJSON(input)).toBe(want);
   });
 });
 

@@ -1,0 +1,1 @@
+{"chain_type":"session","event_type":"session_start","labels":{},"parent_chain_id":null,"prev_hash":null,"run_id":"550e8400-e29b-41d4-a716-446655440000","schema_version":"2","seq":0,"session_id":"550e8400-e29b-41d4-a716-446655440001","surface":"claude-code"}

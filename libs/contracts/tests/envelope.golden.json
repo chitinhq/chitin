@@ -1,0 +1,24 @@
+{
+  "schema_version": "2",
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "session_id": "550e8400-e29b-41d4-a716-446655440001",
+  "surface": "claude-code",
+  "driver_identity": {
+    "user": "jared",
+    "machine_id": "test-box",
+    "machine_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "agent_instance_id": "550e8400-e29b-41d4-a716-446655440002",
+  "parent_agent_id": null,
+  "agent_fingerprint": "0000000000000000000000000000000000000000000000000000000000000001",
+  "event_type": "session_start",
+  "chain_id": "550e8400-e29b-41d4-a716-446655440001",
+  "chain_type": "session",
+  "parent_chain_id": null,
+  "seq": 0,
+  "prev_hash": null,
+  "this_hash": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "ts": "2026-05-02T22:00:00.000Z",
+  "labels": {"env": "test"},
+  "payload": {}
+}
