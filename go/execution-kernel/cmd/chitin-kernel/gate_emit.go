@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
@@ -85,7 +86,19 @@ func (e *decisionEmitter) emitDecision(d *gov.Decision) {
 // payload carries the fields F4's projectToSpan can pick up (decision,
 // tool.name via action_type) plus the audit-relevant fields (rule_id,
 // reason, suggestion, corrected_command).
+//
+// Closes issue #75: stamps a defensive ts when d.Ts is empty (zero-
+// value Decision OR a code path that forgot to stamp). The chain JSONL
+// can't be retroactively patched, so the only safe move is to write
+// SOMETHING here — the event timestamps the moment we wrote it, which
+// is correct-modulo-the-bug-that-caused-Ts-to-be-empty. Without this,
+// the event lands on the chain with ts="" and silently drops at OTEL
+// projection time.
 func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
+	ts := d.Ts
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	decisionStr := "allow"
 	if !d.Allowed {
 		decisionStr = "deny"
@@ -127,7 +140,7 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 		EventType:       "decision",
 		ChainID:         chainID,
 		ChainType:       "session",
-		Ts:              d.Ts,
+		Ts:              ts,
 		Labels:          map[string]string{},
 		Payload:         payloadJSON,
 	}

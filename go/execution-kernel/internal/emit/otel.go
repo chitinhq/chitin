@@ -49,6 +49,19 @@ func newOTELExporter() *otelExporter {
 	}
 }
 
+// allowedEventTypes is the F4 v1 scope set per the spec. Other event
+// types still write to the canonical chain (which is authoritative);
+// they just don't project to OTEL until the spec extends. Closes
+// issue #72: emitting `assistant_turn`, `compaction`, `intended_*`,
+// etc. as spans was unintended scope creep + would surprise downstream
+// OTEL consumers expecting only the 4 documented types.
+var allowedEventTypes = map[string]bool{
+	"session_start":  true,
+	"pre_tool_use":   true,
+	"decision":       true,
+	"post_tool_use":  true,
+}
+
 // ProjectAndPost projects ev to a span and POSTs it to the configured collector.
 // Errors are logged and dropped — never propagated to the kernel write path.
 // Safe to call when x is nil (no-op).
@@ -59,8 +72,17 @@ func newOTELExporter() *otelExporter {
 // chain commit preserves the failure invariant — chain state is durable before
 // the network call begins. Latency cost: one round-trip per emit, capped at
 // 2s by the http.Client timeout. v2 (daemon-mode kernel) can revisit async.
+//
+// Event-type filter: only the 4 in-scope F4 v1 event types project. Other
+// types are silently skipped (they're still on the canonical chain). See
+// allowedEventTypes for the set; extend the spec + this map together when
+// the OTEL surface grows.
 func (x *otelExporter) ProjectAndPost(ev *event.Event, idx *chain.Index) {
 	if x == nil {
+		return
+	}
+	if !allowedEventTypes[ev.EventType] {
+		// Out-of-scope event type. Chain still has it; OTEL doesn't.
 		return
 	}
 	span, err := projectToSpan(ev, idx)
@@ -83,9 +105,19 @@ func (x *otelExporter) ProjectAndPost(ev *event.Event, idx *chain.Index) {
 // projectToSpan maps a canonical event onto an OTLP/HTTP JSON span.
 // Caller is responsible for ev being non-nil.
 func projectToSpan(ev *event.Event, idx *chain.Index) (otlpSpan, error) {
+	traceID := traceIDFromChainID(ev.ChainID)
+	if traceID == "" {
+		return otlpSpan{}, fmt.Errorf("invalid chain_id for traceId: %q (must produce 32 hex chars)", ev.ChainID)
+	}
 	parent, err := parentSpanID(ev, idx)
 	if err != nil {
 		return otlpSpan{}, fmt.Errorf("parent span id: %w", err)
+	}
+	if ev.Ts == "" {
+		// Closes issue #75: an empty Ts upstream silently dropped the
+		// span via the time.Parse error. Now: explicit error so the
+		// log line names the missing field rather than the parse fail.
+		return otlpSpan{}, fmt.Errorf("event has empty ts (this_hash=%s, type=%s)", ev.ThisHash, ev.EventType)
 	}
 	nano, err := tsToUnixNano(ev.Ts)
 	if err != nil {
@@ -117,7 +149,7 @@ func projectToSpan(ev *event.Event, idx *chain.Index) (otlpSpan, error) {
 	}
 
 	return otlpSpan{
-		TraceID:           traceIDFromChainID(ev.ChainID),
+		TraceID:           traceID,
 		SpanID:            spanIDFromHash(ev.ThisHash),
 		ParentSpanID:      parent,
 		Name:              ev.EventType,
@@ -149,9 +181,30 @@ func parentSpanID(ev *event.Event, idx *chain.Index) (string, error) {
 }
 
 // traceIDFromChainID encodes a UUID chain_id as a 32-hex-char traceId by
-// stripping hyphens. OTLP/HTTP JSON traceId is a case-insensitive hex string.
+// stripping hyphens. OTLP/HTTP+JSON traceId MUST be exactly 32 lowercase
+// hex chars (16 bytes). Returns empty string when input doesn't conform —
+// caller treats empty as "skip projection" rather than emitting a malformed
+// span.
+//
+// Closes issue #73: the prior implementation accepted any input and
+// emitted whatever-it-stripped as the traceId, silently corrupting OTLP
+// payloads when chain_ids weren't UUID-shape (e.g., the SP-2
+// `otel:<trace>:<span>:` chain_ids that flow through here from openclaw
+// ingestion). Validation prevents the bad-data-leaks-into-spans class.
 func traceIDFromChainID(id string) string {
-	return strings.ReplaceAll(id, "-", "")
+	stripped := strings.ReplaceAll(id, "-", "")
+	if len(stripped) != 32 {
+		return ""
+	}
+	for i := 0; i < len(stripped); i++ {
+		c := stripped[i]
+		isLowerHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isLowerHex && !isUpperHex {
+			return ""
+		}
+	}
+	return strings.ToLower(stripped)
 }
 
 // spanIDFromHash takes the first 16 hex chars of a SHA-256 chain hash.
