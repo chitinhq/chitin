@@ -34,6 +34,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { ActivityResult } from './activity-types.ts';
 import type { executeRequestWorkflow } from './workflow.ts';
 import { parseBacklog, type BacklogEntry } from './grooming/parse-backlog.ts';
@@ -233,9 +234,14 @@ export function buildPrompt(entry: BacklogEntry): string {
   // agent at the file and tell it to use the read tool. The
   // verbose-step echo was likely tempting the model into "summarize
   // the steps" mode rather than executing them.
-    let targetFile = entry.file?.split(',')[0]?.trim() || 'the file named in the entry';
-  if (targetFile && !targetFile.startsWith('./') && !targetFile.startsWith('/')) {
-    targetFile = `./${targetFile}`;
+  const rawFile = entry.file?.split(',')[0]?.trim();
+  let targetFile: string;
+  if (rawFile) {
+    targetFile = rawFile.startsWith('./') || rawFile.startsWith('/')
+      ? rawFile
+      : `./${rawFile}`;
+  } else {
+    targetFile = 'the file named in the entry';
   }
   return `You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
@@ -373,7 +379,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  log('error', 'dispatcher fatal', { error: err instanceof Error ? err.message : String(err) });
-  process.exit(1);
-});
+// Only auto-run when invoked as a script. Importing buildPrompt or other
+// helpers from tests must not open a Temporal connection.
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((err) => {
+    log('error', 'dispatcher fatal', { error: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
+  });
+}
