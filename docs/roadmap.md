@@ -104,3 +104,11 @@ A1 (agent framework builders) → A2 (platform/infra) → A4 (security/complianc
 ## Phase 0 — archive predecessors (complete)
 
 Renamed `chitinhq/chitin → chitinhq/chitin-archive` at `v1.0.0`; archived every other v1 repo in the org; created the new public MIT `chitinhq/chitin` monorepo. Hermes (the predecessor driver) was killed as a chitin component on 2026-04-23 — chitin is governance around openclaw + Claude Code, not a tick loop. See [`archive-map.md`](./archive-map.md) for what was extracted vs left behind.
+
+## Candidates from external signal
+
+- [reddit] [1t1n6o8](https://reddit.com/r/LocalLLaMA/comments/1t1n6o8/we_are_finally_there_qwen3627b_agentic_search_957/) — We are finally there: Qwen3.6-27B + agentic search; 95.7% SimpleQA on a single 3090, fully local
+- [reddit] [1t19iil](https://reddit.com/r/LocalLLaMA/comments/1t19iil/been_using_qwen3627bq8_k_xl_vscode_rtx_6000_pro/) — Been using Qwen-3.6-27B-q8_k_xl + VSCode + RTX 6000 Pro As Daily Driver
+- [reddit] [1t1judm](https://reddit.com/r/LocalLLaMA/comments/1t1judm/qwen3627b_at_72_toks_on_rtx_3090_on_windows_using/) — Qwen3.6-27B at 72 tok/s on RTX 3090 on Windows using native vLLM (no WSL, no Docker), portable launcher and installer
+- [reddit] [1t1jc1d](https://reddit.com/r/LocalLLaMA/comments/1t1jc1d/have_qwen_said_anything_about_further_qwen_36/) — Have Qwen said anything about further Qwen 3.6 models?
+- [reddit] [1t1a8gf](https://reddit.com/r/LocalLLaMA/comments/1t1a8gf/qwen3627bnvfp4_images/) — Qwen3.6-27B-NVFP4 - images
