@@ -10,13 +10,21 @@ chitin event chain so audit can reconcile.
 
 ## Tier definitions
 
-| Tier | Driver | Model | Use for |
-|------|--------|-------|---------|
-| **T0** | `local-qwen` | `ollama/qwen3-coder:30b` (3090) | mechanical, single-file, <100 LOC. Free, fast. |
-| **T1** | `copilot` | GPT-4.1 (free) or Haiku | moderate, multi-file, clear pattern. Cheap. |
-| **T2** | `local-glm` *or* `copilot` | `ollama-cloud/glm-5.1:cloud` *or* Copilot mid | specialized reasoning. glm rate-limited so use sparingly. |
-| **T3** | `copilot` | GPT-5.4 | heavy / cross-cutting / architectural. Workhorse. |
-| **T4** | Claude Code (interactive, with Jared) | n/a | strategy, ambiguous scope, irreversible decisions, anything the swarm can't groom further. |
+| Tier | Driver | Model (post slice 6c) | Use for |
+|------|--------|-----------------------|---------|
+| **T0** | `local-qwen` | `ollama/qwen3-coder:30b` on the 3090 (free, fast) | mechanical, single-file, <100 LOC |
+| **T1** | `copilot` *or* `claude-code-headless` | Copilot GPT-4.1 (free) / `claude-haiku-4-5` | moderate, multi-file, clear pattern |
+| **T2** | `local-glm` (rate-limited) *or* `copilot` *or* `claude-code-headless` | `ollama-cloud/glm-5.1:cloud` / Copilot Haiku 4.5 / `claude-haiku-4-5` | specialized reasoning |
+| **T3** | `copilot` *or* `claude-code-headless` | Copilot GPT-5.4 / `claude-sonnet-4-6` | heavy / cross-cutting / architectural |
+| **T4** | `claude-code-headless` | `claude-opus-4-7` | strongest programmatic — last resort before T5 |
+| **T5** | Claude Code interactive (Jared in the loop) | n/a | strategy, ambiguous scope, irreversible decisions; **also: any edit chitin's `no-governance-self-modification` rule blocks** (governance config changes are T5 by design) |
+
+**Activity dispatch (slice 6c):** the activity reads `ExecutionRequest.tier`
+and threads `--model <id>` into the spawn args. Maps live in
+`apps/temporal-worker/src/activity.ts` (`CLAUDE_TIER_MODEL`,
+`COPILOT_TIER_MODEL`). Override per tier per driver via
+`CHITIN_MODEL_<DRIVER_KEY>_<TIER>` env. Local-* drivers ignore tier — model
+is set per openclaw agent at agent-creation time (slice 3).
 
 **Escalation rule:** when a workflow at tier `T_n` returns non-zero or stalls
 past `wall_timeout_s`, Temporal re-enqueues at `T_{n+1}` and tags the issue
@@ -27,29 +35,15 @@ ideas live in `roadmap.md` ("Deferred") or as draft issues; they cross over
 once a grooming pass (Copilot GPT-4.1 free, or interactive Jared+Claude Code)
 breaks them down to tier-fit size.
 
+**Self-governance rule (slice 6 lesson):** chitin's
+`no-governance-self-modification` rule blocks all agent writes to
+`chitin.yaml` and `.chitin/` paths regardless of tier. Governance changes
+must come through T5 (a human path). This is a feature, not a friction —
+the swarm cannot quietly grant itself broader permissions.
+
 ---
 
 ## Ready (claimable now)
-
-### `gov-policy-allow-pr-merge`
-
-```yaml
-id: gov-policy-allow-pr-merge
-tier: T0
-status: ready
-estimated_loc: 3
-blocks: []
-file: chitin.yaml
-```
-
-`default-allow-github-write` rule lists `github.pr.create` and `pr.close` but
-omits `pr.merge`. Result: every `gh pr merge` invocation by claude-code or
-swarm dispatcher gets denied with `policy default is deny` and we have to
-fall back to `gh api PUT /pulls/N/merge`. Add `github.pr.merge` to the rule's
-action list in `chitin.yaml`. Bound by existing escalation policy — not a
-broadening, just closing a vocabulary gap that should always have been allowed.
-
----
 
 ### `normalize-decision-params-truthiness`
 
@@ -454,44 +448,41 @@ Log and analyze failure modes from real swarm runs
 
 (Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
 
-### `event-chain-query-api`
+---
+
+### `rename-local-cloud-driver-misnomer`
 
 ```yaml
-id: event-chain-query-api
-tier: T1
-status: in_design
-parent: swarm-shared-memory-spike
-```
-
-Expose API to query event chain for agent/repo history
-
-(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
-
-### `session-context-injector`
-
-```yaml
-id: session-context-injector
-tier: T1
-status: in_design
-parent: swarm-shared-memory-spike
-```
-
-Inject retrieved memory into agent session start
-
-(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
-
-### `failure-mode-logging`
-
-```yaml
-id: failure-mode-logging
+id: rename-local-cloud-driver-misnomer
 tier: T2
-status: in_design
-parent: swarm-shared-memory-spike
+status: ready
+estimated_loc: 60
+blocks: []
+file: libs/contracts/src/execution-request.schema.ts, apps/temporal-worker/src/activity.ts, openclaw agent config
 ```
 
-Log and analyze failure modes from real swarm runs
+`local-glm` and `local-deepseek` driver ids are misnomers — `glm-5.1:cloud`
+runs through Ollama Cloud and `deepseek` (in our setup) routes via cloud
+too, neither is "local" in the same sense as `local-qwen` (which actually
+runs on the 3090). Renaming options:
 
-(Decomposed from `swarm-shared-memory-spike` on 2026-05-02.)
+- `cloud-glm`, `cloud-deepseek` — paired with `local-qwen` keeps the
+  prefix discoverable but introduces a third axis (cost / latency tier
+  vs locality) the prefix doesn't fully capture.
+- `glm`, `deepseek` (no prefix) + keep `local-qwen` as an exception —
+  cleanest but breaks the convention.
+- Tier-suffix vocabulary entirely: drop `local-*` and just name agents
+  by model (`qwen-coder`, `glm-cloud`, `deepseek-cloud`) — biggest
+  rename surface area, cleanest end state.
+
+Touches: `DriverIdSchema` enum, `DRIVER_AGENT_MAP` in activity.ts, the
+per-driver agent ids in openclaw config (`qwen-agent`, `glm-agent`,
+`deepseek-agent` may also need renaming for consistency), CHITIN_AGENT_*
+env var keys, all activity tests, `swarm-backlog.md` tier definitions
+above. T2 because of the breadth (multi-file rename + downstream env
+var docs).
+
+---
 
 ## Strategic / user-only (T4)
 
@@ -516,21 +507,62 @@ below to groom further.
   PR #81 commit
 - `slice-3a-pi-runtime-core-tools` — PR #83, merged 2026-05-01
 - `slice-3-chat-domain-and-routing` — PR #84, merged 2026-05-01
+- `slice-4-grooming-agent` — PR #92, merged 2026-05-02
+- `slice-5-swarm-worktree` — PR #93, merged 2026-05-02
+- `slice-5b-claude-code-headless` — PR #95, merged 2026-05-02 (corrected
+  the 2026-04-30 ToS misread; brought claude-code back as a worker driver)
+- `slice-6-cheaper-driver-gating-and-tier-routing` — PR #96, merged
+  2026-05-02 (closed the audit-gap finding from slice 5b)
+- `gov-policy-allow-pr-merge` — PR #97, merged 2026-05-02 (manual; can't
+  go through swarm by self-governance rule)
 - Closed from issue #82: `#4 driver-id-contract-theater` (slice 3b),
   `#13 normalizer-informational` (PR #83)
+- Closed audit-gap PR #94 — superseded by #97 (its content was correct
+  but it was produced by an unaudited slice-5b run, before slice 6 fixed
+  the cwd-scoped hook gap)
 
 ---
 
-## Tier counts (snapshot)
+## Tier counts (snapshot 2026-05-02 post slice-6 merge)
 
 ```
-T0: 5 ready
-T1: 3 in_design
-T2: 4 in_design (1 wall-timeout, 1 install, 1 audit, 1 shared-memory spike)
-T3: 1 in_design (task-validate command)
-T4: 3 strategic
+T0 ready:    4   (decision.params, workflow-name-drift, repo-regex, read/read_file alias)
+T1 ready:    3   (tools-summary, cron-targets, openclaw-tool-coverage)
+T2 ready:    3   (wall-timeout-sigkill, install-slice-3-agents, rename-cloud-misnomer)
+T3 ready:    1   (task-validate command)
+T1 in_design: 2  (event-chain-query-api, session-context-injector — sub-entries
+                  of swarm-shared-memory-spike)
+T2 in_design: 1  (failure-mode-logging — same parent)
+T4 strategic: 3  (slice-7 scope, OTEL semconv, octi v2)
+T5 only:     ∞  (governance-config edits, ambiguous strategy)
 ```
 
-Bias: there's a lot of T0 ready right now — good warmup load for the swarm.
-Once those are drained, T1 entries need a grooming pass to break them into
-implementation steps before they're claimable.
+**Recommended next-session sequence (cheap → expensive):**
+
+1. **Drain T0 ready (4 entries)** via `local-qwen` — free, ~5 min each.
+   The slice-6 worktree path makes this straightforward; one workflow
+   per entry, apply step PRs each. Each PR is single-file mechanical.
+2. **Run a grooming pass on the T1/T2 in_design sub-entries** to flesh
+   out implementation steps so they're claimable.
+3. **Pick one T2 ready** — `wall-timeout-sigkill` is highest value
+   because it unblocks slow models from timing out at Temporal's
+   15-min cap. `rename-cloud-misnomer` is lower value but smaller.
+
+**How to dispatch a T0 from this backlog:**
+
+```bash
+# Worker must be running:
+CHITIN_REPO_ROOT=/home/red/workspace/chitin \
+  pnpm exec tsx apps/temporal-worker/src/worker.ts &
+
+# Submit:
+PROMPT='<from swarm-backlog entry implementation_steps>' \
+WORKFLOW_ID=swarm-<entry-id>-$(date +%s) \
+BASE_REF=main DRIVER=local-qwen TIER=T0 \
+WALL_TIMEOUT_S=120 MAX_TOOL_CALLS=10 \
+  pnpm exec tsx apps/temporal-worker/src/submit.ts
+
+# Apply:
+pnpm exec tsx apps/temporal-worker/src/grooming/apply-workflow-result.ts \
+  --result tmp/result-<workflow-id>.json --apply
+```
