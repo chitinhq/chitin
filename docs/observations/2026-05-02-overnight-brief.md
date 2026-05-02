@@ -15,7 +15,7 @@ purpose: One-page brief — what happened overnight, what to look at first.
 |---|-------|------|----------------|
 | #107 | docs: overnight research — openclaw usage survey + swarm SoTA | docs | Research on (a) how others use openclaw — they closed Temporal integration as not planned, our three-plane architecture fills exactly that gap. (b) 2026 self-improving-swarm SoTA — Live-SWE-agent, MiniMax M2.7, Kimi K2.5. Concrete next moves prioritized. **Read first — frames everything else.** |
 | #109 | feat(swarm): Slack notifier for dispatcher events + TimeoutStartSec fix | code | Wires `CHITIN_SLACK_WEBHOOK_URL` env so you see swarm activity in Slack. Also bumps `TimeoutStartSec` 900→2400 because slice-7-tuning's longer wall_timeouts opened a window where systemd killed the dispatcher mid-workflow. 9 unit tests, typecheck clean. |
-| #110 | docs(swarm-backlog): 9 research-informed in-design entries | docs | New entries derived from #107: role-typed-backlog-entries, lessons-learned-sidecar, eval-harness-wiring, multi-step-flows, openclaw-mission-control-otel-hookup, openclaw-temporal-issue-10164-public-comment, chitin-readme-positioning-rewrite, playwright-driver-prototype, notebooklm-ingest-via-playwright, soul-md-schema-alignment. All `in_design` — you promote what looks right. |
+| #110 | docs(swarm-backlog): 10 research-informed in-design entries | docs | New entries derived from #107: role-typed-backlog-entries, lessons-learned-sidecar, eval-harness-wiring, multi-step-flows, openclaw-mission-control-otel-hookup, openclaw-temporal-issue-10164-public-comment, chitin-readme-positioning-rewrite, playwright-driver-prototype, notebooklm-ingest-via-playwright, soul-md-schema-alignment. All `in_design` — you promote what looks right. |
 
 **Swarm-produced PRs (7 — autonomous, while we worked):**
 
@@ -48,13 +48,15 @@ purpose: One-page brief — what happened overnight, what to look at first.
 ## What didn't ship (and why)
 
 - **No Playwright integration prototype.** Backlogged as `playwright-driver-prototype` (T3). Real implementation is ~600 LOC + Playwright bootstrap + auth handling — too much for one-shot overnight without your scope review.
-- **No NotebookLM ingest.** Backlogged depends on Playwright. Same reason.
+- **No NotebookLM ingest.** Backlogged; depends on Playwright. Same reason.
 - **No `lessons-learned-sidecar` implementation.** Backlogged at T1 — a future swarm tick can pick it up after you promote it.
 
 ## What I want you to look at FIRST (60-second skim)
 
-1. `docs/observations/2026-05-02-openclaw-usage-survey.md` (PR #107) — the OpenClaw closed-as-not-planned finding is strategic. Want your take before the 2026-05-07 talk.
-2. `docs/observations/2026-05-02-self-improving-swarm-sota.md` (PR #107) — the "where chitin is ahead / behind" sections are the real meat.
+> Files referenced below ship in PR #107 — they don't exist on this branch. Either merge #107 first or check it out (`gh pr checkout 107`) to read them.
+
+1. `docs/observations/2026-05-02-openclaw-usage-survey.md` (in PR #107) — the OpenClaw closed-as-not-planned finding is strategic. Want your take before the 2026-05-07 talk.
+2. `docs/observations/2026-05-02-self-improving-swarm-sota.md` (in PR #107) — the "where chitin is ahead / behind" sections are the real meat.
 3. PR #109 — operator visibility you asked for. Configure the webhook and you start seeing dispatch events in Slack within 5 min.
 
 ## Cost tally (rough)
