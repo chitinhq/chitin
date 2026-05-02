@@ -84,11 +84,23 @@ describe('buildPromptForEntry', () => {
     expect(dispatched).toBe(programmer);
   });
 
-  it('routes non-programmer roles to a stub that names the role', () => {
-    const dispatched = buildPromptForEntry(makeEntry({ id: 'r-test', role: 'researcher' }));
-    expect(dispatched).toContain('researcher');
-    expect(dispatched).toContain('r-test');
+  it('routes still-stubbed non-programmer roles to a stub that names the role', () => {
+    const dispatched = buildPromptForEntry(makeEntry({ id: 'p-test', role: 'product' }));
+    expect(dispatched).toContain('product');
+    expect(dispatched).toContain('p-test');
     // Stub does NOT have the programmer's TOOL DISPATCHES preamble.
+    expect(dispatched).not.toContain('TOOL DISPATCHES count');
+  });
+
+  it('routes role: researcher to the dedicated researcher prompt (not the generic stub)', () => {
+    const dispatched = buildPromptForEntry(makeEntry({ id: 'r-test', role: 'researcher' }));
+    expect(dispatched).toContain('researcher role');
+    expect(dispatched).toContain('r-test');
+    // Researcher prompt mandates the structured-output marker — that's
+    // the load-bearing diff between the dedicated template and the
+    // generic stub.
+    expect(dispatched).toContain('<<<CANDIDATES>>>');
+    // And it doesn't borrow the programmer preamble.
     expect(dispatched).not.toContain('TOOL DISPATCHES count');
   });
 
