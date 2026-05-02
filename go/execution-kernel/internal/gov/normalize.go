@@ -212,7 +212,13 @@ func normalizeWriteFile(args map[string]any) Action {
 // by a `terraform` pass-through rule first.
 func classifyShellCommand(cmd string) Action {
 	trimmed := strings.TrimSpace(cmd)
-	pipeline := canon.Parse(trimmed)
+	// Use the AST-grade canon parser so subshells `(rm -rf /)`, command
+	// substitution `$(rm -rf /)`, process substitution `bash <(curl)`,
+	// heredoc destinations, and `bash -c "<string>"` re-parse all land
+	// inner commands as their own pipeline segments. ParseAST auto-falls-
+	// back to the tokenizer-grade Parse on parse failure, so we never
+	// regress below the prior tokenizer behavior.
+	pipeline := canon.ParseAST(trimmed)
 	first := canon.Command{}
 	if len(pipeline.Segments) > 0 {
 		first = pipeline.Segments[0].Command
@@ -270,7 +276,10 @@ func classifyShellCommand(cmd string) Action {
 	// === Default: generic shell.exec with optional shape annotation ===
 
 	action := Action{Type: ActShellExec, Target: trimmed}
-	if canon.IsRemoteCodeExec(pipeline) || canon.ContainsProcSubstFetch(trimmed) {
+	// IsRemoteCodeExec sees both `curl | bash` AND `bash <(curl)` because
+	// ParseAST descends into ProcSubst. The previous regex band-aid
+	// (ContainsProcSubstFetch) is no longer needed.
+	if canon.IsRemoteCodeExec(pipeline) {
 		action.Params = map[string]any{"shape": "remote-code-exec"}
 	}
 	return action

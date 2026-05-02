@@ -161,19 +161,25 @@ func WriteDestinations(raw string) []string {
 //   `curl URL -o /tmp/x.sh && bash /tmp/x.sh` (caught via && between a
 //   network-fetch segment and a bash segment).
 func IsRemoteCodeExec(p Pipeline) bool {
-	// Pipe form: a network-fetch segment immediately followed by a shell
-	// segment via |.
+	// Pipe / && form, both orderings:
+	//   - fetch | bash    (segments: fetch, bash with Op=Pipe)
+	//   - bash <(fetch)   (segments: bash, fetch with Op=Pipe — AST emits
+	//                      the proc-subst inner as Pipe-connected after
+	//                      the launcher)
+	// We accept either ordering: any adjacent (fetch, shell-launcher)
+	// pair connected by Pipe / && / || is suspicious. A non-adjacent
+	// fetch+launcher in the same pipeline isn't enough — must be
+	// directly connected.
 	for i := 1; i < len(p.Segments); i++ {
 		seg := p.Segments[i]
-		if seg.Op != OpPipe && seg.Op != OpAnd {
-			continue
-		}
-		if !isShellLauncher(seg.Command.Tool) {
-			continue
-		}
-		// Look back for a network-fetch segment.
 		prev := p.Segments[i-1]
-		if isNetworkFetch(prev.Command.Tool) {
+		if seg.Op != OpPipe && seg.Op != OpAnd && seg.Op != OpOr {
+			continue
+		}
+		if isShellLauncher(seg.Command.Tool) && isNetworkFetch(prev.Command.Tool) {
+			return true
+		}
+		if isNetworkFetch(seg.Command.Tool) && isShellLauncher(prev.Command.Tool) {
 			return true
 		}
 	}

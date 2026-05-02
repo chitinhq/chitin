@@ -2221,10 +2221,11 @@ prioritizes.
 ```yaml
 id: canon-ast-upgrade-mvdan-sh
 tier: T3
-status: in_design
-estimated_loc: ~400 (canon/ast.go + tests + benchmarks)
+status: shipped
+shipped_in: PR #173 (gov-bypass-hardening, follow-up commit)
+estimated_loc: ~600 actual (canon/ast.go + ast_test.go + IsRemoteCodeExec bidirectional update)
 blocks: []
-file: go/execution-kernel/internal/canon/ast.go (new), parse.go (existing tokenizer stays as fallback)
+file: go/execution-kernel/internal/canon/ast.go, gov/normalize.go (uses ParseAST)
 references_design: gov-bypass-hardening PR + research finding mvdan.cc/sh/v3/syntax (BSD-3, 8.7k stars, active)
 role: architect
 ```
