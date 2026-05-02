@@ -1,0 +1,24 @@
+# One-shot service fired by chitin-researcher.timer.
+# Runs the researcher script for periodic research tasks.
+
+[Unit]
+Description=Chitin swarm periodic researcher
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-user secrets (CHITIN_SLACK_WEBHOOK_URL etc).
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+# `.ts` files are not exec-able directly; route through pnpm exec tsx
+# (matching chitin-dispatcher.service). researcher.ts is shipped by
+# the paired external-signal-fetchers entry — until that lands, this
+# service will start, fail with "module not found", and the timer
+# tick exits non-zero. That's intentional per the backlog entry's
+# note: the unit is fine as text pointing at a not-yet-existing path.
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/researcher.ts
+StandardOutput=journal
+StandardError=journal
+# 20min is generous for a research pass.
+TimeoutStartSec=1200
