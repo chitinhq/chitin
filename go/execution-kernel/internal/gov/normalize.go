@@ -68,14 +68,33 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// subagents, schedule cron jobs. Cross-agent communication and scheduling
 	// → delegate.task. Bypass closure with `delegate_task`: any rule that
 	// catches one catches all forms.
+	//
+	// sessions_send / sessions_spawn: side-effectful cross-session calls.
+	// They take a target session id (sessions_send) or an agent id +
+	// initial message (sessions_spawn). Use the most specific identifier
+	// available so policy rules can target a specific peer.
+	case "sessions_send", "sessions_spawn":
+		target := stringArg(args, "agentId")
+		if target == "" {
+			target = stringArg(args, "sessionId")
+		}
+		if target == "" {
+			target = stringArg(args, "target")
+		}
+		if target == "" {
+			target = toolName
+		}
+		return Action{Type: ActDelegateTask, Target: target}, nil
+	// cron: granular target is "<action>:<name>" so policy rules can
+	// distinguish create vs delete vs trigger on a specific job. When the
+	// payload omits action/name (older callers, defensive fallback), drop
+	// to the prior target-then-name lookup so existing rules keep firing.
 	case "cron":
 		action := stringArg(args, "action")
 		name := stringArg(args, "name")
 		if action != "" && name != "" {
-			target := action + ":" + name
-			return Action{Type: ActDelegateTask, Target: target}, nil
+			return Action{Type: ActDelegateTask, Target: action + ":" + name}, nil
 		}
-		// fallback to previous logic if fields missing
 		target := stringArg(args, "target")
 		if target == "" {
 			target = stringArg(args, "name")
@@ -84,14 +103,15 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 			target = toolName
 		}
 		return Action{Type: ActDelegateTask, Target: target}, nil
+	// subagents: granular target is "<action>:<agentId>" so policy rules
+	// can distinguish spawn vs kill vs message on a specific agent.
+	// Falls back to target/agentId/toolName when either field is absent.
 	case "subagents":
 		action := stringArg(args, "action")
 		agentId := stringArg(args, "agentId")
 		if action != "" && agentId != "" {
-			target := action + ":" + agentId
-			return Action{Type: ActDelegateTask, Target: target}, nil
+			return Action{Type: ActDelegateTask, Target: action + ":" + agentId}, nil
 		}
-		// fallback to previous logic if fields missing
 		target := stringArg(args, "target")
 		if target == "" {
 			target = stringArg(args, "agentId")
@@ -105,8 +125,26 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// plain forms (web_search, web_fetch) and the provider-prefixed forms
 	// (ollama_web_*) get registered by openclaw; map them identically so
 	// the policy doesn't depend on which provider is wired.
-	case "image", "image_generate":
-		return Action{Type: ActHTTPRequest, Target: toolName}, nil
+	//
+	// image / image_generate: granular target = the path being analyzed
+	// (image) or the prompt being rendered (image_generate). Lets rules
+	// like "no image_generate with prompts containing 'X'" fire on the
+	// actual content. Falls back to toolName when neither is present.
+	case "image":
+		target := stringArg(args, "path")
+		if target == "" {
+			target = stringArg(args, "url")
+		}
+		if target == "" {
+			target = toolName
+		}
+		return Action{Type: ActHTTPRequest, Target: target}, nil
+	case "image_generate":
+		target := stringArg(args, "prompt")
+		if target == "" {
+			target = toolName
+		}
+		return Action{Type: ActHTTPRequest, Target: target}, nil
 	case "web_search", "ollama_web_search":
 		return Action{Type: ActHTTPRequest, Target: stringArg(args, "query")}, nil
 	case "web_fetch", "ollama_web_fetch":
