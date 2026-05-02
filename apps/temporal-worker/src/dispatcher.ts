@@ -37,6 +37,12 @@ import { homedir } from 'node:os';
 import type { ActivityResult } from './activity-types.ts';
 import type { executeRequestWorkflow } from './workflow.ts';
 import { parseBacklog, type BacklogEntry } from './grooming/parse-backlog.ts';
+import {
+  notifyDispatchStart,
+  notifyDispatchComplete,
+  notifyDispatchError,
+  extractPrUrl,
+} from './notify.ts';
 
 const WORKFLOW_NAME = 'executeRequestWorkflow';
 const TASK_QUEUE = 'chitin-worker-q';
@@ -313,14 +319,30 @@ async function main() {
     // the swarm doesn't quietly retry without operator review.
     writeDispatchMarker(entry.id, workflowId, tier, driver);
 
-    const handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
-      args: [req],
-      taskQueue: TASK_QUEUE,
-      workflowId,
-    });
+    await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
+
+    let handle;
+    try {
+      handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
+        args: [req],
+        taskQueue: TASK_QUEUE,
+        workflowId,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'submit', error: msg });
+      throw err;
+    }
     log('info', 'workflow started', { workflow_id: workflowId });
 
-    const result = (await handle.result()) as ActivityResult;
+    let result: ActivityResult;
+    try {
+      result = (await handle.result()) as ActivityResult;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'workflow', error: msg });
+      throw err;
+    }
     mkdirSync(TMP_DIR, { recursive: true });
     const envelopePath = resolve(TMP_DIR, `result-${workflowId}.json`);
     writeFileSync(
@@ -353,18 +375,40 @@ async function main() {
     // Run apply step inline. apply-workflow-result.ts handles push + PR
     // when the worktree has work, no-ops otherwise. Best-effort: failures
     // are logged but don't propagate (operator can run manually).
+    let applyOutput = '';
+    let applyFailed: Error | null = null;
     try {
-      const applyOutput = execSync(
+      applyOutput = execSync(
         `pnpm exec tsx apps/temporal-worker/src/grooming/apply-workflow-result.ts --result ${envelopePath} --apply`,
         { encoding: 'utf8' },
       );
       log('info', 'apply step output', { output: applyOutput.slice(-2000) });
     } catch (err) {
+      applyFailed = err instanceof Error ? err : new Error(String(err));
       log('warn', 'apply step failed (run manually)', {
         envelope: envelopePath,
-        error: err instanceof Error ? err.message : String(err),
+        error: applyFailed.message,
       });
     }
+
+    const prUrl = extractPrUrl(applyOutput);
+    if (applyFailed) {
+      await notifyDispatchError({
+        entry_id: entry.id,
+        workflow_id: workflowId,
+        stage: 'apply',
+        error: applyFailed.message,
+      });
+    }
+    await notifyDispatchComplete({
+      entry_id: entry.id,
+      workflow_id: workflowId,
+      exit_code: result.exit_code,
+      duration_ms: result.duration_ms,
+      commits_added: result.worktree?.commits_added ?? 0,
+      uncommitted: result.worktree?.has_uncommitted_changes ?? false,
+      pr_url: prUrl,
+    });
   } finally {
     await conn.close();
   }
