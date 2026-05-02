@@ -311,6 +311,21 @@ func TestNormalize_TerminalReadOnly(t *testing.T) {
 	}
 }
 
+func TestNormalize_ReadFile_FilePathAlias(t *testing.T) {
+	// read_file should accept both path and file_path as keys
+	aPath, _ := Normalize("read_file", map[string]any{"path": "/x"})
+	aFilePath, _ := Normalize("read_file", map[string]any{"file_path": "/x"})
+	if aPath.Type != ActFileRead || aFilePath.Type != ActFileRead {
+		t.Errorf("Type: got %q and %q, want file.read", aPath.Type, aFilePath.Type)
+	}
+	if aPath.Target != aFilePath.Target {
+		t.Errorf("Target mismatch: path=%q file_path=%q", aPath.Target, aFilePath.Target)
+	}
+	if aPath.Target != "/x" {
+		t.Errorf("Target: got %q, want /x", aPath.Target)
+	}
+}
+
 // openclaw pi-runtime tool names — closes the "exec/process/read/write/edit
 // fall through to ActUnknown" gap that left the openclaw plugin gating with
 // default-deny-unknown instead of policy-meaningful action types.

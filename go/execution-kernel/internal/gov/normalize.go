@@ -41,7 +41,11 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	case "write", "edit":
 		return normalizeWriteFile(args), nil
 	case "read_file":
-		return Action{Type: ActFileRead, Target: stringArg(args, "path")}, nil
+		path := stringArg(args, "path")
+		if path == "" {
+			path = stringArg(args, "file_path")
+		}
+		return Action{Type: ActFileRead, Target: path}, nil
 	case "read":
 		// openclaw pi-runtime read tool — path-based file read.
 		path := stringArg(args, "path")
