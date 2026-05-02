@@ -117,8 +117,9 @@ describe('buildPromptForEntry', () => {
     expect(dispatched).toContain('a-test');
     // The analyst prompt mandates the structured-output marker.
     expect(dispatched).toContain('<<<ANALYSIS>>>');
-    // Names the python/analysis toolkit the role's job is to use.
-    expect(dispatched).toContain('python/analysis');
+    // Names the recipe-driven invocation — the determinism-first model.
+    expect(dispatched).toContain('python3 -m analysis.investigate');
+    expect(dispatched).toContain('--entry "a-test"');
     // Does NOT borrow programmer preamble — analyst output is reports,
     // not commits.
     expect(dispatched).not.toContain('TOOL DISPATCHES count');

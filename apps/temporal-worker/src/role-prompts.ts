@@ -112,21 +112,16 @@ ${RESEARCHER_OUTPUT_INSTRUCTIONS}`;
 // markdown report rather than expecting a code commit. An empty
 // worktree on success is the EXPECTED outcome.
 function buildAnalystEntryPrompt(entry: BacklogEntry): string {
-  return `You are playing the analyst role in chitin's autonomous swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3 for the role's scope.
+  // Pull the alarm signal out of the entry description so the agent
+  // can hand it directly to the recipe. The alarm-feeder formats
+  // entries with `> <alarm text>` as a blockquote line; if a
+  // different upstream filed this entry, the agent reads the
+  // description for context.
+  const alarmHint = '<extract the alarm string from the ENTRY DETAIL — typically a blockquote line under "Auto-filed by chitin-alarm-feeder.timer">';
 
-Your toolkit is \`python/analysis/\`: a typed library of loaders + reports against chitin's canonical event chain. The lib already produces three streams:
+  return `You are playing the analyst role in chitin's autonomous swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3.
 
-  - \`analysis.decisions\` — per-rule deny/allow analysis of governance decisions
-  - \`analysis.debt\` — debt-ledger loader + reporting
-  - \`analysis.swarm_health\` — daily rollup (bucket-B rate, success-by-tier, alarms[])
-  - \`analysis.swarm_runs\` — per-run records (driver, tier, exit_code, duration_ms)
-
-Source data:
-  - \`~/.cache/chitin/.../events-*.jsonl\` — gov-decisions chain (canonical)
-  - \`~/.cache/chitin/swarm-state/dispatched/<entry-id>.json\` — dispatch markers
-  - \`~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json\` — daily rollup
-  - \`tmp/result-swarm-*.json\` — workflow result envelopes
-  - \`docs/debt-ledger.md\` — operator-curated + auto-curated debt
+The investigation is fully recipe-driven. The recipe owns the analysis (deterministic: same alarm + same data → same finding); your job is to invoke it and report the result. Do NOT author bespoke Python — chitin's determinism-first model means the recipe is the contract.
 
 ENTRY ID: ${entry.id}
 ROLE: analyst
@@ -134,25 +129,28 @@ ROLE: analyst
 ENTRY DETAIL:
 ${entry.description}
 
-What good output looks like:
-- Run an existing analysis module (\`python -m analysis.swarm_health\` etc.) OR author a one-off Python query against the chain JSONL.
-- Surface the smallest set of facts that explain WHY the entry was filed (root cause, not symptoms).
-- Recommend a concrete next action: a fix-shape backlog entry, a tier-rule change, a debt-ledger promotion, or \`status: needs_human\` if the cause is non-obvious.
+YOUR ENTIRE WORKFLOW (3 tool calls):
 
-Output rules:
-- Write your findings to \`python/analysis/out/${entry.id}.md\` (the apply step picks up files in this directory). Use the existing analysis writers in \`python/analysis/writers.py\` so format stays consistent across runs.
-- Empty worktree on completion is EXPECTED for the analyst role — your output is the markdown report under \`out/\`, not a code change. The apply step understands this.
-- Do NOT modify code under \`apps/\`, \`go/\`, or \`libs/\`. Pure analysis is your scope; if the analysis surfaces a code change, that's a follow-up backlog entry.
-- Do NOT modify chitin.yaml or anything under .chitin/ — governance is human-only.
-- If you cannot reproduce the regression or the rollup data is missing, exit cleanly with a stub report saying so. Better silent than guessed.
+1. Extract the alarm string from ENTRY DETAIL above (look for a \`> <alarm text>\` blockquote, typically on a line right after "Auto-filed by chitin-alarm-feeder.timer").
 
-At the END of your run, emit EXACTLY ONE JSON object on a single line, prefixed with the literal token \`<<<ANALYSIS>>>\` and nothing else after the closing brace on that line:
+2. Dispatch the \`exec\` tool to run the investigation recipe:
+   \`\`\`
+   cd python && python3 -m analysis.investigate --entry "${entry.id}" --alarm "<the alarm string from step 1>"
+   \`\`\`
+   The recipe writes a markdown report to \`python/analysis/out/${entry.id}.md\` + a JSON sidecar to \`python/analysis/out/${entry.id}.json\`, and prints a \`<<<ANALYSIS>>>{...}\` line on stdout.
 
-<<<ANALYSIS>>>{"root_cause":"<one sentence>","recommended_action":"file-fix-entry"|"needs_human"|"no-action","report_path":"python/analysis/out/${entry.id}.md","confidence":"high"|"medium"|"low"}
+3. The last line of stdout from step 2 IS your structured emit. Echo it as your final reply (the marker line must appear in your output for the runner's parser to find it).
 
-If you couldn't determine a root cause, emit:
+That's it. The recipe handles every alarm kind it knows (bucket-B, low-success, qwen-idle); unknown kinds fall back to needs_human with a stub report. New alarm kinds are added by extending \`analysis.investigate.ALARM_HANDLERS\` — that's a separate backlog entry for the operator, not your job here.
 
-<<<ANALYSIS>>>{"root_cause":"unable to determine","recommended_action":"needs_human","report_path":"python/analysis/out/${entry.id}.md","confidence":"low"}`;
+CONSTRAINTS:
+- The agent's stdout must include the \`<<<ANALYSIS>>>\` line from the recipe. The runner's parser keys on it.
+- Do NOT author Python yourself. If the recipe doesn't recognize the alarm kind, it writes a needs_human stub — that's the correct behavior. File a separate backlog entry to teach the recipe later.
+- Do NOT modify code under \`apps/\`, \`go/\`, or \`libs/\`. Pure analysis is your scope.
+- Do NOT modify chitin.yaml or anything under .chitin/.
+- Empty worktree on completion is EXPECTED — your output is the markdown report under \`python/analysis/out/\` (which the apply step commits + pushes if it's a tracked path) and the marker-line on stdout (which the runner reads for the chain).
+
+Reference: \`python/analysis/investigate.py\` is the recipe source. Read it before extending; the alarm kinds it handles + the Finding shape are pinned by tests in \`tests/test_investigate.py\`.`;
 }
 
 // Stub for the remaining non-programmer roles. Future entries replace
