@@ -70,7 +70,11 @@ PARAMETER num_ctx 32768
 EOF
 
 ollama create qwen3-coder:30b-32k -f /tmp/qwen3-coder-32k.Modelfile
-ollama show qwen3-coder:30b-32k --parameters | grep num_ctx   # expect 32768
+ollama show qwen3-coder:30b-32k --parameters
+# Expect a `num_ctx 32768` line in the output. The exact format varies
+# slightly across ollama 0.22.x point releases — eyeball rather than
+# grep so a render-format change doesn't make verification fail noisily
+# while the model is actually fine.
 ```
 
 Then point the openclaw `qwen-agent` at the new model id. The agent
@@ -108,6 +112,18 @@ openclaw agents add qwen-agent \
 
 Direct edit is preferred — the delete/re-add path may drop bindings
 and identity fields the CLI defaults differently.
+
+**After either path, restart openclaw** (or any long-running consumer
+of `~/.openclaw/openclaw.json`) so the agents.list cache reflects the
+new model. The chitin worker spawns openclaw fresh per workflow, so
+it will pick up the change on the next dispatch automatically; an
+already-running interactive openclaw session won't.
+
+```bash
+# Verify the agent is now bound to the 32k model:
+jq '.agents.list[] | select(.id=="qwen-agent") | .model' ~/.openclaw/openclaw.json
+# Expect: "ollama/qwen3-coder:30b-32k"
+```
 
 ## 4. Smoke-test (without flipping the dispatcher)
 
