@@ -20,3 +20,9 @@ const { runAgentTurn } = proxyActivities<{
 export async function executeRequestWorkflow(req: ExecutionRequest): Promise<ActivityResult> {
   return runAgentTurn(req);
 }
+
+// Re-export the review-graph workflow so it's registered in the
+// workflowsPath bundle the worker loads. Without this, calls to
+// `client.workflow.start('reviewGraphWorkflow', ...)` would fail
+// at submit time with "workflow not found".
+export { reviewGraphWorkflow } from './review-graph-workflow.ts';
