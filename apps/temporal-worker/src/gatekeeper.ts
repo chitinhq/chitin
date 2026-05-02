@@ -42,8 +42,12 @@
 //   network round-trip.
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 import type { ReviewGraphAction, ReviewGraphResult } from './review-graph-workflow.ts';
 import type { PrMeta } from './review-graph.ts';
+import type { DriverId, Tier } from '@chitin/contracts';
 
 export interface GatekeeperInput {
   result: ReviewGraphResult;
@@ -56,6 +60,10 @@ export interface GatekeeperInput {
    *  diff-vs-scope intersection gate uses this. Optional — entries
    *  without scope skip that gate. */
   entry_file_scope?: string;
+  /** Implementor's tier (the entry's declared tier — what the
+   *  dispatcher chose drivers for). Feeds the success-rate weighting
+   *  gate. Optional — legacy entries without tier skip the gate. */
+  implementor_tier?: Tier;
 }
 
 export interface GatekeeperOutcome {
@@ -87,6 +95,20 @@ export interface GateInputs {
   entry_file_scope: string | undefined;
   /** Whether all CI checks on the PR concluded SUCCESS. */
   ci_green: boolean;
+  /** Bucket-B contamination rate from the most-recent rollup
+   *  (~/.cache/chitin/swarm-rollups/<latest>.json). > 0 = bucket-B
+   *  detector fired in the last window; auto-merge fails until
+   *  operator confirms regression source. Undefined = rollup absent
+   *  or unreadable; gate is skipped (operator runs the rollup
+   *  manually if they need the gate strict). */
+  bucket_b_rate?: number;
+  /** Implementor's driver+tier success rate this week. < 0.7 =
+   *  regressing path; gate fails to avoid amplifying. Undefined =
+   *  not enough data points OR rollup absent; gate is skipped. */
+  implementor_success_rate?: number;
+  /** Implementor's driver+tier label, surfaced in the failure
+   *  message so the operator knows WHICH path is regressing. */
+  implementor_path?: string;
 }
 
 export interface GateEvaluation {
@@ -222,6 +244,31 @@ export function evaluateGates(inputs: GateInputs): GateEvaluation {
     failures.push(`diff touches T5-shape path(s): ${t5Touched.join(', ')}`);
   }
 
+  // Bucket-B contamination rate — fed from the swarm-rollup's
+  // bucket_b_rate field. Any positive rate in the last window is a
+  // hard fail because bucket-B was a 4-PR contamination incident
+  // (2026-05-02): auto-merging while the detector is firing risks
+  // amplifying the same regression.
+  if (inputs.bucket_b_rate !== undefined && inputs.bucket_b_rate > 0) {
+    failures.push(
+      `bucket-B rate ${(inputs.bucket_b_rate * 100).toFixed(1)}% in last 24h — auto-merge paused`,
+    );
+  }
+
+  // Driver+tier success rate weighting — avoid amplifying a
+  // regressing path. Threshold per design: < 70% in the last week
+  // → fail. Undefined = insufficient telemetry; skip rather than
+  // false-positive on cold start.
+  if (
+    inputs.implementor_success_rate !== undefined &&
+    inputs.implementor_success_rate < 0.7
+  ) {
+    const path = inputs.implementor_path ?? '?';
+    failures.push(
+      `implementor path ${path} success rate ${(inputs.implementor_success_rate * 100).toFixed(0)}% < 70% — auto-merge avoids amplifying`,
+    );
+  }
+
   // Diff-vs-scope intersection — the bucket-B detection signal.
   // Compute only when the entry has a declared scope; entries
   // without a `file:` field skip this gate (the operator is
@@ -322,6 +369,89 @@ export function mergeViaGh(prNumber: number): { ok: boolean; error?: string } {
   }
 }
 
+// ─── Rollup → telemetry feeders ──────────────────────────────────────────
+
+const SWARM_ROLLUPS_DIR = resolve(homedir(), '.cache/chitin/swarm-rollups');
+
+interface SwarmRollupShape {
+  bucket_b_rate?: number;
+  bucket_b_count?: number;
+  total_runs?: number;
+  success_by_driver?: Record<string, { success: number; total: number }>;
+  success_by_tier?: Record<string, { success: number; total: number }>;
+  // Note: the joint driver+tier signal isn't on today's rollup; when
+  // it lands as success_by_driver_tier, implementorSuccessRateFromRollup
+  // picks it up automatically.
+  success_by_driver_tier?: Record<string, { success: number; total: number }>;
+}
+
+/**
+ * Read the most-recent swarm-rollup JSON. Pure modulo readdirSync +
+ * readFileSync. Returns undefined when:
+ *   - The rollups dir doesn't exist (operator hasn't run rollup
+ *     yet — gates that depend on this skip).
+ *   - The latest file is unreadable / malformed.
+ * Caller must treat undefined as "skip this gate", NOT as "rate=0".
+ *
+ * Exported for tests; passing a custom dir lets tests inject a
+ * synthetic rollup without touching ~/.cache.
+ */
+export function readLatestRollup(dir: string = SWARM_ROLLUPS_DIR): SwarmRollupShape | undefined {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch {
+    return undefined;
+  }
+  if (names.length === 0) return undefined;
+  // Lexicographic sort works here because the names are
+  // YYYY-MM-DD.json — newest sorts last.
+  names.sort();
+  const latest = names[names.length - 1];
+  try {
+    const raw = readFileSync(resolve(dir, latest), 'utf8');
+    return JSON.parse(raw) as SwarmRollupShape;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Pull the bucket-B rate out of the latest rollup. Undefined when no
+ * rollup is available. The caller's gate skips on undefined rather
+ * than treating it as 0.
+ */
+export function bucketBRateFromRollup(rollup: SwarmRollupShape | undefined): number | undefined {
+  if (!rollup) return undefined;
+  if (typeof rollup.bucket_b_rate !== 'number') return undefined;
+  return rollup.bucket_b_rate;
+}
+
+/**
+ * Compute the implementor's success rate for the gate. v1 reads
+ * success-by-tier from the rollup (the joint driver+tier dimension
+ * lives in a future rollup extension; the gate function picks it up
+ * automatically when that lands via success_by_driver_tier). Returns
+ * undefined when:
+ *   - rollup is absent;
+ *   - tier is absent on the entry (legacy);
+ *   - fewer than 5 runs in the bucket (cold-start protection — a
+ *     single-run failure shouldn't trip the gate).
+ */
+export function implementorSuccessRateFromRollup(
+  rollup: SwarmRollupShape | undefined,
+  tier: Tier | undefined,
+): { rate?: number; path: string } {
+  const path = tier ? `tier=${tier}` : 'tier=?';
+  if (!rollup || !tier) return { path };
+  const byTier = (rollup as { success_by_tier?: Record<string, { success: number; total: number }> })
+    .success_by_tier?.[tier];
+  if (byTier && byTier.total >= 5) {
+    return { rate: byTier.success / byTier.total, path };
+  }
+  return { path };
+}
+
 /**
  * Run the gatekeeper: evaluate §6 gates, optionally auto-merge, post
  * Slack digest, return structured outcome. Activity-shaped — this is
@@ -351,11 +481,17 @@ export async function runGatekeeperNotify(input: GatekeeperInput): Promise<Gatek
     } else {
       const prFiles = fetchPrFiles(input.pr_meta.pr_number);
       const ciGreen = checkCiGreen(input.pr_meta.pr_number);
+      const rollup = readLatestRollup();
+      const bucketBRate = bucketBRateFromRollup(rollup);
+      const successInfo = implementorSuccessRateFromRollup(rollup, input.implementor_tier);
       const evaluation = evaluateGates({
         result: input.result,
         pr_files: prFiles,
         entry_file_scope: input.entry_file_scope,
         ci_green: ciGreen,
+        bucket_b_rate: bucketBRate,
+        implementor_success_rate: successInfo.rate,
+        implementor_path: successInfo.path,
       });
       merge.gate_failures = evaluation.failures;
 
