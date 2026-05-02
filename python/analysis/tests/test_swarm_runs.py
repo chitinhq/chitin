@@ -243,10 +243,20 @@ def test_corrupt_marker_skipped_not_raised(tmp_path):
 
 
 def test_corrupt_envelope_skipped_not_raised(tmp_path):
+    """The corrupt envelope must be skipped silently AND the loader must
+    still process the well-formed sibling. The directory has TWO files
+    matching ``result-swarm-*.json``; only one yields a SwarmRun."""
     state, tmp = tmp_path / "state", tmp_path / "tmp"
     _write_marker(state, "e1", workflow_id="swarm-1", tier="T0", driver="copilot", dispatched_at="2026-05-02T03:14:38Z")
+    _write_marker(state, "e-corrupt", workflow_id="swarm-corrupt", tier="T0", driver="copilot", dispatched_at="2026-05-02T03:14:39Z")
     tmp.mkdir()
     (tmp / "result-swarm-corrupt.json").write_text("{not valid json")
     _write_envelope(tmp, workflow_id="swarm-1", exit_code=0, duration_ms=1, commits_added=0)
+
+    # Sanity: the tmp dir really has TWO matching files.
+    matched = sorted(p.name for p in tmp.iterdir() if p.name.startswith("result-swarm-"))
+    assert matched == ["result-swarm-1.json", "result-swarm-corrupt.json"]
+
     runs = load_swarm_runs(state, tmp, window=None)
     assert len(runs) == 1
+    assert runs[0].entry_id == "e1"  # well-formed survived; corrupt was skipped

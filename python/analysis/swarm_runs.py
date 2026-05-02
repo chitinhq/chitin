@@ -81,6 +81,15 @@ class SwarmRun:
 # modelUsage block. These regexes are tolerant of pretty-printed JSON
 # (whitespace between key and value) but anchor on the field name so they
 # don't false-match on entry descriptions that mention "cost" generically.
+#
+# CAVEAT (B1): the activity caps stdout_tail at TAIL_BYTES = 2000 (see
+# `apps/temporal-worker/src/activity.ts`). The claude CLI's final-message
+# JSON typically lands inside that window, but a chatty run that emits
+# a long final assistant message before the usage summary can push the
+# cost block out of the tail — the extractor returns None and the run
+# reports cost=None. Empirically the overnight 2026-05-02 run had all
+# 5 CCH costs captured. If a future cost_by_driver total diverges
+# from the Anthropic-side billing tally, suspect tail truncation first.
 _COST_RE = re.compile(r'"total_cost_usd"\s*:\s*([0-9.]+)')
 _MODEL_USAGE_RE = re.compile(r'"modelUsage"\s*:\s*\{\s*"([^"]+)"')
 _PR_URL_RE = re.compile(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+')
@@ -95,6 +104,14 @@ _PR_URL_RE = re.compile(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+')
 # + envelope window. Conservative — false-negative-leaning, since a
 # legitimate small PR could match the shortstat. Pair with file-list
 # inspection when escalating to an alarm.
+#
+# CAVEAT (B2): this string literal is a SNAPSHOT of what
+# writeWorktreeClaudeSettings (`apps/temporal-worker/src/activity.ts`)
+# emitted as of 2026-05-02. If that function adds a field, reformats
+# JSON, or changes whitespace, the shortstat changes and this matcher
+# silently goes to 0% bucket-B while the actual rate could be non-zero.
+# When updating writeWorktreeClaudeSettings, also update this constant
+# (and the matching test fixture in test_swarm_runs.py).
 _BUCKET_B_SHORTSTAT = "1 file changed, 12 insertions(+), 10 deletions(-)"
 
 
