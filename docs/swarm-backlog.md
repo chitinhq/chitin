@@ -84,42 +84,6 @@ asserting `executeRequestWorkflow.name === WORKFLOW_NAME`.
 
 ---
 
-### `repo-regex-tighten`
-
-```yaml
-id: repo-regex-tighten
-tier: T0
-status: ready
-estimated_loc: 4
-blocks: []
-file: libs/contracts/src/execution-request.schema.ts
-references_issue: 82
-```
-
-`^[^/\s]+\/[^/\s]+$` accepts `..foo/..bar` because `..` matches `[^/\s]+`.
-Tighten to forbid leading `.` — e.g., `^[\w][\w.-]*/[\w][\w.-]*$`. Add tests
-that reject `../foo`, `..foo/bar`, `foo/../bar`, and accept `chitinhq/chitin`.
-
----
-
-### `read-vs-read_file-file_path-alias`
-
-```yaml
-id: read-vs-read_file-file_path-alias
-tier: T0
-status: ready
-estimated_loc: 6
-blocks: []
-file: go/execution-kernel/internal/gov/normalize.go
-```
-
-Slice 3 added `case "read"` with `path` → `file_path` alias fallback, but the
-existing `case "read_file"` has no fallback. Make `read_file` use the same
-alias logic for parity. Add a test that `read_file({file_path: "/x"})` and
-`read_file({path: "/x"})` produce the same Action.
-
----
-
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
@@ -228,6 +192,42 @@ end-to-end on local-qwen. Status `blocked` until the dependencies
 land — the dispatcher's `pickEntryToDispatch` doesn't currently
 respect blocks (slice 8 work) but a human reviewer will catch a
 premature merge.
+
+---
+
+### `repo-regex-tighten`
+
+```yaml
+id: repo-regex-tighten
+tier: T0
+status: ready
+estimated_loc: 4
+blocks: []
+file: libs/contracts/src/execution-request.schema.ts
+references_issue: 82
+```
+
+`^[^/\s]+\/[^/\s]+$` accepts `..foo/..bar` because `..` matches `[^/\s]+`.
+Tighten to forbid leading `.` — e.g., `^[\w][\w.-]*/[\w][\w.-]*$`. Add tests
+that reject `../foo`, `..foo/bar`, `foo/../bar`, and accept `chitinhq/chitin`.
+
+---
+
+### `read-vs-read_file-file_path-alias`
+
+```yaml
+id: read-vs-read_file-file_path-alias
+tier: T0
+status: ready
+estimated_loc: 6
+blocks: []
+file: go/execution-kernel/internal/gov/normalize.go
+```
+
+Slice 3 added `case "read"` with `path` → `file_path` alias fallback, but the
+existing `case "read_file"` has no fallback. Make `read_file` use the same
+alias logic for parity. Add a test that `read_file({file_path: "/x"})` and
+`read_file({path: "/x"})` produce the same Action.
 
 ---
 
