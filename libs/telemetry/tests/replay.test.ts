@@ -1,9 +1,21 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { indexEvents } from '../src/sqlite-indexer';
 import { replaySessionAsTree } from '../src/replay';
+
+// #8: track temp dirs and rm in afterEach.
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  tempDirs.length = 0;
+});
+function tempDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(d);
+  return d;
+}
 
 function baseEvent(over: Record<string, unknown>) {
   return {
@@ -31,7 +43,7 @@ function baseEvent(over: Record<string, unknown>) {
 
 describe('replaySessionAsTree', () => {
   it('returns rows for the requested session, time-ordered, JSON columns parsed', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const dir = tempDir('chitin-tel-');
     const dbPath = join(dir, 'events.db');
     indexEvents(dbPath, [
       baseEvent({ this_hash: 'a'.repeat(64), ts: '2026-04-19T12:00:00Z', labels: { env: 'dev' } }),

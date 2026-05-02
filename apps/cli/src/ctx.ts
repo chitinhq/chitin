@@ -32,8 +32,14 @@ const KERNEL_BIN_ENV = 'CHITIN_KERNEL_BINARY';
 export function buildAdapterContext(input: AdapterContextInput): AdapterContext {
   const user = input.user ?? userInfo().username;
   const machineID = input.machineID ?? hostname();
+  // Closes #9: derive machine_fingerprint from the RESOLVED machineID,
+  // not raw hostname(). When the caller passes machineID (tests,
+  // container setups, hostname-translation envs), the prior code
+  // hashed the un-translated hostname — so driver_identity.machine_id
+  // and driver_identity.machine_fingerprint could disagree, forcing
+  // analytics to choose between two views of the same machine.
   const machineFingerprint = sha256Hex(
-    `${hostname()}|${userInfo().uid}|chitin-machine-fingerprint-v2`,
+    `${machineID}|${userInfo().uid}|chitin-machine-fingerprint-v2`,
   );
   const agentFingerprint = sha256Hex(
     JSON.stringify({

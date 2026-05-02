@@ -1,8 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tailJSONL } from '../src/jsonl-tailer';
+
+// #8: track temp dirs and rm in afterEach.
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  tempDirs.length = 0;
+});
+function tempDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(d);
+  return d;
+}
 
 const sampleLine = JSON.stringify({
   schema_version: '2',
@@ -27,7 +39,7 @@ const sampleLine = JSON.stringify({
 
 describe('tailJSONL', () => {
   it('yields parsed v2 events from a JSONL file', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const dir = tempDir('chitin-tel-');
     const path = join(dir, 'events.jsonl');
     writeFileSync(path, sampleLine + '\n' + sampleLine + '\n');
     const out: unknown[] = [];
@@ -37,7 +49,7 @@ describe('tailJSONL', () => {
   });
 
   it('tolerates malformed lines by skipping them', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const dir = tempDir('chitin-tel-');
     const path = join(dir, 'events.jsonl');
     writeFileSync(path, sampleLine + '\n{bad\n' + sampleLine + '\n');
     const out: unknown[] = [];
