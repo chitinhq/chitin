@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
-from analysis.types import Decision, Pattern
+from analysis.models import Decision, Pattern
 
 
 def detect_patterns(decisions: Iterable[Decision]) -> list[Pattern]:

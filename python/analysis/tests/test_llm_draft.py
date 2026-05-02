@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from analysis.llm_draft import enrich_with_llm
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 
 
 def _heuristic_draft():

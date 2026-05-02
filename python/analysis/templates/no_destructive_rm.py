@@ -8,7 +8,7 @@ import re
 from typing import Optional
 
 from analysis.templates import register
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 
 SAFE_PATTERNS = [
     re.compile(r"\brm\s+-rf?\s+(?:[^/\s]*?/)?(?:tmp|test|out|graphify-out|build|dist|node_modules)(?:/|$)"),

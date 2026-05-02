@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from analysis.templates import REGISTRY
-from analysis.types import Pattern, RuleDraft
+from analysis.models import Pattern, RuleDraft
 
 
 def draft_for_pattern(pattern: Pattern) -> Optional[RuleDraft]:

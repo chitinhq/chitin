@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from analysis.templates.no_curl_pipe_bash import draft, extract_host
-from analysis.types import Decision, Pattern
+from analysis.models import Decision, Pattern
 
 
 def _pattern(*targets):

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from analysis.types import Decision, parse_decision_line
+from analysis.models import Decision, parse_decision_line
 
 GOV_DECISIONS_PATTERN = re.compile(r"^gov-decisions-\d{4}-\d{2}-\d{2}\.jsonl$")
 

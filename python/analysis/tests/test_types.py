@@ -1,7 +1,7 @@
 """Tests for Decision dataclass + parsing."""
 from datetime import datetime, timezone
 
-from analysis.types import Decision, parse_decision_line
+from analysis.models import Decision, parse_decision_line
 
 
 def test_parse_full_decision_line():

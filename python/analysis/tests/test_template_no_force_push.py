@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from analysis.templates.no_force_push import draft
-from analysis.types import Decision, Pattern
+from analysis.models import Decision, Pattern
 
 
 def _pattern(*targets):

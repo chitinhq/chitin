@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from analysis.types import Pattern, RuleDraft
+from analysis.models import Pattern, RuleDraft
 
 TemplateFunc = Callable[[Pattern], Optional[RuleDraft]]
 
