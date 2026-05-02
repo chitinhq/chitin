@@ -70,7 +70,7 @@ export const ExecutionRequestSchema = z
     schema_version: z.literal('1'),
     workflow_id: TemporalIdSchema,
     run_id: TemporalIdSchema,
-    repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'must be <owner>/<name>'),
+    repo: z.string().regex(/^[\w][\w.-]*\/[\w][\w.-]*$/, 'must be <owner>/<name>'),
     files: z.array(z.string().min(1)).optional(),
     task_class: TaskClassSchema,
     risk_level: RiskLevelSchema,

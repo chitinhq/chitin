@@ -66,6 +66,41 @@ describe('ExecutionRequestSchema', () => {
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 
+  it('rejects repo with leading dot in owner', () => {
+    const bad = { ...validRequest, repo: '.foo/bar' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects repo with leading dot in name', () => {
+    const bad = { ...validRequest, repo: 'foo/.bar' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects repo with ..foo/bar', () => {
+    const bad = { ...validRequest, repo: '..foo/bar' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects repo with foo/..bar', () => {
+    const bad = { ...validRequest, repo: 'foo/..bar' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects repo with ../foo (owner=.., name=foo — leading-dot tightening)', () => {
+    const bad = { ...validRequest, repo: '../foo' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects repo with foo/../bar', () => {
+    const bad = { ...validRequest, repo: 'foo/../bar' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts valid repo chitinhq/chitin', () => {
+    const ok = { ...validRequest, repo: 'chitinhq/chitin' };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
   it('accepts max_cost_usd = 0 (T0-only / no-cloud is legal)', () => {
     const ok = { ...validRequest, bounds: { ...validRequest.bounds, max_cost_usd: 0 } };
     expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
