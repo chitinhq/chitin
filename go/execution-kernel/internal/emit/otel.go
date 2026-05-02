@@ -45,7 +45,7 @@ func newOTELExporter() *otelExporter {
 	}
 	return &otelExporter{
 		endpoint: ep,
-		client:   &http.Client{Timeout: 2 * time.Second},
+		client:   &http.Client{Timeout: 500 * time.Millisecond},
 	}
 }
 
@@ -71,7 +71,7 @@ var allowedEventTypes = map[string]bool{
 // not survive process exit, dropping every span. Sync POST after a successful
 // chain commit preserves the failure invariant — chain state is durable before
 // the network call begins. Latency cost: one round-trip per emit, capped at
-// 2s by the http.Client timeout. v2 (daemon-mode kernel) can revisit async.
+// 500ms by the http.Client timeout. v2 (daemon-mode kernel) can revisit async.
 //
 // Event-type filter: only the 4 in-scope F4 v1 event types project. Other
 // types are silently skipped (they're still on the canonical chain). See
@@ -95,7 +95,7 @@ func (x *otelExporter) ProjectAndPost(ev *event.Event, idx *chain.Index) {
 		log.Printf("otel: encode: %v", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := x.post(ctx, body); err != nil {
 		log.Printf("otel: post: %v", err)
