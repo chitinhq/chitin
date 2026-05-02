@@ -372,6 +372,15 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
   let result: ActivityResult;
   try {
     result = await new Promise<ActivityResult>((resolvePromise, reject) => {
+      // Slice 7a: spawn detached so the child becomes the leader of its own
+      // process group. On wall_timeout SIGKILL we then kill the whole group
+      // (process.kill(-pid)) instead of just the parent. Without this,
+      // grandchildren (model runners under openclaw, or claude's worker
+      // subprocesses) inherit the stdout pipe and keep it open after the
+      // parent dies — Node's 'close' event waits for FDs to close, never
+      // fires, and the activity hangs to Temporal's startToCloseTimeout
+      // (15 min). With this fix, the timer-fired kill propagates and the
+      // close event arrives within ~1s.
       const child = spawn(plan.command, plan.args, {
         cwd: workDir,
         env: {
@@ -382,6 +391,7 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
           CHITIN_RUN_ID: req.run_id,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
 
       // Bounded ring buffers — only the tail is reported, so growing strings
@@ -395,7 +405,22 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       child.stdout.on('data', (b) => (stdout = tail(stdout, b.toString(), TAIL_CAP)));
       child.stderr.on('data', (b) => (stderr = tail(stderr, b.toString(), TAIL_CAP)));
 
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), req.bounds.wall_timeout_s * 1000);
+      const killTimer = setTimeout(() => {
+        if (child.pid !== undefined) {
+          try {
+            // Negative pid = process group. Kills child + all its descendants
+            // (openclaw + model runner + ollama + ...). Belt-and-suspenders:
+            // also force-close stdout/stderr in case the descendant tree is
+            // still holding pipes after SIGKILL (rare but real on overloaded
+            // systems where SIGKILL takes a tick to propagate).
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            // ESRCH = process already exited. No-op.
+          }
+        }
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, req.bounds.wall_timeout_s * 1000);
       child.on('close', (code) => {
         clearTimeout(killTimer);
         resolvePromise({

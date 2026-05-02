@@ -69,14 +69,30 @@ async function main() {
     return;
   }
 
+  // Slice 7 finding: don't auto-commit just because porcelain shows
+  // uncommitted state. Some agents (openclaw qwen via the slice-6b
+  // workspace remap) write bootstrap/identity files into the worktree
+  // at session start that aren't related to the assigned task — auto-
+  // committing those produces a junk PR with no relationship to the
+  // backlog entry. Heuristic: only auto-commit when there are TRACKED
+  // file modifications (`diff --shortstat` non-empty). Untracked-only
+  // changes are likely agent side effects, not the work product.
   if (wt.has_uncommitted_changes) {
-    console.log('[apply-result] auto-committing uncommitted changes…');
-    git(wt.path, ['add', '-A']);
-    git(wt.path, [
-      'commit',
-      '-m',
-      defaultCommitMessage(env),
-    ]);
+    const trackedDiff = git(wt.path, ['--no-pager', 'diff', '--shortstat']).length > 0;
+    if (trackedDiff) {
+      console.log('[apply-result] auto-committing tracked uncommitted changes…');
+      git(wt.path, ['add', '-A']);
+      git(wt.path, ['commit', '-m', defaultCommitMessage(env)]);
+    } else {
+      console.log('[apply-result] worktree has untracked-only changes (likely agent bootstrap files); skipping auto-commit.');
+      // If there are no committed changes either, treat as no-work-done
+      // and skip push entirely (don't pollute origin with empty branches).
+      if (wt.commits_added === 0) {
+        console.log('[apply-result] no committed work; skipping push and PR.');
+        cleanupWorktree(repoRoot, wt);
+        return;
+      }
+    }
   }
 
   console.log(`[apply-result] pushing ${wt.branch}…`);

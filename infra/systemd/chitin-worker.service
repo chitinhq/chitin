@@ -1,0 +1,32 @@
+# Slice 7d: Temporal worker as a long-running user service.
+#
+# Install (per-user, no sudo):
+#   mkdir -p ~/.config/systemd/user
+#   cp infra/systemd/chitin-worker.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now chitin-worker
+#   journalctl --user -u chitin-worker -f
+#
+# To enable on boot regardless of login:
+#   sudo loginctl enable-linger $USER
+
+[Unit]
+Description=Chitin Temporal Worker — autonomous swarm execution plane
+After=network.target
+# Soft dependency on docker — Temporal stack runs in compose.
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/worker.ts
+Restart=on-failure
+RestartSec=10
+# Keep stdout/stderr in the journal so journalctl is the operator surface.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
