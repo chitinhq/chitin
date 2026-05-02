@@ -5,6 +5,7 @@ package chain
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,15 +13,33 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
 
-// ChainInfo is the last-known state of a chain.
+// ChainInfo is the last-known state of a chain. The EventType /
+// LogicalHash / EmitTs fields support emit-time invariants:
+//
+//   - LastEventType: drives the session_end-is-last enforcement (#3).
+//     If it equals "session_end" and a non-session_end event tries to
+//     emit on the same chain, the emit is refused.
+//   - LastLogicalHash: drives idempotent emit (#16). A retried event
+//     whose logical content matches the chain tail's LogicalHash AND
+//     was emitted within the dedup window is treated as a duplicate.
+//   - LastEmitTs: paired with LastLogicalHash for the dedup window
+//     check. RFC3339 string (matches event.Event.Ts format).
+//
+// These fields default to "" for chains seeded before the schema
+// migration (see ALTER TABLE in OpenIndex). Empty values are equivalent
+// to "no prior info" — the invariants gracefully no-op on legacy chains.
 type ChainInfo struct {
-	ChainID  string
-	LastSeq  int64
-	LastHash string
+	ChainID         string
+	LastSeq         int64
+	LastHash        string
+	LastEventType   string
+	LastLogicalHash string
+	LastEmitTs      string
 }
 
 // Index is a kernel-owned SQLite handle for chain bookkeeping.
@@ -30,11 +49,25 @@ type Index struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS chains (
-	chain_id  TEXT PRIMARY KEY,
-	last_seq  INTEGER NOT NULL,
-	last_hash TEXT NOT NULL
+	chain_id          TEXT PRIMARY KEY,
+	last_seq          INTEGER NOT NULL,
+	last_hash         TEXT NOT NULL,
+	last_event_type   TEXT NOT NULL DEFAULT '',
+	last_logical_hash TEXT NOT NULL DEFAULT '',
+	last_emit_ts      TEXT NOT NULL DEFAULT ''
 );
 `
+
+// migrations runs idempotent ADD COLUMN statements for DBs created before
+// the last_event_type / last_logical_hash / last_emit_ts columns existed.
+// SQLite returns a "duplicate column" error if the column is already
+// present; we swallow that specific error so re-running OpenIndex on a
+// fresh DB doesn't fail.
+var migrations = []string{
+	`ALTER TABLE chains ADD COLUMN last_event_type   TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE chains ADD COLUMN last_logical_hash TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE chains ADD COLUMN last_emit_ts      TEXT NOT NULL DEFAULT ''`,
+}
 
 func OpenIndex(path string) (*Index, error) {
 	db, err := sql.Open("sqlite", path)
@@ -56,6 +89,17 @@ func OpenIndex(path string) (*Index, error) {
 		db.Close()
 		return nil, err
 	}
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil {
+			// SQLite reports "duplicate column name: X" when the column
+			// is already present from a fresh-schema CREATE TABLE.
+			// Swallow that specific case; surface anything else.
+			if !strings.Contains(err.Error(), "duplicate column") {
+				db.Close()
+				return nil, err
+			}
+		}
+	}
 	return &Index{db: db}, nil
 }
 
@@ -64,9 +108,14 @@ func (i *Index) Close() error {
 }
 
 func (i *Index) Get(chainID string) (*ChainInfo, error) {
-	row := i.db.QueryRow(`SELECT chain_id, last_seq, last_hash FROM chains WHERE chain_id = ?`, chainID)
+	row := i.db.QueryRow(
+		`SELECT chain_id, last_seq, last_hash, last_event_type, last_logical_hash, last_emit_ts
+		 FROM chains WHERE chain_id = ?`, chainID)
 	var info ChainInfo
-	if err := row.Scan(&info.ChainID, &info.LastSeq, &info.LastHash); err != nil {
+	if err := row.Scan(
+		&info.ChainID, &info.LastSeq, &info.LastHash,
+		&info.LastEventType, &info.LastLogicalHash, &info.LastEmitTs,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -75,12 +124,21 @@ func (i *Index) Get(chainID string) (*ChainInfo, error) {
 	return &info, nil
 }
 
-func (i *Index) Upsert(chainID string, seq int64, hash string) error {
+// Upsert writes the chain tail atomically. Used by RebuildFromJSONL when
+// reconciling from disk. The eventType/logicalHash/emitTs args may be ""
+// when the caller only knows seq+hash (legacy paths); the columns default
+// to "" so legacy callers stay correct.
+func (i *Index) Upsert(chainID string, seq int64, hash, eventType, logicalHash, emitTs string) error {
 	_, err := i.db.Exec(
-		`INSERT INTO chains (chain_id, last_seq, last_hash)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(chain_id) DO UPDATE SET last_seq = excluded.last_seq, last_hash = excluded.last_hash`,
-		chainID, seq, hash,
+		`INSERT INTO chains (chain_id, last_seq, last_hash, last_event_type, last_logical_hash, last_emit_ts)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(chain_id) DO UPDATE SET
+		   last_seq          = excluded.last_seq,
+		   last_hash         = excluded.last_hash,
+		   last_event_type   = excluded.last_event_type,
+		   last_logical_hash = excluded.last_logical_hash,
+		   last_emit_ts      = excluded.last_emit_ts`,
+		chainID, seq, hash, eventType, logicalHash, emitTs,
 	)
 	return err
 }
@@ -106,18 +164,26 @@ type EmitTx struct {
 	done    bool
 }
 
-// Commit upserts (chainID, seq, hash) and commits + releases the IMMEDIATE lock.
-func (tx *EmitTx) Commit(seq int64, hash string) error {
+// Commit upserts the chain tail and commits + releases the IMMEDIATE lock.
+// eventType / logicalHash / emitTs become the new tail's metadata used by
+// the next BeginEmit's invariant checks (session_end-is-last, idempotent
+// dedup window).
+func (tx *EmitTx) Commit(seq int64, hash, eventType, logicalHash, emitTs string) error {
 	if tx.done {
 		return nil
 	}
 	tx.done = true
 	ctx := context.Background()
 	_, err := tx.conn.ExecContext(ctx,
-		`INSERT INTO chains (chain_id, last_seq, last_hash)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(chain_id) DO UPDATE SET last_seq = excluded.last_seq, last_hash = excluded.last_hash`,
-		tx.chainID, seq, hash,
+		`INSERT INTO chains (chain_id, last_seq, last_hash, last_event_type, last_logical_hash, last_emit_ts)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(chain_id) DO UPDATE SET
+		   last_seq          = excluded.last_seq,
+		   last_hash         = excluded.last_hash,
+		   last_event_type   = excluded.last_event_type,
+		   last_logical_hash = excluded.last_logical_hash,
+		   last_emit_ts      = excluded.last_emit_ts`,
+		tx.chainID, seq, hash, eventType, logicalHash, emitTs,
 	)
 	if err != nil {
 		// Best-effort rollback before releasing the conn.
@@ -167,10 +233,14 @@ func (i *Index) BeginEmit(chainID string) (*EmitTx, error) {
 	}
 	// Read current chain state inside the transaction.
 	row := conn.QueryRowContext(ctx,
-		`SELECT chain_id, last_seq, last_hash FROM chains WHERE chain_id = ?`, chainID)
+		`SELECT chain_id, last_seq, last_hash, last_event_type, last_logical_hash, last_emit_ts
+		 FROM chains WHERE chain_id = ?`, chainID)
 	var info ChainInfo
 	var current *ChainInfo
-	if err := row.Scan(&info.ChainID, &info.LastSeq, &info.LastHash); err != nil {
+	if err := row.Scan(
+		&info.ChainID, &info.LastSeq, &info.LastHash,
+		&info.LastEventType, &info.LastLogicalHash, &info.LastEmitTs,
+	); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			_, _ = conn.ExecContext(ctx, "ROLLBACK")
 			conn.Close()
@@ -185,12 +255,21 @@ func (i *Index) BeginEmit(chainID string) (*EmitTx, error) {
 
 // jsonlEventRow holds the fields we need when scanning JSONL event lines.
 // PrevHash is a pointer so we can distinguish "not present" (unusual) from
-// "explicitly null" (chain head).
+// "explicitly null" (chain head). EventType + Ts are read so the rebuild
+// can populate the same chain-tail metadata that emit.go relies on for
+// the session_end-is-last and idempotent-dedup invariants.
+//
+// LogicalHash is recomputed from event_type + payload at rebuild time —
+// not stored on the JSONL line — so legacy events written before the
+// dedup feature still get a coherent dedup hash.
 type jsonlEventRow struct {
-	ChainID  string  `json:"chain_id"`
-	Seq      int64   `json:"seq"`
-	ThisHash string  `json:"this_hash"`
-	PrevHash *string `json:"prev_hash"`
+	ChainID   string          `json:"chain_id"`
+	Seq       int64           `json:"seq"`
+	ThisHash  string          `json:"this_hash"`
+	PrevHash  *string         `json:"prev_hash"`
+	EventType string          `json:"event_type"`
+	Ts        string          `json:"ts"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
 // RebuildFromJSONL brings the index into agreement with the ground-truth JSONL
@@ -320,17 +399,49 @@ func (i *Index) RebuildFromJSONL(chitinDir string) error {
 			continue
 		}
 		last := rows[len(rows)-1]
+		// LogicalHash recomputed from canonical (event_type, payload) so
+		// the dedup-window check on next emit works even on legacy chains
+		// reconciled from JSONL.
+		logicalHash := LogicalHash(last.EventType, last.Payload)
 		if _, err := i.db.Exec(
-			`INSERT INTO chains (chain_id, last_seq, last_hash)
-			 VALUES (?, ?, ?)
+			`INSERT INTO chains (chain_id, last_seq, last_hash, last_event_type, last_logical_hash, last_emit_ts)
+			 VALUES (?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(chain_id) DO UPDATE
-			   SET last_seq  = excluded.last_seq,
-			       last_hash = excluded.last_hash
+			   SET last_seq          = excluded.last_seq,
+			       last_hash         = excluded.last_hash,
+			       last_event_type   = excluded.last_event_type,
+			       last_logical_hash = excluded.last_logical_hash,
+			       last_emit_ts      = excluded.last_emit_ts
 			   WHERE excluded.last_seq > last_seq`,
-			chainID, last.Seq, last.ThisHash,
+			chainID, last.Seq, last.ThisHash, last.EventType, logicalHash, last.Ts,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// LogicalHash returns a stable hash over (event_type, payload) — the
+// fields that uniquely identify a logical event regardless of when /
+// how many times it was emitted. Used for idempotent-emit dedup (#16):
+// retries of the same logical event yield identical LogicalHash even
+// though Ts/Seq/PrevHash/ThisHash all differ.
+//
+// Empty event_type or empty payload yield a stable empty-prefix hash;
+// callers should treat the empty string as "no logical hash available"
+// and skip the dedup check.
+func LogicalHash(eventType string, payload json.RawMessage) string {
+	if eventType == "" {
+		return ""
+	}
+	// Canonical-ish JSON: payload may already be canonical from
+	// hash.HashEvent's pipeline; if not, json.Marshal of a sorted
+	// re-decode would be more rigorous. For dedup purposes we just
+	// need byte-equal across retries, which is what the kernel-emit
+	// path produces (deterministic JSON encoding).
+	h := sha256.New()
+	h.Write([]byte(eventType))
+	h.Write([]byte{0})
+	h.Write(payload)
+	return fmt.Sprintf("%x", h.Sum(nil))
 }

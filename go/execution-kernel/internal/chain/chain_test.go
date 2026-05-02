@@ -33,7 +33,7 @@ func TestIndex_NewChainReturnsZero(t *testing.T) {
 
 func TestIndex_UpsertAndGet(t *testing.T) {
 	idx := newTempIndex(t)
-	if err := idx.Upsert("chainA", 0, "hash0"); err != nil {
+	if err := idx.Upsert("chainA", 0, "hash0", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	info, err := idx.Get("chainA")
@@ -44,7 +44,7 @@ func TestIndex_UpsertAndGet(t *testing.T) {
 		t.Errorf("unexpected info: %+v", info)
 	}
 
-	if err := idx.Upsert("chainA", 1, "hash1"); err != nil {
+	if err := idx.Upsert("chainA", 1, "hash1", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	info, _ = idx.Get("chainA")
@@ -55,8 +55,8 @@ func TestIndex_UpsertAndGet(t *testing.T) {
 
 func TestIndex_TwoChainsIndependent(t *testing.T) {
 	idx := newTempIndex(t)
-	idx.Upsert("A", 0, "ha")
-	idx.Upsert("B", 0, "hb")
+	idx.Upsert("A", 0, "ha", "", "", "")
+	idx.Upsert("B", 0, "hb", "", "", "")
 	a, _ := idx.Get("A")
 	b, _ := idx.Get("B")
 	if a.LastHash != "ha" || b.LastHash != "hb" {
