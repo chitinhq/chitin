@@ -45,13 +45,58 @@ type Rule struct {
 
 // Bounds are the blast-radius ceilings checked for push-shaped actions.
 //
-// Note: MaxRuntimeSeconds was in the v1 schema but never implemented at
-// the gate layer (no reliable way to time a future action before it runs).
-// Removed from v1 to avoid giving a false sense of protection; may return
-// in v2 if we add post-action runtime tracking with a ceiling.
+// Top-level MaxFilesChanged/MaxLinesChanged are the DEFAULT ceilings —
+// applied to any push-shaped action whose action_type doesn't have a
+// per-action override in PerAction. PerAction overrides allow doc-batch
+// pushes (e.g. wiki regen, multi-doc rewrites) to use a higher ceiling
+// without widening it for code commits — closes #70.
+//
+// Example:
+//
+//	bounds:
+//	  max_files_changed: 25      # default — code commits stay tight
+//	  max_lines_changed: 500
+//	  per_action:
+//	    git.push:
+//	      max_files_changed: 200    # doc batches via git push allowed
+//	      max_lines_changed: 5000
+//	    github.pr.create:
+//	      max_files_changed: 100    # PR-create is reviewed, slightly looser
+//	      max_lines_changed: 2000
+//
+// Per the spec, MaxRuntimeSeconds was removed in v1 (no reliable way
+// to time a future action before it runs) and may return in v2 with
+// post-action runtime tracking.
 type Bounds struct {
+	MaxFilesChanged int                     `yaml:"max_files_changed"`
+	MaxLinesChanged int                     `yaml:"max_lines_changed"`
+	PerAction       map[string]ActionBounds `yaml:"per_action,omitempty"`
+}
+
+// ActionBounds is the per-action override for blast-radius ceilings.
+// Zero values mean "fall back to the top-level Bounds default".
+type ActionBounds struct {
 	MaxFilesChanged int `yaml:"max_files_changed"`
 	MaxLinesChanged int `yaml:"max_lines_changed"`
+}
+
+// effectiveBounds returns the bounds that apply to actionType — the
+// PerAction override merged with the top-level defaults. Zero values
+// in the override fall back to the default; non-zero values win.
+func (b Bounds) effectiveBounds(actionType string) ActionBounds {
+	out := ActionBounds{
+		MaxFilesChanged: b.MaxFilesChanged,
+		MaxLinesChanged: b.MaxLinesChanged,
+	}
+	if override, ok := b.PerAction[actionType]; ok {
+		if override.MaxFilesChanged > 0 {
+			out.MaxFilesChanged = override.MaxFilesChanged
+		}
+		if override.MaxLinesChanged > 0 {
+			out.MaxLinesChanged = override.MaxLinesChanged
+		}
+	}
+	return out
 }
 
 // EscalationConfig overrides the default escalation thresholds.

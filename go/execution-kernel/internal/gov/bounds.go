@@ -9,17 +9,26 @@ import (
 )
 
 // CheckBounds fires only for push-shaped actions (git.push, github.pr.create).
-// Shells out to `git diff --stat origin/main...HEAD` in cwd; rejects if any
-// ceiling in policy.Bounds is exceeded. Fail-closed: if git diff fails or
-// returns unparseable output, treat as over-bounds.
+// Shells out to `git diff --stat origin/main...HEAD` in cwd; rejects if the
+// per-action ceiling in policy.Bounds is exceeded. Fail-closed: if git diff
+// fails or returns unparseable output, treat as over-bounds.
 //
-// Bounds decisions are ALWAYS mode=enforce — a "try again smaller" guide
-// loop is too expensive for aggregate-blast actions.
+// Per-action overrides (Bounds.PerAction[<action_type>]) close #70: doc-batch
+// pushes via git.push can be allowed a higher ceiling than code commits via
+// github.pr.create without widening either globally.
+//
+// Bounds decisions default to mode=enforce — bounds are intended as hard
+// kill-switches even when policy is in monitor — but the operator can opt
+// out per-rule via invariantModes (e.g. invariantModes."bounds:max_files
+// _changed": monitor) for a documented soft-kill workflow. The InvariantModes
+// override path matches every other rule's mode resolution; it's just
+// applied to bounds rules too instead of being hardcoded.
 func CheckBounds(a Action, p Policy, cwd string) Decision {
 	if a.Type != ActGitPush && a.Type != ActGithubPRCreate {
 		return Decision{Allowed: true, RuleID: "bounds:not-push-shaped", Action: a}
 	}
-	if p.Bounds.MaxFilesChanged == 0 && p.Bounds.MaxLinesChanged == 0 {
+	eff := p.Bounds.effectiveBounds(string(a.Type))
+	if eff.MaxFilesChanged == 0 && eff.MaxLinesChanged == 0 {
 		return Decision{Allowed: true, RuleID: "bounds:no-ceiling", Action: a}
 	}
 
@@ -27,40 +36,55 @@ func CheckBounds(a Action, p Policy, cwd string) Decision {
 	if err != nil {
 		return Decision{
 			Allowed: false,
-			Mode:    "enforce",
+			Mode:    boundsModeFor(p, "bounds:undetermined"),
 			RuleID:  "bounds:undetermined",
 			Reason:  fmt.Sprintf("failed to compute diff stats: %v", err),
 			Action:  a,
 		}
 	}
-	return evaluateBoundsFromStats(a, p, files, ins, del)
+	return evaluateBoundsFromStats(a, p, eff, files, ins, del)
 }
 
-func evaluateBoundsFromStats(a Action, p Policy, files, ins, del int) Decision {
+func evaluateBoundsFromStats(a Action, p Policy, eff ActionBounds, files, ins, del int) Decision {
 	lines := ins + del
-	if p.Bounds.MaxFilesChanged > 0 && files > p.Bounds.MaxFilesChanged {
+	if eff.MaxFilesChanged > 0 && files > eff.MaxFilesChanged {
 		return Decision{
 			Allowed: false,
-			Mode:    "enforce",
+			Mode:    boundsModeFor(p, "bounds:max_files_changed"),
 			RuleID:  "bounds:max_files_changed",
 			Reason: fmt.Sprintf(
 				"%d files changed exceeds ceiling of %d",
-				files, p.Bounds.MaxFilesChanged),
+				files, eff.MaxFilesChanged),
 			Action: a,
 		}
 	}
-	if p.Bounds.MaxLinesChanged > 0 && lines > p.Bounds.MaxLinesChanged {
+	if eff.MaxLinesChanged > 0 && lines > eff.MaxLinesChanged {
 		return Decision{
 			Allowed: false,
-			Mode:    "enforce",
+			Mode:    boundsModeFor(p, "bounds:max_lines_changed"),
 			RuleID:  "bounds:max_lines_changed",
 			Reason: fmt.Sprintf(
 				"%d lines changed exceeds ceiling of %d",
-				lines, p.Bounds.MaxLinesChanged),
+				lines, eff.MaxLinesChanged),
 			Action: a,
 		}
 	}
 	return Decision{Allowed: true, RuleID: "bounds:within-ceilings", Action: a}
+}
+
+// boundsModeFor resolves the effective Mode for a bounds rule. Defaults
+// to enforce (bounds are kill-switches), but honors invariantModes for
+// per-rule overrides — closes #70 for the "I want doc-batch pushes
+// to be soft-killed not hard-blocked" use case. Operator opts out via:
+//
+//	invariantModes:
+//	  "bounds:max_files_changed": monitor
+//	  "bounds:max_lines_changed": guide
+func boundsModeFor(p Policy, ruleID string) string {
+	if m, ok := p.InvariantModes[ruleID]; ok {
+		return m
+	}
+	return "enforce"
 }
 
 func collectDiffStats(cwd string) (files, ins, del int, err error) {
