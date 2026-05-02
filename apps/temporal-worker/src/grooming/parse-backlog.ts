@@ -46,6 +46,36 @@ export function parseBacklog(path: string): BacklogEntry[] {
   return entries;
 }
 
+/**
+ * Returns true if any of `entry.file`'s comma-separated paths matches
+ * a path in `debtFiles` (typically the `file:` field of every
+ * debt-ledger entry with `status: open` or `status: claimed`). Used
+ * by the GROOM stage to surface "this entry touches a known-debt
+ * file" — a signal the groomer should bump the tier or call out
+ * cross-cutting implications when sizing.
+ *
+ * Matching is exact-equality on the trimmed path strings. The
+ * caller is responsible for resolving `cross-cutting` debt entries
+ * (which match no specific file) — a future revision could special-
+ * case that token, but for now those don't fire here.
+ *
+ * Loaded via `python/analysis/debt.load_ledger` on the analysis
+ * side; the typescript caller is expected to pre-load the file
+ * list (e.g., via a small CLI shim or by re-parsing the markdown
+ * directly) and pass it in.
+ */
+export function crossesDebtLedger(entry: BacklogEntry, debtFiles: string[]): boolean {
+  if (!entry.file || debtFiles.length === 0) return false;
+  const entryFiles = entry.file.split(',').map((f) => f.trim()).filter(Boolean);
+  if (entryFiles.length === 0) return false;
+  const debtSet = new Set(debtFiles.map((f) => f.trim()).filter(Boolean));
+  return entryFiles.some((f) => debtSet.has(f));
+}
+
+export const __test__ = {
+  crossesDebtLedger,
+};
+
 // Splits at ### but keeps surrounding ## headings out — only ### sections
 // are entries. We stop a section at the next ### or ##.
 function splitH3Sections(text: string): string[] {
