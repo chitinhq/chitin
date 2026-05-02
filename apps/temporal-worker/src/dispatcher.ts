@@ -71,23 +71,29 @@ const TIER_DRIVER: Record<Tier, DriverId> = {
 
 // Per-entry wall_timeout — short enough that a stuck workflow doesn't
 // hold the queue long, generous enough that real work has room. The
-// wall_timeout is enforced by activity SIGKILL (slice 7a). Activities
-// that finish naturally before this don't pay the cost.
+// wall_timeout is enforced by activity SIGKILL (slice 7a) — stuck
+// processes get killed at exactly this+1s, regardless of how long the
+// budget is. So generous budgets cost nothing for healthy runs and
+// only cost time-to-fail-detection for stuck ones.
 //
-// Slice 7-tuning: bumped T0 from 180s to 480s. The 180s cap was
-// identified as too short for qwen3-coder:30b on the 3090 — verified
-// by two end-of-slice-7 runs (gov-policy-allow-pr-merge,
-// normalize-decision-params-truthiness) where the agent didn't
-// complete inside the timeout. Doubling+ gives the local model room
-// to read the file, plan, edit, and commit. T1+ also bumped slightly
-// so a faster cloud model on a moderate task isn't gated by a tighter
-// budget than T0.
+// Slice 7-tuning history:
+//   180s (slice 7) — too short, even healthy runs hit it
+//   480s (first tuning) — productive for copilot but local-qwen still
+//                         couldn't finish stable runs
+//   1200s/1800s (this tuning) — give complex T2+ work real room. The
+//                         SIGKILL fix means stuck = killed-at-budget,
+//                         not infinite hang, so 30min ceiling is safe.
+//
+// Operator override: if a specific entry needs even more (slice 3-style
+// rewrites that span dozens of files), override per workflow via
+// the request's bounds.wall_timeout_s — the dispatcher's tier value
+// is just the default.
 const TIER_WALL_TIMEOUT_S: Record<Tier, number> = {
-  T0: 480,
-  T1: 480,
-  T2: 600,
-  T3: 900,
-  T4: 900,
+  T0: 1200,  // 20 min — mechanical work has room to read, edit, test, commit
+  T1: 1200,  // 20 min
+  T2: 1800,  // 30 min — specialized reasoning + multi-file
+  T3: 1800,  // 30 min
+  T4: 1800,  // 30 min — even Opus gets a fair budget
 };
 
 const TIER_MAX_TOOL_CALLS: Record<Tier, number> = {
