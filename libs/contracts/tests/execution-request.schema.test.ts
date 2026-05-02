@@ -41,9 +41,19 @@ describe('ExecutionRequestSchema', () => {
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 
-  it('rejects claude-code as a worker driver (Anthropic ToS — interactive only)', () => {
+  it('rejects bare claude-code as a worker driver (use claude-code-headless)', () => {
+    // The interactive Claude Code surface is not a programmatic driver —
+    // there's no spawn pattern for it. Headless mode is the supported
+    // unattended path (see project_anthropic_tos_constraints.md, corrected
+    // 2026-05-02). Reject the unqualified id to force callers to be
+    // explicit about which surface they mean.
     const bad = { ...validRequest, allowed_drivers: ['claude-code' as never] };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts claude-code-headless as a worker driver (slice 5b — Anthropic-supported headless mode)', () => {
+    const ok = { ...validRequest, allowed_drivers: ['claude-code-headless' as const] };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
   });
 
   it('rejects malformed repo (missing owner)', () => {
