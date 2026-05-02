@@ -171,8 +171,13 @@ backlog entry (see `swarm-backlog.md`) is the right place to codify this.
 
 ### Fix 2 (upgrade ollama): bump from 0.21.0 to current stable
 
-Ollama 0.21.0 is old. Current stable is 0.6.x+. Key improvements between
-these versions:
+The currently-running ollama is `0.21.0`. As of 2026-04-28 the latest
+stable release tagged on `ollama/ollama` is `v0.22.1` (with `v0.22.0`
+two days earlier). 0.21 is one minor behind. Verify against
+`gh api repos/ollama/ollama/releases | jq '.[0].tag_name'` before
+upgrading in case a newer point release has shipped.
+
+Key improvements between 0.21.0 and 0.22.x:
 - KV cache quantization (`OLLAMA_KV_CACHE_TYPE=q8_0`) — halves KV cache VRAM
   at marginal quality cost, enabling 262k context with more layers on GPU
 - Fixes to the qwen3coder.go XML tool call parser
