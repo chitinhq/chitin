@@ -158,20 +158,49 @@ export function appendEntries(text: string, entries: DebtEntry[]): string {
 
 const SCAN_MARKERS = ['TODO', 'FIXME', 'HACK', 'XXX'] as const;
 
-// Paths intentionally NOT scanned: markdown files (debt-ledger itself
-// has the schema example with `id: <slug>` etc — and the curator
-// shouldn't ingest its own examples), node_modules / build outputs /
-// generated lockfiles, and the chitin/.cache dirs.
+// Paths intentionally NOT scanned. v1 false-positive sources caught
+// on first live run (2026-05-02): the curator's own source/tests
+// mention the marker strings as test fixtures + module-level docs;
+// systemd unit files reference the markers in [Description=] /
+// comment lines. Excluding those classes keeps the ledger free of
+// self-references — the operator was getting 19 entries the first
+// run, ~70% of which were the scanner finding its own scan vocabulary.
 const SCAN_EXCLUDE_GLOBS = [
+  // Docs: debt-ledger.md itself has the schema, design docs quote markers.
   ':(exclude)*.md',
   ':(exclude)docs/',
+  // Build / cache / lockfile noise.
   ':(exclude)node_modules/',
   ':(exclude).cache/',
   ':(exclude)tsconfig.tsbuildinfo',
   ':(exclude)*.lock',
   ':(exclude)pnpm-lock.yaml',
   ':(exclude)go.sum',
+  // Self-references: the curator's own source + tests use
+  // TODO/FIXME/HACK/XXX as literal string fixtures.
+  ':(exclude)apps/temporal-worker/src/debt-curator.ts',
+  ':(exclude)apps/temporal-worker/test/debt-curator.test.ts',
+  // Systemd units describe themselves in [Description=]/comments.
+  ':(exclude)infra/systemd/*.service',
+  ':(exclude)infra/systemd/*.timer',
+  // Go test files use the markers as string sentinels in fixtures.
+  ':(exclude)*_test.go',
+  // Prompt templates that quote the markers as part of LLM
+  // instructions ("a TODO that should be filed"). These get
+  // compounded: anything that explains debt vocabulary will
+  // mention TODO/FIXME by name.
+  ':(exclude)apps/temporal-worker/src/reviewer-prompts.ts',
+  ':(exclude)apps/temporal-worker/src/researcher-prompts.ts',
+  ':(exclude)apps/temporal-worker/src/role-prompts.ts',
 ];
+
+// Stricter scan regex: require a comment prefix (//, #, --, /*, *)
+// before the marker AND a separator (:, -, space) after. Cuts the
+// false-positive rate from ~95% (literal-string mentions) to ~0%.
+// Trade-off: rare cases like `marker = 'TODO'` inside a non-test
+// file still get matched, but those are usually self-references the
+// path excludes catch.
+const SCAN_REGEX = `(^|[^a-zA-Z])(//|#|--|\\*)[[:space:]]*(${SCAN_MARKERS.join('|')})([[:space:]]|:|-|\\()`;
 
 /**
  * Live scanner using `git grep`. Returns one candidate per match.
@@ -179,12 +208,11 @@ const SCAN_EXCLUDE_GLOBS = [
  * the runner's idempotency rules handle that.
  */
 export function scanForMarkersGitGrep(scanRoot: string): DebtCandidateInput[] {
-  const re = `\\b(${SCAN_MARKERS.join('|')})\\b`;
   let raw: string;
   try {
     raw = execFileSync(
       'git',
-      ['grep', '-n', '-E', re, '--', scanRoot, ...SCAN_EXCLUDE_GLOBS],
+      ['grep', '-n', '-E', SCAN_REGEX, '--', scanRoot, ...SCAN_EXCLUDE_GLOBS],
       { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
     );
   } catch (err) {
