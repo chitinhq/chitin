@@ -71,23 +71,24 @@ off any node when telemetry says "this needs cleanup."
 ## 3. Station taxonomy
 
 Eleven roles, one row each. Most map onto existing in_design entries
-or well-known SoTA patterns. **Today** = current chitin state.
+or well-known SoTA patterns. **Today** = current chitin state
+(refreshed 2026-05-02 after the autonomous-swarm ship).
 **Reference** = the SoTA work we should mine before re-deriving the
 prompt and tool-set.
 
 | Role | Owns | Today | Reference patterns |
 |------|------|-------|--------------------|
-| `researcher` | Pull external signals (arxiv, Reddit, X, openclaw upstream, ollama releases). Open candidate entries in `roadmap.md`. | Manual (operator + this assistant) | NotebookLM ingestion, awesome-openclaw-agents registry, dev.to community mining |
-| `product` | Turn raw signals into 1-paragraph problem statements with success criteria. | Manual | MetaGPT's PM role; LangChain agentic-engineering writeups |
-| `groomer` | Tier-classify entries; size; identify file scope; mark blockers; verify against schema. | Slice 7 has a partial groomer (Copilot GPT-4.1 with `chitin-groom-pass.ts`) | Lobster's deterministic YAML-first pattern (ggondim) |
-| `architect` | Write `docs/design/<entry-id>.md` ADRs: context / options / decision / tradeoffs. | Mixed into implementation today | MetaGPT architect role; AutoCodeRover patch-context |
-| `programmer` | Read entry's `file:`, edit, commit, push branch. The current swarm worker. | **In production.** | SWE-agent, Live-SWE-agent's tool-registry pattern |
-| `reviewer` | Tier-escalating review (R0-R3, see §5). | R0 (Copilot bot) automated; R3 (Opus) manual via operator | Anthropic's plan/code/review pattern |
-| `qa` | Generate or run E2E tests against shipped diffs; smoke-test. | Unit tests exist; no E2E generation | Cursor's test-author flow; Playwright codegen agent |
-| `gatekeeper` | Read CI + reviews + telemetry; decide self-merge or escalate. | Manual (operator) | This is novel — we're defining it |
-| `tech-writer` | Update wiki + ADRs + runbooks from merged work. Maintain `lessons-learned`. | Partial via operator-driven fix passes | Wiki pipeline; NotebookLM artifact generation |
-| `analyst` | The Python analysis lib. Daily rollup (PR #127). Author new queries on demand. | **In production.** | LangSmith / Helicone / Phoenix patterns |
-| `refactorer` + `debt-curator` | Surface duplication / dead code / hot-path debt. Maintain `docs/debt-ledger.md`. | Doesn't exist | Zoncolan-style static analysis; AutoFlake-style mechanical cleanup |
+| `researcher` | Pull external signals (arxiv, Reddit, X, openclaw upstream, ollama releases). Open candidate entries in `roadmap.md`. | **In production.** `chitin-researcher.timer` fires every 4h via `apps/temporal-worker/src/researcher.ts` (#147); 5-source dedupe + cap. Per-role prompt template at `researcher-prompts.ts` (#143). | NotebookLM ingestion, awesome-openclaw-agents registry, dev.to community mining |
+| `product` | Turn raw signals into 1-paragraph problem statements with success criteria. | Filed as in_design backlog entry `product-role-prompt-template` (#161). | MetaGPT's PM role; LangChain agentic-engineering writeups |
+| `groomer` | Tier-classify entries; size; identify file scope; mark blockers; verify against schema. | **Two-half production.** Candidate-promoter (`chitin-groomer.timer`, #157) drips arxiv candidates → in_design entries; existing `groom-pass.ts` (Copilot-driven) classifies in_design → ready. | Lobster's deterministic YAML-first pattern (ggondim) |
+| `architect` | Write `docs/design/<entry-id>.md` ADRs: context / options / decision / tradeoffs. | Filed as in_design backlog entry `architect-role-prompt-template` (#161). | MetaGPT architect role; AutoCodeRover patch-context |
+| `programmer` | Read entry's `file:`, edit, commit, push branch. The current swarm worker. | **In production.** Slice 7 dispatcher + Phase-1 role registry; lessons prepended from `swarm-lessons.md` (#152, #156). | SWE-agent, Live-SWE-agent's tool-registry pattern |
+| `reviewer` | Tier-escalating review (R0-R3, see §5). | **In production.** R1→R2→R3 escalation chain in `reviewGraphWorkflow` (#140); adversarial prompt template `reviewer-prompts.ts`. R0 = Copilot bot (server-side, passive). R0-wait integration filed as `r0-copilot-wait-on-review-graph-kickoff` (#161). | Anthropic's plan/code/review pattern |
+| `qa` | Generate or run E2E tests against shipped diffs; smoke-test. | Filed as in_design backlog entry `qa-automation-from-merged-diff` (#161). | Cursor's test-author flow; Playwright codegen agent |
+| `gatekeeper` | Read CI + reviews + telemetry; decide self-merge or escalate. | **In production.** Slack digest (#149) + 6-gate auto-merge (#158, #159). All §6 gates wired: action=approve, t5_shape=false, CI green, no 🔴 findings, no T5-path touch, scope-intersection, bucket-B rate=0, driver-success ≥70%. Off by default; opt-in via `CHITIN_GATEKEEPER_AUTO_MERGE=1`. | This was novel — we defined it |
+| `tech-writer` | Update wiki + ADRs + runbooks from merged work. Maintain `lessons-learned`. | **Two halves shipped.** Lessons-learned sidecar (`chitin-lessons.timer`, #152, #156) + stale-doc detector (`chitin-stale-doc-detector.timer`, #165). Wiki / runbook auto-update is a follow-up. | Wiki pipeline; NotebookLM artifact generation |
+| `analyst` | The Python analysis lib. Daily rollup (PR #127). Author new queries on demand. | **In production + recipe-driven.** `python/analysis/` for ad-hoc + daily rollup; swarm-dispatched analyst role (#163) routes alarm-feeder entries to `python/analysis/investigate.py` (#164) — deterministic pre-canned investigations of bucket-B / low-success / qwen-idle alarm kinds. | LangSmith / Helicone / Phoenix patterns |
+| `refactorer` + `debt-curator` | Surface duplication / dead code / hot-path debt. Maintain `docs/debt-ledger.md`. | **In production.** TODO/FIXME/HACK/XXX marker scanner (`chitin-debt-curator.timer`, #153, hotfix #155); stricter regex + path excludes after live first-run noise. Duplication / dead-code detection is post-v1. | Zoncolan-style static analysis; AutoFlake-style mechanical cleanup |
 
 The taxonomy isn't a hierarchy — it's a *registry*. A backlog entry
 at any point can name `role: researcher` or `role: qa` and the

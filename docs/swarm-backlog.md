@@ -1970,3 +1970,94 @@ Auto-filed by chitin-alarm-feeder.timer at 2026-05-02T19:46:35.246Z from a swarm
 > BUCKET-B REGRESSION: 1/19 runs contaminated (5.3%) — PR #123 preflight may have regressed
 
 Researcher role: read the alarm + the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json`; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); propose either a fix entry or `status: needs_human` if the cause is non-obvious. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
+
+### `nx-affected-in-ci`
+
+```yaml
+id: nx-affected-in-ci
+tier: T1
+status: ready
+estimated_loc: 80
+blocks: []
+file: .github/workflows/ci.yml, nx.json
+references_design: nx affected docs / chitin's existing nx.json
+role: programmer
+```
+
+CI doesn't use `nx affected`. `nx.json` is configured with the
+TypeScript plugin (typecheck / build targets), but `.github/workflows/
+ci.yml` runs `pnpm exec vitest run` against EVERYTHING on every PR,
+plus `go test ./...` on every PR. Docs-only PRs trigger full test
+suites; the marginal CI cost compounds across the 30+ PRs we ship a
+day.
+
+Scope:
+
+1. CI workflow: replace bare `pnpm exec vitest run` with
+   `pnpm exec nx affected -t test --base=origin/main` (or with
+   `nx run-many` if affected detection isn't worth the complexity
+   on this size repo).
+2. Same for typecheck + lint targets if Nx isn't already routing
+   those.
+3. Keep `go test ./...` as-is unless someone files a separate entry
+   to add Nx-Go integration.
+4. Verify on a docs-only PR: should skip TS test step entirely.
+
+Trade-off: Nx affected requires correct project boundaries (which
+this repo has via `nx.json` + `package.json` per package). The
+cost is one PR with 80-ish LOC of CI changes; the gain is faster
+CI on routine PRs and a real "Nx-shaped" workflow that matches the
+nx.json config we already wrote.
+
+## Audit log: shipped entries (2026-05-02 ship session)
+
+Many entries below this line have status: ready or in_design but
+their work is actually merged. Rather than touching every entry's
+status field (low-leverage edit), we record the shipped audit here
+so the backlog itself stays small to scan. The dispatcher's
+existing "skip — origin branch exists" check already prevents
+re-dispatch of these.
+
+| Entry id | Status field | Actual state | Shipped in |
+|----------|--------------|--------------|------------|
+| `dispatcher-respect-blocks-field` | ready | shipped | #144 |
+| `review-graph-executor` | ready | shipped | #140 |
+| `tech-debt-ledger` | ready | shipped | #137 |
+| `debt-ledger-analysis-loader` | ready | shipped | #142 |
+| `researcher-role-prompt-template` | ready | shipped | #143 |
+| `chitin-researcher-systemd-units` | ready | shipped | #145 |
+| `external-signal-fetchers` | ready | shipped | #147 |
+| `analysis-swarm-runs-loader` | ready | shipped | #126 |
+| `swarm-daily-rollup-healthcheck` | ready | shipped | #127 |
+| `dispatcher-preflight-scrub-claude-settings-backup` | ready | shipped | (live in `dispatcher.ts` preflight + apply revert) |
+| `normalize-decision-params-truthiness` | ready | shipped | #101 |
+| `workflow-name-drift-test` | ready | shipped | (origin branch) |
+| `dispatcher-prompt-relative-path-prefix` | ready | shipped | #105 |
+| `dispatcher-prompt-scope-discipline` | ready | shipped | #106 |
+| `activity-include-hook-events-flag` | ready | shipped | #108 |
+| `repo-regex-tighten` | ready | shipped | #103 |
+| `read-vs-read_file-file_path-alias` | ready | shipped | #113 |
+| `wall-timeout-sigkill-propagation` | ready | shipped | #114 (+ rerun in #123) |
+| `cron-subagents-image-granular-targets` | ready | shipped | #116 |
+| `task-validate-command-pre-activity-gate` | ready | shipped | #117 |
+| `chitin-install-slice-3-agents` | ready | shipped | #118 |
+| `openclaw-tool-coverage-audit` | ready | shipped | #119 |
+| `rename-local-cloud-driver-misnomer` | ready | shipped | #120 |
+| `lessons-learned-sidecar` | in_design | shipped | #152 + #156 |
+| `agent-adversarial-review-pass` | completed | already correct | #134 |
+| `role-typed-backlog-entries` | completed | already correct | (Phase 1) |
+| `external-signal-collector` | (SUPERSEDED) | already correct | superseded by 3 split entries |
+
+Entries newly filed in this session (in_design, awaiting groomer):
+
+- `product-role-prompt-template` (#161)
+- `architect-role-prompt-template` (#161)
+- `qa-automation-from-merged-diff` (#161)
+- `r0-copilot-wait-on-review-graph-kickoff` (#161)
+- `investigate-bucket-b-regression` (#162, auto-filed by alarm-feeder)
+- `nx-affected-in-ci` (this commit)
+
+Operator action item: the dispatcher's branch + marker checks already
+keep these from re-dispatching. If you want a clean visual scan of
+"what's left", filter the file by `status: ready` lines that are NOT
+in the table above.
