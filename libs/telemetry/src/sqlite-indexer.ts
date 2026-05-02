@@ -51,6 +51,15 @@ CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
 export function indexEvents(dbPath: string, events: V2Event[]): void {
   const db = new BetterSqlite3(dbPath);
+  // WAL + NORMAL synchronous: closes #5. Without WAL, concurrent
+  // readers (events list/tree/replay during indexing) hit a SHARED
+  // lock contention with the indexer's RESERVED writer lock and
+  // serialize at SQLite's level. WAL flips the read path to a
+  // separate snapshot that doesn't block writes. NORMAL synchronous
+  // is fsync-on-checkpoint rather than per-write — durable enough
+  // for an append-only event log whose ground truth is the JSONL.
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
   db.exec(CREATE_SCHEMA);
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO events (

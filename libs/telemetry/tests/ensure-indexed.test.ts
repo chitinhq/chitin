@@ -1,9 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import BetterSqlite3 from 'better-sqlite3';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureIndexed } from '../src/ensure-indexed';
+
+// #8: track temp dirs and rm in afterEach.
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  tempDirs.length = 0;
+});
+function tempDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(d);
+  return d;
+}
 
 const sampleEvent = (over: Record<string, unknown> = {}) => ({
   schema_version: '2',
@@ -29,7 +41,7 @@ const sampleEvent = (over: Record<string, unknown> = {}) => ({
 
 describe('ensureIndexed', () => {
   it('materializes JSONL into events.db', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-ei-'));
+    const dir = tempDir('chitin-ei-');
     writeFileSync(
       join(dir, 'events-r-1.jsonl'),
       JSON.stringify(sampleEvent({ this_hash: 'a'.repeat(64) })) + '\n' +
@@ -43,7 +55,7 @@ describe('ensureIndexed', () => {
   });
 
   it('is idempotent on re-run', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-ei-'));
+    const dir = tempDir('chitin-ei-');
     writeFileSync(
       join(dir, 'events-r-1.jsonl'),
       JSON.stringify(sampleEvent({ this_hash: 'a'.repeat(64) })) + '\n',
@@ -57,7 +69,7 @@ describe('ensureIndexed', () => {
   });
 
   it('tolerates malformed lines', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-ei-'));
+    const dir = tempDir('chitin-ei-');
     writeFileSync(
       join(dir, 'events-r-1.jsonl'),
       JSON.stringify(sampleEvent({ this_hash: 'a'.repeat(64) })) + '\n{bad\n' + JSON.stringify(sampleEvent({ this_hash: 'b'.repeat(64) })) + '\n',

@@ -1,9 +1,23 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { indexEvents } from '../src/sqlite-indexer';
 import BetterSqlite3 from 'better-sqlite3';
+
+// #8: track mkdtempSync dirs and rm them in afterEach so /tmp doesn't
+// accumulate across CI runs. Survives test failures (afterEach fires
+// even on assertion error or thrown exception).
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  tempDirs.length = 0;
+});
+function tempDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(d);
+  return d;
+}
 
 const sampleEvent = (over: Record<string, unknown> = {}) => ({
   schema_version: '2',
@@ -29,7 +43,7 @@ const sampleEvent = (over: Record<string, unknown> = {}) => ({
 
 describe('indexEvents', () => {
   it('creates events table and inserts a v2 envelope row', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const dir = tempDir('chitin-tel-');
     const dbPath = join(dir, 'events.db');
     const events = [sampleEvent()];
     indexEvents(dbPath, events);
@@ -42,7 +56,7 @@ describe('indexEvents', () => {
   });
 
   it('is idempotent on duplicate this_hash', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-tel-'));
+    const dir = tempDir('chitin-tel-');
     const dbPath = join(dir, 'events.db');
     const e = sampleEvent();
     indexEvents(dbPath, [e]);
