@@ -644,6 +644,319 @@ var docs).
 
 ---
 
+## Research-informed (added 2026-05-02 from SoTA + OpenClaw survey)
+
+These entries are derived from two observation docs that ship in PR #107
+(not yet on `main`): `docs/observations/2026-05-02-self-improving-swarm-sota.md`
+and `docs/observations/2026-05-02-openclaw-usage-survey.md`. To read them,
+either merge #107 first or `gh pr checkout 107`. Status `in_design`
+until the user reviews and promotes — they touch architecture and need a
+human green-light.
+
+### `role-typed-backlog-entries`
+
+```yaml
+id: role-typed-backlog-entries
+tier: T2
+status: in_design
+estimated_loc: 200
+blocks: []
+file: apps/temporal-worker/src/grooming/parse-backlog.ts, apps/temporal-worker/src/dispatcher.ts, docs/swarm-backlog.md
+```
+
+Add a `role:` field to backlog entries. Initial role vocabulary:
+`research`, `fix`, `refactor`, `test`, `doc`, `gov`. Dispatcher
+selects per-role prompt templates instead of one generic prompt (the
+current generic prompt is biased toward "read-then-edit" which is
+wrong for research-style entries). Roles also let us route per-role
+to per-role tier defaults (e.g., research → T2 minimum because we
+want WebSearch).
+
+Why: the SoTA review (Live-SWE-agent, Lobster + OpenClaw multi-agent
+pipeline) shows role-typed workers are the next leverage point. Right
+now every entry runs through the same prompt, which is why the swarm
+can't yet handle research tasks well.
+
+Implementation steps:
+- Extend `BacklogEntry` with optional `role` field
+- Add per-role prompt builders to dispatcher (extract `buildPrompt`
+  → `buildPromptForRole`); fall back to generic if role missing
+- Document the role vocabulary in this backlog file's header
+- Update existing entries to include role retroactively (tedious
+  but small)
+
+### `lessons-learned-sidecar`
+
+```yaml
+id: lessons-learned-sidecar
+tier: T1
+status: in_design
+estimated_loc: 80
+blocks: [role-typed-backlog-entries]
+file: docs/swarm-lessons.md (new), apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/dispatcher.ts
+```
+
+After every merged swarm PR, the apply step distills one sentence
+("when X file pattern, prefer Y") and appends to `docs/swarm-lessons.md`.
+Dispatcher prepends recent lessons (top N) to the prompt so workers
+benefit from past runs without burning tokens on full context.
+
+> Implementation note: `apply-workflow-result.ts` currently skips
+> auto-committing untracked-only changes (`git diff --shortstat` check)
+> and skips push/PR when there are no existing commits. The first lesson
+> append on a fresh worktree would be dropped. Mitigation: commit an
+> empty (tracked) `docs/swarm-lessons.md` as part of this entry's
+> first PR so subsequent appends produce trackable diffs, OR add an
+> explicit-track branch in the apply heuristic for this file. Decide
+> when implementing.
+
+Why: the SoTA review highlighted "long-term memory + global
+observability" as the leader-agent pattern. Chitin already has the
+event chain — this surfaces a digestible slice of it back into worker
+prompts. Cheap, high-yield. Live-SWE has the analogous tool registry;
+this is our equivalent for declarative knowledge.
+
+Implementation steps:
+- Add `appendLesson(entry, prMeta)` after successful PR open
+- Prepend `## Recent lessons` section to dispatcher prompt (top 10)
+- Cap file size; rotate when over (e.g., 200 lessons → trim oldest)
+
+### `eval-harness-wiring`
+
+```yaml
+id: eval-harness-wiring
+tier: T2
+status: in_design
+estimated_loc: 250
+blocks: []
+file: apps/temporal-worker/src/eval/ (new dir)
+```
+
+Periodic chitin-internal eval. Pick a reference set of past merged
+swarm PRs, replay each entry through the dispatcher in sandbox mode,
+score the diff against the merged version. Detects swarm regressions
+before they ship — if next week's `dispatcher-prompt-relative-path-prefix`
+re-run produces a worse diff, we know prompt drift happened.
+
+Why: SoTA notes chitin lacks autonomous evaluation. Without it,
+"swarm-quality regressed last week" is a vibes-based judgment.
+Live-SWE has SWE-bench replay; M2.7 has eval-suite delta. We need
+something analogous, even if rough.
+
+Implementation steps:
+- Define `EvalCase` schema (entry, expected merged diff, base ref)
+- `eval/run-suite.ts` replays via dispatcher in `--sandbox` mode
+  (workflow runs, no PR opened — just compute diff vs expected)
+- Diff scorer: structural (files changed match) + content
+  (line-level Jaccard on the diff body)
+- `/evolve` skill (already exists) gets a `--eval` mode
+
+### `multi-step-flows`
+
+```yaml
+id: multi-step-flows
+tier: T3
+status: in_design
+estimated_loc: 400
+blocks: [role-typed-backlog-entries]
+file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/workflow.ts
+```
+
+One backlog entry can spawn N sub-tasks via the same dispatcher.
+Programmer-then-reviewer is the simplest case. Lobster's
+`loop.maxIterations` is the prior art (see openclaw-usage-survey).
+Sub-tasks share a parent workflow id so the chain is auditable.
+
+Why: SoTA review identified single-step entries as a chitin gap. The
+deterministic substrate pattern (YAML plumbing, LLM creative work) is
+what the OpenClaw + Lobster community converged on; we should match.
+
+Implementation steps:
+- Extend ExecutionRequest with optional `parent_workflow_id` and
+  `step_index`
+- Dispatcher adds a `dispatchSubtask(entry, parent)` path
+- Cap depth (e.g., 3) to prevent runaway chains
+- Document the multi-step pattern in `docs/swarm-backlog.md` header
+
+### `openclaw-mission-control-otel-hookup`
+
+```yaml
+id: openclaw-mission-control-otel-hookup
+tier: T2
+status: in_design
+estimated_loc: 150
+blocks: []
+file: apps/temporal-worker/src/activity.ts, libs/telemetry/src/ (existing)
+```
+
+Emit OTEL spans in the format expected by `abhi1693/openclaw-mission-control`
+(the OpenClaw-ecosystem fleet dashboard). Per the OTEL emit-direction
+memo (locked 2026-04-29), chitin already emits spans; this entry
+specifically aligns the span attribute schema with mission-control's
+expected fields so we get a free fleet view.
+
+Why: openclaw-usage-survey identified mission-control as the
+ecosystem dashboard. Wiring chitin's spans to its schema is cheap and
+gives the user a richer monitoring surface than journalctl + Slack.
+
+Implementation steps:
+- Read `mission-control` README for span attribute expectations
+- Map chitin's existing `gov.decision`, `swarm.dispatch`, `worker.activity`
+  spans to mission-control's vocabulary
+- Document the mapping in `docs/observability/mission-control.md`
+- Smoke-test in dev (one local mission-control instance)
+
+### `openclaw-temporal-issue-10164-public-comment`
+
+```yaml
+id: openclaw-temporal-issue-10164-public-comment
+tier: T3
+status: in_design
+estimated_loc: 80
+blocks: []
+file: docs/outreach/2026-openclaw-issue-10164-comment.md (new)
+```
+
+OpenClaw closed issue #10164 (native Temporal integration) as not
+planned. Chitin's three-plane architecture is exactly the answer
+upstream's users were asking for. This entry produces a comment on
+that closed issue (non-spammy, factual) pointing at chitin as a
+community-built option. (~80 LOC, mostly outreach prose.)
+
+Why: openclaw-usage-survey identified this as the strategic outreach
+opportunity. Public visibility, free distribution, aligns with
+positioning chitin as policy + audit + durable workflows for the
+OpenClaw ecosystem.
+
+T3 because it's outreach prose with strategic implications — not
+mechanical. User reviews the comment text before posting.
+
+Implementation steps:
+- Draft comment in `docs/outreach/...` (this branch)
+- User edits
+- User posts (chitin doesn't auto-comment on external repos)
+
+### `chitin-readme-positioning-rewrite`
+
+```yaml
+id: chitin-readme-positioning-rewrite
+tier: T2
+status: in_design
+estimated_loc: 100
+blocks: []
+file: README.md
+```
+
+Per openclaw-usage-survey, chitin's positioning should lead with
+"policy and audit plane for AI coding agents, built to compose with
+OpenClaw + Temporal" — not "execution kernel" (which sounds like a
+runtime competitor).
+
+Why: ecosystem framing matters before the 2026-05-07 talk. The
+"execution kernel" framing was right when chitin had no upstream peer;
+now OpenClaw owns runtime, and chitin's wedge is what OpenClaw said
+no to (durable workflows + governance).
+
+Implementation steps:
+- Rewrite README hero sentence + subhead
+- Add an "ecosystem" section diagramming chitin's relationship to
+  OpenClaw + Temporal
+- Cross-reference openclaw-usage-survey doc
+
+### `playwright-driver-prototype`
+
+```yaml
+id: playwright-driver-prototype
+tier: T3
+status: in_design
+estimated_loc: 600
+blocks: []
+file: apps/temporal-worker/src/drivers/ (new), libs/contracts/src/execution-request.schema.ts
+```
+
+Add a Playwright-based browser driver so the swarm can interact with
+authenticated web UIs (NotebookLM, internal dashboards, etc.) under
+the same gate machinery. Requires:
+
+- Headed Playwright session running under user auth
+- Driver shim that translates `ExecutionRequest` browser actions to
+  Playwright primitives
+- Gate hook for `browser.navigate`, `browser.click`, `browser.extract`
+
+Why: user explicitly asked for "building artifacts using my notebooklm
+account via playwright." Playwright is the right substrate for this
+class of work; NotebookLM ingestion is a downstream consumer.
+
+T3 because of breadth + auth handling complexity. Subentry breakdown
+needed before claimable: separate auth-bootstrap from action API.
+
+Implementation steps (high-level):
+- Add `browser` driver id to `DriverIdSchema`
+- Bootstrap a persistent Playwright user-data-dir for auth
+- Action API: `navigate`, `click`, `type`, `extract_text`, `screenshot`
+- Gate rules for browser actions (allowlist of domains)
+- One smoke test against a public site (e.g., chitin's own GitHub)
+
+### `notebooklm-ingest-via-playwright`
+
+```yaml
+id: notebooklm-ingest-via-playwright
+tier: T3
+status: in_design
+estimated_loc: 300
+blocks: [playwright-driver-prototype]
+file: apps/temporal-worker/src/integrations/notebooklm/ (new)
+```
+
+Use the playwright driver to upload a markdown source to NotebookLM,
+trigger summary generation, and pull the resulting artifact (audio
+overview, FAQ, study guide). Output goes into the workspace-level
+`/wiki` skill (defined in the parent workspace's `CLAUDE.md`, not in
+this repo) as a digestible source.
+
+Why: user asked for this directly. NotebookLM produces dense
+artifacts (audio overviews especially) that are useful for solo
+review of long docs. Wiring chitin to drive it = automated source
+distillation pipeline.
+
+T3 because of UI-fragility and auth handling. Likely requires retry
++ flake-tolerance from the start.
+
+Implementation steps:
+- After playwright-driver-prototype lands, write the NotebookLM
+  flow: upload, wait, click "audio overview", wait, download
+- Output as a chain event so the audit trail captures the artifact
+
+### `soul-md-schema-alignment`
+
+```yaml
+id: soul-md-schema-alignment
+tier: T2
+status: in_design
+estimated_loc: 120
+blocks: []
+file: souls/canonical/*.md, docs/souls/schema.md (new)
+```
+
+The OpenClaw ecosystem standardized on `SOUL.md` files for agent
+templates (162 templates in awesome-openclaw-agents). Chitin already
+uses `souls/canonical/<name>.md` with frontmatter — likely close to
+their schema. Diff our schema against theirs, document migration
+notes, optionally publish a chitin-specific extension.
+
+Why: ecosystem alignment cheap-wins. If our soul schema matches
+SOUL.md, chitin souls can be contributed to the awesome-openclaw-agents
+registry directly. Free distribution.
+
+Implementation steps:
+- Read `awesome-openclaw-agents` SOUL.md schema
+- Diff against our frontmatter
+- Document delta in `docs/souls/schema.md`
+- If the gap is small, write a migrator or align the next soul
+  edit to the unified schema
+
+---
+
 ## Strategic / user-only (T4)
 
 These need Jared + Claude Code interactive — too ambiguous for any tier
