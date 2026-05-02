@@ -41,6 +41,7 @@ import {
   notifyDispatchStart,
   notifyDispatchComplete,
   notifyDispatchError,
+  notifyTickIdle,
   extractPrUrl,
 } from './notify.ts';
 
@@ -269,6 +270,7 @@ async function main() {
     const running = await findRunningSwarmWorkflow(client);
     if (running) {
       log('info', 'swarm workflow already in flight; exiting', { running });
+      await notifyTickIdle(`workflow already in flight (${running})`);
       return;
     }
 
@@ -276,6 +278,7 @@ async function main() {
     const entry = pickEntryToDispatch(entries);
     if (!entry) {
       log('info', 'no ready entry to dispatch this tick');
+      await notifyTickIdle('no ready entry to dispatch');
       return;
     }
     const tier = entry.tier as Tier;
@@ -319,8 +322,6 @@ async function main() {
     // the swarm doesn't quietly retry without operator review.
     writeDispatchMarker(entry.id, workflowId, tier, driver);
 
-    await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
-
     let handle;
     try {
       handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
@@ -333,6 +334,10 @@ async function main() {
       await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'submit', error: msg });
       throw err;
     }
+    // notifyDispatchStart fires AFTER successful submit so a failed
+    // workflow.start() doesn't claim a workflow exists in Slack that
+    // never actually got created.
+    await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
     log('info', 'workflow started', { workflow_id: workflowId });
 
     let result: ActivityResult;
@@ -392,12 +397,35 @@ async function main() {
     }
 
     const prUrl = extractPrUrl(applyOutput);
+    // apply-workflow-result.ts catches `gh pr create` failures and returns
+    // null instead of throwing, so applyFailed is null but no PR landed.
+    // Detect the warning it emits so the operator still sees a Slack alert.
+    const prCreateSilentlyFailed =
+      !applyFailed &&
+      !prUrl &&
+      /\[apply-result\] gh pr create failed/.test(applyOutput);
+    // The push step ran iff we got past the apply step (no exception) AND
+    // apply didn't bail on "no committed work; skipping push and PR." If
+    // apply ran the auto-commit branch + pushed, commits_added (captured
+    // before apply ran) understates reality.
+    const applyAutoCommitted = /\[apply-result\] auto-committing tracked uncommitted changes/.test(applyOutput);
+    const pushed = !applyFailed && /\[apply-result\] pushing /.test(applyOutput);
+
     if (applyFailed) {
       await notifyDispatchError({
         entry_id: entry.id,
         workflow_id: workflowId,
         stage: 'apply',
         error: applyFailed.message,
+      });
+    } else if (prCreateSilentlyFailed) {
+      await notifyDispatchError({
+        entry_id: entry.id,
+        workflow_id: workflowId,
+        stage: 'apply',
+        error:
+          `gh pr create failed (branch ${result.worktree?.branch ?? '?'} pushed but no PR opened — open manually: ` +
+          `gh pr create --head ${result.worktree?.branch ?? '<branch>'} --title "swarm: ${entry.id}")`,
       });
     }
     await notifyDispatchComplete({
@@ -408,6 +436,9 @@ async function main() {
       commits_added: result.worktree?.commits_added ?? 0,
       uncommitted: result.worktree?.has_uncommitted_changes ?? false,
       pr_url: prUrl,
+      apply_failed: !!applyFailed || prCreateSilentlyFailed,
+      pushed,
+      auto_committed: applyAutoCommitted,
     });
   } finally {
     await conn.close();

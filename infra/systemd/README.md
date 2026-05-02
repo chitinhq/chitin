@@ -125,9 +125,10 @@ opt-in.
 
 | Event | Trigger | Example |
 |-------|---------|---------|
-| `dispatch_start` | entry picked, workflow submitted | `🦞 swarm dispatch start <entry-id>` |
-| `dispatch_complete` | workflow + apply finished | `✅ <entry-id> — PR opened — #N` (or 🟢 / ⚪ / ❌ depending on outcome) |
-| `dispatch_error` | submit / workflow / apply failure | `🚨 dispatch error <entry-id> at <stage>` with stack |
+| `dispatch_start` | entry picked, workflow successfully submitted | `🦞 swarm dispatch start <entry-id>` (only fires after `client.workflow.start()` returns; submit failures emit `dispatch_error` instead) |
+| `dispatch_complete` | workflow + apply finished | `✅ <entry-id> — PR opened — #N` (or `🟢` `⚪` `❌` `⚠️` depending on outcome — apply failures render `⚠️` and link the operator to the paired `dispatch_error`) |
+| `dispatch_error` | submit / workflow / apply failure (incl. silent `gh pr create` failure after a successful push) | `🚨 dispatch error <entry-id> at <stage>` with the failure's `error.message` (truncated to 2000 chars; no stack trace — stack contents can leak sensitive paths through Slack retention) |
+| `dispatch_idle` | tick had nothing to do (no ready entry, or workflow already in flight) | `💤 dispatcher idle — <reason>`. Only emitted when `CHITIN_SLACK_NOTIFY_IDLE=1` (off by default since most ticks are idle) |
 
 Failures during posting (timeout, 5xx) are logged at warn level and
 swallowed — visibility is nice-to-have, dispatch correctness comes

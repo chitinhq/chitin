@@ -98,21 +98,45 @@ export interface DispatchComplete {
   workflow_id: string;
   exit_code: number;
   duration_ms: number;
+  /** From the activity result (captured before apply ran). May understate
+   *  reality if apply auto-committed tracked uncommitted changes — see
+   *  auto_committed. */
   commits_added: number;
   uncommitted: boolean;
   pr_url?: string;
+  /** True when the apply step (or PR creation inside it) failed. The
+   *  operator already got a separate notifyDispatchError; this flag is
+   *  for the summary so we don't render misleading "no work produced"
+   *  text in the same channel. */
+  apply_failed?: boolean;
+  /** True when the apply step actually pushed the branch to origin. */
+  pushed?: boolean;
+  /** True when apply auto-committed tracked uncommitted changes (so
+   *  commits_added=0 from the activity result no longer means "no
+   *  work"). */
+  auto_committed?: boolean;
 }
 
 export async function notifyDispatchComplete(ev: DispatchComplete): Promise<void> {
-  const ok = ev.exit_code === 0 && ev.commits_added > 0;
-  const icon = ev.pr_url ? '✅' : ok ? '🟢' : ev.exit_code === 0 ? '⚪' : '❌';
+  // "Real work produced" considers both committed and auto-committed work,
+  // and treats a successful push as evidence regardless of commits_added
+  // (since apply only pushes when there's tracked work to push).
+  const producedWork = ev.commits_added > 0 || ev.auto_committed === true || ev.pushed === true;
+  const ok = ev.exit_code === 0 && producedWork;
+  const icon = ev.apply_failed ? '⚠️' : ev.pr_url ? '✅' : ok ? '🟢' : ev.exit_code === 0 ? '⚪' : '❌';
   const summary = ev.pr_url
     ? `PR opened — <${ev.pr_url}|${ev.pr_url.split('/').pop()}>`
-    : ok
-      ? `committed ${ev.commits_added} (no PR yet)`
-      : ev.exit_code === 0
-        ? 'no work produced (empty worktree)'
-        : `exit ${ev.exit_code}`;
+    : ev.apply_failed
+      ? ev.pushed
+        ? 'apply failed after push — branch is on origin, PR creation/cleanup needs manual attention (see error)'
+        : 'apply failed (see error notification)'
+      : ok
+        ? ev.pushed
+          ? `pushed ${ev.commits_added || (ev.auto_committed ? 'auto-committed' : '?')} commit(s) but no PR URL captured`
+          : `committed ${ev.commits_added} (no PR yet)`
+        : ev.exit_code === 0
+          ? 'no work produced (empty worktree)'
+          : `exit ${ev.exit_code}`;
   const dur = (ev.duration_ms / 1000).toFixed(1);
   await postSlack({
     text: `${icon} ${ev.entry_id} — ${summary} (${dur}s)`,
@@ -129,7 +153,10 @@ export async function notifyDispatchComplete(ev: DispatchComplete): Promise<void
         elements: [
           {
             type: 'mrkdwn',
-            text: `exit \`${ev.exit_code}\`  •  ${dur}s  •  commits *${ev.commits_added}*  •  uncommitted *${ev.uncommitted}*  •  wf \`${ev.workflow_id}\``,
+            text:
+              `exit \`${ev.exit_code}\`  •  ${dur}s  •  commits *${ev.commits_added}*` +
+              (ev.auto_committed ? ' (+auto)' : '') +
+              `  •  pushed *${ev.pushed ? 'yes' : 'no'}*  •  uncommitted *${ev.uncommitted}*  •  wf \`${ev.workflow_id}\``,
           },
         ],
       },
