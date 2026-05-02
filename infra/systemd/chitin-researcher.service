@@ -1,0 +1,18 @@
+# One-shot service fired by chitin-researcher.timer.
+# Runs the researcher script for periodic research tasks.
+
+[Unit]
+Description=Chitin swarm periodic researcher
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-user secrets (CHITIN_SLACK_WEBHOOK_URL etc).
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+ExecStart=%h/workspace/chitin/apps/temporal-worker/src/researcher.ts
+StandardOutput=journal
+StandardError=journal
+# 20min is generous for a research pass.
+TimeoutStartSec=1200

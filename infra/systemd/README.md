@@ -10,6 +10,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-worker.service` | long-running | Temporal worker, polls `chitin-worker-q`, runs activities. |
 | `chitin-dispatcher.service` | oneshot | Single tick: reads backlog, picks next ready entry, submits workflow, runs apply step. |
 | `chitin-dispatcher.timer` | timer | Fires the dispatcher every 5 minutes. |
+| `chitin-researcher.service` | oneshot | Periodic research tasks, runs researcher script. |
+| `chitin-researcher.timer` | timer | Fires the researcher every 4 hours. |
 
 ## Install
 
@@ -19,6 +21,7 @@ cp infra/systemd/*.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now chitin-worker
 systemctl --user enable --now chitin-dispatcher.timer
+systemctl --user enable --now chitin-researcher.timer
 ```
 
 To survive logout (start at boot):
@@ -33,16 +36,19 @@ sudo loginctl enable-linger $USER
 # Live logs
 journalctl --user -u chitin-worker -f
 journalctl --user -u chitin-dispatcher -f
+journalctl --user -u chitin-researcher -f
 
 # Status
 systemctl --user status chitin-worker
+systemctl --user status chitin-researcher
 systemctl --user list-timers --all
 
 # Pause the swarm (stop dispatcher; worker keeps polling)
 systemctl --user stop chitin-dispatcher.timer
+systemctl --user stop chitin-researcher.timer
 
 # Hard stop everything
-systemctl --user stop chitin-dispatcher.timer chitin-worker
+systemctl --user stop chitin-dispatcher.timer chitin-researcher.timer chitin-worker
 ```
 
 ## Manual one-shot
@@ -50,11 +56,13 @@ systemctl --user stop chitin-dispatcher.timer chitin-worker
 ```bash
 # Dispatch a single tick on demand (no timer)
 systemctl --user start chitin-dispatcher.service
+systemctl --user start chitin-researcher.service
 
 # Or run dispatcher directly (dry-run available)
 cd ~/workspace/chitin
 pnpm exec tsx apps/temporal-worker/src/dispatcher.ts --dry-run
 pnpm exec tsx apps/temporal-worker/src/dispatcher.ts
+pnpm exec tsx apps/temporal-worker/src/researcher.ts
 ```
 
 ## What gets dispatched
