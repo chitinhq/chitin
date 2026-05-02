@@ -4,8 +4,23 @@ description: Block classes of actions that the 2026-04-21 hermes autonomy incide
 mode: enforce
 
 bounds:
+  # Default ceilings — applied to push-shaped actions whose action_type
+  # has no per_action override. Calibrated for code commits (the
+  # original Hermes autonomy v1 incident class).
   max_files_changed: 25
   max_lines_changed: 500
+  # Per-action overrides (#70 closure). Doc-batch pushes via git.push
+  # legitimately exceed code-commit ceilings (wiki regen, multi-doc
+  # rewrites — see karpathy lint loop). github.pr.create stays slightly
+  # tighter than git.push because PR-create is a heavier-weight action
+  # and gets human review.
+  per_action:
+    git.push:
+      max_files_changed: 200
+      max_lines_changed: 5000
+    github.pr.create:
+      max_files_changed: 100
+      max_lines_changed: 2000
 
 escalation:
   elevated_threshold: 3
