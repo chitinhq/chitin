@@ -430,12 +430,14 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
         const hookEvents = plan.args.includes('--include-hook-events')
           ? extractHookEvents(tailStdout)
           : undefined;
+        const tool_summary = plan.command === 'openclaw' ? parseToolSummary(stdout) : undefined;
         resolvePromise({
           exit_code: code ?? -1,
           stdout_tail: tailStdout,
           stderr_tail: tailStderr,
           duration_ms: Date.now() - start,
           ...(hookEvents ? { hook_events: hookEvents } : {}),
+          ...(tool_summary ? { tool_summary } : {}),
         });
       });
       child.on('error', reject);
