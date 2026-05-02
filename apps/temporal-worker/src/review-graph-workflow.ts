@@ -119,6 +119,12 @@ export async function runReviewGraphLoop(
   const tier_log: ReviewGraphResult['tier_log'] = [];
   let tier: ReviewTier = decision.tier;
   let priorFindings: string | undefined;
+  // Track the last successful parse separately so the fallthrough
+  // return can surface it even when the FINAL tier's emit didn't
+  // parse. tier_log[last].output would lose earlier parses in that
+  // case — the docstring on ReviewGraphResult.output promises "the
+  // last successful parse, when one happened".
+  let lastParsedOutput: ReviewerOutput | undefined;
 
   // Skip R0 — it's the GH Copilot bot, fires server-side, not
   // dispatched. If computeStartingTier returned R0, bump to R1 to
@@ -151,6 +157,7 @@ export async function runReviewGraphLoop(
     }
 
     tier_log.push({ tier, parsed: true, output: parsed.output });
+    lastParsedOutput = parsed.output;
 
     // R3-only: operator-escalation rule
     if (tier === 'R3' && shouldEscalateToOperator(parsed.output)) {
@@ -231,7 +238,7 @@ export async function runReviewGraphLoop(
   return {
     final_tier: lastEntry?.tier ?? 'R3',
     action,
-    output: lastEntry?.output,
+    output: lastParsedOutput,
     t5_shape: decision.t5_shape,
     tier_log,
   };
@@ -286,7 +293,7 @@ function buildReviewerRequest(
   // for the reviewer path we want the explicit REVIEW_TIER_MODEL
   // not the implementor's tier-routing. Passing tier here is a
   // hint; the actual model lock-down lives in the env override.
-  const reviewerWorkflowId = `${input.parent_workflow_id}-rev${tier.toLowerCase()}`;
+  const reviewerWorkflowId = deriveReviewerWorkflowId(input.parent_workflow_id, tier);
 
   return ExecutionRequestSchema.parse({
     schema_version: '1',
@@ -312,16 +319,53 @@ function buildReviewerRequest(
 }
 
 /**
- * Map a review tier to a step_index for the parent workflow chain.
- * R1=1, R2=2, R3=3 — matches the schema's max=3 cap exactly. The R0
- * GH-bot review is step 0 (passive observation, not dispatched), so
- * the chain's step_index field counts dispatched reviewer steps.
+ * Map a review tier to its 0-based step_index. Each dispatched
+ * reviewer turn is one iteration of the escalation loop; R1 is the
+ * first iteration (step 0), R2 the second (1), R3 the third (2).
+ * Mirrors Lobster's loop.maxIterations counter as the schema
+ * docstring describes.
+ *
+ * R0 (GH bot) doesn't dispatch through Temporal — its findings come
+ * in via copilot_comments, not a workflow turn — so it has no
+ * step_index. R4 is the operator-pickup terminator, also not
+ * dispatched.
  */
-function tierAsStepIndex(tier: ReviewTier): 1 | 2 | 3 {
-  if (tier === 'R1') return 1;
-  if (tier === 'R2') return 2;
-  if (tier === 'R3') return 3;
+function tierAsStepIndex(tier: ReviewTier): 0 | 1 | 2 {
+  if (tier === 'R1') return 0;
+  if (tier === 'R2') return 1;
+  if (tier === 'R3') return 2;
   throw new Error(`tier ${tier} has no step_index`);
+}
+
+// Maximum length Temporal allows for a workflow_id / run_id (matches
+// TemporalIdSchema in @chitin/contracts). When the parent's
+// workflow_id is already at the cap, naively concatenating "-revrN"
+// overflows and ExecutionRequestSchema.parse() rejects the request.
+const TEMPORAL_WORKFLOW_ID_MAX = 128;
+
+// run_id is constructed as `${workflow_id}${RUN_ID_SUFFIX}`. Both
+// fields share the 128-char regex cap, so workflow_id has to leave
+// room for this suffix — that's why the cap below is tighter than
+// TEMPORAL_WORKFLOW_ID_MAX.
+const RUN_ID_SUFFIX = '-attempt-1';
+
+/**
+ * Derive a reviewer workflow_id from the parent + tier, guaranteeing
+ * BOTH the result and its derived `<workflow_id>-attempt-1` run_id
+ * fit TemporalIdSchema (<=128 chars). The suffix is fixed length
+ * ("-revrN" = 6 chars), so when the parent leaves no room we truncate
+ * it. We keep the parent's prefix readable when possible (operator
+ * can grep the gov-decisions chain by the parent prefix); truncation
+ * is a fallback for the edge case.
+ */
+function deriveReviewerWorkflowId(parentId: string, tier: ReviewTier): string {
+  const suffix = `-rev${tier.toLowerCase()}`; // e.g. "-revr1"
+  // Headroom is the cap minus BOTH our suffix AND the run_id suffix
+  // the schema-parse step appends downstream — otherwise a 128-char
+  // workflow_id would push run_id past the cap.
+  const headroom = TEMPORAL_WORKFLOW_ID_MAX - suffix.length - RUN_ID_SUFFIX.length;
+  const head = parentId.length > headroom ? parentId.slice(0, headroom) : parentId;
+  return `${head}${suffix}`;
 }
 
 /**
@@ -383,4 +427,6 @@ export const __test__ = {
   formatFindingsForNextTier,
   formatParseFailureForNextTier,
   tierAsStepIndex,
+  deriveReviewerWorkflowId,
+  TEMPORAL_WORKFLOW_ID_MAX,
 };

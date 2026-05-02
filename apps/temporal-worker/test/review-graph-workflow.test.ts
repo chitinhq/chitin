@@ -13,7 +13,13 @@ import {
 import type { BacklogEntry } from '../src/grooming/parse-backlog.ts';
 import type { PrMeta, ReviewerFinding } from '../src/review-graph.ts';
 
-const { buildReviewerRequest, formatFindingsForNextTier, tierAsStepIndex } = __test__;
+const {
+  buildReviewerRequest,
+  formatFindingsForNextTier,
+  tierAsStepIndex,
+  deriveReviewerWorkflowId,
+  TEMPORAL_WORKFLOW_ID_MAX,
+} = __test__;
 
 function makeEntry(overrides: Partial<BacklogEntry> = {}): BacklogEntry {
   return {
@@ -253,7 +259,7 @@ describe('buildReviewerRequest', () => {
     expect(req.allowed_drivers).toEqual(['copilot']);
     expect(req.write_policy).toBe('none');           // reviewer can't push
     expect(req.parent_workflow_id).toBe('swarm-parent-12345');
-    expect(req.step_index).toBe(1);
+    expect(req.step_index).toBe(0);  // R1 is the first dispatched iteration of the chain (0-based)
     expect(req.workflow_id).toBe('swarm-parent-12345-revr1');
     expect(req.bounds.wall_timeout_s).toBe(600);     // R1 timeout
     expect(req.bounds.max_tool_calls).toBe(20);
@@ -266,7 +272,7 @@ describe('buildReviewerRequest', () => {
     expect(req.bounds.wall_timeout_s).toBe(1800);
     expect(req.bounds.max_tool_calls).toBe(60);
     expect(req.bounds.max_cost_usd).toBeGreaterThan(0);   // R3 is paid
-    expect(req.step_index).toBe(3);
+    expect(req.step_index).toBe(2);                       // R3 is the third iteration (0-based)
   });
 
   it('includes prior findings in the prompt when provided', () => {
@@ -331,16 +337,103 @@ describe('formatFindingsForNextTier', () => {
 // ─── tierAsStepIndex ─────────────────────────────────────────────────────
 
 describe('tierAsStepIndex', () => {
+  // 0-based per the schema docstring. R1 is the first dispatched
+  // iteration of the escalation chain; R3 is the third. Schema cap
+  // is max=3 (so values 0-3 are legal); we use 0-2 here, leaving
+  // headroom for a future R4-as-loop-iteration (currently R4 is
+  // operator pickup, not a chain member).
   it.each([
-    ['R1', 1],
-    ['R2', 2],
-    ['R3', 3],
+    ['R1', 0],
+    ['R2', 1],
+    ['R3', 2],
   ] as const)('%s → step_index %d', (tier, expected) => {
     expect(tierAsStepIndex(tier)).toBe(expected);
   });
 
   it.each(['R0', 'R4'] as const)('throws on %s (no step_index)', (tier) => {
     expect(() => tierAsStepIndex(tier)).toThrow(/no step_index/);
+  });
+});
+
+// ─── deriveReviewerWorkflowId ────────────────────────────────────────────
+
+describe('deriveReviewerWorkflowId', () => {
+  it('appends -revrN suffix for normal-length parent ids', () => {
+    expect(deriveReviewerWorkflowId('swarm-foo-12345', 'R1')).toBe('swarm-foo-12345-revr1');
+    expect(deriveReviewerWorkflowId('swarm-foo-12345', 'R2')).toBe('swarm-foo-12345-revr2');
+    expect(deriveReviewerWorkflowId('swarm-foo-12345', 'R3')).toBe('swarm-foo-12345-revr3');
+  });
+
+  it('produces an id that fits TemporalIdSchema (<=128 chars) when parent is at the cap', () => {
+    const parent = 'a'.repeat(TEMPORAL_WORKFLOW_ID_MAX); // exactly 128 chars
+    for (const tier of ['R1', 'R2', 'R3'] as const) {
+      const id = deriveReviewerWorkflowId(parent, tier);
+      expect(id.length).toBeLessThanOrEqual(TEMPORAL_WORKFLOW_ID_MAX);
+      expect(id).toMatch(/-revr[123]$/);
+    }
+  });
+
+  it('truncates the parent prefix when needed (suffix is always preserved, leaves run_id headroom)', () => {
+    const longParent = 'b'.repeat(150);
+    const id = deriveReviewerWorkflowId(longParent, 'R1');
+    // workflow_id + "-attempt-1" run_id must both fit 128 chars.
+    expect(id.length + '-attempt-1'.length).toBeLessThanOrEqual(TEMPORAL_WORKFLOW_ID_MAX);
+    expect(id.endsWith('-revr1')).toBe(true);
+    expect(id.startsWith('b')).toBe(true);
+  });
+
+  it('keeps short parents intact (no truncation when not needed)', () => {
+    const id = deriveReviewerWorkflowId('short', 'R3');
+    expect(id).toBe('short-revr3');
+  });
+
+  it('produces an ExecutionRequestSchema-valid id even for the worst-case parent length', () => {
+    // Regression for the original bug: buildReviewerRequest threw a
+    // schema-rejection when the concatenated workflow_id exceeded 128.
+    // The truncation makes that case parse cleanly.
+    const longParent = 'p'.repeat(TEMPORAL_WORKFLOW_ID_MAX);
+    const input = makeInput({ parent_workflow_id: longParent });
+    expect(() => buildReviewerRequest(input, 'R3', undefined)).not.toThrow();
+    const req = buildReviewerRequest(input, 'R3', undefined);
+    expect(req.workflow_id.length).toBeLessThanOrEqual(TEMPORAL_WORKFLOW_ID_MAX);
+  });
+});
+
+// ─── runReviewGraphLoop — output retention across tiers ──────────────────
+
+describe('runReviewGraphLoop — output retention', () => {
+  it('returns the LAST PARSED output even when the final dispatched tier failed to parse', async () => {
+    // Regression: result.output was previously sourced from the last
+    // tier_log entry, so a final-tier parse failure after earlier
+    // successful parses would surface output: undefined. Per the
+    // ReviewGraphResult.output docstring it should be "the last
+    // successful parse, when one happened".
+    const dispatcher: ReviewerDispatch = async (req) => {
+      if (req.workflow_id.endsWith('-revr1')) {
+        return buildMockReviewerOutput({ decision: 'escalate', confidence: 'medium' });
+      }
+      if (req.workflow_id.endsWith('-revr2')) {
+        return buildMockReviewerOutput({ decision: 'escalate', confidence: 'medium' });
+      }
+      // R3 emits unparseable output
+      return makeBlankResult('agent decided to skip the structured output');
+    };
+    const result = await runReviewGraphLoop(makeInput(), dispatcher);
+    expect(result.action).toBe('escalate-to-operator');
+    // R2's output is the last successful parse; R3 didn't parse.
+    expect(result.output).toBeDefined();
+    expect(result.output?.decision).toBe('escalate');
+    // tier_log should still record R3 as a parse-failure entry.
+    expect(result.tier_log[result.tier_log.length - 1].parsed).toBe(false);
+  });
+
+  it('returns output: undefined only when no tier ever parsed (parse-failure cascade)', async () => {
+    const dispatcher: ReviewerDispatch = async () =>
+      makeBlankResult('garbage emit, no marker');
+    const result = await runReviewGraphLoop(makeInput(), dispatcher);
+    expect(result.action).toBe('parse-failure-at-r4');
+    expect(result.output).toBeUndefined();
+    expect(result.tier_log.every((e) => !e.parsed)).toBe(true);
   });
 });
 
