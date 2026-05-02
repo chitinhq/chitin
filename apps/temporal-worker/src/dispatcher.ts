@@ -220,7 +220,7 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
   return null;
 }
 
-function buildPrompt(entry: BacklogEntry): string {
+export function buildPrompt(entry: BacklogEntry): string {
   // Slice 7-tuning: rewritten to be directive about tool use and
   // shut off chat-style replies. The pre-tuning prompt let qwen3-
   // coder:30b answer with a markdown plan instead of dispatching
@@ -233,7 +233,10 @@ function buildPrompt(entry: BacklogEntry): string {
   // agent at the file and tell it to use the read tool. The
   // verbose-step echo was likely tempting the model into "summarize
   // the steps" mode rather than executing them.
-  const targetFile = entry.file?.split(',')[0]?.trim() || 'the file named in the entry';
+    let targetFile = entry.file?.split(',')[0]?.trim() || 'the file named in the entry';
+  if (targetFile && !targetFile.startsWith('./') && !targetFile.startsWith('/')) {
+    targetFile = `./${targetFile}`;
+  }
   return `You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
