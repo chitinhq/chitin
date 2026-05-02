@@ -236,4 +236,57 @@ describe('ExecutionRequestSchema', () => {
     const bad = { ...validRequest, tier: 'tier-zero' as never };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
+
+  // Phase 1 of swarm-as-software-factory (factory design §4):
+  // optional role + parent_workflow_id + step_index for typed
+  // multi-step flows.
+  it('accepts a request without role (defaults to programmer at the dispatcher layer)', () => {
+    expect(() => ExecutionRequestSchema.parse(validRequest)).not.toThrow();
+  });
+
+  it('accepts each valid role value', () => {
+    const roles = [
+      'researcher', 'product', 'groomer', 'architect', 'programmer',
+      'reviewer', 'qa', 'gatekeeper', 'tech-writer', 'analyst',
+      'refactorer', 'debt-curator',
+    ] as const;
+    for (const role of roles) {
+      const ok = { ...validRequest, role };
+      expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+    }
+  });
+
+  it('rejects an unknown role string', () => {
+    const bad = { ...validRequest, role: 'wizard' as never };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts parent_workflow_id when set', () => {
+    const ok = { ...validRequest, parent_workflow_id: 'swarm-parent-123' };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
+  it('rejects parent_workflow_id with shell-unsafe characters', () => {
+    // Same TemporalIdSchema regex as workflow_id — keeps shell-quote-
+    // free and path-injection-free.
+    const bad = { ...validRequest, parent_workflow_id: 'parent;rm -rf' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts step_index 0..3', () => {
+    for (const step_index of [0, 1, 2, 3]) {
+      const ok = { ...validRequest, step_index };
+      expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+    }
+  });
+
+  it('rejects step_index > 3 (Lobster-equivalent depth cap)', () => {
+    const bad = { ...validRequest, step_index: 4 };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects negative step_index', () => {
+    const bad = { ...validRequest, step_index: -1 };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
 });
