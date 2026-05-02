@@ -2148,3 +2148,70 @@ The architect role (when shipped) is the right home for this entry.
 Operator: when picking up, decompose into 5+ T1-T2 scope-down
 entries with concrete files + LOC estimates. Each substrate piece
 ships independently; the "substrate" is the union, not a monolith.
+
+### `agent-identification-fingerprinting-v2`
+
+```yaml
+id: agent-identification-fingerprinting-v2
+tier: T3
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD (libs/adapters/claude-code/src/hook-context.ts, go/execution-kernel/internal/event/event.go, plus copilot + openclaw adapters)
+references_design: docs/event-model.md (existing fingerprint surface) + GitHub issue #9
+role: architect
+```
+
+The current fingerprinting surface is plumbed but shallow. Real
+"this agent uniquely identifies as <X> with capabilities <Y>" doesn't
+exist yet, which limits:
+
+- **Per-agent telemetry slicing** — today every claude-code hook produces
+  the same `agent_fingerprint` regardless of model / token budget /
+  extension surface. Can't slice success rates by agent capability.
+- **Cross-session continuity** — `agent_instance_id` is `randomUUID()`
+  per HOOK CALL. Same Claude Code session emits dozens of different
+  instance IDs. Should be stable per-session at minimum.
+- **Provenance audit** — auto-merge gates can't prove "this PR was
+  produced by an agent with capability set X" because the fingerprint
+  doesn't encode the capability surface.
+
+Today's surface (verbatim from `libs/adapters/claude-code/src/hook-context.ts`):
+- `machine_fingerprint = sha256(hostname + uid + 'chitin-machine-fingerprint-v2')`
+  — partially-stable but doesn't use systemd machine-id (issue #9
+  names this exact gap).
+- `agent_fingerprint = sha256({surface, machine, version})` — same value
+  for every claude-code hook on this machine; useless for slicing.
+- `agent_instance_id = randomUUID()` — fresh every hook.
+
+What v2 should look like:
+
+1. **Stable machine_fingerprint** — derive from `/etc/machine-id`
+   (Linux) or `system_profiler` UUID (mac); fallback to current
+   sha256 only when the canonical source is missing. Closes issue #9.
+
+2. **Capability-encoding agent_fingerprint** — sha256 of:
+   ```
+   {surface, model_name, model_version, allowed_tools[], extension_pack[],
+    chitin_kernel_version}
+   ```
+   Stable across runs of "the same configured agent"; differs when
+   any capability dimension changes.
+
+3. **Session-stable agent_instance_id** — first hook in a session
+   generates the UUID; subsequent hooks read it from session_state.json
+   (already exists in `<repo>/.chitin/`) instead of generating fresh.
+
+4. **OTEL projection update** — the F4 projector adds
+   `agent.fingerprint` and `machine.fingerprint` attributes (currently
+   only `agent.id`). Required for downstream observability tools
+   (mission-control etc.) to slice by fingerprint.
+
+5. **Cross-surface parity** — copilot-cli + openclaw adapters need
+   the same logic. Today only claude-code is wired; the others
+   inherit empty fingerprint fields.
+
+Why T3: capability-encoding requires reading model metadata from
+each driver (claude-code, copilot, openclaw) — non-trivial cross-
+surface work. Decompose into per-surface entries when an architect
+prioritizes.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
@@ -437,3 +438,101 @@ func TestKernelSurvivesOTELFailure(t *testing.T) {
 		t.Errorf("chain index not updated: %+v want seq=0 hash=%q", info, ev.ThisHash)
 	}
 }
+
+// ─── Fixes for issues #72 / #73 / #75 (PR #170) ────────────────────────
+
+// TestProjectAndPost_FiltersOutOfScopeEventTypes pins the F4 v1 scope
+// (issue #72): events outside the 4-type allowlist (session_start,
+// pre_tool_use, decision, post_tool_use) MUST NOT project to OTEL spans.
+// Chain still has them; OTEL doesnt.
+func TestProjectAndPost_FiltersOutOfScopeEventTypes(t *testing.T) {
+	idx := openTestIndex(t)
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	x := &otelExporter{endpoint: server.URL, client: &http.Client{Timeout: 2 * time.Second}}
+
+	for _, et := range []string{"assistant_turn", "compaction", "session_end", "user_prompt", "intended_tool_use", "post_compact"} {
+		ev := &event.Event{
+			EventType: et, ChainID: "550e8400-e29b-41d4-a716-446655440000", ThisHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			AgentInstanceID: "agent-1", Ts: "2026-04-30T01:39:37.647Z",
+			Payload: json.RawMessage(`{}`),
+		}
+		x.ProjectAndPost(ev, idx)
+	}
+	if hits != 0 {
+		t.Fatalf("out-of-scope event types projected to OTEL: got %d hits, want 0", hits)
+	}
+}
+
+// TestTraceIDFromChainID_ValidationRules pins the OTLP traceId format
+// requirement (issue #73): exactly 32 lowercase hex chars after stripping
+// hyphens. Anything else returns "" — caller treats empty as drop.
+func TestTraceIDFromChainID_ValidationRules(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"valid uuid", "550e8400-e29b-41d4-a716-446655440000", "550e8400e29b41d4a716446655440000"},
+		{"valid uuid uppercase normalized", "550E8400-E29B-41D4-A716-446655440000", "550e8400e29b41d4a716446655440000"},
+		{"sp2 otel chain_id rejected", "otel:01010101010101010101010101010101:0101010101010101", ""},
+		{"too short rejected", "abc-def", ""},
+		{"non-hex rejected", "zzzzzzzz-e29b-41d4-a716-446655440000", ""},
+		{"empty rejected", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := traceIDFromChainID(tc.in)
+			if got != tc.want {
+				t.Errorf("traceIDFromChainID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProjectToSpan_RejectsEmptyTs pins the empty-ts guard (issue #75).
+// Decision events with empty Ts must error explicitly so the log line
+// names the missing field.
+func TestProjectToSpan_RejectsEmptyTs(t *testing.T) {
+	idx := openTestIndex(t)
+	ev := &event.Event{
+		EventType: "decision", ChainID: "550e8400-e29b-41d4-a716-446655440000",
+		ThisHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		AgentInstanceID: "agent-1", Ts: "", // EMPTY
+		Payload: json.RawMessage(`{}`),
+	}
+	_, err := projectToSpan(ev, idx)
+	if err == nil {
+		t.Fatalf("expected error for empty ts, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty ts") {
+		t.Errorf("error should name empty ts: %v", err)
+	}
+}
+
+// TestProjectToSpan_RejectsInvalidChainID pins the trace-id validation
+// (issue #73 at the projector level): the new validation in
+// traceIDFromChainID returns "" for non-UUID input; projectToSpan must
+// surface that as an explicit error.
+func TestProjectToSpan_RejectsInvalidChainID(t *testing.T) {
+	idx := openTestIndex(t)
+	ev := &event.Event{
+		EventType: "session_start", ChainID: "otel:01010101010101010101010101010101:0101",
+		ThisHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		AgentInstanceID: "agent-1", Ts: "2026-04-30T01:39:37.647Z",
+		Payload: json.RawMessage(`{}`),
+	}
+	_, err := projectToSpan(ev, idx)
+	if err == nil {
+		t.Fatalf("expected error for non-UUID chain_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid chain_id") {
+		t.Errorf("error should name chain_id: %v", err)
+	}
+}
+
