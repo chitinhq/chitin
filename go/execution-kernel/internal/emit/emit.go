@@ -4,13 +4,28 @@ package emit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/hash"
 )
+
+// ErrSessionEnded is returned by Emit when the chain's tail is already
+// session_end and the new event is not also session_end. Spec §3
+// invariant — once a session has ended, no further non-session_end
+// events may land on its chain. Closes #3.
+var ErrSessionEnded = errors.New("emit: chain has session_end tail; cannot emit non-session_end event")
+
+// IdempotentDedupWindow is the time window within which a retried emit
+// (same logical content as the chain tail) is treated as a duplicate
+// and skipped without writing. 30s covers transport timeouts and
+// caller retry policies; legitimately distinct events with identical
+// content at sub-30s cadence are vanishingly rare. Closes #16.
+const IdempotentDedupWindow = 30 * time.Second
 
 // Emitter appends events to a JSONL log and updates the chain index.
 //
@@ -55,7 +70,42 @@ func (e *Emitter) Emit(ev *event.Event) error {
 	}
 	defer tx.Rollback() // no-op if Commit was called
 
+	// Compute logical hash up front — used for both invariant checks
+	// (idempotent dedup) and stamped on commit for the next emit's
+	// dedup-window check. Empty payload yields an empty logical hash,
+	// in which case dedup is skipped (caller chose not to participate).
+	logicalHash := chain.LogicalHash(ev.EventType, ev.Payload)
+
 	if tx.Current != nil {
+		// #3: session_end-is-last invariant. A non-session_end event
+		// may not land on a chain whose tail is session_end. Refuse.
+		if tx.Current.LastEventType == "session_end" && ev.EventType != "session_end" {
+			return fmt.Errorf("%w: chain=%s last_seq=%d new_event_type=%s",
+				ErrSessionEnded, ev.ChainID, tx.Current.LastSeq, ev.EventType)
+		}
+		// #16: idempotent emit. If the chain tail has identical
+		// logical content AND was emitted within the dedup window,
+		// the new emit is a retry — skip the write and return the
+		// tail's existing ThisHash so callers see the operation as
+		// successful. This catches the common timeout-retry case
+		// where the writer doesn't know whether the prior emit
+		// succeeded; a deterministic logical match within 30s is
+		// the strongest signal we have without a client-supplied
+		// idempotency key.
+		if logicalHash != "" &&
+			tx.Current.LastLogicalHash == logicalHash &&
+			withinDedupWindow(tx.Current.LastEmitTs) {
+			ev.Seq = tx.Current.LastSeq
+			prev := "" // not meaningful for the dedup-no-op path
+			if ev.Seq > 0 {
+				prev = tx.Current.LastHash // best-effort; caller may inspect
+			}
+			_ = prev // populate below if useful in future
+			ev.ThisHash = tx.Current.LastHash
+			// Don't write JSONL, don't bump seq, don't OTEL — the
+			// prior emit already did all of that. Roll back the tx.
+			return nil
+		}
 		ev.Seq = tx.Current.LastSeq + 1
 		prev := tx.Current.LastHash
 		ev.PrevHash = &prev
@@ -94,7 +144,7 @@ func (e *Emitter) Emit(ev *event.Event) error {
 		return fmt.Errorf("close log: %w", cerr)
 	}
 
-	if err := tx.Commit(ev.Seq, ev.ThisHash); err != nil {
+	if err := tx.Commit(ev.Seq, ev.ThisHash, ev.EventType, logicalHash, ev.Ts); err != nil {
 		return err
 	}
 
@@ -103,4 +153,22 @@ func (e *Emitter) Emit(ev *event.Event) error {
 	// affect canonical state. Safe when OTEL is nil (no-op).
 	e.OTEL.ProjectAndPost(ev, e.Index)
 	return nil
+}
+
+// withinDedupWindow returns true iff lastEmitTs is RFC3339-parseable
+// and within IdempotentDedupWindow of now. Empty / unparseable lastEmitTs
+// returns false (no dedup — legacy chain or no metadata available).
+func withinDedupWindow(lastEmitTs string) bool {
+	if lastEmitTs == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, lastEmitTs)
+	if err != nil {
+		// Try the nano variant the kernel sometimes uses.
+		t, err = time.Parse(time.RFC3339Nano, lastEmitTs)
+		if err != nil {
+			return false
+		}
+	}
+	return time.Since(t) <= IdempotentDedupWindow
 }

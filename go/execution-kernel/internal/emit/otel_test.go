@@ -175,7 +175,7 @@ func TestParentSpanIdRules(t *testing.T) {
 
 	const parentChainID = "11111111-1111-1111-1111-111111111111"
 	const parentLastHash = "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
-	if err := idx.Upsert(parentChainID, 5, parentLastHash); err != nil {
+	if err := idx.Upsert(parentChainID, 5, parentLastHash, "", "", ""); err != nil {
 		t.Fatalf("seed parent chain: %v", err)
 	}
 
