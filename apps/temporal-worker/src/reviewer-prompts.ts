@@ -26,12 +26,21 @@
 //   🟡 = worth fixing but doesn't block merge (feeds tech-debt-ledger)
 //   🟢 = doc / nit / cosmetic, advisory only
 //
-// The graph escalates on:
-//   - explicit decision: 'escalate'
-//   - confidence: 'low' AND any 🔴 finding
-//   (other gates — CI, bucket-B telemetry, T5-shape — are gatekeeper-
-//    layer concerns; see review-graph.ts shouldEscalateToOperator
-//    docstring.)
+// The graph escalates to the OPERATOR (not a tier-bump) on:
+//   - explicit decision: 'escalate' from R3
+//   - confidence: 'low' from R3 (the heaviest dispatchable reviewer
+//     saying "I can't decide" is the operator-pickup signal — Jared's
+//     policy: "if Headless Claude Opus can't figure it out, escalate
+//     to me." Findings count is not a precondition; an Opus run
+//     without smoking guns but low confidence still warrants a human
+//     look, since by the time we've climbed to R3 the cheaper
+//     reviewers couldn't decide either.)
+// Tier-bump (R1/R2 with the same outputs) is a separate path — the
+// loop in review-graph-workflow.ts handles that before consulting
+// shouldEscalateToOperator.
+// Other gates — CI, bucket-B telemetry, T5-shape — are gatekeeper-
+// layer concerns; see review-graph.ts shouldEscalateToOperator
+// docstring.
 
 import { z } from 'zod';
 import type { ReviewerOutput, ReviewerFinding, ReviewTier } from './review-graph.ts';

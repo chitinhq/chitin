@@ -59,6 +59,33 @@ export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; mod
 };
 
 /**
+ * Per-tier resource bounds. R1 is fast + cheap (small diffs go through
+ * here); R3 gets enough wall time and tool-calls to actually walk a
+ * hard PR. R0 + R4 are non-dispatchable so values are 0.
+ *
+ * Lifted from the closed PR #133's review-graph attempt — the swarm's
+ * intuition there was right even though the rest of the implementation
+ * skipped the design-doc-first plan. Per-tier bounds keep cost-shaped:
+ * R3 (Opus, $0.10–0.50/run) gets generous timeouts because cancelling
+ * a partially-done Opus run costs as much as letting it finish.
+ */
+export const REVIEW_TIER_WALL_TIMEOUT_S: Record<ReviewTier, number> = {
+  R0: 0,
+  R1: 600,    // 10 min
+  R2: 900,    // 15 min
+  R3: 1800,   // 30 min — Opus on a hard PR
+  R4: 0,
+};
+
+export const REVIEW_TIER_MAX_TOOL_CALLS: Record<ReviewTier, number> = {
+  R0: 0,
+  R1: 20,
+  R2: 30,
+  R3: 60,
+  R4: 0,
+};
+
+/**
  * Inputs to `computeStartingTier`. Captures the PR-side state the
  * dispatcher learns at apply-step time, plus the originating entry
  * so file-scope and implementor-tier checks have what they need.
@@ -86,6 +113,12 @@ export interface PrMeta {
    *  decisions. Surfaced in tier-decision logs so the chain can be
    *  traversed back to the PR. */
   pr_url?: string;
+  /** PR number — required by the workflow loop so it can construct
+   *  reviewer prompts (which name the PR# explicitly so the agent
+   *  can `gh pr diff <num>` etc.). Optional in the
+   *  `computeStartingTier` path (which doesn't need it), required
+   *  by the workflow runner. */
+  pr_number?: number;
 }
 
 /**
