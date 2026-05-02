@@ -20,6 +20,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-lessons.timer` | timer | Fires the lessons extractor once per day. |
 | `chitin-debt-curator.service` | oneshot | Daily debt-curator scan: greps the repo for TODO/FIXME/HACK/XXX markers, dedups, appends new finds to `docs/debt-ledger.md` at severity:'low' (operator promotes). |
 | `chitin-debt-curator.timer` | timer | Fires the debt-curator once per day. |
+| `chitin-alarm-feeder.service` | oneshot | Daily alarm-feeder: reads rollup `alarms[]`, dedups against existing `investigate-*` backlog entries, drafts in_design entries with role:researcher. Closes §7 telemetry → backlog flywheel. |
+| `chitin-alarm-feeder.timer` | timer | Fires the alarm-feeder once per day. |
 
 ## Install
 
@@ -33,6 +35,7 @@ systemctl --user enable --now chitin-researcher.timer
 systemctl --user enable --now chitin-swarm-rollup.timer
 systemctl --user enable --now chitin-lessons.timer
 systemctl --user enable --now chitin-debt-curator.timer
+systemctl --user enable --now chitin-alarm-feeder.timer
 systemctl --user enable --now chitin-groomer.timer
 ```
 
@@ -52,6 +55,7 @@ journalctl --user -u chitin-researcher -f
 journalctl --user -u chitin-swarm-rollup -f
 journalctl --user -u chitin-lessons -f
 journalctl --user -u chitin-debt-curator -f
+journalctl --user -u chitin-alarm-feeder -f
 journalctl --user -u chitin-groomer -f
 
 # Status
