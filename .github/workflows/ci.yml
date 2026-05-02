@@ -62,7 +62,10 @@ jobs:
         run: pnpm exec nx run execution-kernel:build
 
       - name: Vitest (TS suites)
-        run: pnpm exec vitest run
+        run: pnpm exec nx affected -t test --base=origin/main
 
-      - name: Oxlint
-        run: pnpm exec oxlint . || true  # warnings only for phase-1
+      - name: Typecheck (Nx affected)
+        run: pnpm exec nx affected -t typecheck --base=origin/main
+
+      - name: Lint (Nx affected)
+        run: pnpm exec nx affected -t lint --base=origin/main || true  # warnings only for phase-1
