@@ -45,6 +45,86 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `verify-openclaw-chatgpt-auth-on-rig`
+
+```yaml
+id: verify-openclaw-chatgpt-auth-on-rig
+tier: T5
+status: ready
+estimated_loc: 80
+blocks: []
+file: docs/runbooks/openclaw-chatgpt-driver.md (new)
+references_finding: 2026-05-02-altman-tweet-chatgpt-auth-in-openclaw
+escalation: human-pickup
+```
+
+> **🚨 ESCALATED — T5 / human action required.** Sam Altman tweeted
+> 2026-05-02 that openclaw now supports signing in with a ChatGPT
+> account, putting GPT-5-class reasoning on the swarm's substrate at
+> $0 marginal cost (covered by an existing Plus/Pro subscription).
+> Verifying the actual flow needs hands-on testing with a real
+> ChatGPT account on the 3090 rig — not something the autonomous
+> dispatcher can or should do unattended. Tier T5 ensures the
+> dispatcher skips this entry.
+
+The chitin worker currently has three driver paths in production:
+copilot (free GPT-4.1 on the Copilot Pro plan), claude-code-headless
+(paid Anthropic API at ~$0.10/run), and the local-* (qwen/glm/
+deepseek) family via openclaw + ollama. A fourth path —
+`openclaw + ChatGPT-account` — would unlock GPT-5-class reasoning at
+zero marginal cost for any operator already paying for ChatGPT, and
+fits chitin's three-plane architecture (chitin governs, openclaw
+executes, ChatGPT provides the model).
+
+What's already known (from a 2026-05-02 CLI poke on this rig):
+
+- The on-rig openclaw is **2026.4.25 (aa36ee6)**.
+- `openclaw channels login --verbose` exists — likely the right
+  surface for a ChatGPT account binding.
+- `openclaw models auth` (subcommand: "Manage model auth profiles")
+  also exists.
+- A bundled `openclaw auth` CLI is **plugin-gated** — disabled by
+  default; `~/.openclaw/openclaw.json` `plugins.allow` excludes
+  `"auth"`. Adding it back may be a precondition.
+- Sam's tweet did not name a specific provider flag; the verification
+  step needs to discover whether the path is `--provider chatgpt`,
+  `--provider openai`, or a different shape entirely.
+
+Verification checklist (for whoever picks this up):
+
+1. Confirm the openclaw release notes / docs.openclaw.ai for the
+   ChatGPT auth flow (release ≥ 2026.4.25 or a newer point release).
+2. If `auth` plugin is needed: `jq '.plugins.allow += ["auth"]' ~/.openclaw/openclaw.json | sponge ~/.openclaw/openclaw.json`
+   (or hand-edit). Restart any long-running openclaw consumers.
+3. Run the login flow (probably `openclaw channels login --provider chatgpt --verbose`)
+   and follow the device-code or browser path with a real ChatGPT
+   Plus/Pro account.
+4. Verify a model is now available: `openclaw models list` should
+   include a `chatgpt-*` or `openai-gpt-*` entry.
+5. Bind to a new chitin driver id. Suggested name: `chatgpt-via-openclaw`
+   (matches the local-* / claude-code-headless naming pattern).
+   Adding to:
+   - `libs/contracts/src/execution-request.schema.ts` `DriverIdSchema`
+   - `apps/temporal-worker/src/activity.ts` `planInvocation` switch +
+     `DRIVER_AGENT_MAP`
+   - `apps/temporal-worker/src/dispatcher.ts` `TIER_DRIVER` (don't
+     route by default — gate behind a flag until benched)
+6. Smoke-test: dispatch one trivial T1 entry through the new driver
+   via `submit.ts` (DRIVER=chatgpt-via-openclaw). Confirm the run
+   completes with exit_code=0 and a real diff.
+7. Bench head-to-head against copilot on 3-5 backlog entries to
+   pick the right tier defaults.
+8. Document the working stack in `docs/runbooks/openclaw-chatgpt-driver.md`.
+
+Why T5 (not T2/T3): the verification involves real-account auth,
+ToS scrutiny (does Anthropic-style "no Claude as worker" have an
+OpenAI parallel?), and an architectural addition to the driver enum
+— not autonomous-swarm-shaped work. After the runbook lands and the
+dispatcher PR is filed, individual follow-ups (e.g.,
+`bench-chatgpt-vs-copilot-on-T1`) can drop back to T2/T3.
+
+---
+
 ### `qwen-ollama-config-bump-and-validate`
 
 ```yaml
