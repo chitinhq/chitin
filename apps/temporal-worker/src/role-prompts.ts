@@ -11,9 +11,18 @@
 // doesn't crash when they're picked, but the actual per-role prompt
 // engineering lands in follow-up entries (one per role).
 
+import { resolve } from 'node:path';
 import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { RESEARCHER_OUTPUT_INSTRUCTIONS } from './researcher-prompts.ts';
+import { getRecentLessonsSync } from './lessons.ts';
+
+// How many of the most-recent lessons to prepend to a programmer
+// prompt. Picked low enough that the overhead per dispatch is small,
+// high enough that the recent-history pattern (last week's swarm
+// activity) is visible to the next worker.
+const LESSONS_PROMPT_HEAD = 12;
+const LESSONS_PATH = resolve(process.cwd(), 'docs/swarm-lessons.md');
 
 export type RolePromptBuilder = (entry: BacklogEntry) => string;
 
@@ -29,7 +38,19 @@ function buildProgrammerPrompt(entry: BacklogEntry): string {
     targetFile = 'the file named in the entry';
   }
 
-  return `You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
+  // Recent lessons prepended so the next swarm worker starts with
+  // what the last N already learned. Empty string when the file is
+  // missing or empty (first-tick state) — the section is skipped
+  // rather than rendering an empty heading.
+  const lessonsBlock = getRecentLessonsSync(LESSONS_PATH, LESSONS_PROMPT_HEAD);
+  const lessonsHeader = lessonsBlock
+    ? `RECENT LESSONS (most recent first — apply these before writing code; ignore irrelevant ones):
+${lessonsBlock}
+
+`
+    : '';
+
+  return `${lessonsHeader}You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
 TARGET FILE: ${targetFile}

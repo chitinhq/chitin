@@ -1,0 +1,27 @@
+# One-shot service fired by chitin-lessons.timer.
+# Scans recently-merged swarm/* PRs, distills a one-sentence lesson per
+# (heuristic in v1; LLM swap point in lessons.ts), appends to
+# docs/swarm-lessons.md. Idempotent — re-runs add 0 entries when the
+# scan window hasn't surfaced anything new. The dispatcher reads the
+# file at programmer-prompt-build time and prepends the most recent
+# N entries so the next swarm worker starts where the last one left.
+
+[Unit]
+Description=Chitin swarm lessons-learned extractor
+# Worker not required (this is a pure gh-CLI + file-IO script), but
+# if the worker is restarting we'd rather not race it for the
+# repo's working tree.
+After=chitin-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+# Routes through pnpm exec tsx, matching dispatcher / researcher.
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/lessons.ts
+StandardOutput=journal
+StandardError=journal
+# 60s is generous for a `gh pr list` of 30 + a markdown rewrite.
+TimeoutStartSec=60
