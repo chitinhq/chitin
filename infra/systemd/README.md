@@ -22,6 +22,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-debt-curator.timer` | timer | Fires the debt-curator once per day. |
 | `chitin-alarm-feeder.service` | oneshot | Daily alarm-feeder: reads rollup `alarms[]`, dedups against existing `investigate-*` backlog entries, drafts in_design entries with role:researcher. Closes §7 telemetry → backlog flywheel. |
 | `chitin-alarm-feeder.timer` | timer | Fires the alarm-feeder once per day. |
+| `chitin-stale-doc-detector.service` | oneshot | Daily stale-doc detector: scans `docs/**/*.md` for project-relative path refs that no longer exist in the working tree, files debt-ledger entries at severity:'low'. Tech-writer's debt-detection half. |
+| `chitin-stale-doc-detector.timer` | timer | Fires the stale-doc detector once per day. |
 
 ## Install
 
@@ -36,6 +38,7 @@ systemctl --user enable --now chitin-swarm-rollup.timer
 systemctl --user enable --now chitin-lessons.timer
 systemctl --user enable --now chitin-debt-curator.timer
 systemctl --user enable --now chitin-alarm-feeder.timer
+systemctl --user enable --now chitin-stale-doc-detector.timer
 systemctl --user enable --now chitin-groomer.timer
 ```
 
@@ -56,6 +59,7 @@ journalctl --user -u chitin-swarm-rollup -f
 journalctl --user -u chitin-lessons -f
 journalctl --user -u chitin-debt-curator -f
 journalctl --user -u chitin-alarm-feeder -f
+journalctl --user -u chitin-stale-doc-detector -f
 journalctl --user -u chitin-groomer -f
 
 # Status

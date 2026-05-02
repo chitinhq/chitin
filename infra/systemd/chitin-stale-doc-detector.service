@@ -1,0 +1,22 @@
+# One-shot service fired by chitin-stale-doc-detector.timer.
+# Scans every docs/**/*.md for project-relative path references
+# (apps/, libs/, go/, python/, infra/, scripts/, tests/, docs/);
+# resolves each against the working tree; files debt-ledger entries
+# at severity:'low' for refs that no longer exist. Tech-writer
+# role's debt-detection half — operator promotes / fixes / dismisses.
+# Idempotent — re-runs add 0 entries when no new refs went stale.
+
+[Unit]
+Description=Chitin swarm stale-doc detector
+After=chitin-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/stale-doc-detector.ts
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60

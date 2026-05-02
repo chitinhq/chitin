@@ -1,0 +1,18 @@
+# Timer for chitin-stale-doc-detector.service.
+# Daily — doc references go stale on PR-merge events; daily cadence
+# catches them within 24h. Persistent so a missed tick from a
+# powered-off rig fires on the next boot. 105min boot offset stages
+# it after the rest of the daily lineup (rollup / lessons /
+# debt-curator / groomer / alarm-feeder).
+
+[Unit]
+Description=Chitin swarm stale-doc detector timer
+
+[Timer]
+OnUnitActiveSec=24h
+OnBootSec=105min
+Persistent=true
+Unit=chitin-stale-doc-detector.service
+
+[Install]
+WantedBy=timers.target
