@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildGatekeeperDigest,
+  buildGatekeeperDigestWithMerge,
+  evaluateGates,
   runGatekeeperNotify,
   __test__,
+  type GateInputs,
   type GatekeeperInput,
+  type GatekeeperOutcome,
 } from '../src/gatekeeper.ts';
 import type { ReviewGraphResult } from '../src/review-graph-workflow.ts';
 import type { PrMeta, ReviewerOutput, ReviewerFinding } from '../src/review-graph.ts';
@@ -221,5 +225,231 @@ describe('runGatekeeperNotify', () => {
     const r = await runGatekeeperNotify(makeInput());
     expect(r.digest.length).toBeGreaterThan(0);
     expect(r.digest).toContain('sample-entry');
+  });
+});
+
+// ─── §6 auto-merge gates ─────────────────────────────────────────────────
+
+function makeGateInputs(overrides: Partial<GateInputs> = {}): GateInputs {
+  return {
+    result: makeResult({ action: 'approve' }),
+    pr_files: ['apps/temporal-worker/src/foo.ts'],
+    entry_file_scope: 'apps/temporal-worker/src/foo.ts',
+    ci_green: true,
+    ...overrides,
+  };
+}
+
+describe('evaluateGates', () => {
+  it('passes when every signal is green (approve + CI green + scope matches + no t5)', () => {
+    const r = evaluateGates(makeGateInputs());
+    expect(r.passed).toBe(true);
+    expect(r.failures).toEqual([]);
+  });
+
+  it('fails when action is not approve', () => {
+    const r = evaluateGates(makeGateInputs({ result: makeResult({ action: 'request-changes' }) }));
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain("action=request-changes");
+  });
+
+  it('fails when t5_shape is true (even if action=approve)', () => {
+    const r = evaluateGates(
+      makeGateInputs({ result: makeResult({ action: 'approve', t5_shape: true }) }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('t5_shape');
+  });
+
+  it('fails when CI is not green', () => {
+    const r = evaluateGates(makeGateInputs({ ci_green: false }));
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('CI not green');
+  });
+
+  it('fails when reviewer flagged a 🔴 finding', () => {
+    const result = makeResult({
+      action: 'approve',
+      output: makeOutput({
+        decision: 'approve',
+        findings: [{ severity: '🔴', file: 'a.ts', category: 'bug', summary: 'real bug' }],
+      }),
+    });
+    const r = evaluateGates(makeGateInputs({ result }));
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('🔴');
+  });
+
+  it('fails when diff touches a T5-shape path (chitin.yaml)', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        pr_files: ['chitin.yaml', 'apps/temporal-worker/src/foo.ts'],
+      }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('chitin.yaml');
+  });
+
+  it('fails when diff touches go/execution-kernel/internal/gov/', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        pr_files: ['go/execution-kernel/internal/gov/normalize.go'],
+        entry_file_scope: 'go/execution-kernel/internal/gov/normalize.go',
+      }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('T5-shape');
+  });
+
+  it('fails when diff does not intersect entry file scope (bucket-B detection)', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        pr_files: ['unrelated/path.ts'],
+        entry_file_scope: 'apps/temporal-worker/src/foo.ts',
+      }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain("doesn't intersect");
+  });
+
+  it('passes when diff intersects ANY of the comma-separated scope files', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        pr_files: ['libs/contracts/src/bar.ts'],
+        entry_file_scope: 'apps/temporal-worker/src/foo.ts, libs/contracts/src/bar.ts',
+      }),
+    );
+    expect(r.passed).toBe(true);
+  });
+
+  it('passes when diff is in a subdirectory of the scope file (directory-style)', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        pr_files: ['apps/temporal-worker/src/lib/util.ts'],
+        entry_file_scope: 'apps/temporal-worker/src/',
+      }),
+    );
+    expect(r.passed).toBe(true);
+  });
+
+  it('skips the scope-intersection gate when entry has no declared file scope', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        entry_file_scope: undefined,
+        pr_files: ['random/path.ts'],
+      }),
+    );
+    expect(r.passed).toBe(true);
+  });
+
+  it('accumulates multiple gate failures (does not short-circuit)', () => {
+    const r = evaluateGates(
+      makeGateInputs({
+        result: makeResult({ action: 'request-changes', t5_shape: true }),
+        ci_green: false,
+      }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ─── runGatekeeperNotify with auto-merge flag ────────────────────────────
+
+describe('runGatekeeperNotify auto-merge gating', () => {
+  let realFetch: typeof globalThis.fetch;
+  let realWebhook: string | undefined;
+  let realFlag: string | undefined;
+
+  beforeEach(() => {
+    realFetch = globalThis.fetch;
+    realWebhook = process.env.CHITIN_SLACK_WEBHOOK_URL;
+    realFlag = process.env.CHITIN_GATEKEEPER_AUTO_MERGE;
+    delete process.env.CHITIN_SLACK_WEBHOOK_URL;
+    delete process.env.CHITIN_GATEKEEPER_AUTO_MERGE;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realWebhook === undefined) delete process.env.CHITIN_SLACK_WEBHOOK_URL;
+    else process.env.CHITIN_SLACK_WEBHOOK_URL = realWebhook;
+    if (realFlag === undefined) delete process.env.CHITIN_GATEKEEPER_AUTO_MERGE;
+    else process.env.CHITIN_GATEKEEPER_AUTO_MERGE = realFlag;
+  });
+
+  it("notifies-only by default (CHITIN_GATEKEEPER_AUTO_MERGE off)", async () => {
+    const r = await runGatekeeperNotify(makeInput());
+    expect(r.merge.attempted).toBe(false);
+    expect(r.merge.merged).toBe(false);
+    expect(r.merge.reason).toContain('off');
+  });
+
+  it("does not attempt auto-merge when action is not 'approve' (even with flag on)", async () => {
+    process.env.CHITIN_GATEKEEPER_AUTO_MERGE = '1';
+    const r = await runGatekeeperNotify(
+      makeInput({ result: makeResult({ action: 'request-changes' }) }),
+    );
+    expect(r.merge.attempted).toBe(false);
+  });
+
+  it("does not attempt auto-merge when pr_number is missing", async () => {
+    process.env.CHITIN_GATEKEEPER_AUTO_MERGE = '1';
+    const r = await runGatekeeperNotify(
+      makeInput({
+        pr_meta: { ...makePrMeta(), pr_number: undefined },
+        result: makeResult({ action: 'approve' }),
+      }),
+    );
+    expect(r.merge.attempted).toBe(false);
+    expect(r.merge.reason).toContain('pr_number missing');
+  });
+});
+
+// ─── buildGatekeeperDigestWithMerge ──────────────────────────────────────
+
+describe('buildGatekeeperDigestWithMerge', () => {
+  function makeMerge(overrides: Partial<GatekeeperOutcome['merge']> = {}): GatekeeperOutcome['merge'] {
+    return {
+      attempted: false,
+      merged: false,
+      reason: '',
+      gate_failures: [],
+      ...overrides,
+    };
+  }
+
+  it("renders a success line when merge succeeded", () => {
+    const out = buildGatekeeperDigestWithMerge(
+      makeInput(),
+      makeMerge({ attempted: true, merged: true, reason: 'gates passed; gh pr merge succeeded (#142)' }),
+    );
+    expect(out).toContain('🤖 Auto-merged');
+    expect(out).toContain('#142');
+  });
+
+  it("renders a failure line when merge attempted but failed", () => {
+    const out = buildGatekeeperDigestWithMerge(
+      makeInput(),
+      makeMerge({ attempted: true, merged: false, reason: 'gh exit 1: ref protected' }),
+    );
+    expect(out).toContain('Auto-merge attempted but failed');
+  });
+
+  it("renders gate-failure breakdown when gates blocked", () => {
+    const out = buildGatekeeperDigestWithMerge(
+      makeInput(),
+      makeMerge({
+        gate_failures: ['CI not green', 'diff touches T5-shape path(s): chitin.yaml'],
+      }),
+    );
+    expect(out).toContain('Auto-merge gates failed');
+    expect(out).toContain('CI not green');
+    expect(out).toContain('chitin.yaml');
+  });
+
+  it("adds NO merge section when no merge was attempted + no gate failures (auto-merge off)", () => {
+    const base = buildGatekeeperDigest(makeInput());
+    const out = buildGatekeeperDigestWithMerge(makeInput(), makeMerge());
+    expect(out).toBe(base);
   });
 });
