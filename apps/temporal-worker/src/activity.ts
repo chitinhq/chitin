@@ -1,8 +1,8 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, copyFileSync, existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { ExecutionRequest, DriverId } from '@chitin/contracts';
+import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
 import type { ActivityResult, WorktreeResult } from './activity-types.ts';
 
 // Bytes of stdout/stderr returned to Temporal in ActivityResult. Buffers
@@ -47,34 +47,82 @@ function resolveAgent(driver: DriverId): string {
 // a tighter scope (e.g., 'Read,Edit' only).
 const DEFAULT_CLAUDE_ALLOWED_TOOLS = 'Read,Edit,Write,Bash,Glob,Grep';
 
+// Slice 6c: tier → model maps per driver. T0/T1 use the cheap fast
+// models; T4 uses the strongest. Drivers that route via a per-agent
+// configured model (the local-* tier through openclaw) ignore the tier
+// — its model is set at agent-creation time, not per call. Override by
+// setting CHITIN_MODEL_<DRIVER>_<TIER> for tactical experimentation.
+const CLAUDE_TIER_MODEL: Record<Tier, string> = {
+  T0: 'claude-haiku-4-5',
+  T1: 'claude-haiku-4-5',
+  T2: 'claude-sonnet-4-6',
+  T3: 'claude-sonnet-4-6',
+  T4: 'claude-opus-4-7',
+};
+
+const COPILOT_TIER_MODEL: Record<Tier, string> = {
+  T0: 'gpt-4.1',
+  T1: 'gpt-4.1',
+  T2: 'claude-haiku-4.5',
+  T3: 'claude-sonnet-4.6',
+  T4: 'claude-opus-4.7',
+};
+
+function envOverride(driverEnvKey: string, tier: Tier): string | undefined {
+  const v = process.env[`CHITIN_MODEL_${driverEnvKey}_${tier}`];
+  return v && v.trim() ? v.trim() : undefined;
+}
+
+function resolveClaudeModel(tier: Tier | undefined): string | null {
+  if (!tier) return null;
+  return envOverride('CLAUDE_CODE_HEADLESS', tier) ?? CLAUDE_TIER_MODEL[tier];
+}
+
+function resolveCopilotModel(tier: Tier | undefined): string | null {
+  if (!tier) return null;
+  return envOverride('COPILOT', tier) ?? COPILOT_TIER_MODEL[tier];
+}
+
 function planInvocation(req: ExecutionRequest): DriverInvocation {
   const driver: DriverId = req.allowed_drivers[0];
   switch (driver) {
-    case 'copilot':
+    case 'copilot': {
+      // Slice 6c: append --model when tier is set, so chitin-kernel drive
+      // copilot threads it into the Copilot SDK SessionConfig.
+      const args = ['drive', 'copilot', req.prompt];
+      const model = resolveCopilotModel(req.tier);
+      if (model) args.push('--model', model);
       return {
         command: 'chitin-kernel',
-        args: ['drive', 'copilot', req.prompt],
+        args,
       };
-    case 'claude-code-headless':
+    }
+    case 'claude-code-headless': {
       // Anthropic publishes this as the supported pattern for unattended
       // runs (see code.claude.com/docs/en/headless). Spawned in the
       // worktree (when base_ref is set on the request) so edits land on
-      // a real branch. The existing claude-code adapter PreToolUse hook
-      // (PR #66) gates every tool call — same enforcement plane as the
-      // interactive surface, just no human in the loop. The
-      // --dangerously-skip-permissions flag bypasses Claude Code's own
-      // interactive permission prompts; chitin's gate is the actual
-      // policy boundary.
+      // a real branch. The chitin claude-code PreToolUse hook gates every
+      // tool call — but only fires when Claude Code's settings discovery
+      // picks up a hooks-bearing settings.json, which is project-relative.
+      // Slice 6a wires that via writeWorktreeSettings before this spawn.
+      // --dangerously-skip-permissions bypasses Claude Code's own
+      // interactive permission prompts; chitin's gate is the actual policy
+      // boundary, and it still fires via the worktree's project settings.
+      const args = [
+        '-p', req.prompt,
+        '--dangerously-skip-permissions',
+        '--allowedTools', process.env.CHITIN_CLAUDE_ALLOWED_TOOLS ?? DEFAULT_CLAUDE_ALLOWED_TOOLS,
+        '--output-format', 'stream-json',
+        '--verbose',
+      ];
+      // Slice 6c: tier-driven model. T0/T1 → haiku, T2/T3 → sonnet, T4 → opus.
+      const model = resolveClaudeModel(req.tier);
+      if (model) args.push('--model', model);
       return {
         command: 'claude',
-        args: [
-          '-p', req.prompt,
-          '--dangerously-skip-permissions',
-          '--allowedTools', process.env.CHITIN_CLAUDE_ALLOWED_TOOLS ?? DEFAULT_CLAUDE_ALLOWED_TOOLS,
-          '--output-format', 'stream-json',
-          '--verbose',
-        ],
+        args,
       };
+    }
     case 'local-qwen':
     case 'local-glm':
     case 'local-deepseek':
@@ -155,6 +203,91 @@ function provisionWorktree(req: ExecutionRequest, repoRoot: string): { path: str
   return { path, branch };
 }
 
+// Slice 6a: write a project-level .claude/settings.json into the worktree
+// before spawning claude -p. This wires the chitin PreToolUse hook for
+// claude-code-headless runs whose cwd is outside the user's primary
+// workspace dir — without this, slice 5b's headless runs bypassed the
+// chitin gate entirely (verified by zero claude-code chain entries on
+// 2026-05-02 despite 1123+ hook captures going to the no-op global hook).
+//
+// Claude Code merges hooks across scopes (managed > local > project >
+// user), so this project-level settings.json adds chitin gating ON TOP
+// OF whatever the user's global settings define — it does not replace
+// the global config.
+function writeWorktreeClaudeSettings(worktreePath: string): void {
+  const claudeDir = join(worktreePath, '.claude');
+  mkdirSync(claudeDir, { recursive: true });
+  const settingsPath = join(claudeDir, 'settings.json');
+  // The hook command must produce a JSON decision the Claude Code hook
+  // protocol recognizes. chitin-kernel's `gate evaluate --hook-stdin`
+  // mode reads the hook payload from stdin, normalizes the tool call,
+  // calls gov.Gate.Evaluate, and prints {decision} on stdout.
+  const settings = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: '',
+          hooks: [
+            {
+              type: 'command' as const,
+              command: 'chitin-kernel gate evaluate --hook-stdin --agent=claude-code',
+            },
+          ],
+        },
+      ],
+    },
+  };
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
+// Slice 6b: write a per-workflow openclaw config dir that points the
+// requested local-* agent's workspace at the worktree. Spawned openclaw
+// reads OPENCLAW_STATE_DIR for its config + state, so a transient
+// per-workflow STATE_DIR avoids mutating the user's `~/.openclaw/openclaw.json`
+// (which would race with concurrent workflows). Returns the env var to set
+// on the spawn, or null when no remap is needed.
+function provisionOpenclawState(
+  req: ExecutionRequest,
+  worktreePath: string,
+  agentId: string,
+): { stateDir: string; envOverride: Record<string, string> } | null {
+  const sourceConfig = resolve(homedir(), '.openclaw/openclaw.json');
+  if (!existsSync(sourceConfig)) return null;
+  const sourceState = resolve(homedir(), '.openclaw');
+  const stateDir = join(SWARM_WORKTREES_ROOT, `${req.workflow_id}-openclaw-state`);
+  mkdirSync(stateDir, { recursive: true });
+  // Symlink everything from the source state dir except openclaw.json,
+  // which we rewrite below to redirect the requested agent's workspace.
+  // This avoids copying gigabytes of session/transcript history while
+  // still letting openclaw find its providers, plugins, agent dirs.
+  for (const entry of execFileSync('ls', ['-1', sourceState], { encoding: 'utf8' }).trim().split('\n')) {
+    if (!entry || entry === 'openclaw.json' || entry === 'openclaw.json.bak') continue;
+    const target = join(stateDir, entry);
+    if (existsSync(target)) continue;
+    try {
+      execFileSync('ln', ['-s', join(sourceState, entry), target]);
+    } catch {
+      // skip — usually a dangling symlink in source we can't follow
+    }
+  }
+  // Read the user's openclaw.json, redirect the named agent's workspace
+  // to the worktree, write to the per-workflow state dir.
+  const cfg = JSON.parse(readFileSync(sourceConfig, 'utf8'));
+  const list = cfg?.agents?.list;
+  if (Array.isArray(list)) {
+    for (const a of list) {
+      if (a && typeof a === 'object' && a.id === agentId) {
+        a.workspace = worktreePath;
+      }
+    }
+  }
+  writeFileSync(join(stateDir, 'openclaw.json'), JSON.stringify(cfg, null, 2));
+  return {
+    stateDir,
+    envOverride: { OPENCLAW_STATE_DIR: stateDir },
+  };
+}
+
 // After agent exits, capture worktree state for the apply step. Does not
 // modify anything — purely observational.
 function captureWorktreeState(worktreePath: string, baseRef: string): WorktreeResult {
@@ -205,9 +338,26 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
   const repoRoot = resolveRepoRoot();
   let workDir: string;
   let worktreeInfo: { path: string; branch: string } | null = null;
+  let openclawState: { stateDir: string; envOverride: Record<string, string> } | null = null;
   if (useWorktree) {
     worktreeInfo = provisionWorktree(req, repoRoot);
     workDir = worktreeInfo.path;
+    // Slice 6a: claude-code-headless needs project-level chitin hook
+    // settings.json in the worktree so its tool calls actually gate.
+    if (req.allowed_drivers.includes('claude-code-headless')) {
+      writeWorktreeClaudeSettings(worktreeInfo.path);
+    }
+    // Slice 6b: openclaw-driven local-* drivers need the agent's workspace
+    // pointed at the worktree so the agent's read/edit tools see the right
+    // files. We provision a per-workflow OPENCLAW_STATE_DIR with a remapped
+    // openclaw.json instead of mutating the user's global config.
+    const localDriver = req.allowed_drivers.find((d) =>
+      d === 'local-qwen' || d === 'local-glm' || d === 'local-deepseek',
+    );
+    if (localDriver) {
+      const agentId = resolveAgent(localDriver as DriverId);
+      openclawState = provisionOpenclawState(req, worktreeInfo.path, agentId);
+    }
   } else {
     workDir = mkdtempSync(join(tmpdir(), `chitin-worker-${req.workflow_id}-`));
     const policySrc = resolvePolicySrc();
@@ -227,6 +377,7 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
         env: {
           ...process.env,
           ...(plan.env ?? {}),
+          ...(openclawState?.envOverride ?? {}),
           CHITIN_WORKFLOW_ID: req.workflow_id,
           CHITIN_RUN_ID: req.run_id,
         },
@@ -265,6 +416,13 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     if (!useWorktree) {
       rmSync(workDir, { recursive: true, force: true });
     }
+    // Slice 6b: per-workflow openclaw state dir is transient — clean it
+    // up unconditionally regardless of activity success/failure. The user's
+    // `~/.openclaw/openclaw.json` was never mutated, so there's nothing
+    // to restore there.
+    if (openclawState) {
+      rmSync(openclawState.stateDir, { recursive: true, force: true });
+    }
   }
 
   if (useWorktree && worktreeInfo) {
@@ -288,6 +446,12 @@ export const __test__ = {
   resolveRepoRoot,
   provisionWorktree,
   captureWorktreeState,
+  resolveClaudeModel,
+  resolveCopilotModel,
+  writeWorktreeClaudeSettings,
+  provisionOpenclawState,
   DRIVER_AGENT_MAP,
   SWARM_WORKTREES_ROOT,
+  CLAUDE_TIER_MODEL,
+  COPILOT_TIER_MODEL,
 };

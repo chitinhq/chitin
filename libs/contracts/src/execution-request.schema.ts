@@ -11,6 +11,16 @@ export const TaskClassSchema = z.enum([
 
 export const RiskLevelSchema = z.enum(['low', 'medium', 'high', 'irreversible']);
 
+// Slice 6c: tier hint for the dispatcher. The grooming agent assigns a
+// tier per backlog entry (T0 mechanical, T4 strongest programmatic, T5
+// human-only). Activity dispatch uses the tier to pick a model per
+// driver — T0 → cheapest available, T4 → strongest. Optional because
+// not every workflow comes from the grooming pipeline yet (manual
+// dispatches exist); when absent, drivers fall back to their default
+// model. T5 is intentionally absent from the enum: that tier is human-
+// only, no programmatic driver should ever receive a T5 ExecutionRequest.
+export const TierSchema = z.enum(['T0', 'T1', 'T2', 'T3', 'T4']);
+
 // Driver tiers for the swarm. The 2026-04-30 framing that excluded
 // `claude-code` was based on a misread of Anthropic's terms — verified
 // 2026-05-02 against code.claude.com/docs/en/headless that headless mode
@@ -74,6 +84,10 @@ export const ExecutionRequestSchema = z
     // spawns the agent there. When absent (slice 1-4 behavior), the
     // activity runs in a tempdir and any agent edits are discarded.
     base_ref: GitRefSchema.optional(),
+    // Slice 6c: optional tier hint. When set, dispatch resolves a
+    // tier-appropriate model for the chosen driver (e.g., T0 →
+    // claude-haiku for claude-code-headless). Absent = driver default.
+    tier: TierSchema.optional(),
   })
   .superRefine((req, ctx) => {
     if (req.network_policy === 'open' && (req.risk_level === 'high' || req.risk_level === 'irreversible')) {
@@ -99,3 +113,4 @@ export type DriverId = z.infer<typeof DriverIdSchema>;
 export type NetworkPolicy = z.infer<typeof NetworkPolicySchema>;
 export type WritePolicy = z.infer<typeof WritePolicySchema>;
 export type Bounds = z.infer<typeof BoundsSchema>;
+export type Tier = z.infer<typeof TierSchema>;

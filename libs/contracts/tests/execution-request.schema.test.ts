@@ -179,4 +179,26 @@ describe('ExecutionRequestSchema', () => {
     const bad = { ...validRequest, base_ref: 'a'.repeat(129) };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
+
+  // Slice 6c: optional tier hint for model routing.
+  it('accepts a request without tier (driver-default model)', () => {
+    expect(() => ExecutionRequestSchema.parse(validRequest)).not.toThrow();
+  });
+
+  it('accepts each valid tier value (T0..T4)', () => {
+    for (const tier of ['T0', 'T1', 'T2', 'T3', 'T4'] as const) {
+      const ok = { ...validRequest, tier };
+      expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+    }
+  });
+
+  it('rejects T5 tier (human-only escalation; not programmatic)', () => {
+    const bad = { ...validRequest, tier: 'T5' as never };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects invalid tier strings', () => {
+    const bad = { ...validRequest, tier: 'tier-zero' as never };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
 });
