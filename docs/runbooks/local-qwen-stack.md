@@ -1,112 +1,180 @@
 # Local Qwen Stack Runbook
 
-Canonical reference for configuring and validating the local-qwen driver on the RTX 3090 box.
+> **Status: draft, pending operator validation on the 3090 rig.** This
+> runbook captures the remediations the 2026-05-01 instability
+> investigation (PR #112) recommended, scoped to commands that match
+> the toolchain actually shipped on this rig (ollama systemd unit,
+> openclaw 2026.4.25 agents CLI, Modelfile-based parameter override).
+> The "validate" half of the qwen-ollama-config-bump-and-validate
+> entry is operator-action — running these on the 3090 and pasting
+> the smoke-test journalctl output back into this doc.
 
-## Stack versions (as of 2026-05-02)
+Canonical reference for configuring and validating the local-qwen
+driver on the RTX 3090 box.
 
-| Component | Required version |
-|-----------|-----------------|
-| ollama | 0.22.x |
-| qwen3-coder | latest pulled via `ollama pull` |
+## Stack versions
 
-Check current version:
+| Component | Required | Verify with |
+|-----------|----------|-------------|
+| ollama | ≥ 0.22.x | `ollama --version` |
+| qwen3-coder | latest | `ollama list \| grep qwen3-coder` |
+| openclaw | 2026.4.x | `openclaw --version` |
 
-```bash
-ollama --version
-```
+The current latest ollama tag can be confirmed against
+`gh api repos/ollama/ollama/releases --jq '.[0].tag_name'` before
+upgrading; as of 2026-05-02 it's `v0.22.1`.
 
-## 1. Upgrade ollama to 0.22.x
+## 1. Upgrade ollama
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-```
-
-Verify:
-
-```bash
-ollama --version   # should print 0.22.x
-```
-
-Restart the service after upgrade:
-
-```bash
+ollama --version   # expect 0.22.x
 sudo systemctl restart ollama
 ```
 
-## 2. Set KV cache type (halves VRAM usage)
+## 2. KV cache type via systemd drop-in
 
-Edit `/etc/systemd/system/ollama.service` and add under the `[Service]` section:
-
-```ini
-Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
-```
-
-Full minimal service block for reference:
-
-```ini
-[Service]
-ExecStart=/usr/local/bin/ollama serve
-Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
-Restart=always
-RestartSec=3
-```
-
-Reload and restart:
+Don't edit `/etc/systemd/system/ollama.service` directly — that file
+is owned by the ollama installer and gets clobbered on the next
+upgrade. Use a drop-in override:
 
 ```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/kv-cache.conf >/dev/null <<'EOF'
+[Service]
+Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl restart ollama
-sudo systemctl status ollama   # confirm Active: running
+
+# Verify the env var is live in the running process:
+systemctl show ollama -p Environment | grep -F OLLAMA_KV_CACHE_TYPE
 ```
 
-## 3. Set context window on qwen-agent
+The drop-in survives ollama upgrades; the upstream `Unit`/`Install`
+sections (paths, dependencies, user, RuntimeDirectory, etc.) stay
+intact.
 
-`num_ctx=262144` (default) spills to CPU when the KV cache overflows 24 GB VRAM. Cap it at 32768 to keep all inference on-GPU.
+## 3. Cap context window via Modelfile
 
-Locate the chitin agent config for local-qwen (typically `config/agents/local-qwen.yaml` or equivalent) and ensure:
+`num_ctx=262144` (qwen3-coder default) overflows the 3090's 24 GB
+VRAM and silently spills to CPU. Cap at 32768 by creating a custom
+model variant — ollama's parameter system is per-model, not per-
+agent, so this lives at the ollama layer.
 
-```yaml
-model_options:
-  num_ctx: 32768
+```bash
+cat > /tmp/qwen3-coder-32k.Modelfile <<'EOF'
+FROM qwen3-coder:30b
+PARAMETER num_ctx 32768
+EOF
+
+ollama create qwen3-coder:30b-32k -f /tmp/qwen3-coder-32k.Modelfile
+ollama show qwen3-coder:30b-32k --parameters | grep num_ctx   # expect 32768
 ```
 
-Do **not** set this in `chitin.yaml` — that file is human-gated. Set it in the agent's own config layer.
+Then point the openclaw `qwen-agent` at the new model id. The agent
+config lives in `~/.openclaw/openclaw.json` (the canonical source —
+there is no `config/agents/local-qwen.yaml` in this repo). Either
+edit the `model` field directly:
 
-## 4. Smoke-test
-
-Force one T0 entry through local-qwen to confirm the stack is healthy. Create a minimal backlog entry with the driver override:
-
-```yaml
-id: qwen-smoke-test
-tier: T0
-allowed_drivers: ['local-qwen']
-description: |
-  Echo "ok" to a temp file and commit it. Verifies local-qwen end-to-end.
+```bash
+# Inspect:
+jq '.agents.list[] | select(.id=="qwen-agent")' ~/.openclaw/openclaw.json
 ```
 
-Expected result: `exit_code=0`, agent produces a real diff, no CPU-offload warnings in `journalctl -u ollama`.
+```jsonc
+// expected shape (post-edit):
+{
+  "id": "qwen-agent",
+  "name": "qwen-agent",
+  "workspace": "/home/red/.openclaw/workspaces/qwen-agent",
+  "agentDir": "/home/red/.openclaw/agents/qwen-agent/agent",
+  "model": "ollama/qwen3-coder:30b-32k"
+}
+```
 
-Check ollama logs during the run:
+Or via the CLI (delete + re-add — `agents update` doesn't expose a
+`--model` flag in 2026.4.25):
+
+```bash
+openclaw agents delete qwen-agent
+openclaw agents add qwen-agent \
+  --workspace /home/red/.openclaw/workspaces/qwen-agent \
+  --agent-dir /home/red/.openclaw/agents/qwen-agent/agent \
+  --model ollama/qwen3-coder:30b-32k \
+  --non-interactive
+```
+
+Direct edit is preferred — the delete/re-add path may drop bindings
+and identity fields the CLI defaults differently.
+
+## 4. Smoke-test (without flipping the dispatcher)
+
+The dispatcher uses `TIER_DRIVER` to pick the driver and **ignores**
+backlog-level `allowed_drivers`. So a smoke-test that puts
+`allowed_drivers: ['local-qwen']` in the entry yaml does not actually
+test local-qwen — it tests whatever `TIER_DRIVER[T0]` is currently
+routed to (copilot at the time of writing).
+
+To actually exercise local-qwen, bypass the dispatcher and submit a
+workflow directly via `submit.ts`, which honors the `DRIVER` env var:
+
+```bash
+cd /home/red/workspace/chitin
+DRIVER=local-qwen \
+WALL_TIMEOUT_S=180 \
+MAX_TOOL_CALLS=5 \
+PROMPT="Use the Bash tool to run exactly: echo ok > /tmp/qwen-smoke.txt. Then stop." \
+pnpm exec tsx apps/temporal-worker/src/submit.ts
+```
+
+While the workflow runs, watch ollama:
 
 ```bash
 journalctl -u ollama -f
 ```
 
-Look for lines like `llm_load_tensors: offloaded 0/N layers to CPU` — any offload means num_ctx is still too high or another process is holding VRAM.
+**Expected outcome:**
+
+- `submit.ts` exits 0 with `result.exit_code: 0`.
+- `/tmp/qwen-smoke.txt` contains `ok`.
+- `journalctl` shows model load + inference, **no** `offloaded N/M
+  layers to CPU` lines (any non-zero offload means num_ctx is still
+  too high or another GPU process is competing for VRAM — check
+  `nvidia-smi` and free what's holding VRAM).
+
+If the smoke test fails, see Diagnostics below before iterating on
+the config.
 
 ## 5. Re-enable T0 routing to local-qwen
 
-After smoke-test passes, flip `TIER_DRIVER[T0]` in the dispatcher config from `copilot` back to `local-qwen`. That change is a one-liner and is tracked as a separate backlog entry.
+Once smoke-test passes, flip `TIER_DRIVER[T0]` in
+`apps/temporal-worker/src/dispatcher.ts` from `'copilot'` back to
+`'local-qwen'`. That's a one-line change tracked as a separate
+backlog entry (`dispatcher-flip-t0-back-to-local-qwen` in
+`docs/swarm-backlog.md`). Don't flip until you have a successful
+smoke-test artifact pasted into this doc — flipping prematurely
+re-creates the slice-7-tuning failures that motivated the rerouting.
 
 ## Diagnostics
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `exit_code=1`, timeout | num_ctx too large → CPU spill | Confirm `num_ctx=32768` in agent config |
-| OOM / ollama crash | KV cache not q8_0 | Check `OLLAMA_KV_CACHE_TYPE` in service env |
-| 0 dispatches to local-qwen | TIER_DRIVER still points to copilot | Flip T0 routing after smoke-test |
-| ollama 0.21.0 still installed | Upgrade script didn't run | Re-run `curl -fsSL https://ollama.com/install.sh | sh` |
+| `exit_code=1`, timeout | num_ctx still too large → CPU spill | Confirm Modelfile has `PARAMETER num_ctx 32768` and the `qwen-agent` config points at the `:30b-32k` variant |
+| OOM / ollama crash | KV cache not q8_0 | `systemctl show ollama -p Environment` should include `OLLAMA_KV_CACHE_TYPE=q8_0`; if absent, drop-in didn't apply |
+| 0 dispatches to local-qwen | TIER_DRIVER still points to copilot | Smoke-test via `submit.ts` first (bypasses TIER_DRIVER); flip routing only after smoke succeeds |
+| ollama 0.21.0 still installed | Upgrade script didn't run / ollama wasn't restarted | `curl -fsSL https://ollama.com/install.sh \| sh` + `sudo systemctl restart ollama` |
+| `qwen3-coder:30b-32k` not found | Modelfile create skipped | Re-run section 3 |
 
 ## Why this matters
 
-The 3090 has 24 GB VRAM. At the default `num_ctx=262144`, the qwen3-coder KV cache alone exceeds that budget, causing silent CPU offload that turns a 2-minute task into a 20-minute timeout. `q8_0` KV quantization cuts cache size ~50%; `num_ctx=32768` caps the worst-case allocation. Together they keep all inference on-GPU and make local-qwen a reliable T0/T1 driver rather than a fallback that always times out.
+The 3090 has 24 GB VRAM. At qwen3-coder's default `num_ctx=262144`
+the KV cache alone exceeds that budget, causing silent CPU offload
+that turns a 2-minute task into a 20-minute timeout. `q8_0` KV
+quantization cuts cache size ~50%; `num_ctx=32768` caps the
+worst-case allocation. Together they keep all inference on-GPU and
+make local-qwen a reliable T0/T1 driver rather than a fallback that
+always times out — which is what overnight 2026-05-02 telemetry
+showed (0 dispatches to local-qwen, $0.50 routed to claude-code-
+headless instead, while the 3090 sat idle).
