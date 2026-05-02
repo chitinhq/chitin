@@ -13,14 +13,27 @@ import (
 // default-deny path catches them.
 func TestNormalize_AllDocumentedToolsProduceNonEmptyType(t *testing.T) {
 	tools := []string{
+		// Original tool set
 		"Bash", "Edit", "Write", "NotebookEdit",
 		"Read", "WebFetch", "WebSearch", "Task",
 		"Glob", "Grep", "LS", "TodoWrite",
+		// Modern Claude Code tools (issue #69 — pre-fix these all
+		// fell to ActUnknown → fail-closed → blocked under enforce
+		// mode).
+		"Agent", "Skill", "TaskStop",
+		"TaskCreate", "TaskUpdate",
+		"TaskGet", "TaskList", "TaskOutput", "ToolSearch", "AskUserQuestion",
+		"Monitor",
+		"EnterPlanMode", "ExitPlanMode",
+		"EnterWorktree", "ExitWorktree",
+		"PushNotification", "RemoteTrigger",
+		"CronCreate", "CronDelete", "CronList",
+		"ScheduleWakeup",
 	}
 	for _, name := range tools {
 		in := HookInput{
 			ToolName:  name,
-			ToolInput: map[string]any{"command": "x", "file_path": "/x", "url": "https://x", "query": "x", "pattern": "*", "path": "/x", "description": "x", "notebook_path": "/x.ipynb"},
+			ToolInput: map[string]any{"command": "x", "file_path": "/x", "url": "https://x", "query": "x", "pattern": "*", "path": "/x", "description": "x", "notebook_path": "/x.ipynb", "subagent_type": "x", "skill": "x", "task_id": "t1", "branch": "main", "endpoint": "/x"},
 			Cwd:       "/cwd",
 		}
 		a, err := Normalize(in)
@@ -34,6 +47,79 @@ func TestNormalize_AllDocumentedToolsProduceNonEmptyType(t *testing.T) {
 		if a.Type == gov.ActUnknown {
 			t.Errorf("%s: must not produce ActUnknown (documented tool)", name)
 		}
+	}
+}
+
+// TestNormalize_ModernClaudeCodeToolMappings pins the per-tool action
+// type for the modern Claude Code surface. Closes issue #69 — the
+// pre-fix denial under `mode: enforce` was the headline operator pain.
+func TestNormalize_ModernClaudeCodeToolMappings(t *testing.T) {
+	cases := []struct {
+		name      string
+		toolName  string
+		toolInput map[string]any
+		wantType  gov.ActionType
+	}{
+		{"Agent maps to delegate.task", "Agent", map[string]any{"description": "search the codebase", "subagent_type": "general-purpose"}, gov.ActDelegateTask},
+		{"Skill maps to delegate.task", "Skill", map[string]any{"skill": "graphify"}, gov.ActDelegateTask},
+		{"TaskStop maps to delegate.task", "TaskStop", map[string]any{"task_id": "t1"}, gov.ActDelegateTask},
+		{"TaskCreate maps to file.write target=task-state", "TaskCreate", map[string]any{}, gov.ActFileWrite},
+		{"TaskUpdate maps to file.write target=task-state", "TaskUpdate", map[string]any{}, gov.ActFileWrite},
+		{"TaskGet maps to file.read", "TaskGet", map[string]any{}, gov.ActFileRead},
+		{"TaskList maps to file.read", "TaskList", map[string]any{}, gov.ActFileRead},
+		{"TaskOutput maps to file.read", "TaskOutput", map[string]any{}, gov.ActFileRead},
+		{"ToolSearch maps to file.read", "ToolSearch", map[string]any{"query": "x"}, gov.ActFileRead},
+		{"AskUserQuestion maps to file.read", "AskUserQuestion", map[string]any{}, gov.ActFileRead},
+		{"Monitor maps to shell.exec", "Monitor", map[string]any{"command": "tail -f log"}, gov.ActShellExec},
+		{"EnterPlanMode maps to file.read", "EnterPlanMode", map[string]any{}, gov.ActFileRead},
+		{"ExitPlanMode maps to file.read", "ExitPlanMode", map[string]any{}, gov.ActFileRead},
+		{"EnterWorktree maps to git.worktree.add", "EnterWorktree", map[string]any{"branch": "feat/x"}, gov.ActGitWorktreeAdd},
+		{"ExitWorktree maps to git.worktree.remove", "ExitWorktree", map[string]any{"path": "/wt"}, gov.ActGitWorktreeRemove},
+		{"PushNotification maps to http.request", "PushNotification", map[string]any{"endpoint": "https://x"}, gov.ActHTTPRequest},
+		{"RemoteTrigger maps to http.request", "RemoteTrigger", map[string]any{"url": "https://x"}, gov.ActHTTPRequest},
+		{"CronCreate maps to file.write target=cron", "CronCreate", map[string]any{}, gov.ActFileWrite},
+		{"CronDelete maps to file.delete target=cron", "CronDelete", map[string]any{}, gov.ActFileDelete},
+		{"CronList maps to file.read target=cron", "CronList", map[string]any{}, gov.ActFileRead},
+		{"ScheduleWakeup maps to file.write", "ScheduleWakeup", map[string]any{}, gov.ActFileWrite},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize(HookInput{ToolName: tc.toolName, ToolInput: tc.toolInput, Cwd: "/cwd"})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Errorf("Type = %q, want %q", a.Type, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestNormalize_AgentSkillFallbackTargetExtraction pins the target-
+// extraction precedence for Agent/Skill: description > subagent_type >
+// skill. The Target is the field policy rules + audit-log readers
+// see, so order matters when multiple are present.
+func TestNormalize_AgentSkillFallbackTargetExtraction(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolInput  map[string]any
+		wantTarget string
+	}{
+		{"description wins over subagent_type", map[string]any{"description": "search", "subagent_type": "general-purpose"}, "search"},
+		{"subagent_type wins over skill", map[string]any{"subagent_type": "general-purpose", "skill": "graphify"}, "general-purpose"},
+		{"skill alone", map[string]any{"skill": "graphify"}, "graphify"},
+		{"empty everything → empty target", map[string]any{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize(HookInput{ToolName: "Agent", ToolInput: tc.toolInput, Cwd: "/cwd"})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Target != tc.wantTarget {
+				t.Errorf("Target = %q, want %q", a.Target, tc.wantTarget)
+			}
+		})
 	}
 }
 
