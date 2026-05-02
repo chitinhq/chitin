@@ -425,6 +425,7 @@ const { runGatekeeperNotify } = proxyActivities<{
     repo: string;
     entry_id: string;
     entry_file_scope?: string;
+    implementor_tier?: Tier;
   }): Promise<{
     action: ReviewGraphAction;
     notified: boolean;
@@ -472,6 +473,7 @@ export async function reviewGraphWorkflow(input: ReviewGraphInput): Promise<Revi
       repo: input.repo,
       entry_id: input.entry.id,
       entry_file_scope: input.entry.file,
+      implementor_tier: input.entry.tier as Tier | undefined,
     });
   } catch {
     // Activity layer already swallows HTTP errors. This catch covers

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildGatekeeperDigest,
   buildGatekeeperDigestWithMerge,
@@ -351,6 +354,126 @@ describe('evaluateGates', () => {
     );
     expect(r.passed).toBe(false);
     expect(r.failures.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("fails when bucket-B rate > 0% (last 24h)", () => {
+    const r = evaluateGates(makeGateInputs({ bucket_b_rate: 0.05 }));
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('bucket-B rate');
+  });
+
+  it('passes when bucket-B rate is 0', () => {
+    const r = evaluateGates(makeGateInputs({ bucket_b_rate: 0 }));
+    expect(r.passed).toBe(true);
+  });
+
+  it('skips the bucket-B gate when rate is undefined (rollup absent / cold start)', () => {
+    const r = evaluateGates(makeGateInputs({ bucket_b_rate: undefined }));
+    expect(r.passed).toBe(true);
+  });
+
+  it("fails when implementor success rate < 70%", () => {
+    const r = evaluateGates(
+      makeGateInputs({ implementor_success_rate: 0.5, implementor_path: 'tier=T2' }),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.failures.join(' ')).toContain('success rate');
+    expect(r.failures.join(' ')).toContain('tier=T2');
+  });
+
+  it('passes when implementor success rate >= 70%', () => {
+    const r = evaluateGates(
+      makeGateInputs({ implementor_success_rate: 0.85, implementor_path: 'tier=T1' }),
+    );
+    expect(r.passed).toBe(true);
+  });
+
+  it('skips the success-rate gate when undefined (insufficient telemetry)', () => {
+    const r = evaluateGates(
+      makeGateInputs({ implementor_success_rate: undefined, implementor_path: 'tier=T2' }),
+    );
+    expect(r.passed).toBe(true);
+  });
+});
+
+// ─── Rollup readers ──────────────────────────────────────────────────────
+
+import {
+  bucketBRateFromRollup,
+  implementorSuccessRateFromRollup,
+  readLatestRollup,
+} from '../src/gatekeeper.ts';
+
+describe('readLatestRollup', () => {
+  let scratch: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'gatekeeper-rollup-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('returns undefined when the rollup dir is missing', () => {
+    expect(readLatestRollup(join(scratch, 'nope'))).toBeUndefined();
+  });
+
+  it('returns undefined when the rollup dir is empty', () => {
+    expect(readLatestRollup(scratch)).toBeUndefined();
+  });
+
+  it('reads the latest rollup by lexicographic name (YYYY-MM-DD.json)', () => {
+    writeFileSync(join(scratch, '2026-04-30.json'), JSON.stringify({ bucket_b_rate: 0.1 }), 'utf8');
+    writeFileSync(join(scratch, '2026-05-02.json'), JSON.stringify({ bucket_b_rate: 0 }), 'utf8');
+    const r = readLatestRollup(scratch);
+    expect(r?.bucket_b_rate).toBe(0); // newest wins
+  });
+
+  it('returns undefined on a malformed JSON file (and does not throw)', () => {
+    writeFileSync(join(scratch, '2026-05-02.json'), '{ not valid json', 'utf8');
+    expect(readLatestRollup(scratch)).toBeUndefined();
+  });
+});
+
+describe('bucketBRateFromRollup', () => {
+  it('returns the rate from the rollup', () => {
+    expect(bucketBRateFromRollup({ bucket_b_rate: 0.21 })).toBe(0.21);
+    expect(bucketBRateFromRollup({ bucket_b_rate: 0 })).toBe(0);
+  });
+
+  it('returns undefined when rollup is undefined', () => {
+    expect(bucketBRateFromRollup(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when bucket_b_rate field is missing', () => {
+    expect(bucketBRateFromRollup({})).toBeUndefined();
+  });
+});
+
+describe('implementorSuccessRateFromRollup', () => {
+  it('returns rate when tier has enough data', () => {
+    const rollup = { success_by_tier: { T1: { success: 8, total: 10 } } };
+    const r = implementorSuccessRateFromRollup(rollup, 'T1');
+    expect(r.rate).toBe(0.8);
+    expect(r.path).toBe('tier=T1');
+  });
+
+  it('returns undefined when tier has < 5 runs (cold-start protection)', () => {
+    const rollup = { success_by_tier: { T1: { success: 1, total: 2 } } };
+    const r = implementorSuccessRateFromRollup(rollup, 'T1');
+    expect(r.rate).toBeUndefined();
+  });
+
+  it('returns undefined when rollup is undefined', () => {
+    const r = implementorSuccessRateFromRollup(undefined, 'T1');
+    expect(r.rate).toBeUndefined();
+  });
+
+  it('returns undefined when tier is undefined', () => {
+    const rollup = { success_by_tier: { T1: { success: 8, total: 10 } } };
+    const r = implementorSuccessRateFromRollup(rollup, undefined);
+    expect(r.rate).toBeUndefined();
   });
 });
 
