@@ -124,19 +124,40 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
-// Revert any uncommitted modification of `.claude/settings.json` in the
+// Revert any modification of `.claude/settings.json` (vs HEAD) in the
 // worktree. The worker's `writeWorktreeClaudeSettings` always touches
 // this file (to install the chitin gate hook for the spawned claude-
 // code-headless session); the modification is *not* task work and
-// shipping it produces bucket-B contamination. If the file isn't a
-// tracked modification (no entry in `git diff`), the checkout is a
-// no-op. Errors are swallowed — failing the apply step over a
-// bookkeeping revert would be worse than leaving the artifact in.
+// shipping it produces bucket-B contamination.
+//
+// Uses `git diff HEAD --` (working tree + index vs HEAD) instead of bare
+// `git diff` so the check sees modifications regardless of whether the
+// agent / a future early `git add` already staged them. Plain `git diff`
+// is index-vs-working-tree only and would silently no-op on staged
+// modifications — bucket-B would silently return.
+//
+// CAVEAT: this revert ALWAYS fires when `.claude/settings.json` differs
+// from HEAD. If a future backlog entry's `file:` field legitimately
+// names `.claude/settings.json`, the agent's edits will be silently
+// dropped. The function has no awareness of the entry — apply-step
+// inputs are just the worktree state. Two mitigations available if it
+// ever bites: (a) the entry can pre-commit its `.claude/settings.json`
+// edit before declining (auto-commit fallback then sees only that), or
+// (b) plumb the entry's file scope into apply-workflow-result and
+// gate the revert on whether the entry claims this file.
+//
+// Errors are swallowed — failing the apply step over a bookkeeping
+// revert would be worse than leaving the artifact in (and the
+// trackedDiff check still bails on no-real-work via the "no committed
+// work; skipping push and PR" branch).
 export function revertWorktreeSettingsArtifact(worktreePath: string): void {
   try {
-    const modified = git(worktreePath, ['--no-pager', 'diff', '--name-only', '--', '.claude/settings.json']);
-    if (!modified) return; // not a tracked-file modification — nothing to revert
-    git(worktreePath, ['checkout', '--', '.claude/settings.json']);
+    const modified = git(worktreePath, ['--no-pager', 'diff', 'HEAD', '--name-only', '--', '.claude/settings.json']);
+    if (!modified) return; // not a modification of a tracked file — nothing to revert
+    // `checkout HEAD --` resets the file in BOTH the index and the working
+    // tree, matching the diff scope above. Plain `checkout --` would only
+    // reset the working tree, leaving a staged modification in place.
+    git(worktreePath, ['checkout', 'HEAD', '--', '.claude/settings.json']);
     console.log('[apply-result] reverted writeWorktreeClaudeSettings artifact: .claude/settings.json');
   } catch (err) {
     console.warn(`[apply-result] revert of .claude/settings.json failed (ignored): ${err instanceof Error ? err.message : String(err)}`);

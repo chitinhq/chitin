@@ -60,10 +60,16 @@ const CLAUDE_TIER_MODEL: Record<Tier, string> = {
   T4: 'claude-opus-4-7',
 };
 
+// 2026-05-02: T2 bumped from haiku → sonnet on copilot. Pairs with the
+// dispatcher.ts T2 reroute (claude-code-headless → copilot) so the model
+// class is preserved (was claude-sonnet-4-6 via CCH, now claude-sonnet-4.6
+// via copilot — same family). Without this bump the reroute would silently
+// downgrade T2 reasoning to haiku. Cost is still $0 under the Copilot Pro
+// plan.
 const COPILOT_TIER_MODEL: Record<Tier, string> = {
   T0: 'gpt-4.1',
   T1: 'gpt-4.1',
-  T2: 'claude-haiku-4.5',
+  T2: 'claude-sonnet-4.6',           // (was claude-haiku-4.5; bumped to preserve T2 reasoning quality)
   T3: 'claude-sonnet-4.6',
   T4: 'claude-opus-4.7',
 };

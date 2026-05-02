@@ -120,7 +120,10 @@ describe('slice 6c — planInvocation tier wiring', () => {
   it('copilot with tier appends --model into the chitin-kernel shim args', () => {
     const planT2 = planInvocation({ ...baseReq, allowed_drivers: ['copilot'], tier: 'T2' as Tier });
     expect(planT2.args).toContain('--model');
-    expect(planT2.args[planT2.args.indexOf('--model') + 1]).toBe('claude-haiku-4.5');
+    // 2026-05-02: T2 copilot model bumped to claude-sonnet-4.6 to preserve
+    // T2 reasoning quality after the dispatcher reroute (TIER_DRIVER[T2]
+    // changed from claude-code-headless → copilot in PR #123).
+    expect(planT2.args[planT2.args.indexOf('--model') + 1]).toBe('claude-sonnet-4.6');
   });
 });
 

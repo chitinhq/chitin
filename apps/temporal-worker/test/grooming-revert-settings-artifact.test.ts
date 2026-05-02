@@ -84,4 +84,32 @@ describe('revertWorktreeSettingsArtifact', () => {
     expect(readFileSync(join(scratch, '.claude/settings.json'), 'utf8')).toBe(settings);
     expect(readFileSync(join(scratch, 'task.ts'), 'utf8')).toBe('// task work edit');
   });
+
+  it('reverts even when the modification has already been staged (git add)', () => {
+    // Adversarial-review concern (R1): if the call site ever runs
+    // `git add` before this revert, plain `git diff` would no-op (it
+    // only sees unstaged changes). We use `git diff HEAD` and
+    // `git checkout HEAD --` so the revert fires regardless of stage
+    // state.
+    mkdirSync(join(scratch, '.claude'));
+    const original = JSON.stringify({ extra: 'main' });
+    writeFileSync(join(scratch, '.claude/settings.json'), original);
+    git(['add', '.claude/settings.json']);
+    git(['commit', '-m', 'baseline', '--quiet']);
+
+    // Modify and stage.
+    writeFileSync(join(scratch, '.claude/settings.json'), '{"hooks":[]}');
+    git(['add', '.claude/settings.json']);
+
+    // Sanity: plain `git diff` is empty (working tree == index after
+    // the add), but `git diff HEAD` still shows the modification.
+    expect(git(['diff', '--name-only'])).toBe('');
+    expect(git(['diff', 'HEAD', '--name-only'])).toBe('.claude/settings.json');
+
+    revertWorktreeSettingsArtifact(scratch);
+
+    expect(readFileSync(join(scratch, '.claude/settings.json'), 'utf8')).toBe(original);
+    // After revert, the index should also be reset (no staged delta left).
+    expect(git(['diff', 'HEAD', '--name-only'])).toBe('');
+  });
 });
