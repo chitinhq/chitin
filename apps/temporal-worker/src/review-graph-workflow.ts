@@ -414,23 +414,31 @@ function formatParseFailureForNextTier(
 
 // ─── Temporal wrapper ──────────────────────────────────────────────────────
 
-// Activity proxy for the gatekeeper Slack digest. 30s is generous
-// for an HTTP POST + 3s internal timeout; activity itself is
-// best-effort and never throws on Slack failure.
+// Activity proxy for the gatekeeper. 60s timeout — covers Slack post
+// (3s internal cap) + auto-merge gh CLI calls (2-3 round trips: pr
+// view, pr diff, pr merge). Best-effort: activity returns notified=
+// false / merge.merged=false rather than throwing.
 const { runGatekeeperNotify } = proxyActivities<{
   runGatekeeperNotify(input: {
     result: ReviewGraphResult;
     pr_meta: ReviewGraphInput['pr_meta'];
     repo: string;
     entry_id: string;
+    entry_file_scope?: string;
   }): Promise<{
     action: ReviewGraphAction;
     notified: boolean;
     reason: string;
     digest: string;
+    merge: {
+      attempted: boolean;
+      merged: boolean;
+      reason: string;
+      gate_failures: string[];
+    };
   }>;
 }>({
-  startToCloseTimeout: '30 seconds',
+  startToCloseTimeout: '60 seconds',
   retry: { maximumAttempts: 1 },
 });
 
@@ -463,6 +471,7 @@ export async function reviewGraphWorkflow(input: ReviewGraphInput): Promise<Revi
       pr_meta: input.pr_meta,
       repo: input.repo,
       entry_id: input.entry.id,
+      entry_file_scope: input.entry.file,
     });
   } catch {
     // Activity layer already swallows HTTP errors. This catch covers
