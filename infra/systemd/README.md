@@ -95,6 +95,45 @@ The dispatcher's invariants:
 - **Dispatcher tick errors:** systemd records exit code, next timer
   tick retries.
 
+## Slack notifications (optional)
+
+The dispatcher posts events to a Slack incoming webhook so the operator
+can stay aware of swarm activity without tailing journalctl. If the
+webhook URL is unset, every notify call is a no-op — Slack is purely
+opt-in.
+
+**Setup:**
+
+1. In Slack, create an incoming webhook (Apps → "Incoming Webhooks" →
+   New). Pick the channel that should receive swarm events. Copy the
+   `https://hooks.slack.com/services/T.../B.../...` URL.
+2. Drop the URL into a per-user systemd environment file:
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cat >> ~/.config/systemd/user/chitin.env <<'EOF'
+   CHITIN_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
+   # Optional: also post when a tick has nothing to do (defaults to silent).
+   # CHITIN_SLACK_NOTIFY_IDLE=1
+   EOF
+   chmod 600 ~/.config/systemd/user/chitin.env
+   ```
+3. The unit files already include `EnvironmentFile=-%h/.config/systemd/user/chitin.env`,
+   so `systemctl --user daemon-reload` picks it up. The leading dash
+   means the file is optional — if it's missing, the unit still starts.
+
+**What gets posted:**
+
+| Event | Trigger | Example |
+|-------|---------|---------|
+| `dispatch_start` | entry picked, workflow successfully submitted | `🦞 swarm dispatch start <entry-id>` (only fires after `client.workflow.start()` returns; submit failures emit `dispatch_error` instead) |
+| `dispatch_complete` | workflow + apply finished | `✅ <entry-id> — PR opened — #N` (or `🟢` `⚪` `❌` `⚠️` depending on outcome — apply failures render `⚠️` and link the operator to the paired `dispatch_error`) |
+| `dispatch_error` | submit / workflow / apply failure (incl. silent `gh pr create` failure after a successful push) | `🚨 dispatch error <entry-id> at <stage>` with the failure's `error.message` (truncated to 2000 chars; no stack trace — stack contents can leak sensitive paths through Slack retention) |
+| `dispatch_idle` | tick had nothing to do (no ready entry, or workflow already in flight) | `💤 dispatcher idle — <reason>`. Only emitted when `CHITIN_SLACK_NOTIFY_IDLE=1` (off by default since most ticks are idle) |
+
+Failures during posting (timeout, 5xx) are logged at warn level and
+swallowed — visibility is nice-to-have, dispatch correctness comes
+first.
+
 ## Pause for governance changes
 
 Slice 6 verified that the swarm cannot edit `chitin.yaml` (the
