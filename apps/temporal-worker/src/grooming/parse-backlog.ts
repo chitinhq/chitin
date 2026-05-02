@@ -24,6 +24,12 @@ export interface BacklogEntry {
   referencesIssue?: string;
   referencesFinding?: string;
   referencesSpec?: string;
+  // Phase 1 of swarm-as-software-factory (see
+  // docs/design/2026-05-02-swarm-as-software-factory.md §3): the role
+  // this entry's worker plays on the assembly line. Absent = generic
+  // programmer (the slice-7b dispatcher's pre-Phase-1 default).
+  // Vocabulary matches RoleSchema in @chitin/contracts.
+  role?: string;
   rawFrontmatter: string;  // the original ```yaml block, preserved verbatim
   description: string;     // prose below the frontmatter, before next ### or ##
   rawSection: string;      // entire ### section for in-place replacement
@@ -91,6 +97,7 @@ function parseSection(section: string): BacklogEntry | null {
     referencesIssue: fields.references_issue,
     referencesFinding: fields.references_finding,
     referencesSpec: fields.references_spec,
+    role: fields.role,
     rawFrontmatter,
     description,
     rawSection: section,

@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import type { ActivityResult } from './activity-types.ts';
 import type { executeRequestWorkflow } from './workflow.ts';
 import { parseBacklog, type BacklogEntry } from './grooming/parse-backlog.ts';
+import { buildPromptForEntry, resolveEntryRole } from './role-prompts.ts';
 import {
   notifyDispatchStart,
   notifyDispatchComplete,
@@ -357,6 +358,12 @@ async function main() {
       return;
     }
 
+    // Phase 1 (factory design §3-4): pick the prompt template based
+    // on the entry's role. Unknown / absent role → programmer (the
+    // pre-Phase-1 default).
+    const { role: resolvedRole, warning: roleWarning } = resolveEntryRole(entry);
+    if (roleWarning) log('warn', 'role-resolution', { entry_id: entry.id, warning: roleWarning });
+
     const req = ExecutionRequestSchema.parse({
       schema_version: '1',
       workflow_id: workflowId,
@@ -368,9 +375,14 @@ async function main() {
       network_policy: 'allowlist',
       write_policy: 'worktree',
       bounds: { max_tool_calls: maxToolCalls, max_cost_usd: 0, wall_timeout_s: wallTimeout },
-      prompt: buildPrompt(entry),
+      prompt: buildPromptForEntry(entry),
       base_ref: 'main',
       tier,
+      role: resolvedRole,
+      // Phase 1 surfaces the parent_workflow_id + step_index fields
+      // on the schema; the multi-step flow that uses them lands with
+      // the review-graph-executor in Phase 2. Top-level dispatches
+      // leave these undefined.
     });
 
     // Write the marker BEFORE submit. If submit fails, marker still

@@ -887,11 +887,22 @@ human green-light.
 ```yaml
 id: role-typed-backlog-entries
 tier: T2
-status: in_design
+status: completed
+shipped_in: PR #130 (Phase 1 of swarm-as-software-factory; design doc PR #129)
 estimated_loc: 200
 blocks: []
 file: apps/temporal-worker/src/grooming/parse-backlog.ts, apps/temporal-worker/src/dispatcher.ts, docs/swarm-backlog.md
 ```
+
+> **✅ COMPLETED 2026-05-02 in PR #130.** Vocabulary landed slightly
+> different from this entry's draft (`research`/`fix`/`refactor`/...
+> were work-shape labels; the design doc reframed them as agent
+> ROLES — programmer/reviewer/researcher/etc.). See
+> `docs/design/2026-05-02-swarm-as-software-factory.md` §3 for the
+> final taxonomy and `apps/temporal-worker/src/role-prompts.ts` for
+> the role-prompt registry. Per-role prompt templates beyond
+> `programmer` are stubs in this slice — follow-up entries (one per
+> role) flesh out the dedicated prompts.
 
 Add a `role:` field to backlog entries. Initial role vocabulary:
 `research`, `fix`, `refactor`, `test`, `doc`, `gov`. Dispatcher
@@ -985,11 +996,22 @@ Implementation steps:
 ```yaml
 id: multi-step-flows
 tier: T3
-status: in_design
+status: partial
+shipped_in: PR #130 (schema fields only; orchestration in Phase 2)
 estimated_loc: 400
 blocks: [role-typed-backlog-entries]
 file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/workflow.ts
 ```
+
+> **🟡 PARTIAL 2026-05-02 in PR #130.** The schema fields
+> (`parent_workflow_id`, `step_index` with cap=3) landed in
+> `libs/contracts/src/execution-request.schema.ts` so future
+> consumers can construct multi-step requests. The dispatcher's
+> `dispatchSubtask(entry, parent)` orchestration path is **not yet
+> wired** — that lands with `review-graph-executor` in Phase 2 since
+> the review escalation graph is the first real multi-step user. See
+> `docs/design/2026-05-02-swarm-as-software-factory.md` §4 + §9
+> Phase 2.
 
 One backlog entry can spawn N sub-tasks via the same dispatcher.
 Programmer-then-reviewer is the simplest case. Lobster's

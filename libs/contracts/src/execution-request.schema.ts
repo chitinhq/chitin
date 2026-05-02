@@ -21,6 +21,35 @@ export const RiskLevelSchema = z.enum(['low', 'medium', 'high', 'irreversible'])
 // only, no programmatic driver should ever receive a T5 ExecutionRequest.
 export const TierSchema = z.enum(['T0', 'T1', 'T2', 'T3', 'T4']);
 
+// Phase 1 of the swarm-as-software-factory design (see
+// docs/design/2026-05-02-swarm-as-software-factory.md §3-4): each
+// workflow plays one role on the assembly line. The dispatcher uses
+// the role to pick the prompt template + tier defaults; the
+// gov-decisions chain records the role on each decision so audit can
+// reconstruct who did what at each station.
+//
+// Roles intentionally describe AGENTS, not work-shapes. A `programmer`
+// agent might be doing a refactor or a feature; a `reviewer` might be
+// looking at either. Work-shape (refactor / fix / doc) lives on
+// `task_class` — a separate concern.
+//
+// Absent = generic programmer (the slice-7b dispatcher's pre-Phase-1
+// behavior). Existing manual dispatches keep working.
+export const RoleSchema = z.enum([
+  'researcher',     // Pull external signals (arxiv, Reddit, openclaw, ollama)
+  'product',        // Turn signals into 1-paragraph problem statements
+  'groomer',        // Tier-classify, size, identify file scope, mark blockers
+  'architect',      // Write design docs / ADRs
+  'programmer',     // Read entry's file:, edit, commit, push (the current swarm)
+  'reviewer',       // Tier-escalating review (R0-R3, see design §5)
+  'qa',             // Generate / run E2E tests; smoke-test
+  'gatekeeper',     // CI + reviews + telemetry → merge or escalate
+  'tech-writer',    // Update wiki + ADRs + runbooks; lessons-learned
+  'analyst',        // Author analysis-lib queries; explain telemetry
+  'refactorer',     // Find duplication / dead code / hot-path debt
+  'debt-curator',   // Maintain debt-ledger; surface debt that blocks other work
+]);
+
 // Driver tiers for the swarm. The 2026-04-30 framing that excluded
 // `claude-code` was based on a misread of Anthropic's terms — verified
 // 2026-05-02 against code.claude.com/docs/en/headless that headless mode
@@ -88,6 +117,20 @@ export const ExecutionRequestSchema = z
     // tier-appropriate model for the chosen driver (e.g., T0 →
     // claude-haiku for claude-code-headless). Absent = driver default.
     tier: TierSchema.optional(),
+    // Phase 1 (factory design §3-4): which role this workflow plays.
+    // Picks the prompt template + per-role tier defaults. Absent =
+    // generic programmer (current pre-Phase-1 behavior).
+    role: RoleSchema.optional(),
+    // Phase 1 (factory design §4): when this workflow was spawned by
+    // a parent in a multi-step flow (e.g., reviewer spawned by a
+    // programmer that just opened a PR), the parent's workflow_id
+    // links them in the chain. Absent = top-level dispatch.
+    parent_workflow_id: TemporalIdSchema.optional(),
+    // Phase 1 (factory design §4): step index within a multi-step
+    // flow, 0-based. Lets the flow cap iterations (Lobster's
+    // loop.maxIterations equivalent — chitin caps at 3 per the
+    // design doc to prevent runaway chains). Absent = 0.
+    step_index: z.number().int().nonnegative().max(3).optional(),
   })
   .superRefine((req, ctx) => {
     if (req.network_policy === 'open' && (req.risk_level === 'high' || req.risk_level === 'irreversible')) {
@@ -114,3 +157,4 @@ export type NetworkPolicy = z.infer<typeof NetworkPolicySchema>;
 export type WritePolicy = z.infer<typeof WritePolicySchema>;
 export type Bounds = z.infer<typeof BoundsSchema>;
 export type Tier = z.infer<typeof TierSchema>;
+export type Role = z.infer<typeof RoleSchema>;
