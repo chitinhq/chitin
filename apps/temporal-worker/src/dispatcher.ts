@@ -31,7 +31,7 @@ import { Connection, Client } from '@temporalio/client';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { DriverId, Tier } from '@chitin/contracts';
 import { execFileSync, execSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -269,7 +269,43 @@ CONSTRAINTS:
 REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
 }
 
+// Returns true if the dispatcher should skip this tick. Looks for any
+// `.claude/settings.json.chitin-backup-*` artifact in the given cwd's
+// `.claude/` directory — that file gets swept into worktree diffs by
+// `git add -A` in the apply step and produces bucket-B contaminated
+// PRs (see docs/observations/2026-05-02-bucket-b-after-action.md).
+//
+// Exported for tests via `__test__`. Pure modulo `existsSync`/
+// `readdirSync` calls — operator-facing logging + idle-notify happen
+// in the caller.
+function findClaudeBackupArtifact(cwd: string): string | null {
+  const claudeDir = resolve(cwd, '.claude');
+  if (!existsSync(claudeDir)) return null;
+  const re = /^settings\.json\.chitin-backup-.+$/;
+  for (const file of readdirSync(claudeDir)) {
+    if (re.test(file)) return resolve(claudeDir, file);
+  }
+  return null;
+}
+
+async function preflightRefuseOnClaudeBackup(): Promise<boolean> {
+  const artifact = findClaudeBackupArtifact(process.cwd());
+  if (!artifact) return false;
+  log('warn', 'preflight: claude-settings-backup artifact present', { artifact });
+  await notifyTickIdle(`preflight: claude-settings-backup artifact present (${artifact})`);
+  return true;
+}
+
 async function main() {
+  // Pre-flight: refuse to dispatch if any .claude/settings.json.chitin-backup-*
+  // artifact is present in the cwd's .claude/ dir. Background: a leftover
+  // backup file got swept into worktree diffs by `git add -A` in the apply
+  // step on 2026-05-02, producing four bucket-B contaminated PRs whose diff
+  // didn't match their title. See docs/observations/2026-05-02-bucket-b-
+  // after-action.md. Default policy is option-1 from the backlog entry —
+  // hard refuse, operator deletes the artifact manually before next tick.
+  if (await preflightRefuseOnClaudeBackup()) return;
+
   const dryRun = process.argv.includes('--dry-run');
   log('info', 'dispatcher start', { dryRun });
 
@@ -454,6 +490,8 @@ async function main() {
     await conn.close();
   }
 }
+
+export const __test__ = { findClaudeBackupArtifact };
 
 // Only auto-run when invoked as a script. Importing buildPrompt or other
 // helpers from tests must not open a Temporal connection.
