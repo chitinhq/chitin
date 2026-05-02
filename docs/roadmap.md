@@ -1,6 +1,9 @@
 # Roadmap
 
-The strategic arc, what's shipped, what's in flight, and what's deferred. Updated 2026-04-30.
+The strategic arc, what's shipped, what's in flight, and what's deferred. Updated 2026-05-01.
+
+> Companion: [`swarm-backlog.md`](./swarm-backlog.md) — tier-tagged execution backlog
+> the local 24/7 swarm chews through. Roadmap = *strategy*. Backlog = *execution*.
 
 ## Strategic arc
 
@@ -53,6 +56,16 @@ The hero sentence names these three drivers. Bitrot in any is a hero-sentence bu
 
 Four invariants documented at [`architecture/layer-contracts.md`](./architecture/layer-contracts.md): kernel authority, driver constraint (`AllowedDrivers` primitive), routing scope, aggregation role.
 
+### `AllowedDrivers` primitive + Temporal swarm (merged 2026-05-01)
+
+Three coordinated PRs ship the local 24/7 swarm:
+
+- **PR #81 — slice 1+2** — Temporal worker (`apps/temporal-worker/`) + chitin-governance openclaw plugin (`apps/openclaw-plugin-governance/`). `ExecutionRequest` is the `AllowedDrivers` primitive in concrete form (`libs/contracts/src/execution-request.schema.ts`). End-to-end verified: Temporal → openclaw → plugin's `before_tool_call` hook → kernel deny.
+- **PR #83 — slice 3a (core normalizer)** — openclaw pi-runtime tool names (`exec`, `process`, `read`, `write`, `edit`) mapped to canonical action types in `gov.Normalize()`.
+- **PR #84 — slice 3 (chat-domain + routing + default-enforce)** — 14 chat-domain tools mapped (memory, sessions, image, ollama_web, cron, subagents) plus per-driver agent routing in `activity.ts` (`local-qwen → qwen-agent`, etc.) and default mode flipped from `observe` to `enforce`. End-to-end verified with qwen3-coder:30b dispatching the `read` tool.
+
+Three planes locked: **Temporal** (control), **OpenClaw** (execution), **Chitin** (enforcement). Per the post-talk plan, this is the load-bearing piece for autonomous-swarm ops; the talk demos it live.
+
 ## In flight
 
 Forcing function: **2026-05-07 talk** ("Copilot CLI Without Fear"). Eight days from this update.
@@ -66,13 +79,15 @@ Forcing function: **2026-05-07 talk** ("Copilot CLI Without Fear"). Eight days f
 
 Cut order if F4 slips: README first, then strategic-roadmap polish. Never cut Layer Contracts doc, supersede headers, or memory rewrites.
 
-## Next slice (post cost-gov v3)
+## Next slice (post slice-3 swarm merge)
 
-**`AllowedDrivers` primitive** — Layer Contracts v1 commits to it as the next kernel slice. When this lands, terrain B (compute fabric / placement-as-policy) becomes a real public roadmap item. Three follow-ups before terrain B is real:
+The `AllowedDrivers` primitive shipped with slices 1–3 above. The swarm now runs but eats its own backlog (`swarm-backlog.md`); these are the strategic slices that aren't groomable to a tier yet:
 
-1. Input-integrity for `AllowedDrivers` (who constructs the `execution_request` — the next leak vector)
-2. `AllowedDrivers` audit-chaining (every call lands in the event chain so policy backtesting is real)
-3. `libs/adapters/openclaw/SPIKE.md` flips from ingest to emit role
+1. **Pre-activity policy gate** — `chitin-kernel task validate` subcommand. The spec addendum committed to it; submit.ts currently bypasses (zod parse only). Tracked as `task-validate-command-pre-activity-gate` in the swarm backlog.
+2. **Wall-timeout SIGKILL propagation** — current activity hangs to Temporal's 15-min `startToCloseTimeout` because openclaw's grandchildren keep stdout pipes open after parent dies. Blocking the swarm from running on slow models without retry pollution. Tracked in swarm backlog.
+3. **Slice 4 scope decision** — open. Candidates on the deferred list below; needs a Jared+Claude Code interactive call to pick.
+
+When (1) and (2) ship, terrain B (compute fabric / placement-as-policy) becomes a real public roadmap item with the swarm dogfooding it.
 
 ## Deferred (post-talk)
 
