@@ -110,6 +110,7 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       // boundary, and it still fires via the worktree's project settings.
       const args = [
         '-p', req.prompt,
+        '--include-hook-events',
         '--dangerously-skip-permissions',
         '--allowedTools', process.env.CHITIN_CLAUDE_ALLOWED_TOOLS ?? DEFAULT_CLAUDE_ALLOWED_TOOLS,
         '--output-format', 'stream-json',
@@ -139,6 +140,7 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
           '--local',
           '--agent', resolveAgent(driver),
           '--json',
+          '--include-hook-events',
           '--timeout', String(req.bounds.wall_timeout_s),
           '--message', req.prompt,
         ],
@@ -423,11 +425,28 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       }, req.bounds.wall_timeout_s * 1000);
       child.on('close', (code) => {
         clearTimeout(killTimer);
+        // Parse hook events from stream-json output if present
+        let hookEvents: any[] | undefined = undefined;
+        try {
+          // Only attempt to parse if --include-hook-events was passed
+          if (plan.args.includes('--include-hook-events')) {
+            // Look for hook events in the tail of stdout
+            // (Assume each event is a JSON object on its own line)
+            const lines = stdout.split('\n');
+            hookEvents = lines
+              .map(line => {
+                try { return JSON.parse(line); } catch { return undefined; }
+              })
+              .filter(ev => ev && ev.type === 'hook_event');
+            if (hookEvents.length === 0) hookEvents = undefined;
+          }
+        } catch {}
         resolvePromise({
           exit_code: code ?? -1,
           stdout_tail: stdout.slice(-TAIL_BYTES),
           stderr_tail: stderr.slice(-TAIL_BYTES),
           duration_ms: Date.now() - start,
+          ...(hookEvents ? { hookEvents } : {}),
         });
       });
       child.on('error', reject);

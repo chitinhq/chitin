@@ -7,6 +7,11 @@ export interface ActivityResult {
   // activity created a worktree. Apply-step uses worktree_path to push
   // the branch and open a PR.
   worktree?: WorktreeResult;
+  /**
+   * Parsed summary of hook events emitted by the agent (if available).
+   * Only present when --include-hook-events was passed and the agent supports it.
+   */
+  hookEvents?: any[];
 }
 
 export interface WorktreeResult {
