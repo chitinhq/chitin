@@ -270,6 +270,23 @@ REMEMBER: chat replies do nothing. Tool calls are the only thing that produces w
 }
 
 async function main() {
+  // Pre-flight: refuse to dispatch if any .claude/settings.json.chitin-backup-* artifact is present
+  const cwd = process.cwd();
+  const fs = require('fs');
+  const path = require('path');
+  const claudeBackupPattern = /^settings\.json\.chitin-backup-.*$/;
+  const claudeDir = path.join(cwd, '.claude');
+  if (fs.existsSync(claudeDir)) {
+    for (const file of fs.readdirSync(claudeDir)) {
+      if (claudeBackupPattern.test(file)) {
+        log('warn', 'preflight: claude-settings-backup artifact present', { artifact: path.join(claudeDir, file) });
+        if (typeof global.notifyTickIdle === 'function') {
+          global.notifyTickIdle('preflight: claude-settings-backup artifact present');
+        }
+        return;
+      }
+    }
+  }
   const dryRun = process.argv.includes('--dry-run');
   log('info', 'dispatcher start', { dryRun });
 
