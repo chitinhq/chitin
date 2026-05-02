@@ -29,42 +29,63 @@ mismatch between title (`wall-timeout-sigkill-propagation`) and diff
 by how often the apply step produces an honest PR; one-in-four false
 positives is worse than one-in-four no-PRs.
 
-## Root cause
+## Root cause (CORRECTED 2026-05-02 afternoon)
 
-The workspace's `.claude/` directory contained a leftover artifact:
+> **First analysis was wrong.** The original write-up blamed an
+> untracked backup artifact (`.claude/settings.json.chitin-backup-<ts>`)
+> in the parent repo's `.claude/` dir. That theory motivated PR #121's
+> backlog entry and PR #122's pre-flight scrub. Both shipped. Both
+> address a real but smaller issue. Neither fixes Bucket-B.
+>
+> The actual root cause was found while pulling driver-mix telemetry on
+> the 15 overnight runs: 100% of Bucket-B PRs were claude-code-headless,
+> 0% were copilot. That asymmetry is not consistent with "shared
+> backup artifact in the parent repo" (which would affect both
+> drivers equally). Re-reading PR #114's diff revealed it was
+> byte-identical to the output of `writeWorktreeClaudeSettings`.
 
-```
-.claude/settings.json.chitin-backup-20260429T210349Z
-```
+The actual chain:
 
-This was created by `chitin-kernel install --surface claude-code
---project` on 2026-04-29 — the installer's normal behavior is to back
-up the previous settings.json before overwriting. Backups are
-append-only and never auto-cleaned.
+1. The dispatcher provisions a fresh worktree off `main` for each
+   dispatch.
+2. For claude-code-headless, the worker calls
+   `writeWorktreeClaudeSettings(worktreePath)` (`apps/temporal-worker/
+   src/activity.ts:219`) before spawning the agent. This writes the
+   chitin gate hook config to `worktree/.claude/settings.json` —
+   **overwriting** whatever main had checked out there (the Nx-plugin
+   config).
+3. Whether or not the agent does any task work, the apply step's
+   "tracked diff" check (`grooming/apply-workflow-result.ts`) sees a
+   modification on `.claude/settings.json` (tracked: yes; in `git
+   diff --shortstat`: yes).
+4. `trackedDiff` non-empty → auto-commit fallback fires → pushes →
+   opens PR.
+5. The PR's title and body are generated from the entry's metadata,
+   so it *looks* like the agent did the work. The diff is just the
+   worker's hook write.
 
-The dispatcher provisions a worktree off `main` for each dispatch and
-spawns the agent in it. The agent's prompt names a specific target
-file and tells it not to invent scope. But the apply step
-(`grooming/apply-workflow-result.ts`) ran `git add -A` over the entire
-worktree to stage anything the agent had touched. The backup file
-isn't tracked on `main` — it lives only in the live workspace's
-`.claude/` directory. Each dispatch's worktree inherited it as
-untracked content.
-
-Critically, on at least four runs, the agent (claude-code-headless)
-never touched the actual target file at all — likely the wall_timeout
-fired before tool-dispatch completed, or the agent declined to commit.
-But because the backup artifact existed in the worktree and `git add
--A` swept it up, the apply step found "tracked diff" content (the
-backup file got promoted from untracked to staged), called the
-auto-commit fallback path with `defaultCommitMessage()`, and pushed.
-The PR opened with a generated title from the entry id — looking, to
-the reader, like the agent had done the work.
+Why only claude-code-headless: copilot dispatches via
+`chitin-kernel drive copilot` and never enters the `claude` CLI's
+project-settings discovery path, so the worker never touches
+`.claude/settings.json` for copilot runs. All 10 copilot dispatches
+overnight produced honest PRs; 4 of 5 CCH dispatches produced
+Bucket-B.
 
 This is **a security-shaped failure even though no security policy
-was bypassed.** The chain says: artifact + permissive `git add -A` +
-auto-commit-on-tracked-diff = ship something that looks like the
-intended work but isn't.
+was bypassed.** The chain says: worker writes hook config + apply
+step's permissive auto-commit heuristic = ship something that looks
+like the intended work but isn't.
+
+### Why the first analysis was plausible-but-wrong
+
+When I noticed four PRs with identical small diffs, the parent
+repo's untracked `.claude/settings.json.chitin-backup-*` was visibly
+present and nominally matched "something replaced settings.json with
+the chitin hook." The hypothesis would have predicted contamination
+on copilot too, but I didn't check driver-mix before publishing the
+after-action — closing the loop on driver split would have surfaced
+the wrong-cause sooner. **Lesson: ground every "why did this fail?"
+in the per-driver / per-tier breakdown before publishing.**
 
 ## How it was detected
 
@@ -81,18 +102,30 @@ absent.
 
 ## What we changed
 
-1. **Deleted the artifact** (this commit). Backups created by
-   `chitin-kernel install` will continue to land in `.claude/` —
-   future hardening is in (2) below.
+1. **Deleted the parent-repo artifact** (PR #121). Backups created by
+   `chitin-kernel install` are noisy but turned out not to be the
+   cause. Cleanup still good hygiene.
 2. **Filed `dispatcher-preflight-scrub-claude-settings-backup`** as a
-   ready entry in `swarm-backlog.md` (PR #121). Pre-flight refuses
-   (or auto-scrubs) when any `.claude/settings.json.chitin-backup-*`
+   ready entry in `swarm-backlog.md` (PR #121); the swarm picked it
+   up and shipped PR #122 implementing the preflight check. Pre-flight
+   refuses (or auto-scrubs) when any `.claude/settings.json.chitin-backup-*`
    file is present at tick start. Default to refuse unless dogfood
    shows it's a recurring operator burden.
-3. **Closed #114, #117, #118, #120** with a comment naming the root
-   cause. #114's entry is moot — the SIGKILL fix already shipped in
-   slice-7a (PR #99). The other three remain claimable; the next
-   swarm tick after (2) lands will pick them up cleanly.
+3. **Closed #114, #117, #118, #120** with a comment naming what we
+   *thought* was the root cause. #114's entry is moot — the SIGKILL
+   fix already shipped in slice-7a (PR #99). The other three remain
+   claimable. After PR #123 lands they'll dispatch cleanly.
+4. **PR #123 (the actual fix):** added
+   `revertWorktreeSettingsArtifact()` to the apply step. Before the
+   trackedDiff check, the apply step runs `git checkout --
+   .claude/settings.json` in the worktree. If the worker's hook write
+   was the only modification, the worktree returns to clean → no
+   auto-commit → no PR. If the agent did real work elsewhere, that
+   work is the only thing the heuristic sees.
+5. **PR #123 also routes T2 → copilot for now.** Overnight data: T2
+   on CCH was 1/4 success vs. T0/T1 on copilot at 9/10. Flip back to
+   CCH after this fix has been live for one swarm cycle and the
+   bucket-B rate stays at 0.
 
 ## What we did NOT change (and why)
 
@@ -100,7 +133,10 @@ absent.
   named in the entry's `file:` field." Tempting, but it punishes the
   legitimate case where an entry's target generates auxiliary files
   (e.g. updating a generated test fixture). Fix the artifact at the
-  source, not the staging step.
+  source (the worktree write), not the staging step.
+- **Did not** stop calling `writeWorktreeClaudeSettings` itself.
+  Removing it would break the chitin gate hook that makes CCH runs
+  governable. The fix is at the apply step, not the worker.
 - **Did not** force-push reset the four broken branches. Force-push
   is denied by `chitin.yaml`'s `no-force-push` rule, and rightly so —
   rewriting shared history hides this exact kind of failure from
@@ -112,35 +148,51 @@ absent.
 
 ## Generalizable lessons
 
-1. **Untracked artifacts in `.claude/`, `.git/`, dotfiles, etc. are
-   not benign.** A `git add -A` will sweep them up. The dispatcher's
-   pre-flight is now the right place to gate this.
-2. **PR title vs diff mismatch is a real failure mode the pipeline
+1. **Cross-tab the failure by driver / tier / model before publishing
+   a root-cause.** I shipped the wrong root-cause because I didn't
+   check whether bucket-B was driver-asymmetric. The 0% / 100%
+   copilot-vs-CCH split would have ruled out the parent-repo backup
+   theory immediately. *Telemetry first, narrative second.*
+2. **The worker's bootstrap writes are pipeline state.** Anything
+   `writeWorktreeClaudeSettings`, `provisionOpenclawState`, or any
+   future bootstrap helper writes into the worktree is part of the
+   diff the apply step will see. Each such write needs an explicit
+   apply-step exception OR a write target that's outside the
+   worktree's diff surface (`.gitignore`'d, `XDG_CACHE_HOME`, or via
+   `git update-index --skip-worktree`).
+3. **PR title vs diff mismatch is a real failure mode the pipeline
    doesn't catch.** Worth thinking about whether the apply step
    should refuse to push when the diff doesn't intersect the entry's
    declared `file:` field. Defer until we have a cheap way to
    express "entry's file scope" as a structured constraint that
    `apply-workflow-result.ts` can consume.
-3. **Similarity across PRs is a signal.** If you ever see N
+4. **Similarity across PRs is a signal.** If you ever see N
    autonomous-swarm PRs with the same one-file diff and divergent
    titles, do not merge any of them until you understand what's
-   common.
-4. **Installer backups are state.** Anything the kernel writes into
-   the user's working tree is part of the pipeline's environment.
-   If the installer leaves backups, the dispatcher needs an opinion
-   about them — and the kernel should probably namespace its backups
-   to a path the dispatcher's pre-flight can scrub generically (e.g.
-   `~/.cache/chitin/install-backups/<surface>/<ts>`) rather than
-   leaving them in `.claude/` next to live config.
+   common. (My initial discovery path was right; the wrong-cause
+   only got published because I stopped tracing one step too soon.)
+5. **Untracked artifacts in `.claude/`, `.git/`, dotfiles, etc. are
+   still not benign** — `git add -A` will sweep them up. PR #122's
+   pre-flight scrub is correct hygiene even though the original
+   bucket-B wasn't caused by it.
 
 ## See also
 
-- PR #121 — the pre-flight scrub backlog entry.
+- **PR #123 — the actual fix.** Apply-step revert of
+  `.claude/settings.json` + T2 reroute to copilot.
+- PR #121 — the pre-flight scrub backlog entry (correct hygiene,
+  wrong target for this bug).
+- PR #122 — the swarm-produced implementation of #121's entry. Real
+  meta-recursion: swarm shipped a fix for what we *thought* was the
+  bucket-B cause.
 - PRs #114, #117, #118, #120 — the four closed contaminated PRs;
-  comments name the root cause.
+  diff in #114 was the byte-level evidence that finally cracked the
+  real root cause.
+- `apps/temporal-worker/src/activity.ts:219` — `writeWorktreeClaudeSettings`,
+  the worker write that creates the artifact.
 - `apps/temporal-worker/src/grooming/apply-workflow-result.ts` —
   where the "tracked diff exists → auto-commit + push" heuristic
-  lives.
+  lives, and where PR #123 plants the revert.
 - `go/execution-kernel/internal/govhookinstall/install.go` — where
-  the `.claude/settings.json.chitin-backup-<ts>` filename is minted
-  by the installer.
+  the (red-herring) `.claude/settings.json.chitin-backup-<ts>`
+  filename gets minted by the installer.

@@ -45,6 +45,130 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `qwen-ollama-config-bump-and-validate`
+
+```yaml
+id: qwen-ollama-config-bump-and-validate
+tier: T2
+status: ready
+estimated_loc: 80
+blocks: []
+file: docs/runbooks/local-qwen-stack.md (new), apps/temporal-worker/src/activity.ts
+references_finding: 2026-05-02-overnight-driver-mix
+```
+
+The 2026-05-01 instability investigation (PR #112) produced a clear
+remediation list but no implementation. Overnight 2026-05-02:
+local-qwen received **0 dispatches** (TIER_DRIVER routes T0/T1 →
+copilot until the qwen layer is fixed). The 3090 sat idle while
+$0.50 went to claude-code-headless on T2/T3. Stop the bleed by
+actually shipping the recommended config.
+
+Concrete actions from the investigation:
+1. Bump ollama 0.21.0 → 0.22.x (verified current via
+   `gh api repos/ollama/ollama/releases | jq '.[0].tag_name'`).
+2. Set `OLLAMA_KV_CACHE_TYPE=q8_0` in
+   `/etc/systemd/system/ollama.service` (halves KV cache VRAM).
+3. Set `num_ctx=32768` on the qwen-agent (avoids 262144 → CPU
+   offload spill).
+4. Smoke-test by dispatching one T0 entry to local-qwen explicitly
+   (`allowed_drivers: ['local-qwen']` override) and confirm the run
+   returns exit_code=0 with the qwen3-coder agent producing a real
+   diff.
+5. Document the resulting stack in `docs/runbooks/local-qwen-stack.md`
+   so this doesn't get re-derived next time.
+
+After this lands, a follow-up entry can flip `TIER_DRIVER[T0]` from
+`copilot` back to `local-qwen` (will be a 1-line change). Keep T0
+on copilot for now — local-qwen reliability is the gate.
+
+T2 because it crosses systemd, ollama config, and verification work.
+
+---
+
+### `analysis-swarm-runs-loader`
+
+```yaml
+id: analysis-swarm-runs-loader
+tier: T1
+status: ready
+estimated_loc: 120
+blocks: []
+file: python/analysis/swarm_runs.py (new), python/analysis/tests/test_swarm_runs.py (new)
+references_finding: 2026-05-02-overnight-driver-mix
+```
+
+The Python analysis library (`python/analysis/`) only has
+`gov-decisions-*.jsonl` loaders today. The 2026-05-02 overnight-mix
+analysis (driver/tier breakdown, contamination rate, per-run cost)
+required a bespoke `/tmp/swarm-overnight-analysis.py` script. That
+substrate is the wrong place — telemetry-derived insights should
+live in the lib so future questions are queryable, not re-engineered
+each time.
+
+Schema:
+- Inputs: `~/.cache/chitin/swarm-state/dispatched/*.json` (markers)
+  joined with `tmp/result-swarm-*.json` (envelopes) by `workflow_id`.
+- Output: typed `SwarmRun` dataclasses with `entry_id`, `tier`,
+  `driver`, `dispatched_at`, `exit_code`, `duration_ms`,
+  `commits_added`, `pr_url` (parsed from stdout via `extractPrUrl`-
+  equivalent), `cost_usd` (parsed from claude-code-headless tail),
+  `model` (parsed from modelUsage), `bucket_b` (heuristic: diff is
+  byte-identical to writeWorktreeClaudeSettings output).
+- Window-filter helper matching `loaders.Window`.
+
+Implementation steps:
+- `python/analysis/swarm_runs.py`: `load_swarm_runs(state_dir, tmp_dir, window)` returning `list[SwarmRun]`.
+- Helpers for `cost_by_driver`, `outcomes_by_driver`, `bucket_b_rate`.
+- Tests using fixture marker + envelope JSON files.
+- Update `python/analysis/__init__.py` description to mention
+  decisions, debt, soul-routing, **and swarm-runs**.
+
+T1 because mechanical (parse JSON, dataclass projection, simple
+aggregations). No external services, no model calls.
+
+---
+
+### `swarm-daily-rollup-healthcheck`
+
+```yaml
+id: swarm-daily-rollup-healthcheck
+tier: T2
+status: ready
+estimated_loc: 150
+blocks: [analysis-swarm-runs-loader]
+file: python/analysis/swarm_health.py (new), scripts/swarm-daily-rollup.sh (new), infra/systemd/chitin-swarm-rollup.timer (new)
+references_finding: 2026-05-02-overnight-driver-mix
+```
+
+Telemetry without alarms is just data. The bucket-B contamination
+overnight 2026-05-02 looked indistinguishable from healthy
+dispatch_complete events in Slack — operator only noticed because
+they happened to inspect 18 PRs by hand the next morning. We need a
+daily rollup that flags drift.
+
+Output (Slack channel + structured stdout for journal):
+- 24h dispatches by driver
+- Bucket-B rate (target: 0%; alarm: > 5%)
+- Success rate per driver and per tier (alarm: < 70%)
+- Cost summary (claude-code-headless $/run; total)
+- Local-qwen idle-percentage (we're paying for cloud when the 3090
+  could be working — alarm: > 80% T0 routed away from local-qwen)
+- Top 3 failure modes (timeout, exit_code=1 partial, contamination)
+
+Wire-up:
+- Cron: `chitin-swarm-rollup.timer` fires daily at 06:00 local.
+- Service runs `swarm-daily-rollup.sh` which calls the Python
+  rollup, posts to `CHITIN_SLACK_WEBHOOK_URL` if set, and writes
+  `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` for trend
+  analysis.
+
+T2: cross-cutting (Python analysis + Slack notifier reuse + systemd
+timer). Blocked by `analysis-swarm-runs-loader` since the rollup is
+its first real consumer.
+
+---
+
 ### `dispatcher-preflight-scrub-claude-settings-backup`
 
 ```yaml
