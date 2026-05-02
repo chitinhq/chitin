@@ -12,6 +12,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-dispatcher.timer` | timer | Fires the dispatcher every 5 minutes. |
 | `chitin-researcher.service` | oneshot | Periodic research tasks, runs researcher script. |
 | `chitin-researcher.timer` | timer | Fires the researcher every 4 hours. |
+| `chitin-swarm-rollup.service` | oneshot | Daily swarm-health rollup: derives metrics from `tmp/result-swarm-*.json` + dispatcher journalctl, posts a digest to Slack. |
+| `chitin-swarm-rollup.timer` | timer | Fires the rollup once per day. |
 
 ## Install
 
@@ -22,6 +24,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now chitin-worker
 systemctl --user enable --now chitin-dispatcher.timer
 systemctl --user enable --now chitin-researcher.timer
+systemctl --user enable --now chitin-swarm-rollup.timer
 ```
 
 To survive logout (start at boot):
@@ -37,6 +40,7 @@ sudo loginctl enable-linger $USER
 journalctl --user -u chitin-worker -f
 journalctl --user -u chitin-dispatcher -f
 journalctl --user -u chitin-researcher -f
+journalctl --user -u chitin-swarm-rollup -f
 
 # Status
 systemctl --user status chitin-worker
@@ -48,7 +52,7 @@ systemctl --user stop chitin-dispatcher.timer
 systemctl --user stop chitin-researcher.timer
 
 # Hard stop everything
-systemctl --user stop chitin-dispatcher.timer chitin-researcher.timer chitin-worker
+systemctl --user stop chitin-dispatcher.timer chitin-researcher.timer chitin-swarm-rollup.timer chitin-worker
 ```
 
 ## Manual one-shot
