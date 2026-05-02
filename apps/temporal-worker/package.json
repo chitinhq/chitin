@@ -6,7 +6,8 @@
   "main": "./src/worker.ts",
   "scripts": {
     "worker": "tsx src/worker.ts",
-    "submit": "tsx src/submit.ts"
+    "submit": "tsx src/submit.ts",
+    "test": "vitest run test"
   },
   "nx": {
     "tags": ["layer:app"],
@@ -22,6 +23,13 @@
         "executor": "nx:run-commands",
         "options": {
           "command": "pnpm exec tsx apps/temporal-worker/src/submit.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run apps/temporal-worker/test",
           "cwd": "{workspaceRoot}"
         }
       }

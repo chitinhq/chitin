@@ -61,8 +61,35 @@ jobs:
       - name: Build Go kernel
         run: pnpm exec nx run execution-kernel:build
 
-      - name: Vitest (TS suites)
-        run: pnpm exec vitest run
+      # Nx affected: only run the test target on TS projects whose
+      # source (or whose dependencies' source) changed since main.
+      # Falls back to running EVERY project on push events to main
+      # (`nx affected --base=HEAD~1` would scope to the merge commit's
+      # diff, which under squash-merge equals the whole PR — same as
+      # `--base=origin/main` on a feature branch).
+      #
+      # We pass --parallel=3 to avoid overwhelming CI runners that have
+      # limited cores. The vitest suites individually finish in <10s,
+      # so serial-ish parallelism is fine.
+      - name: Determine Nx base
+        id: nx-base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            # push to main: scope to the commit before HEAD (squash-merge
+            # equivalent of "the PR's diff").
+            echo "base=HEAD~1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Vitest (Nx affected)
+        run: |
+          # nx affected exits 0 with no output when nothing's affected
+          # (e.g., docs-only PR). That's the goal: skip TS test work
+          # entirely when the diff doesn't touch any TS project.
+          pnpm exec nx affected -t test \
+            --base=${{ steps.nx-base.outputs.base }} \
+            --parallel=3
 
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
