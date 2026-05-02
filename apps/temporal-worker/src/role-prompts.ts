@@ -77,6 +77,13 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   product: (entry) => buildStubPrompt('product', entry),
   groomer: (entry) => buildStubPrompt('groomer', entry),
   architect: (entry) => buildStubPrompt('architect', entry),
+  // The reviewer stub here fires only when a BACKLOG ENTRY explicitly
+  // says `role: reviewer` (rare — entries are usually programmer-shape
+  // work). The richer adversarial-review prompt the review-graph
+  // workflow dispatches at tiers R1-R3 lives in reviewer-prompts.ts —
+  // it takes PR context (diff, scope, prior findings, copilot
+  // comments) that a single BacklogEntry can't carry. See
+  // docs/design/2026-05-02-swarm-as-software-factory.md §5.
   reviewer: (entry) => buildStubPrompt('reviewer', entry),
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
