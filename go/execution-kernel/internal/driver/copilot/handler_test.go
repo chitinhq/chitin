@@ -22,6 +22,9 @@ const (
 
 // captureStderr redirects os.Stderr for the duration of fn and returns the bytes written.
 // Used to assert Verbose decision logging without coupling tests to log framing.
+//
+// Restores os.Stderr and closes the read-end via defer so a panic in fn or
+// io.Copy doesn't leak fds across the test suite (issue #56).
 func captureStderr(t *testing.T, fn func()) []byte {
 	t.Helper()
 	orig := os.Stderr
@@ -30,6 +33,9 @@ func captureStderr(t *testing.T, fn func()) []byte {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	defer r.Close()
+
 	done := make(chan []byte, 1)
 	go func() {
 		var buf bytes.Buffer
@@ -38,7 +44,6 @@ func captureStderr(t *testing.T, fn func()) []byte {
 	}()
 	fn()
 	_ = w.Close()
-	os.Stderr = orig
 	return <-done
 }
 
@@ -83,10 +88,11 @@ func TestHandler_Allow(t *testing.T) {
 	}
 }
 
-func TestHandler_GuideDenyRejectsAndLogsDecision(t *testing.T) {
-	// Wire kind flips to "reject" with nil error. Guide text travels via the
-	// Verbose decision log on stderr, not via the handler's error return —
-	// the Go SDK drops handler errors before they reach the wire.
+func TestHandler_GuideDenyReturnsRetryableAndLogsDecision(t *testing.T) {
+	// Wire kind is "user-not-available" (retryable: invites the model to try
+	// a variation, which drives the escalation counter). Guide text travels
+	// via the Verbose decision log on stderr, not via the handler's error
+	// return — the Go SDK drops handler errors before they reach the wire.
 	h := &Handler{
 		Gate: &mockGate{decision: gov.Decision{
 			Allowed:          false,
@@ -189,6 +195,49 @@ func TestHandler_LockdownSignalsChannelAndReturnsReject(t *testing.T) {
 	default:
 		t.Fatal("expected *LockdownError on LockdownCh, channel was empty")
 	}
+}
+
+func TestHandler_LockdownCountReflectsPriorDenials(t *testing.T) {
+	// Issue #54: LockdownError.Count must carry the per-handler denial
+	// total so printLockdownSummary's "denials=N" matches what the
+	// operator just watched. Mock gate denies for the first 3 calls,
+	// then locks down on the 4th — final Count must be 3.
+	gate := &countingGate{denyCount: 3}
+	lockdownCh := make(chan *LockdownError, 1)
+	h := &Handler{
+		Gate:       gate,
+		Agent:      "copilot-cli",
+		Cwd:        "/work",
+		LockdownCh: lockdownCh,
+	}
+	req := copilotsdk.PermissionRequest{
+		Kind: copilotsdk.PermissionRequestKindShell, FullCommandText: strPtr("rm -rf /"),
+	}
+	for i := 0; i < 4; i++ {
+		_, _ = h.OnPermissionRequest(req, copilotsdk.PermissionInvocation{})
+	}
+	select {
+	case lde := <-lockdownCh:
+		if lde.Count != 3 {
+			t.Errorf("LockdownError.Count: got %d, want 3 (3 prior denials before lockdown)", lde.Count)
+		}
+	default:
+		t.Fatal("expected lockdown signal on channel")
+	}
+}
+
+// countingGate denies for the first denyCount calls, then locks down.
+type countingGate struct {
+	denyCount int
+	calls     int
+}
+
+func (g *countingGate) Evaluate(a gov.Action, agent string, _ *gov.BudgetEnvelope) gov.Decision {
+	g.calls++
+	if g.calls > g.denyCount {
+		return gov.Decision{Allowed: false, Mode: "enforce", RuleID: "lockdown", Agent: agent}
+	}
+	return gov.Decision{Allowed: false, Mode: "guide", RuleID: "no-rm", Reason: "denied"}
 }
 
 func TestHandler_LockdownWithNilChannelDoesNotPanic(t *testing.T) {

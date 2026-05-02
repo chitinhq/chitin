@@ -72,16 +72,20 @@ func TestWriteLog_AppendsOneJSONLine(t *testing.T) {
 
 func TestDecision_JSONL_CarriesAgent(t *testing.T) {
 	dir := t.TempDir()
+	// Capture now once: a separate time.Now() at filename-construction time
+	// can land on the next UTC date when the test runs within ~1s of midnight,
+	// flaking the assertion (issue #56).
+	now := time.Now().UTC()
 	d := Decision{
 		Allowed: true,
 		Agent:   "copilot-cli",
 		Action:  Action{Type: "shell.exec", Target: "ls /tmp"},
-		Ts:      time.Now().UTC().Format(time.RFC3339),
+		Ts:      now.Format(time.RFC3339),
 	}
 	if err := WriteLog(d, dir); err != nil {
 		t.Fatalf("WriteLog: %v", err)
 	}
-	path := filepath.Join(dir, "gov-decisions-"+time.Now().UTC().Format("2006-01-02")+".jsonl")
+	path := filepath.Join(dir, "gov-decisions-"+now.Format("2006-01-02")+".jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read log: %v", err)

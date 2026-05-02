@@ -18,7 +18,12 @@ import (
 //	1 — runtime error (session failed after startup)
 //	2 — startup error or usage error
 func cmdDriveCopilot(args []string) int {
-	fs := flag.NewFlagSet("drive copilot", flag.ExitOnError)
+	// ContinueOnError so parse failures hit the documented exit-code map
+	// (return 2) instead of os.Exit'ing past it. Tests can then observe
+	// the return value, and any future change to the exit-code map for
+	// usage errors stays in one place.
+	fs := flag.NewFlagSet("drive copilot", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 	cwd := fs.String("cwd", ".", "policy scope working directory")
 	interactive := fs.Bool("interactive", false, "launch REPL-style interactive session")
 	preflight := fs.Bool("preflight", false, "run startup validations and exit without starting session")
