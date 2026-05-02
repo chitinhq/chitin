@@ -1,0 +1,24 @@
+# One-shot service fired by chitin-debt-curator.timer.
+# Scans the repo for TODO/FIXME/HACK/XXX markers via git grep, dedups
+# against existing entries in docs/debt-ledger.md, appends new finds.
+# Idempotent — re-runs add 0 entries when the codebase hasn't gained
+# new markers since the last tick.
+
+[Unit]
+Description=Chitin swarm debt-curator extractor
+# Don't race the dispatcher's worktree access. Worker not strictly
+# required (this is a pure git-grep script), but ordering keeps
+# logs readable.
+After=chitin-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/debt-curator.ts
+StandardOutput=journal
+StandardError=journal
+# 60s is generous for a git-grep over the chitin tree.
+TimeoutStartSec=60
