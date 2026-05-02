@@ -45,6 +45,285 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `review-graph-executor`
+
+```yaml
+id: review-graph-executor
+tier: T3
+status: ready
+estimated_loc: 400
+blocks: []
+file: apps/temporal-worker/src/review-graph.ts, apps/temporal-worker/src/workflow.ts, apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/grooming/apply-workflow-result.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
+role: programmer
+precondition: |
+  PR metadata (pr_url, pr_number, files-changed list) must be persisted
+  in tmp/result-<workflow>.json by the apply step before the
+  review-graph workflow can consume it. Today the envelope is just
+  ActivityResult — extending it to include PR metadata is part of
+  this entry's scope (apply-workflow-result.ts is in the file: list).
+```
+
+Phase 2 of the factory design. Implements the §5 review-tier
+escalation graph as a Temporal multi-step workflow. First real
+consumer of the `parent_workflow_id` + `step_index` schema fields
+that landed in Phase 1 (PR #130).
+
+When a programmer workflow opens a PR, the apply step writes the PR
+metadata into the result envelope. The review-graph workflow consumes
+that, computes the starting reviewer tier from the §5 trigger
+matrix, and walks the R0→R1→R2→R3→R4 chain — each tier is a child
+workflow at the right driver+model, fed the diff + entry's declared
+`file:` scope + previous reviewer's findings (if any). Each
+reviewer's decision is a chain event with its own gov-decision row;
+the chain is traversable end-to-end via `parent_workflow_id`.
+
+Implementation steps:
+1. New `apps/temporal-worker/src/review-graph.ts`:
+   - `REVIEW_TIER_DRIVER` map (R0=copilot-bot-only, R1=copilot/gpt-4.1,
+     R2=copilot/gpt-5.4 or sonnet, R3=cch/opus, R4=escalate)
+   - `computeStartingTier(prMeta, entry, telemetry)` — reads §5 trigger
+     matrix (Copilot comment count, diff LOC, file scope, implementor
+     tier, prior-attempt history)
+   - `escalateOneTier(currentTier)` — bumps to next reviewer
+   - Reviewer-role prompt template (consume diff + previous findings;
+     emit structured JSON: `{decision, severity, location, reason}`)
+2. `workflow.ts` — new `reviewGraphWorkflow` that loops:
+   submit reviewer at current tier → wait for envelope → read
+   structured decision → either approve+return-to-merge-gate or
+   escalateOneTier and recurse (capped at step_index ≤ 3).
+3. Dispatcher integration: when an apply step opens a PR, enqueue
+   a reviewGraphWorkflow with `parent_workflow_id = <programmer-wfid>`,
+   `step_index = 1`, `role = 'reviewer'`. The marker file gets a new
+   `kind: 'review-graph'` so the daily rollup (PR #127) can break
+   out review costs separately from programmer costs.
+4. Tests: unit-test computeStartingTier with the §5 trigger matrix
+   table (one case per row); integration test of the escalateOneTier
+   loop with mock reviewers.
+5. Auto-merge gate (separate entry, future) consumes review-graph's
+   final decision — they're paired but not co-dependent.
+
+Note on `step_index`: the schema caps step_index at 3, which means
+the workflow can run R1 (step 1) → R2 (step 2) → R3 (step 3). R0 is
+the GitHub Copilot bot's server-side review (no chitin-side step
+index — it's pre-existing context, not a dispatched workflow). R4
+is operator escalation (no Temporal step — the workflow ends with a
+notification, not a child dispatch). So a chain that escalates from
+R0 fully to R4 uses 3 dispatch steps, fitting the cap exactly.
+
+Blocked-by: nothing (Phase 1 schema fields are in main as of PR #130).
+Pairs-with: `agent-adversarial-review-pass` (the R3 reviewer template
+this graph dispatches to).
+
+T3 because it introduces a new Temporal workflow shape, touches
+the dispatcher, and locks in the review escalation policy in code.
+
+---
+
+### `agent-adversarial-review-pass`
+
+```yaml
+id: agent-adversarial-review-pass
+tier: T3
+status: ready
+estimated_loc: 200
+blocks: [review-graph-executor]
+file: apps/temporal-worker/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
+role: programmer
+```
+
+Phase 2 of the factory design. Replaces the `reviewer` role's stub
+prompt (placeholder shipped in PR #130) with a real adversarial-
+review template — the kind that's been running manually all session
+and that empirically catches what Copilot misses (PR #78's 8/11
+real-bug rate; today's bucket-B root-cause discovery; PR #109's
+notification-ordering bug; etc.).
+
+The template's job:
+
+- Treat itself as a hostile reviewer. Look for cases the code
+  doesn't handle, assumptions that might be wrong, race conditions,
+  security issues, subtle test gaps, design choices worth questioning.
+- Verify each Copilot comment against the actual code (do NOT
+  auto-dismiss as noise — per memory, PR #78 caught 8/11 real bugs
+  Copilot flagged).
+- Read the entry's declared `file:` scope and flag if the diff
+  doesn't intersect it (the bucket-B detection signal).
+- Emit STRUCTURED output the review-graph-executor consumes:
+
+```json
+{
+  "decision": "approve" | "request_changes" | "escalate",
+  "confidence": "high" | "medium" | "low",
+  "findings": [
+    {"severity": "🔴" | "🟡" | "🟢", "file": "...", "line": 42,
+     "category": "bug" | "test_gap" | "design" | "doc",
+     "summary": "...", "suggested_fix": "..."}
+  ]
+}
+```
+
+Implementation steps:
+1. Replace the `reviewer` stub in `role-prompts.ts` with
+   `buildAdversarialReviewerPrompt(prMeta, diff, copilotComments,
+   entryFileScope)`.
+2. The prompt instructs the agent to verify each Copilot comment +
+   do its own pass + emit the structured shape above.
+3. Test the structured output parses against a JSON schema (zod);
+   the review-graph-executor's `escalateOneTier` reads `decision` +
+   `severity` + `confidence` to decide next-tier.
+4. Document the three severity classes (🔴 real bug → block merge;
+   🟡 worth fixing but not blocking; 🟢 doc/nit) — these are the
+   only severities; escalate-to-operator is decided by `decision`
+   + `confidence`, not severity.
+5. Pair-test with review-graph-executor — at least one integration
+   test where R0+R1+R2 all approve but R3 finds a 🔴.
+
+Blocked-by: `review-graph-executor` (this is the prompt template it
+calls; landing alone is harmless, but only useful with the graph).
+
+Pairs-with: `review-graph-executor`.
+
+T3 because the prompt engineering is load-bearing — a
+hallucination here is what makes the auto-merge gate unsafe.
+
+---
+
+### `tech-debt-ledger`
+
+```yaml
+id: tech-debt-ledger
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: docs/debt-ledger.md, python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (debt-curator role) + §9 Phase 3
+role: programmer
+```
+
+Phase 3 of the factory design. Without a curated debt-ledger, debt
+is invisible until someone trips over it (the bucket-B incident is
+the cautionary case — `writeWorktreeClaudeSettings`'s
+overwriting-worktree-state was a known-but-undocumented design
+choice that became a security-shaped failure).
+
+Schema (`docs/debt-ledger.md`, the human-readable canonical surface):
+
+```yaml
+id: <slug>
+discovered_at: <ISO-8601>
+discovered_by: <swarm | operator | user>
+severity: blocking | high | medium | low
+category: code-debt | doc-debt | infra-debt | governance-debt
+file: <primary file or 'cross-cutting'>
+description: |
+  What's wrong / why it's debt / what scenario it bites in.
+status: open | claimed | shipped
+shipped_in: <PR # if shipped>
+```
+
+Three feeds:
+
+1. **Manual** — operator or analyst-role agent files entries when
+   noticing during code review.
+2. **Automated** — periodic `refactor-debt-detector` agent (separate
+   entry, blocks-by this one) reads recent diffs + telemetry and
+   proposes entries.
+3. **Adversarial-review** — when the reviewer flags a 🟡 (worth
+   fixing but not blocking), it gets surfaced here automatically
+   instead of expecting the next implementer to catch it.
+
+The GROOM stage consumes this when sizing entries — an entry
+touching a file in the debt-ledger gets bumped a tier (cross-cutting
+implications likely).
+
+Implementation steps:
+1. Create `docs/debt-ledger.md` with the schema header + 3-5
+   real entries to seed (e.g., the `_load_marker_count` duplication
+   between `swarm_health.py` and `swarm_runs.py` from PR #127's
+   adversarial pass — finding C1).
+2. Extend `python/analysis/debt.py` (already exists for gov-decision
+   debt analysis) with a `load_ledger(path)` that returns typed
+   `DebtEntry` records. Add `tests/test_debt_ledger.py`.
+3. Update GROOM-stage prompt template (when role-typed grooming
+   ships) to consult the ledger before sizing new entries.
+4. Update `python/analysis/__init__.py` description to mention
+   the debt-ledger stream.
+
+Blocked-by: nothing.
+Feeds-into: `refactor-debt-detector` (separate entry — auto-discovery
+of debt candidates).
+
+T2 because it's mechanical (parse + project) but the schema decision
+locks in the debt vocabulary across the codebase.
+
+---
+
+### `external-signal-collector`
+
+```yaml
+id: external-signal-collector
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: []
+file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/src/role-prompts.ts, infra/systemd/chitin-researcher.timer, infra/systemd/chitin-researcher.service, docs/roadmap.md
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role) + §9 Phase 3 + §10 (cadence open question)
+role: programmer
+```
+
+Phase 3 of the factory design. Cron'd researcher-role agent that
+scans the external surface (arxiv, Reddit, openclaw upstream, ollama
+releases, X/HN, LangChain/Anthropic blogs) and opens candidate
+entries in `roadmap.md` for human grooming. Replaces the current
+"the operator + this assistant tell each other when something
+interesting drops" loop, which is high-friction and has no audit
+trail.
+
+Sources to monitor:
+
+| Source | Fetch | Filter |
+|--------|-------|--------|
+| arxiv | `arxiv.org/list/cs.SE/recent` + cs.AI agent papers | new IDs since last run |
+| Reddit | r/LocalLLaMA top 20 of last 24h | keyword: agent / swarm / chitin |
+| HN | hn.algolia.com search API | keyword: AI coding agent / swarm |
+| X | nitter or rss.app for accounts (Sam Altman, Anthropic, OpenClaw, ollama, langchain) | last 24h |
+| openclaw | `gh api repos/openclaw/openclaw/releases` + `/issues?since=` | new releases + issue activity on watched issues |
+| ollama | `gh api repos/ollama/ollama/releases` | new releases |
+| awesome-openclaw-agents | `gh api repos/mergisi/awesome-openclaw-agents/commits` | new template additions |
+
+Output: `roadmap.md` "Candidates from external signal" section gets
+new entries with the source, finding, and a 1-line-why-it-matters.
+Operator promotes to `swarm-backlog.md` after grooming.
+
+Implementation steps:
+1. Replace the `researcher` stub in `role-prompts.ts` with
+   `buildResearcherPrompt(sources, since_window)`.
+2. New `apps/temporal-worker/src/researcher.ts` — collects the
+   sources, dedupes against existing roadmap entries, hands the
+   raw text to the researcher-role agent for synthesis + 1-line
+   summary.
+3. New systemd timer `chitin-researcher.timer` firing every 4h
+   plus the paired `chitin-researcher.service` (the unit the timer
+   activates — timers without paired services are inert). Cadence
+   is in the open-questions list (operator decides; default 4h
+   until tuned).
+4. Cap: max N candidate entries opened per run (default 5) so a
+   bursty news day doesn't flood `roadmap.md`.
+5. Telemetry: candidate-entries-opened-per-run counter feeds the
+   daily rollup.
+
+Blocked-by: nothing.
+Open question: §10 cadence — every 4h vs. once-daily vs. on-demand.
+Default to 4h pending operator tuning.
+
+T2 because it's mostly mechanical (HTTP fetches + dedupe) but the
+prompt for "what's worth surfacing as a candidate entry" is fuzzy.
+
+---
+
 ### `verify-openclaw-chatgpt-auth-on-rig`
 
 ```yaml
