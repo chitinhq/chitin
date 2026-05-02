@@ -332,66 +332,230 @@ locks in the debt vocabulary across the codebase.
 
 ---
 
-### `external-signal-collector`
+### `debt-ledger-analysis-loader`
 
 ```yaml
-id: external-signal-collector
-tier: T2
+id: debt-ledger-analysis-loader
+tier: T1
 status: ready
-estimated_loc: 250
+estimated_loc: 120
 blocks: []
-file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/src/role-prompts.ts, infra/systemd/chitin-researcher.timer, infra/systemd/chitin-researcher.service, docs/roadmap.md
-references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role) + §9 Phase 3 + §10 (cadence open question)
+file: python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (debt-curator role)
 role: programmer
 ```
 
-Phase 3 of the factory design. Cron'd researcher-role agent that
-scans the external surface (arxiv, Reddit, openclaw upstream, ollama
-releases, X/HN, LangChain/Anthropic blogs) and opens candidate
-entries in `roadmap.md` for human grooming. Replaces the current
-"the operator + this assistant tell each other when something
-interesting drops" loop, which is high-friction and has no audit
-trail.
+Follow-up to PR #137 (which shipped `docs/debt-ledger.md` alone).
+This entry adds the analysis-lib + grooming-side hooks split off from
+the original `tech-debt-ledger` entry's scope.
 
-Sources to monitor:
+Scope:
+
+1. `python/analysis/debt.py`: extend with `load_ledger(path: Path) -> list[DebtEntry]`
+   that parses `docs/debt-ledger.md`'s yaml-fenced sections into typed
+   dataclasses. Match the schema header in the doc (id, severity,
+   category, file, status, shipped_in, description, discovered_at,
+   discovered_by). Handle malformed entries the same way other
+   loaders do (skip + count parse_errors; never raise — see
+   `loaders.load_gov_decisions` for the pattern).
+2. `python/analysis/__init__.py`: update description to mention
+   the debt-ledger stream alongside decisions / debt / soul-routing /
+   swarm-runs.
+3. `python/analysis/tests/test_debt_ledger.py`: fixture-driven tests.
+   At minimum: well-formed entry round-trips; missing required field
+   → parse_error; status filter helper; severity filter helper.
+4. `apps/temporal-worker/src/grooming/parse-backlog.ts`: when the
+   GROOM stage sizes a new backlog entry, look up its `file:` paths
+   against the debt-ledger and bump the tier estimate by one level
+   if any debt-ledger file matches (cross-cutting implications).
+   Add a `crossesDebtLedger(entry: BacklogEntry, debtFiles: string[]): boolean`
+   helper exported via `__test__`. Don't auto-bump in this PR;
+   surface the signal so the human/agent groomer sees it.
+
+Blocked-by: nothing.
+Pairs-with: `tech-debt-ledger` (PR #137) — that entry shipped the
+doc; this one ships the consumer.
+
+T1 — mechanical parse + project + helper.
+
+---
+
+### `external-signal-collector` (SUPERSEDED 2026-05-02)
+
+> **🔻 SUPERSEDED.** PR #138 attempted this entry as one slice and
+> shipped non-functional code (ESM-incompatible imports — `__dirname`
+> + `require.main`; `node-fetch` not in deps; all 7 fetcher stubs
+> returned `[]`; only 1 of 5 declared file targets touched). Closed
+> 2026-05-02. The original 250-LOC scope was too wide for one
+> dispatch — re-filed as three smaller entries below
+> (`researcher-role-prompt-template`, `chitin-researcher-systemd-units`,
+> `external-signal-fetchers`). Each is independently dispatchable;
+> together they deliver what this entry intended.
+
+---
+
+### `researcher-role-prompt-template`
+
+```yaml
+id: researcher-role-prompt-template
+tier: T1
+status: ready
+estimated_loc: 80
+blocks: []
+file: apps/temporal-worker/src/researcher-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/researcher-prompts.test.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role)
+role: programmer
+```
+
+Replace the `researcher` role's stub in `role-prompts.ts` with a
+real adversarial-research prompt template, parallel to what
+`reviewer-prompts.ts` (PR #134) does for the reviewer role.
+
+Scope:
+
+1. New `apps/temporal-worker/src/researcher-prompts.ts`:
+   - `buildResearcherPrompt({ source_summaries, existing_candidate_ids, since_window_hours })`
+     — produces the agent's prompt. Tier-tone is consistent (research
+     is a synthesis task; one tone fits all dispatched tiers).
+   - `parseResearcherOutput(stdoutTail)` — extracts a structured
+     `<<<CANDIDATES>>>{json}` emit listing new candidate entries
+     `[{source, id, summary, why}]`. Mirrors the reviewer-prompts
+     pattern.
+   - Strict zod schema for the output.
+2. Update `role-prompts.ts`: the `researcher` registry entry calls
+   `buildResearcherPrompt` for backlog entries with `role: researcher`,
+   threading the (limited) `BacklogEntry` context as the prompt's
+   minimal input. Richer caller (the runner in
+   `external-signal-fetchers`) bypasses the registry and calls
+   `buildResearcherPrompt` directly with full context.
+3. Tests parallel to `reviewer-prompts.test.ts`: schema validation
+   (6 cases), parser (8 cases including last-marker-wins, malformed
+   JSON, unknown source field), prompt builder (rendering of source
+   summaries / existing candidates / since-window).
+
+Blocked-by: nothing.
+Pairs-with: `external-signal-fetchers` (which uses the prompt).
+
+T1 because mechanical — same shape as reviewer-prompts, just
+different agent persona.
+
+---
+
+### `chitin-researcher-systemd-units`
+
+```yaml
+id: chitin-researcher-systemd-units
+tier: T1
+status: ready
+estimated_loc: 60
+blocks: [external-signal-fetchers]
+file: infra/systemd/chitin-researcher.service, infra/systemd/chitin-researcher.timer, infra/systemd/README.md
+role: programmer
+```
+
+Paired systemd `.service` + `.timer` to fire the researcher
+periodically. Mirrors the existing `chitin-dispatcher.service` /
+`chitin-dispatcher.timer` and `chitin-swarm-rollup.service` /
+`chitin-swarm-rollup.timer` patterns — copy them as the template.
+
+Scope:
+
+1. `chitin-researcher.service` (oneshot): runs
+   `pnpm exec tsx apps/temporal-worker/src/researcher.ts`. Working
+   directory is the chitin repo root (`Environment=` or
+   `WorkingDirectory=`).
+2. `chitin-researcher.timer`: fires every 4h
+   (`OnUnitActiveSec=4h` + `OnBootSec=15min`), `Persistent=true`
+   so a missed tick from a powered-off rig fires on the next boot.
+   `Unit=chitin-researcher.service`.
+3. Update `infra/systemd/README.md` with install instructions
+   matching the existing dispatcher + rollup sections.
+
+Blocked-by-then-unblocks: this entry's `.service` references
+`researcher.ts`, which `external-signal-fetchers` creates. So this
+timer should land paired with that one OR one tick after — the
+service file itself is just text that points at a path that may
+not yet exist (timer is happy to fire even if the service unit
+fails; operator notices via systemd journal).
+
+Mark `external-signal-fetchers` in `blocks:` so the dispatcher
+ships them in the right order once `dispatcher-respect-blocks-field`
+(PR #139) lands.
+
+T1 — straight unit-file authoring.
+
+---
+
+### `external-signal-fetchers`
+
+```yaml
+id: external-signal-fetchers
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: [researcher-role-prompt-template]
+file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/test/researcher.test.ts, docs/roadmap.md
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role) + §9 Phase 3
+role: programmer
+```
+
+The actual signal-collection logic. Consumes the researcher prompt
+template (`researcher-role-prompt-template`) + writes candidate
+entries to `roadmap.md`. Triggered by
+`chitin-researcher-systemd-units`'s timer.
+
+Sources to fetch (each as a typed function returning
+`{source, id, summary, raw_text}[]`):
 
 | Source | Fetch | Filter |
 |--------|-------|--------|
-| arxiv | `arxiv.org/list/cs.SE/recent` + cs.AI agent papers | new IDs since last run |
-| Reddit | r/LocalLLaMA top 20 of last 24h | keyword: agent / swarm / chitin |
-| HN | hn.algolia.com search API | keyword: AI coding agent / swarm |
-| X | nitter or rss.app for accounts (Sam Altman, Anthropic, OpenClaw, ollama, langchain) | last 24h |
-| openclaw | `gh api repos/openclaw/openclaw/releases` + `/issues?since=` | new releases + issue activity on watched issues |
-| ollama | `gh api repos/ollama/ollama/releases` | new releases |
-| awesome-openclaw-agents | `gh api repos/mergisi/awesome-openclaw-agents/commits` | new template additions |
+| arxiv | RSS feed `https://export.arxiv.org/rss/cs.SE` + `cs.AI` | new IDs since last run |
+| Reddit | `https://www.reddit.com/r/LocalLLaMA/top.json?t=day` (no auth) | keyword: agent / swarm / chitin |
+| HN | `https://hn.algolia.com/api/v1/search_by_date?query=AI+coding+agent` | last 24h |
+| openclaw | `gh api repos/openclaw/openclaw/releases?per_page=5` + `gh api repos/openclaw/openclaw/issues?state=open&since=YYYY-MM-DDTHH:MM:SSZ` | new releases + issue activity |
+| ollama | `gh api repos/ollama/ollama/releases?per_page=5` | new releases |
+| awesome-openclaw-agents | `gh api repos/mergisi/awesome-openclaw-agents/commits?since=...` | new template additions |
 
-Output: `roadmap.md` "Candidates from external signal" section gets
-new entries with the source, finding, and a 1-line-why-it-matters.
-Operator promotes to `swarm-backlog.md` after grooming.
+X/Twitter intentionally NOT in the v1 — nitter/rss.app are flaky
+and X auth is high-friction. Add later if needed.
 
-Implementation steps:
-1. Replace the `researcher` stub in `role-prompts.ts` with
-   `buildResearcherPrompt(sources, since_window)`.
-2. New `apps/temporal-worker/src/researcher.ts` — collects the
-   sources, dedupes against existing roadmap entries, hands the
-   raw text to the researcher-role agent for synthesis + 1-line
-   summary.
-3. New systemd timer `chitin-researcher.timer` firing every 4h
-   plus the paired `chitin-researcher.service` (the unit the timer
-   activates — timers without paired services are inert). Cadence
-   is in the open-questions list (operator decides; default 4h
-   until tuned).
-4. Cap: max N candidate entries opened per run (default 5) so a
-   bursty news day doesn't flood `roadmap.md`.
-5. Telemetry: candidate-entries-opened-per-run counter feeds the
-   daily rollup.
+Implementation requirements (these caused PR #138's bugs — encode
+them explicitly):
 
-Blocked-by: nothing.
-Open question: §10 cadence — every 4h vs. once-daily vs. on-demand.
-Default to 4h pending operator tuning.
+- **ESM-compatible**: use `fileURLToPath(import.meta.url)` for
+  `__dirname`-equivalent. Use `process.argv[1] === fileURLToPath(import.meta.url)`
+  for the `if (require.main === module)` equivalent (matches the
+  pattern PR #105/#112/#127 introduced).
+- **No new deps**: use Node 18+'s native `fetch` (no `node-fetch`
+  import). Use `node:fs/promises` (with the prefix). Use
+  `node:child_process` for any gh CLI calls.
+- **Dedup against `roadmap.md`**: parse existing
+  "Candidates from external signal" section, skip ids already
+  present.
+- **Cap**: max 5 new candidates per run (default; configurable via
+  env). Bursty news day shouldn't flood roadmap.md.
+- **Telemetry**: emit a structured stdout log line
+  `{component: "researcher", candidates_opened: N, sources_scanned: K}`
+  for the daily rollup to consume.
 
-T2 because it's mostly mechanical (HTTP fetches + dedupe) but the
-prompt for "what's worth surfacing as a candidate entry" is fuzzy.
+Output: append `## Candidates from external signal` section to
+`roadmap.md` (creating if missing), with each candidate as:
+```markdown
+- [<source>] [<id>](url) — <1-line why>
+```
+
+Tests: 8-12 fixture-driven cases. Mock the source fetchers (return
+canned typed records); assert dedup, cap, roadmap-format, telemetry
+log shape. ESM compat covered by the fact tests run via vitest
+which respects ESM module resolution.
+
+Blocked-by: `researcher-role-prompt-template` (the prompt + parser
+this entry imports). Once that lands the dispatcher can pick this
+up — assuming `dispatcher-respect-blocks-field` (PR #139) is in
+main first; otherwise this could ship before its prompt and bust.
+
+T2 because the implementation needs HTTP + parse + dedup + agent
+synthesis — multi-step, but each step is mechanical.
 
 ---
 
