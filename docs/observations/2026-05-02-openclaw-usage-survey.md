@@ -17,13 +17,20 @@ where is chitin's wedge real vs. imagined?
 
 ### OpenClaw is consolidating into the local-agent OS slot
 
-OpenClaw crossed 100k+ GitHub stars in early 2026 and now ships as the
-default local-agent runtime in two production stacks:
+OpenClaw crossed 100k+ GitHub stars in early 2026. Two production
+runtime stacks ship it as the default local-agent runtime, and two
+adjacent ecosystem projects (a fleet dashboard and a template
+registry) extend it without themselves being runtimes:
+
+**Runtime stacks (these embed OpenClaw at runtime):**
 
 - **NVIDIA NemoClaw** — Nemotron 3 Super models orchestrated by OpenClaw +
   OpenShell for sandboxed on-prem deployment.
 - **ggondim's deterministic dev pipeline** — multi-agent code/review/test
   loop using OpenClaw's `sessions_send` + Lobster YAML workflows.
+
+**Ecosystem-adjacent (consume or describe agents, not runtimes):**
+
 - **abhi1693/openclaw-mission-control** — agent fleet dashboard via the
   Gateway protocol.
 - **mergisi/awesome-openclaw-agents** — 162 production-ready agent
@@ -121,11 +128,12 @@ substrate.
 - Don't build a workflow YAML engine. Lobster + Temporal between them
   cover this; chitin sits above as policy.
 - Don't try to compete with mission-control on dashboards. Our
-  observability surface should emit OTEL spans (already locked, see
-  `project_otel_emit_direction.md`) and let mission-control + Grafana
-  consume them.
+  observability surface should emit OTEL spans (already locked — the
+  decision lives in author-side memory; the canonical spec is
+  `docs/superpowers/specs/2026-04-29-otel-emit-mvp-design.md`) and let
+  mission-control + Grafana consume them.
 
-## Followups (added to swarm backlog)
+## Followups (landing in PR #110, not yet on `main`)
 
 - `openclaw-issue-10164-public-comment` — open a PR to the OpenClaw
   repo pointing at chitin as a community-built answer to the Temporal

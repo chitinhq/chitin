@@ -107,9 +107,9 @@ Across all four patterns, three things show up everywhere:
 - **Policy as code, not as prompt.** Most templates in
   awesome-openclaw-agents put guardrails in the system prompt.
   Chitin's `chitin.yaml` rules are declarative + auditable. The 2026
-  governance literature ([NIST autonomous AI standards initiative],
-  [Galileo Agent Control launch]) is converging on what we already
-  ship.
+  industry-analyst literature ([CIO — agentic AI workflows 2026],
+  [CNCF — autonomous enterprise platform-control forecast]) is
+  converging on what we already ship.
 - **Hash-linked decision chain.** Most projects log JSON; we log a
   chain. When auditors arrive in 2027, this matters.
 - **Three-plane separation.** Temporal + OpenClaw + Chitin each own
@@ -121,8 +121,10 @@ Across all four patterns, three things show up everywhere:
 - **No autonomous evaluation harness.** We have CI as a binary signal.
   Live-SWE has a benchmark loop; M2.7 has eval-suite delta. Chitin
   needs a way to measure "did my change improve dispatcher reliability"
-  beyond "the next PR opened cleanly." Evolution bench (`/evolve`) is
-  the right shape; needs to be exercised more.
+  beyond "the next PR opened cleanly." The workspace-level `/evolve`
+  skill (defined in the parent workspace's `CLAUDE.md`, not in this
+  repo) is the right shape; needs to be wired into a chitin-internal
+  bench loop and exercised regularly.
 - **No role-typed workers.** Every entry routes through one prompt
   template. Adding research / fix / refactor / test types lets us tune
   prompts per role and route to per-role models.
@@ -135,7 +137,10 @@ Across all four patterns, three things show up everywhere:
 
 ## Concrete next moves (in priority order)
 
-These are added to `docs/swarm-backlog.md` as ready/in_design entries:
+These are landing as `in_design` entries in `docs/swarm-backlog.md` via
+follow-up PR #110 (a separate, docs-only PR). They are not yet on `main`
+when this observation merges — promote what looks right after #110
+lands:
 
 1. **Role-typed backlog entries** (T2 spec, T1 impl). Add a `role:`
    field to entries. Define `research`, `fix`, `test`, `doc`, `gov`
@@ -181,8 +186,8 @@ These are added to `docs/swarm-backlog.md` as ready/in_design entries:
 [Kimi K2.5]: https://www.kimi.com/blog/kimi-k2-5
 [Lobster + OpenClaw multi-agent dev]: https://dev.to/ggondim/how-i-built-a-deterministic-multi-agent-dev-pipeline-inside-openclaw-and-contributed-a-missing-4ool
 [LangChain agentic engineering]: https://www.langchain.com/blog/agentic-engineering-redefining-software-engineering
-[NIST autonomous AI standards initiative]: https://www.cio.com/article/4134741/how-agentic-ai-will-reshape-engineering-workflows-in-2026.html
-[Galileo Agent Control launch]: https://www.cncf.io/blog/2026/01/23/the-autonomous-enterprise-and-the-four-pillars-of-platform-control-2026-forecast/
+[CIO — agentic AI workflows 2026]: https://www.cio.com/article/4134741/how-agentic-ai-will-reshape-engineering-workflows-in-2026.html
+[CNCF — autonomous enterprise platform-control forecast]: https://www.cncf.io/blog/2026/01/23/the-autonomous-enterprise-and-the-four-pillars-of-platform-control-2026-forecast/
 
 ## Sources
 
