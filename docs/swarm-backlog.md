@@ -1804,3 +1804,150 @@ WALL_TIMEOUT_S=120 MAX_TOOL_CALLS=10 \
 pnpm exec tsx apps/temporal-worker/src/grooming/apply-workflow-result.ts \
   --result tmp/result-<workflow-id>.json --apply
 ```
+
+## Remaining design-doc roles (filed 2026-05-02)
+
+These are the §3 station-taxonomy roles the framework supports but
+hasn't authored a dedicated prompt template / runner for yet. The
+chain is plumbable (role: field on entries routes through the
+dispatcher's role-prompts.ts registry), but each role needs (a) a
+prompt template + structured-output parser parallel to
+reviewer-prompts.ts / researcher-prompts.ts, and (b) a runner if the
+role's work is operator-triggered or cron-driven (vs entry-driven).
+
+### `product-role-prompt-template`
+
+```yaml
+id: product-role-prompt-template
+tier: T2
+status: in_design
+estimated_loc: 150
+blocks: []
+file: apps/temporal-worker/src/product-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/product-prompts.test.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (product role)
+role: programmer
+```
+
+Author the product-role's prompt template + structured-output parser
+parallel to reviewer-prompts.ts / researcher-prompts.ts. Job per the
+design's §3 row: "turn raw signals into 1-paragraph problem
+statements with success criteria."
+
+Scope:
+
+1. `buildProductPrompt({raw_signal, context, audience})` — pure prompt
+   builder. Inputs: a raw signal blob (e.g., a roadmap candidate
+   summary, a debt-ledger entry description, an alarm digest); the
+   chitin context the operator already has (the design doc layer);
+   the audience (operator vs another swarm role).
+2. `<<<PROBLEM_STATEMENT>>>{...}` structured emit:
+   `{ statement: string, success_criteria: string[], owner_role: 'programmer' | 'researcher' | 'qa' | ... }`
+3. Wire into role-prompts.ts so an entry with `role: product` builds
+   from this template instead of the generic stub.
+4. 12-15 tests parallel to reviewer-prompts.test.ts: schema, parser
+   cases (well-formed / missing marker / malformed JSON / SKIP),
+   prompt rendering with all input shapes.
+
+LLM swap: heuristic v1 not useful here (turning raw signal into
+success criteria is judgment); product role goes straight to LLM
+via the existing dispatcher role flow. Cost shape per haiku:
+~$0.001 per dispatch.
+
+### `architect-role-prompt-template`
+
+```yaml
+id: architect-role-prompt-template
+tier: T2
+status: in_design
+estimated_loc: 180
+blocks: []
+file: apps/temporal-worker/src/architect-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/architect-prompts.test.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (architect role)
+role: programmer
+```
+
+Author the architect-role's prompt template. Job per the design's §3
+row: "write `docs/design/<entry-id>.md` ADRs: context / options /
+decision / tradeoffs."
+
+Scope:
+
+1. `buildArchitectPrompt({entry, problem_statement, prior_adrs})` —
+   reads the entry + the product-role's problem_statement + the
+   index of existing ADRs in `docs/design/`; emits an ADR draft.
+2. Structured emit (`<<<ADR>>>`-marked): `{ context: string, options: [...], decision: string, tradeoffs: string }`
+3. Apply step writes the ADR to `docs/design/<entry-id>.md`.
+4. 12-15 tests covering schema, parser, prompt rendering, ADR-file
+   write logic.
+
+Blocks `qa-automation-from-merged-diff` (which references the ADR's
+"success_criteria" to know what to test).
+
+### `qa-automation-from-merged-diff`
+
+```yaml
+id: qa-automation-from-merged-diff
+tier: T3
+status: in_design
+estimated_loc: 250
+blocks: [architect-role-prompt-template]
+file: apps/temporal-worker/src/qa-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/qa-prompts.test.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (qa role) + Phase 4
+role: programmer
+```
+
+Author the qa-role's prompt template + diff-driven test generation.
+Job per the design's §3 row: "generate or run E2E tests against
+shipped diffs; smoke-test."
+
+Scope:
+
+1. `buildQaPrompt({pr_url, diff, success_criteria, surface_kind})` —
+   reads the PR diff + the architect-emitted success_criteria + an
+   inferred surface kind (CLI / HTTP / Python module / TS module);
+   asks the agent to author Playwright / curl / vitest test code.
+2. Structured emit (`<<<QA_TESTS>>>`-marked):
+   `{ test_files: [{ path: string, content: string }], smoke_command: string }`
+3. Apply step writes the new test files into the PR's branch (or
+   an adjacent branch the gatekeeper-merge will fold in).
+4. 15-20 tests covering schema, parser, surface-detection, prompt
+   rendering, file-write logic.
+
+T3 because writing tests at the integration level needs Sonnet-class
+reasoning for surface inference.
+
+### `r0-copilot-wait-on-review-graph-kickoff`
+
+```yaml
+id: r0-copilot-wait-on-review-graph-kickoff
+tier: T2
+status: in_design
+estimated_loc: 90
+blocks: []
+file: apps/temporal-worker/src/review-graph-dispatch.ts, apps/temporal-worker/test/review-graph-dispatch-r0-wait.test.ts
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5 (R0 fires before R1)
+role: programmer
+```
+
+Add the R0 Copilot-bot wait the §5 escalation diagram describes.
+Today reviewGraphWorkflow fires R1 immediately after the dispatcher
+opens the PR; the design wants R0 (the GitHub Copilot bot review)
+to land first so its inline comments are present in the
+`copilot_comments` argument when R1 builds its prompt.
+
+Scope:
+
+1. New helper in review-graph-dispatch.ts: `waitForR0Review(prNumber,
+   maxSeconds=300)`. Polls `gh pr view <num> --json reviews` every 15s
+   until a review with `author.login` containing "copilot" appears,
+   OR the timeout hits.
+2. `enqueueReviewGraph` calls it before submitting reviewGraphWorkflow,
+   then passes the formatted comments via copilot_comments. On
+   timeout, proceeds with copilot_comments=undefined (current
+   behavior — R0 just doesn't land in time, no harm).
+3. Tests with a mock pollFn that returns the review on the Nth
+   call, verifies the formatted comments shape.
+
+Cap: 5 minutes. Beyond that, the operator's experience of "PR open
+→ review chain runs" gets too laggy. The design's policy assumes
+R0 typically lands within 60-120s; 5min is the upper bound.
