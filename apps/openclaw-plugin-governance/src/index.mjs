@@ -48,7 +48,7 @@ const plugin = {
       );
 
       if (decision.allow) {
-        return decision.params ? { params: decision.params } : undefined;
+        return Object.keys(decision.params ?? {}).length > 0 ? { params: decision.params } : undefined;
       }
 
       if (cfg.mode === 'observe') {
