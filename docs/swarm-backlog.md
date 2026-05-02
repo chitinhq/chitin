@@ -45,6 +45,55 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `dispatcher-preflight-scrub-claude-settings-backup`
+
+```yaml
+id: dispatcher-preflight-scrub-claude-settings-backup
+tier: T1
+status: ready
+estimated_loc: 40
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts
+references_finding: overnight-2026-05-02-bucket-b-contamination
+```
+
+The 2026-05-02 overnight run produced four PRs (#114, #117, #118, #120
+— all now closed) where the swarm worker committed only a
+`.claude/settings.json` diff and no actual task implementation. Root
+cause: a leftover `.claude/settings.json.chitin-backup-<ts>` artifact
+in the workspace's `.claude/` directory. The agent's worktree
+inherited it as untracked-then-staged content, and `git add -A` in
+the apply step picked it up as the diff. The actual entry's target
+file was never edited.
+
+Fix: dispatcher pre-flight refuses to dispatch (or scrubs the
+artifact first) when any `.claude/settings.json.chitin-backup-*` file
+is present in the cwd at tick start. Two options:
+
+1. **Hard refuse** — log a warn-level dispatcher event, emit
+   `notifyTickIdle("preflight: claude-settings-backup artifact present")`,
+   exit 0. Operator deletes the artifact manually before the next tick.
+2. **Auto-scrub** — `rm` the artifact at tick start (it's a backup, by
+   definition disposable), log the scrub, dispatch normally.
+
+Option 2 is more autonomous; option 1 is safer if the artifact is ever
+load-bearing. Default to option 1 unless dogfood reveals a recurring
+operator burden.
+
+Also: the four closed PRs' backlog entries (`wall-timeout-sigkill-
+propagation`, `task-validate-command-pre-activity-gate`,
+`chitin-install-slice-3-agents`, `rename-local-cloud-driver-misnomer`)
+should be re-evaluated before re-dispatch:
+
+- `wall-timeout-sigkill-propagation` is **already shipped in main**
+  (slice-7a / PR #99) — mark completed, drop from backlog.
+- `rename-local-cloud-driver-misnomer` needs a human pick from its
+  three naming-convention options before any worker can claim it.
+- `task-validate-command-pre-activity-gate` and
+  `chitin-install-slice-3-agents` are still claimable as written.
+
+---
+
 ### `normalize-decision-params-truthiness`
 
 ```yaml
