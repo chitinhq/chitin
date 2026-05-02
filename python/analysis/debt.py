@@ -20,6 +20,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+from dataclasses import dataclass
+from typing import List, Optional, Any
+import re
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.now:
@@ -49,6 +52,59 @@ def main(argv: list[str] | None = None) -> int:
     )
     return 0
 
+
+@dataclass
+class DebtEntry:
+    id: str
+    severity: str
+    category: str
+    file: str
+    status: str
+    shipped_in: Optional[str]
+    description: str
+    discovered_at: str
+    discovered_by: str
+
+
+def load_ledger(path: Path) -> list[DebtEntry]:
+    """
+    Parses docs/debt-ledger.md's yaml-fenced sections into DebtEntry dataclasses.
+    Skips malformed entries, counts parse_errors (never raises).
+    """
+    import yaml
+    entries = []
+    parse_errors = 0
+    try:
+        text = path.read_text()
+    except Exception:
+        return []
+    # Find all yaml-fenced code blocks
+    pattern = re.compile(r"```yaml(.*?)```", re.DOTALL)
+    for match in pattern.finditer(text):
+        block = match.group(1)
+        try:
+            data = yaml.safe_load(block)
+            # Validate required fields
+            required = ["id", "severity", "category", "file", "status", "description", "discovered_at", "discovered_by"]
+            if not all(k in data for k in required):
+                parse_errors += 1
+                continue
+            entry = DebtEntry(
+                id=data["id"],
+                severity=data["severity"],
+                category=data["category"],
+                file=data["file"],
+                status=data["status"],
+                shipped_in=data.get("shipped_in"),
+                description=data["description"],
+                discovered_at=data["discovered_at"],
+                discovered_by=data["discovered_by"]
+            )
+            entries.append(entry)
+        except Exception:
+            parse_errors += 1
+            continue
+    return entries
 
 if __name__ == "__main__":
     sys.exit(main())
