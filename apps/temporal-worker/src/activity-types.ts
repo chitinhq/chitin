@@ -7,6 +7,38 @@ export interface ActivityResult {
   // activity created a worktree. Apply-step uses worktree_path to push
   // the branch and open a PR.
   worktree?: WorktreeResult;
+  /**
+   * Hook events extracted from the agent's stream-json output.
+   *
+   * Only present when --include-hook-events was passed AND the parser
+   * found at least one well-formed event in the bounded stdout tail.
+   * The set is a best-effort projection from the tail window — events
+   * older than TAIL_BYTES of stdout will not appear.
+   *
+   * Each entry is a typed projection of the underlying agent hook
+   * event (claude-code or openclaw), keeping only the fields downstream
+   * consumers (apply-step, audit log) actually use.
+   */
+  hook_events?: HookEventSummary[];
+}
+
+/**
+ * Stable, narrow projection of an agent hook event. Both claude-code
+ * (PreToolUse / PostToolUse / Stop / etc.) and openclaw (before_tool_call,
+ * subagent_spawning, etc.) emit events with these fields populated.
+ *
+ * Fields are optional because event types vary — a Stop event has no
+ * tool_name, a Notification event has no decision, etc.
+ */
+export interface HookEventSummary {
+  /** Event family — e.g. 'PreToolUse', 'before_tool_call', 'Stop'. */
+  hook_name?: string;
+  /** Tool the event references when applicable. */
+  tool_name?: string;
+  /** allow / deny / error when the event reports a gate decision. */
+  decision?: 'allow' | 'deny' | 'error';
+  /** Human-readable explanation when present. */
+  reason?: string;
 }
 
 export interface WorktreeResult {

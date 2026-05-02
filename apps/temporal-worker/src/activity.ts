@@ -3,7 +3,7 @@ import { mkdtempSync, copyFileSync, existsSync, rmSync, mkdirSync, readFileSync,
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
-import type { ActivityResult, WorktreeResult } from './activity-types.ts';
+import type { ActivityResult, HookEventSummary, WorktreeResult } from './activity-types.ts';
 
 // Bytes of stdout/stderr returned to Temporal in ActivityResult. Buffers
 // during the run are bounded at 2x this value (see runAgentTurn), so
@@ -110,6 +110,7 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       // boundary, and it still fires via the worktree's project settings.
       const args = [
         '-p', req.prompt,
+        '--include-hook-events',
         '--dangerously-skip-permissions',
         '--allowedTools', process.env.CHITIN_CLAUDE_ALLOWED_TOOLS ?? DEFAULT_CLAUDE_ALLOWED_TOOLS,
         '--output-format', 'stream-json',
@@ -139,6 +140,7 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
           '--local',
           '--agent', resolveAgent(driver),
           '--json',
+          '--include-hook-events',
           '--timeout', String(req.bounds.wall_timeout_s),
           '--message', req.prompt,
         ],
@@ -423,11 +425,17 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       }, req.bounds.wall_timeout_s * 1000);
       child.on('close', (code) => {
         clearTimeout(killTimer);
+        const tailStdout = stdout.slice(-TAIL_BYTES);
+        const tailStderr = stderr.slice(-TAIL_BYTES);
+        const hookEvents = plan.args.includes('--include-hook-events')
+          ? extractHookEvents(tailStdout)
+          : undefined;
         resolvePromise({
           exit_code: code ?? -1,
-          stdout_tail: stdout.slice(-TAIL_BYTES),
-          stderr_tail: stderr.slice(-TAIL_BYTES),
+          stdout_tail: tailStdout,
+          stderr_tail: tailStderr,
           duration_ms: Date.now() - start,
+          ...(hookEvents ? { hook_events: hookEvents } : {}),
         });
       });
       child.on('error', reject);
@@ -464,6 +472,41 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
   return result;
 }
 
+/**
+ * Project the agent's stream-json stdout tail into a typed
+ * HookEventSummary[]. Best-effort — events older than TAIL_BYTES are
+ * lost, and lines that don't parse as JSON are silently skipped.
+ *
+ * We only forward fields downstream consumers actually use; other
+ * fields on the source event are intentionally dropped to keep the
+ * audit-log payload small.
+ */
+function extractHookEvents(stdoutTail: string): HookEventSummary[] | undefined {
+  const out: HookEventSummary[] = [];
+  for (const line of stdoutTail.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object') continue;
+    const ev = parsed as Record<string, unknown>;
+    if (ev.type !== 'hook_event') continue;
+    const summary: HookEventSummary = {};
+    if (typeof ev.hook_name === 'string') summary.hook_name = ev.hook_name;
+    if (typeof ev.tool_name === 'string') summary.tool_name = ev.tool_name;
+    if (ev.decision === 'allow' || ev.decision === 'deny' || ev.decision === 'error') {
+      summary.decision = ev.decision;
+    }
+    if (typeof ev.reason === 'string') summary.reason = ev.reason;
+    out.push(summary);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export const __test__ = {
   planInvocation,
   resolvePolicySrc,
@@ -475,6 +518,7 @@ export const __test__ = {
   resolveCopilotModel,
   writeWorktreeClaudeSettings,
   provisionOpenclawState,
+  extractHookEvents,
   DRIVER_AGENT_MAP,
   SWARM_WORKTREES_ROOT,
   CLAUDE_TIER_MODEL,
