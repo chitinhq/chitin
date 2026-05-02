@@ -509,7 +509,86 @@ function extractHookEvents(stdoutTail: string): HookEventSummary[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * Extract the openclaw `toolSummary` payload from the agent's stdout.
+ *
+ * openclaw's `--json` mode emits NDJSON (one JSON object per line) but
+ * older / non-streaming variants drop a final summary object containing
+ * a top-level `toolSummary`. The previous regex-based extractor was
+ * non-greedy on `{...}` which silently dropped any object containing
+ * nested braces — including the toolSummary object itself — so the
+ * field never populated in practice.
+ *
+ * Strategy: split into lines first (NDJSON path); for any line that
+ * doesn't parse, fall back to a brace-balanced scan from the end of
+ * stdout to recover the LAST complete top-level JSON object. Either
+ * path returns the typed `tool_summary` shape if a `toolSummary` field
+ * is found, otherwise undefined.
+ */
+function parseToolSummary(stdout: string): ActivityResult['tool_summary'] {
+  // Path 1 — NDJSON. Try every line. The newest summary wins (last
+  // line that has toolSummary).
+  let found: ActivityResult['tool_summary'];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(trimmed) as { toolSummary?: ActivityResult['tool_summary'] };
+      if (obj && typeof obj === 'object' && obj.toolSummary) {
+        found = obj.toolSummary;
+      }
+    } catch {
+      // Not a complete JSON line on its own — fall through.
+    }
+  }
+  if (found) return found;
+
+  // Path 2 — brace-balanced scan from the end. Walk backward from the
+  // last `}`, count braces (outside string literals), and slice when
+  // the count returns to zero. Try parsing that slice.
+  for (let end = stdout.lastIndexOf('}'); end >= 0; end = stdout.lastIndexOf('}', end - 1)) {
+    const start = findMatchingOpenBrace(stdout, end);
+    if (start < 0) continue;
+    const candidate = stdout.slice(start, end + 1);
+    try {
+      const obj = JSON.parse(candidate) as { toolSummary?: ActivityResult['tool_summary'] };
+      if (obj && typeof obj === 'object' && obj.toolSummary) return obj.toolSummary;
+    } catch {
+      // Not balanced top-level JSON — keep walking.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Walk backward from `end` (a `}` index in `s`), counting brace depth
+ * while ignoring braces inside double-quoted strings. Returns the index
+ * of the matching `{`, or -1 if no balanced opener is found.
+ */
+function findMatchingOpenBrace(s: string, end: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = end; i >= 0; i--) {
+    const ch = s[i];
+    if (inString) {
+      if (ch === '"' && s[i - 1] !== '\\') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '}') depth++;
+    else if (ch === '{') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 export const __test__ = {
+  parseToolSummary,
   planInvocation,
   resolvePolicySrc,
   resolveAgent,

@@ -264,3 +264,83 @@ describe('resolveAgent', () => {
     expect(DRIVER_AGENT_MAP['local-deepseek']).toBe('deepseek-agent');
   });
 });
+
+describe('parseToolSummary', () => {
+  const { parseToolSummary } = __test__;
+
+  it('returns undefined when stdout has no toolSummary', () => {
+    expect(parseToolSummary('')).toBeUndefined();
+    expect(parseToolSummary('{"foo":1}\n{"bar":2}')).toBeUndefined();
+  });
+
+  it('extracts a flat NDJSON line containing toolSummary', () => {
+    const stdout = `{"toolSummary":{"calls":3,"tools":["edit","search"],"failures":1}}\n`;
+    expect(parseToolSummary(stdout)).toEqual({
+      calls: 3,
+      tools: ['edit', 'search'],
+      failures: 1,
+    });
+  });
+
+  it('extracts toolSummary from a wrapper object with NESTED braces (regression: previous regex dropped this)', () => {
+    // The previous /\{[\s\S]*?\}/g extraction was non-greedy on `}`,
+    // so for output like { ..., "toolSummary": { ... } } it stopped at
+    // the first inner `}` and JSON.parse always failed. The brace-
+    // balanced fallback path must handle this.
+    const stdout = [
+      'noise before the json',
+      '{"event":"final","toolSummary":{"calls":7,"tools":["read","edit","bash"],"failures":2}}',
+      'trailing log line',
+    ].join('\n');
+    expect(parseToolSummary(stdout)).toEqual({
+      calls: 7,
+      tools: ['read', 'edit', 'bash'],
+      failures: 2,
+    });
+  });
+
+  it('handles multi-line pretty-printed JSON via brace-balanced fallback', () => {
+    const stdout = [
+      'log: starting',
+      '{',
+      '  "event": "final",',
+      '  "toolSummary": {',
+      '    "calls": 2,',
+      '    "tools": ["edit", "exec"],',
+      '    "failures": 0',
+      '  }',
+      '}',
+      'log: done',
+    ].join('\n');
+    expect(parseToolSummary(stdout)).toEqual({
+      calls: 2,
+      tools: ['edit', 'exec'],
+      failures: 0,
+    });
+  });
+
+  it('skips non-JSON lines and tolerates partial output', () => {
+    const stdout = [
+      'plain log line',
+      '{"event":"telemetry","value":1}',
+      '{"toolSummary":{"calls":0,"tools":[],"failures":0}}',
+    ].join('\n');
+    expect(parseToolSummary(stdout)).toEqual({
+      calls: 0,
+      tools: [],
+      failures: 0,
+    });
+  });
+
+  it('does not get confused by braces inside string literals', () => {
+    // Failure mode: a naive bracket counter would treat `{` inside a
+    // string as opening a new object and the toolSummary extraction
+    // would slice mid-string.
+    const stdout = `{"event":"oops","note":"path was {odd}","toolSummary":{"calls":1,"tools":["x"],"failures":0}}`;
+    expect(parseToolSummary(stdout)).toEqual({
+      calls: 1,
+      tools: ['x'],
+      failures: 0,
+    });
+  });
+});
