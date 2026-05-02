@@ -97,7 +97,7 @@ rules:
     reason: "GitHub read-only operations allowed"
 
   - id: default-allow-github-write
-    action: [github.issue.create, github.issue.close, github.pr.create, github.pr.close]
+    action: [github.issue.create, github.issue.close, github.pr.create, github.pr.close, github.pr.merge]
     effect: allow
     reason: "GitHub state-changing operations allowed (bounds still apply to pr.create)"
 
