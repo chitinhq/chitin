@@ -553,6 +553,32 @@ async function main() {
       pushed,
       auto_committed: applyAutoCommitted,
     });
+
+    // Phase 2 step 3b: kick off the review-graph for the freshly-
+    // opened PR. Fire-and-forget — the next dispatcher tick is free
+    // to pick a new entry while reviewers proceed in parallel. A
+    // submit failure here is logged but never propagates: the
+    // implementor's work has shipped, and Copilot R0 still reviews
+    // server-side regardless.
+    if (prUrl) {
+      try {
+        const { enqueueReviewGraph } = await import('./review-graph-dispatch.ts');
+        await enqueueReviewGraph({
+          client,
+          taskQueue: TASK_QUEUE,
+          parent_workflow_id: workflowId,
+          pr_url: prUrl,
+          worktree: result.worktree,
+          entry,
+          repo: 'chitinhq/chitin',
+          log: (line) => console.log(line),
+        });
+      } catch (err) {
+        log('warn', 'review-graph enqueue failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   } finally {
     await conn.close();
   }
