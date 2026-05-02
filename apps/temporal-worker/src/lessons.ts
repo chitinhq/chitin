@@ -63,8 +63,10 @@ export interface LessonsExtractorOptions {
   /** Limits the gh PR scan window. v1 default = 30 PRs back. */
   scanLimit: number;
   /** Distillation function. Tests inject a deterministic mock; live
-   *  uses the heuristic. Future LLM-backed version swaps in here. */
-  distill: (pr: MergedPr) => string;
+   *  uses the heuristic OR an LLM-backed distiller when
+   *  CHITIN_LESSONS_USE_LLM=1. Returning '' (or whitespace-only) is
+   *  the "skip this PR" signal — runner won't write a blank row. */
+  distill: (pr: MergedPr) => string | Promise<string>;
   /** PR fetcher. Tests inject; live uses the gh CLI wrapper. */
   fetchMergedPrs: (limit: number) => Promise<MergedPr[]>;
   log?: (line: string) => void;
@@ -186,6 +188,143 @@ function capLength(s: string, max: number): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
+// ─── LLM-backed distiller (v2) ──────────────────────────────────────────
+
+/**
+ * Reflective distillation via `claude -p` headless. Reads the PR's
+ * title + body + diff and asks Claude for a one-sentence lesson the
+ * NEXT swarm worker would benefit from knowing — a non-obvious
+ * gotcha, contract change, or lesson learned. Falls back to the
+ * heuristic on any failure (claude binary missing, timeout, parse
+ * failure, empty output) so a flaky LLM call never breaks the
+ * extractor's idempotency.
+ *
+ * Cost: a 1-2k-token PR diff at haiku rates is ~$0.0003 per call.
+ * Daily extraction over a month of merged PRs is ~$0.01. The price
+ * is worth the quality gap between heuristic (descriptive) and LLM
+ * (reflective).
+ *
+ * Why not the kernel's claudecode driver: that path goes through
+ * Temporal + activity layer; this is a one-shot script call from
+ * inside another one-shot script. Direct `claude -p` is the right
+ * tool for the lifetime + scope.
+ */
+export async function distillWithClaude(pr: MergedPr): Promise<string> {
+  const diff = await fetchPrDiff(pr.number);
+  const prompt = buildClaudeDistillPrompt(pr, diff);
+  try {
+    const out = await runClaudeHeadless(prompt);
+    const lesson = parseClaudeLesson(out);
+    if (lesson) return lesson;
+    // Empty / unparseable → fall through to heuristic.
+    return extractLessonHeuristic(pr);
+  } catch {
+    return extractLessonHeuristic(pr);
+  }
+}
+
+/**
+ * Build the LLM prompt. The agent gets PR metadata + a truncated diff
+ * and is asked for a single sentence — no preamble, no explanation.
+ * The marker `<<<LESSON>>>` lets the parser pick the right line out
+ * of any chatty preamble Claude might emit despite instructions.
+ */
+export function buildClaudeDistillPrompt(pr: MergedPr, diff: string): string {
+  // Diffs can be large; cap at ~8k chars (haiku context budget for
+  // headroom on the response). Tail-truncate so the most-relevant
+  // changes (typically end-of-diff are tests confirming the fix)
+  // are preserved.
+  const cappedDiff = diff.length > 8000 ? `…[truncated]…\n${diff.slice(-7900)}` : diff;
+  return `You are distilling a one-sentence lesson from a merged swarm PR. Future swarm workers see a list of these prepended to their prompts; the lesson should help them avoid re-discovering the same gotcha.
+
+PR title: ${pr.title}
+PR body (truncated):
+${pr.body.slice(0, 1500)}
+
+Diff (truncated):
+${cappedDiff}
+
+Output rules:
+- ONE sentence (≤ 200 chars). No preamble, no markdown bullet, no quotes.
+- Capture the LESSON, not the WORK. "What was done" is in the title; you should add what the next worker would learn from this.
+- If the change is a routine merge with no transferable lesson (e.g., docs typo, version bump), respond with the literal token \`SKIP\` and nothing else.
+- Prefix your line with \`<<<LESSON>>>\` so the parser can find it.
+
+Examples:
+<<<LESSON>>>Workflow code can't import from @chitin/contracts barrel — node:crypto pulls in via hash.ts and the bundler rejects it; use type-only imports.
+<<<LESSON>>>PyYAML auto-converts unquoted ISO-8601 timestamps to datetime; coerce back to string before validating against a schema that expects string.
+<<<LESSON>>>SKIP
+
+Now distill the PR above.`;
+}
+
+/**
+ * Spawn `claude -p` with the prompt on stdin. Times out at 60s
+ * (haiku is fast — anything past this is a stuck binary). Returns
+ * stdout. Errors propagate so distillWithClaude can fall back.
+ */
+async function runClaudeHeadless(prompt: string): Promise<string> {
+  // Lazy import to keep test paths from spawning child processes.
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolveStdout, rejectErr) => {
+    const child = spawn('claude', ['-p', '--model', 'claude-haiku-4-5'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      rejectErr(new Error('claude -p timed out'));
+    }, 60_000);
+    child.stdout.on('data', (b) => (out += b.toString()));
+    child.stderr.on('data', (b) => (err += b.toString()));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      rejectErr(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveStdout(out);
+      else rejectErr(new Error(`claude exit=${code} stderr=${err.slice(-500)}`));
+    });
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+const LESSON_MARKER = '<<<LESSON>>>';
+
+/**
+ * Pull the lesson out of `claude -p` stdout. Last-marker-wins
+ * (matches the reviewer-prompts.ts pattern). `SKIP` → empty
+ * (caller falls back to heuristic). Caps at 220 chars.
+ */
+export function parseClaudeLesson(stdout: string): string {
+  const idx = stdout.lastIndexOf(LESSON_MARKER);
+  if (idx < 0) return '';
+  const after = stdout.slice(idx + LESSON_MARKER.length);
+  const lineEnd = after.indexOf('\n');
+  const line = (lineEnd >= 0 ? after.slice(0, lineEnd) : after).trim();
+  if (!line || line === 'SKIP') return '';
+  return capLength(line, 220);
+}
+
+/**
+ * Fetch the PR diff via gh CLI. Returns the raw diff text or empty
+ * string on failure (claude can still emit a lesson from title +
+ * body alone).
+ */
+async function fetchPrDiff(prNumber: number): Promise<string> {
+  try {
+    return execFileSync('gh', ['pr', 'diff', String(prNumber)], {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch {
+    return '';
+  }
+}
+
 // ─── PR fetcher (live) ───────────────────────────────────────────────────
 
 interface GhPrJsonRow {
@@ -255,7 +394,8 @@ export async function runLessonsExtractor(
       duplicates_skipped++;
       continue;
     }
-    const lesson = opts.distill(pr).trim();
+    const distilled = await opts.distill(pr);
+    const lesson = distilled.trim();
     if (!lesson) continue;
     newEntries.push({
       pr_number: pr.number,
@@ -322,10 +462,16 @@ const DEFAULT_LESSONS_PATH = resolve(process.cwd(), 'docs/swarm-lessons.md');
 
 async function main(): Promise<void> {
   const limit = Number(process.env.CHITIN_LESSONS_SCAN_LIMIT ?? '30');
+  // CHITIN_LESSONS_USE_LLM=1 → reflective distillation via `claude -p`.
+  // Default off — heuristic is dep-free, idempotent, and what the
+  // existing rig is calibrated against. Flip on once you've seen
+  // a heuristic run land cleanly + the operator wants higher
+  // signal-per-row in the lessons file.
+  const useLlm = process.env.CHITIN_LESSONS_USE_LLM === '1';
   await runLessonsExtractor({
     lessonsPath: DEFAULT_LESSONS_PATH,
     scanLimit: limit,
-    distill: extractLessonHeuristic,
+    distill: useLlm ? distillWithClaude : extractLessonHeuristic,
     fetchMergedPrs: fetchMergedSwarmPrs,
   });
 }
@@ -349,6 +495,7 @@ if (isMain) {
 export const __test__ = {
   LESSONS_HEADER,
   ENTRY_RE,
+  LESSON_MARKER,
   capLength,
   DEFAULT_LESSONS_PATH,
 };
