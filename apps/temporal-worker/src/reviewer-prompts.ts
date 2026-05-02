@@ -196,21 +196,36 @@ export function parseReviewerOutput(
   const lineEnd = after.indexOf('\n');
   const candidate = (lineEnd >= 0 ? after.slice(0, lineEnd) : after).trim();
   if (!candidate.startsWith('{')) {
-    return { ok: false, error: `expected JSON object after marker, got: ${candidate.slice(0, 80)}` };
+    return { ok: false, error: `expected JSON object after marker, got: ${truncate(candidate, 200)}` };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(candidate);
   } catch (err) {
-    return { ok: false, error: `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}` };
+    // Include the candidate slice so debugging doesn't require
+    // re-fetching the raw stdout. Truncated to keep error messages
+    // readable in logs (full slice is in stdout_tail anyway).
+    return {
+      ok: false,
+      error:
+        `JSON.parse failed: ${err instanceof Error ? err.message : String(err)} ` +
+        `(candidate: ${truncate(candidate, 200)})`,
+    };
   }
 
   const result = ReviewerOutputSchema.safeParse(parsed);
   if (!result.success) {
-    return { ok: false, error: `schema validation: ${result.error.message}` };
+    return {
+      ok: false,
+      error: `schema validation: ${result.error.message} (candidate: ${truncate(candidate, 200)})`,
+    };
   }
   return { ok: true, output: result.data };
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…[+${s.length - max} more chars]`;
 }
 
 export const __test__ = {
