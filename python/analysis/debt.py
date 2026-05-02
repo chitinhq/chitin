@@ -99,6 +99,16 @@ class DebtEntry:
     discovered_by: str
 
 
+@dataclass(frozen=True)
+class LedgerLoadResult:
+    """Mirror of `loaders.LoadResult` for the debt-ledger loader. Exposes
+    `parse_errors` so callers/tests can observe the skip-count rather
+    than relying on the stderr warning alone."""
+
+    entries: list[DebtEntry]
+    parse_errors: int
+
+
 _REQUIRED_FIELDS = (
     "id",
     "severity",
@@ -127,11 +137,11 @@ def _stringify_timestamp(value: object) -> str:
     return str(value)
 
 
-def load_ledger(path: Path) -> list[DebtEntry]:
+def load_ledger(path: Path) -> LedgerLoadResult:
     """Parse `docs/debt-ledger.md`'s yaml-fenced sections into typed
     `DebtEntry` records.
 
-    - Missing file → empty list (never raise)
+    - Missing file → empty result (never raise)
     - Malformed yaml block → skip + count toward parse_errors
     - Missing required fields → skip + count toward parse_errors
     - parse_errors > 0 → single stderr warning at end (operator
@@ -141,11 +151,15 @@ def load_ledger(path: Path) -> list[DebtEntry]:
     sections in the source file — useful for the GROOM stage which
     wants to see the most recent debt first (entries are listed
     newest-first by convention).
+
+    Returns a `LedgerLoadResult` (mirroring `loaders.LoadResult`) so
+    callers can observe `parse_errors` directly rather than relying on
+    the stderr warning alone.
     """
     try:
         text = path.read_text()
     except OSError:
-        return []
+        return LedgerLoadResult(entries=[], parse_errors=0)
 
     entries: list[DebtEntry] = []
     parse_errors = 0
@@ -184,7 +198,7 @@ def load_ledger(path: Path) -> list[DebtEntry]:
             f"[debt.load_ledger] {parse_errors} malformed entries skipped in {path}",
             file=sys.stderr,
         )
-    return entries
+    return LedgerLoadResult(entries=entries, parse_errors=parse_errors)
 
 
 def filter_by_status(entries: list[DebtEntry], status: str) -> list[DebtEntry]:
