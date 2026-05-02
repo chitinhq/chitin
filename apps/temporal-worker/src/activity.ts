@@ -1,14 +1,18 @@
-import { spawn } from 'node:child_process';
-import { mkdtempSync, copyFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdtempSync, copyFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ExecutionRequest, DriverId } from '@chitin/contracts';
-import type { ActivityResult } from './activity-types.ts';
+import type { ActivityResult, WorktreeResult } from './activity-types.ts';
 
 // Bytes of stdout/stderr returned to Temporal in ActivityResult. Buffers
 // during the run are bounded at 2x this value (see runAgentTurn), so
 // chatty drivers can't OOM the 24/7 worker.
 const TAIL_BYTES = 2000;
+
+// Slice 5: where worktrees live when base_ref is set on the request. XDG
+// cache (transient, safe to delete). One sub-dir per workflow_id.
+const SWARM_WORKTREES_ROOT = resolve(homedir(), '.cache/chitin/swarm-worktrees');
 
 interface DriverInvocation {
   command: string;
@@ -84,20 +88,115 @@ function resolvePolicySrc(): string {
   return resolve(process.cwd(), 'chitin.yaml');
 }
 
+// Where the source repo lives — the one we create worktrees from. Worker
+// is conventionally launched from the repo root, but allow CHITIN_REPO_ROOT
+// to override (e.g., when the worker process runs from a different dir).
+function resolveRepoRoot(): string {
+  const explicit = process.env.CHITIN_REPO_ROOT;
+  if (explicit) return resolve(explicit);
+  return process.cwd();
+}
+
+function git(repoCwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd: repoCwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+// Slice 5: provision a worktree at SWARM_WORKTREES_ROOT/<workflow_id>/
+// based on req.base_ref. Branch is `swarm/<workflow_id>`. Idempotent:
+// if the path or branch already exists (from a prior crash), tries to
+// clean up first.
+function provisionWorktree(req: ExecutionRequest, repoRoot: string): { path: string; branch: string } {
+  if (!req.base_ref) {
+    throw new Error('provisionWorktree called without base_ref');
+  }
+  mkdirSync(SWARM_WORKTREES_ROOT, { recursive: true });
+  const path = join(SWARM_WORKTREES_ROOT, req.workflow_id);
+  const branch = `swarm/${req.workflow_id}`;
+  // Best-effort cleanup of stale state from a prior crashed run.
+  try {
+    git(repoRoot, ['worktree', 'remove', '--force', path]);
+  } catch {
+    // not an existing worktree — fine
+  }
+  if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+  try {
+    git(repoRoot, ['branch', '-D', branch]);
+  } catch {
+    // not an existing branch — fine
+  }
+  git(repoRoot, ['worktree', 'add', '-b', branch, path, req.base_ref]);
+  return { path, branch };
+}
+
+// After agent exits, capture worktree state for the apply step. Does not
+// modify anything — purely observational.
+function captureWorktreeState(worktreePath: string, baseRef: string): WorktreeResult {
+  const headSha = git(worktreePath, ['rev-parse', 'HEAD']);
+  const commitsAdded = parseInt(
+    git(worktreePath, ['rev-list', '--count', `${baseRef}..HEAD`]) || '0',
+    10,
+  );
+  // status --porcelain returns one line per dirty path; empty string = clean.
+  const status = git(worktreePath, ['status', '--porcelain']);
+  const hasUncommitted = status.length > 0;
+  // shortstat between base and current tree (covers both committed and
+  // uncommitted by diffing tree-vs-tree-of-base — actually for that we want
+  // a full diff including working tree, so:
+  const diffShortstat = (() => {
+    try {
+      // Full diff including working tree changes:
+      // diff base...HEAD covers committed; we want both, so do diff base
+      // against the working tree:
+      return git(worktreePath, ['--no-pager', 'diff', '--shortstat', baseRef]);
+    } catch {
+      return '';
+    }
+  })();
+  // resolve branch name from HEAD ref
+  let branch = '';
+  try {
+    branch = git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  } catch {
+    // detached
+  }
+  return {
+    path: worktreePath,
+    branch,
+    head_sha: headSha,
+    commits_added: Number.isFinite(commitsAdded) ? commitsAdded : 0,
+    has_uncommitted_changes: hasUncommitted,
+    diff_shortstat: diffShortstat,
+  };
+}
+
 export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResult> {
-  const taskRoot = mkdtempSync(join(tmpdir(), `chitin-worker-${req.workflow_id}-`));
-  const policySrc = resolvePolicySrc();
-  if (existsSync(policySrc)) {
-    copyFileSync(policySrc, join(taskRoot, 'chitin.yaml'));
+  // Slice 5: when base_ref is set, run inside a real git worktree so the
+  // agent's edits are durable and a follow-up apply-step can push + PR.
+  // When base_ref is absent (slice 1-4 behavior), use a tempdir — the
+  // agent's edits are discarded on exit.
+  const useWorktree = !!req.base_ref;
+  const repoRoot = resolveRepoRoot();
+  let workDir: string;
+  let worktreeInfo: { path: string; branch: string } | null = null;
+  if (useWorktree) {
+    worktreeInfo = provisionWorktree(req, repoRoot);
+    workDir = worktreeInfo.path;
+  } else {
+    workDir = mkdtempSync(join(tmpdir(), `chitin-worker-${req.workflow_id}-`));
+    const policySrc = resolvePolicySrc();
+    if (existsSync(policySrc)) {
+      copyFileSync(policySrc, join(workDir, 'chitin.yaml'));
+    }
   }
 
   const plan = planInvocation(req);
 
   const start = Date.now();
+  let result: ActivityResult;
   try {
-    return await new Promise<ActivityResult>((resolvePromise, reject) => {
+    result = await new Promise<ActivityResult>((resolvePromise, reject) => {
       const child = spawn(plan.command, plan.args, {
-        cwd: taskRoot,
+        cwd: workDir,
         env: {
           ...process.env,
           ...(plan.env ?? {}),
@@ -131,8 +230,37 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       child.on('error', reject);
     });
   } finally {
-    rmSync(taskRoot, { recursive: true, force: true });
+    // Tempdir mode: rm is fine, edits discarded by design.
+    // Worktree mode: do NOT rm — apply-step needs the worktree to capture
+    // state and push. Apply-step is responsible for cleanup. If the activity
+    // crashes mid-way, the next provisionWorktree() call on the same
+    // workflow_id will reclaim the path via best-effort cleanup.
+    if (!useWorktree) {
+      rmSync(workDir, { recursive: true, force: true });
+    }
   }
+
+  if (useWorktree && worktreeInfo) {
+    try {
+      result.worktree = captureWorktreeState(worktreeInfo.path, req.base_ref!);
+    } catch (err) {
+      // Don't fail the activity over capture errors — the apply step will
+      // surface the issue. Log to stderr_tail so the operator sees it.
+      const msg = err instanceof Error ? err.message : String(err);
+      result.stderr_tail = `${result.stderr_tail}\n[capture-worktree-state] ${msg}`.slice(-TAIL_BYTES);
+    }
+  }
+
+  return result;
 }
 
-export const __test__ = { planInvocation, resolvePolicySrc, resolveAgent, DRIVER_AGENT_MAP };
+export const __test__ = {
+  planInvocation,
+  resolvePolicySrc,
+  resolveAgent,
+  resolveRepoRoot,
+  provisionWorktree,
+  captureWorktreeState,
+  DRIVER_AGENT_MAP,
+  SWARM_WORKTREES_ROOT,
+};

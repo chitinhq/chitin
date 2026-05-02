@@ -125,4 +125,48 @@ describe('ExecutionRequestSchema', () => {
     const bad = { ...validRequest, workflow_id: 'wf with spaces' };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
+
+  // Slice 5: optional base_ref for swarm-worktree mode.
+  it('accepts a request without base_ref (slice 1-4 tempdir behavior)', () => {
+    expect(() => ExecutionRequestSchema.parse(validRequest)).not.toThrow();
+  });
+
+  it('accepts a valid base_ref (branch name)', () => {
+    const ok = { ...validRequest, base_ref: 'main' };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
+  it('accepts a valid base_ref (40-char sha)', () => {
+    const ok = { ...validRequest, base_ref: 'a'.repeat(40) };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
+  it('accepts a base_ref with slashes (e.g., feature/foo)', () => {
+    const ok = { ...validRequest, base_ref: 'feature/foo-bar' };
+    expect(() => ExecutionRequestSchema.parse(ok)).not.toThrow();
+  });
+
+  it('rejects base_ref starting with hyphen (flag-injection guard)', () => {
+    const bad = { ...validRequest, base_ref: '--upload-pack=evil' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow(/cannot start with hyphen/);
+  });
+
+  it('rejects base_ref with shell metacharacters', () => {
+    const bad1 = { ...validRequest, base_ref: 'main; rm -rf /' };
+    expect(() => ExecutionRequestSchema.parse(bad1)).toThrow();
+    const bad2 = { ...validRequest, base_ref: 'main`echo`' };
+    expect(() => ExecutionRequestSchema.parse(bad2)).toThrow();
+    const bad3 = { ...validRequest, base_ref: 'main$(id)' };
+    expect(() => ExecutionRequestSchema.parse(bad3)).toThrow();
+  });
+
+  it('rejects base_ref with whitespace', () => {
+    const bad = { ...validRequest, base_ref: 'main branch' };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects base_ref over 128 chars', () => {
+    const bad = { ...validRequest, base_ref: 'a'.repeat(129) };
+    expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
+  });
 });

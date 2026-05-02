@@ -38,6 +38,13 @@ export const BoundsSchema = z.object({
 
 const TemporalIdSchema = z.string().regex(/^[a-zA-Z0-9_\-:.]{1,128}$/);
 
+// Git ref: branch or commit-ish. Restrictive enough that what we pass to
+// `git worktree add ... <ref>` is shell-safe and doesn't try to be a path.
+const GitRefSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9_\-./]{1,128}$/, 'must be a simple git ref (branch, tag, or sha)')
+  .refine((s) => !s.startsWith('-'), 'git ref cannot start with hyphen (flag-injection guard)');
+
 export const ExecutionRequestSchema = z
   .object({
     schema_version: z.literal('1'),
@@ -52,6 +59,11 @@ export const ExecutionRequestSchema = z
     write_policy: WritePolicySchema,
     bounds: BoundsSchema,
     prompt: z.string().min(1),
+    // Slice 5: optional. When set, the activity creates a git worktree
+    // from this ref at ~/.cache/chitin/swarm-worktrees/<workflow_id>/ and
+    // spawns the agent there. When absent (slice 1-4 behavior), the
+    // activity runs in a tempdir and any agent edits are discarded.
+    base_ref: GitRefSchema.optional(),
   })
   .superRefine((req, ctx) => {
     if (req.network_policy === 'open' && (req.risk_level === 'high' || req.risk_level === 'irreversible')) {
