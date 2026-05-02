@@ -69,10 +69,21 @@ const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 // PRs for them via this same dispatcher). Cost: still $0 under
 // Jared's Copilot plan. One-line revert to local-qwen once the local
 // model is reliable.
+// 2026-05-02: T2 temporarily routed to copilot. The overnight 2026-05-02
+// run produced 4/4 bucket-B contaminated PRs on T2/T3 claude-code-
+// headless (and 1/5 successes total). Root cause: the worker's
+// writeWorktreeClaudeSettings overwrites the worktree's
+// .claude/settings.json, and the apply step's "tracked diff" heuristic
+// auto-commits + ships the modification as task work whenever the
+// agent declined to commit real edits. The apply-step revert in
+// apply-workflow-result.revertWorktreeSettingsArtifact closes the
+// auto-commit path; once it's been live for a swarm cycle and the
+// rate stays at 0, flip T2 (and T3) back to claude-code-headless.
+// See docs/observations/2026-05-02-bucket-b-after-action.md.
 const TIER_DRIVER: Record<Tier, DriverId> = {
   T0: 'copilot',                     // Copilot GPT-4.1 free (was local-qwen — see comment)
   T1: 'copilot',                     // Copilot GPT-4.1 free
-  T2: 'claude-code-headless',        // claude-haiku-4-5
+  T2: 'copilot',                     // (was claude-code-headless — see comment above; flip back after CCH bucket-B rate stays at 0)
   T3: 'claude-code-headless',        // claude-sonnet-4-6
   T4: 'claude-code-headless',        // claude-opus-4-7
 };

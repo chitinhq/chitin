@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync, execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ActivityResult, WorktreeResult } from '../activity-types.ts';
 
 interface ResultEnvelope {
@@ -77,7 +78,20 @@ async function main() {
   // backlog entry. Heuristic: only auto-commit when there are TRACKED
   // file modifications (`diff --shortstat` non-empty). Untracked-only
   // changes are likely agent side effects, not the work product.
+  //
+  // 2026-05-02 finding (bucket-B contamination): claude-code-headless
+  // worktrees ALWAYS show a tracked diff on `.claude/settings.json` —
+  // the worker's writeWorktreeClaudeSettings overwrites whatever main
+  // has there with the chitin gate hook config. That diff is byte-
+  // identical across runs and is not the agent's task work. Reverting
+  // it before the trackedDiff check makes the heuristic see only real
+  // edits, so a CCH run where the agent declined to commit task work
+  // produces no PR (instead of a "1 file changed, 12 insertions(+),
+  // 10 deletions(-)" Bucket-B PR). See
+  // docs/observations/2026-05-02-bucket-b-after-action.md for the
+  // full root-cause analysis.
   if (wt.has_uncommitted_changes) {
+    revertWorktreeSettingsArtifact(wt.path);
     const trackedDiff = git(wt.path, ['--no-pager', 'diff', '--shortstat']).length > 0;
     if (trackedDiff) {
       console.log('[apply-result] auto-committing tracked uncommitted changes…');
@@ -108,6 +122,46 @@ async function main() {
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+// Revert any modification of `.claude/settings.json` (vs HEAD) in the
+// worktree. The worker's `writeWorktreeClaudeSettings` always touches
+// this file (to install the chitin gate hook for the spawned claude-
+// code-headless session); the modification is *not* task work and
+// shipping it produces bucket-B contamination.
+//
+// Uses `git diff HEAD --` (working tree + index vs HEAD) instead of bare
+// `git diff` so the check sees modifications regardless of whether the
+// agent / a future early `git add` already staged them. Plain `git diff`
+// is index-vs-working-tree only and would silently no-op on staged
+// modifications — bucket-B would silently return.
+//
+// CAVEAT: this revert ALWAYS fires when `.claude/settings.json` differs
+// from HEAD. If a future backlog entry's `file:` field legitimately
+// names `.claude/settings.json`, the agent's edits will be silently
+// dropped. The function has no awareness of the entry — apply-step
+// inputs are just the worktree state. Two mitigations available if it
+// ever bites: (a) the entry can pre-commit its `.claude/settings.json`
+// edit before declining (auto-commit fallback then sees only that), or
+// (b) plumb the entry's file scope into apply-workflow-result and
+// gate the revert on whether the entry claims this file.
+//
+// Errors are swallowed — failing the apply step over a bookkeeping
+// revert would be worse than leaving the artifact in (and the
+// trackedDiff check still bails on no-real-work via the "no committed
+// work; skipping push and PR" branch).
+export function revertWorktreeSettingsArtifact(worktreePath: string): void {
+  try {
+    const modified = git(worktreePath, ['--no-pager', 'diff', 'HEAD', '--name-only', '--', '.claude/settings.json']);
+    if (!modified) return; // not a modification of a tracked file — nothing to revert
+    // `checkout HEAD --` resets the file in BOTH the index and the working
+    // tree, matching the diff scope above. Plain `checkout --` would only
+    // reset the working tree, leaving a staged modification in place.
+    git(worktreePath, ['checkout', 'HEAD', '--', '.claude/settings.json']);
+    console.log('[apply-result] reverted writeWorktreeClaudeSettings artifact: .claude/settings.json');
+  } catch (err) {
+    console.warn(`[apply-result] revert of .claude/settings.json failed (ignored): ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function defaultCommitMessage(env: ResultEnvelope): string {
@@ -159,7 +213,13 @@ function readFlag(name: string): string | null {
   return process.argv[idx + 1];
 }
 
-main().catch((err) => {
-  console.error('[apply-result] fatal:', err);
-  process.exit(1);
-});
+// Only run main() when invoked as a script. Importing
+// revertWorktreeSettingsArtifact (or any other helper) from tests
+// must not exit the process or read process.argv as a CLI.
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((err) => {
+    console.error('[apply-result] fatal:', err);
+    process.exit(1);
+  });
+}
