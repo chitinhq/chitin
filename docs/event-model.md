@@ -76,7 +76,7 @@ Reserved (not yet wired): `policy_decided`, `rewritten`, `denied`, `chain_verify
 
 ## OTEL projection (one-way bridge)
 
-When OTEL emit is enabled (F4, ships before 2026-05-07), the kernel projects events onto OTEL spans **after** the chain write succeeds. The chain is authoritative; OTEL is non-authoritative.
+When OTEL emit is enabled (F4, **shipped 2026-05-02** in `go/execution-kernel/internal/emit/otel.go` — opt-in via `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`), the kernel projects events onto OTEL spans **after** the chain write succeeds. The chain is authoritative; OTEL is non-authoritative.
 
 ```
 event chain (canonical)         OTEL span (projection)
@@ -98,7 +98,7 @@ decision.decision     ──────►  attribute: decision.type
 - No policy on OTEL. All policy decisions derive from the chain or kernel-observed data.
 - Kernel survives OTEL failure. If OTEL emit fails, kernel write must still succeed.
 
-F4 ships 4 event types only (`session_start`, `pre_tool_use`, `decision`, `post_tool_use`) over OTLP HTTP JSON. Full `gen_ai.*` semconv compliance, OTLP-grpc, batching, and multi-exporter support are post-talk.
+F4 v1 ships 4 event types only (`session_start`, `pre_tool_use`, `decision`, `post_tool_use`) over OTLP HTTP JSON, sync after chain commit (kernel runs as a short-lived CLI per emit; daemon-mode async is deferred). Full `gen_ai.*` semconv compliance, OTLP-grpc, batching, and multi-exporter support are post-talk.
 
 ## Surface neutrality
 
