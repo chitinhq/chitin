@@ -5,14 +5,208 @@
 // dedicated template fall back to `programmer` (the pre-Phase-1
 // behavior).
 //
-// What's here is intentionally minimal in this slice — only
-// `programmer` has a real template (it's what slice-7b shipped).
-// Other roles are stubs with role-aware framing so the dispatcher
-// doesn't crash when they're picked, but the actual per-role prompt
-// engineering lands in follow-up entries (one per role).
+// `programmer` has the pre-Phase-1 template; `reviewer` has the
+// Phase-2 adversarial-review template. Other roles are stubs until
+// their dedicated entries land.
 
 import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
+
+// ---------------------------------------------------------------------------
+// Adversarial reviewer — types, schema, and prompt builder
+// ---------------------------------------------------------------------------
+
+export interface PrMeta {
+  prNumber: number;
+  title: string;
+  author: string;
+  baseBranch: string;
+}
+
+export interface CopilotComment {
+  file: string;
+  line?: number;
+  body: string;
+}
+
+export type FindingSeverity = '🔴' | '🟡' | '🟢';
+export type FindingCategory = 'bug' | 'test_gap' | 'design' | 'doc';
+export type ReviewDecision = 'approve' | 'request_changes' | 'escalate';
+export type ReviewConfidence = 'high' | 'medium' | 'low';
+
+export interface ReviewFinding {
+  severity: FindingSeverity;
+  file: string;
+  line?: number;
+  category: FindingCategory;
+  summary: string;
+  suggested_fix?: string;
+}
+
+// Structured output emitted by the reviewer agent — consumed by
+// review-graph-executor's escalateOneTier to decide next-tier.
+export interface AdversarialReviewOutput {
+  decision: ReviewDecision;
+  confidence: ReviewConfidence;
+  findings: ReviewFinding[];
+}
+
+// Severity rubric:
+//   🔴  Real bug — incorrect behavior, data loss, security issue → block merge.
+//       If confidence:low, decision becomes "escalate" (next tier decides).
+//   🟡  Worth fixing but not blocking — code smell, minor logic issue, test gap.
+//       → request_changes, do not block merge.
+//   🟢  Doc/nit — comment, naming, formatting → approve with comment.
+// escalate: triggered when any 🔴 finding exists but confidence is "low".
+
+const VALID_DECISIONS = new Set<ReviewDecision>(['approve', 'request_changes', 'escalate']);
+const VALID_CONFIDENCES = new Set<ReviewConfidence>(['high', 'medium', 'low']);
+const VALID_SEVERITIES = new Set<FindingSeverity>(['🔴', '🟡', '🟢']);
+const VALID_CATEGORIES = new Set<FindingCategory>(['bug', 'test_gap', 'design', 'doc']);
+
+// Runtime validator for AdversarialReviewOutput. Throws on invalid shape.
+// Used by review-graph-executor to verify the LLM emitted the right JSON.
+export function parseReviewOutput(raw: unknown): AdversarialReviewOutput {
+  if (typeof raw !== 'object' || raw === null) throw new Error('review output must be an object');
+  const obj = raw as Record<string, unknown>;
+
+  if (!VALID_DECISIONS.has(obj['decision'] as ReviewDecision)) {
+    throw new Error(`invalid decision: ${String(obj['decision'])}`);
+  }
+  if (!VALID_CONFIDENCES.has(obj['confidence'] as ReviewConfidence)) {
+    throw new Error(`invalid confidence: ${String(obj['confidence'])}`);
+  }
+  if (!Array.isArray(obj['findings'])) throw new Error('findings must be an array');
+
+  const findings: ReviewFinding[] = obj['findings'].map((f: unknown, i: number) => {
+    if (typeof f !== 'object' || f === null) throw new Error(`finding[${i}] must be an object`);
+    const fi = f as Record<string, unknown>;
+    if (!VALID_SEVERITIES.has(fi['severity'] as FindingSeverity)) {
+      throw new Error(`finding[${i}].severity invalid: ${String(fi['severity'])}`);
+    }
+    if (typeof fi['file'] !== 'string') throw new Error(`finding[${i}].file must be a string`);
+    if (!VALID_CATEGORIES.has(fi['category'] as FindingCategory)) {
+      throw new Error(`finding[${i}].category invalid: ${String(fi['category'])}`);
+    }
+    if (typeof fi['summary'] !== 'string') throw new Error(`finding[${i}].summary must be a string`);
+    return {
+      severity: fi['severity'] as FindingSeverity,
+      file: fi['file'] as string,
+      line: typeof fi['line'] === 'number' ? fi['line'] : undefined,
+      category: fi['category'] as FindingCategory,
+      summary: fi['summary'] as string,
+      suggested_fix: typeof fi['suggested_fix'] === 'string' ? fi['suggested_fix'] : undefined,
+    };
+  });
+
+  return {
+    decision: obj['decision'] as ReviewDecision,
+    confidence: obj['confidence'] as ReviewConfidence,
+    findings,
+  };
+}
+
+// Build the adversarial-reviewer system prompt. Called by the
+// review-graph-executor when dispatching a reviewer-role agent turn.
+// The ROLE_PROMPTS registry calls this with no runtime data (entry-only);
+// the executor calls it directly with the full PR context.
+export function buildAdversarialReviewerPrompt(
+  prMeta: PrMeta | undefined,
+  diff: string | undefined,
+  copilotComments: CopilotComment[],
+  entryFileScope: string | undefined,
+): string {
+  const prSection = prMeta
+    ? `PR #${prMeta.prNumber}: "${prMeta.title}" by @${prMeta.author} (base: ${prMeta.baseBranch})`
+    : '(PR metadata not provided — fetch it via `gh pr view <number>` from entry context)';
+
+  const diffSection = diff
+    ? `\`\`\`diff\n${diff}\n\`\`\``
+    : '(diff not injected — fetch it via `gh pr diff <number>` before proceeding)';
+
+  const copilotSection =
+    copilotComments.length > 0
+      ? copilotComments
+          .map(
+            (c, i) =>
+              `[${i + 1}] ${c.file}${c.line != null ? `:${c.line}` : ''}\n${c.body}`,
+          )
+          .join('\n\n')
+      : '(no Copilot comments provided — skip this section)';
+
+  const scopeSection = entryFileScope
+    ? `Declared \`file:\` scope in the backlog entry: ${entryFileScope}`
+    : '(no file scope declared in entry — flag any changes to undeclared files)';
+
+  return `You are an adversarial code reviewer. Your job is to find problems the author and Copilot missed.
+
+Be hostile. Look for:
+- Unhandled cases (boundary, null, out-of-order, empty collection, max-value)
+- Wrong assumptions (API contracts, ordering guarantees, encoding, clock drift)
+- Race conditions and concurrency hazards
+- Security vulnerabilities (injection, data exposure, auth bypass, path traversal)
+- Test gaps (happy-path only, wrong mock boundary, missing edge cases)
+- Design flaws (naming that conceals intent, hidden coupling, abstraction leakage)
+
+---
+## PR UNDER REVIEW
+
+${prSection}
+
+## DIFF
+
+${diffSection}
+
+## COPILOT COMMENTS TO VERIFY
+
+IMPORTANT: Do NOT auto-dismiss these as noise. Historical data shows ~73% of Copilot flags are real bugs (PR #78: 8 of 11 confirmed). Verify each comment against the actual diff above and report your finding.
+
+${copilotSection}
+
+## ENTRY FILE SCOPE
+
+${scopeSection}
+
+Invariant: every changed file in the diff must intersect the declared \`file:\` scope.
+If the diff touches a file NOT in the declared scope, emit a 🔴 finding:
+  category: "design", summary: "diff touches <file> which is outside declared file: scope — possible bucket-B misclassification".
+
+---
+## SEVERITY RUBRIC
+
+| Severity | Meaning | Decision trigger |
+|----------|---------|-----------------|
+| 🔴 | Real bug — incorrect behavior, data loss, security issue | "request_changes" (confidence:high) or "escalate" (confidence:low) |
+| 🟡 | Worth fixing but not blocking — smell, minor logic issue, test gap | "request_changes" |
+| 🟢 | Doc/nit — comment, naming, formatting | "approve" with comment |
+
+Decision rules (applied after collecting all findings):
+- "approve"           → zero 🔴 findings AND confidence is "high"
+- "request_changes"   → any 🟡, OR any 🔴 with confidence "high"
+- "escalate"          → any 🔴 with confidence "low" (you see a problem but aren't certain)
+
+---
+## REQUIRED OUTPUT FORMAT
+
+Emit ONLY valid JSON. No markdown fences, no explanation text — raw JSON only.
+
+{
+  "decision": "approve" | "request_changes" | "escalate",
+  "confidence": "high" | "medium" | "low",
+  "findings": [
+    {
+      "severity": "🔴" | "🟡" | "🟢",
+      "file": "<path relative to repo root>",
+      "line": <integer line number, omit if not applicable>,
+      "category": "bug" | "test_gap" | "design" | "doc",
+      "summary": "<one precise sentence>",
+      "suggested_fix": "<optional: what to change>"
+    }
+  ]
+}
+
+An empty findings array with decision "approve" and confidence "high" is valid — it means you examined the diff carefully and found nothing. Do not fabricate findings.`;
+}
 
 export type RolePromptBuilder = (entry: BacklogEntry) => string;
 
@@ -77,7 +271,10 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   product: (entry) => buildStubPrompt('product', entry),
   groomer: (entry) => buildStubPrompt('groomer', entry),
   architect: (entry) => buildStubPrompt('architect', entry),
-  reviewer: (entry) => buildStubPrompt('reviewer', entry),
+  // Phase 2: real adversarial-review template. The executor calls
+  // buildAdversarialReviewerPrompt directly with full PR context;
+  // this registry path is used when the dispatcher fires without it.
+  reviewer: (entry) => buildAdversarialReviewerPrompt(undefined, undefined, [], entry.file),
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
   'tech-writer': (entry) => buildStubPrompt('tech-writer', entry),
@@ -120,4 +317,21 @@ export const __test__ = {
   ROLE_PROMPTS,
   ROLE_VOCAB,
   buildStubPrompt,
+  // Integration-test fixture: R0+R1+R2 approve, R3 finds a 🔴.
+  // Validates that parseReviewOutput correctly round-trips the schema
+  // and that escalateOneTier can consume decision+confidence+findings.
+  fixtureR3RedFinding: (): AdversarialReviewOutput => ({
+    decision: 'request_changes',
+    confidence: 'high',
+    findings: [
+      {
+        severity: '🔴',
+        file: 'apps/temporal-worker/src/role-prompts.ts',
+        line: 42,
+        category: 'bug',
+        summary: 'parseReviewOutput does not handle null line field from LLM output',
+        suggested_fix: 'Add `typeof fi.line === "number"` guard before coercing to integer',
+      },
+    ],
+  }),
 };
