@@ -2,6 +2,10 @@ package hash
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,29 +71,66 @@ func TestHashEvent_ExcludesThisHash(t *testing.T) {
 	}
 }
 
+// TestCanonicalJSON_EventGolden asserts byte-equality against a SHARED
+// fixture at libs/contracts/tests/canonical.golden.{json,txt} that the
+// TS canonicalJSON implementation also reads. Closes #7 + #15: the two
+// implementations can no longer drift silently on opposite-side test
+// suites — a divergence on either side fails its own goldensuite.
+//
+// Fixture source-of-truth lives under libs/contracts/tests/ because
+// the contracts library is the cross-language schema home; the Go and
+// TS test suites both load from there.
 func TestCanonicalJSON_EventGolden(t *testing.T) {
-	event := map[string]any{
-		"schema_version":  "2",
-		"run_id":          "550e8400-e29b-41d4-a716-446655440000",
-		"session_id":      "550e8400-e29b-41d4-a716-446655440001",
-		"surface":         "claude-code",
-		"seq":             0.0,
-		"event_type":      "session_start",
-		"chain_type":      "session",
-		"parent_chain_id": nil,
-		"prev_hash":       nil,
-		"labels":          map[string]any{},
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("locate repo root: %v", err)
+	}
+	inputBytes, err := os.ReadFile(filepath.Join(repoRoot, "libs", "contracts", "tests", "canonical.golden.json"))
+	if err != nil {
+		t.Fatalf("read input fixture: %v", err)
+	}
+	wantBytes, err := os.ReadFile(filepath.Join(repoRoot, "libs", "contracts", "tests", "canonical.golden.txt"))
+	if err != nil {
+		t.Fatalf("read want fixture: %v", err)
+	}
+	want := strings.TrimRight(string(wantBytes), "\n")
+
+	var event map[string]any
+	if err := json.Unmarshal(inputBytes, &event); err != nil {
+		t.Fatalf("parse input fixture: %v", err)
 	}
 	got, err := CanonicalJSON(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"chain_type":"session","event_type":"session_start","labels":{},"parent_chain_id":null,"prev_hash":null,"run_id":"550e8400-e29b-41d4-a716-446655440000","schema_version":"2","seq":0,"session_id":"550e8400-e29b-41d4-a716-446655440001","surface":"claude-code"}`
 	if got != want {
-		t.Errorf("golden canonical JSON mismatch:\ngot:  %s\nwant: %s", got, want)
+		t.Errorf("golden canonical JSON mismatch (Go side):\ngot:  %s\nwant: %s", got, want)
 	}
 	var rt map[string]any
 	if err := json.Unmarshal([]byte(got), &rt); err != nil {
 		t.Fatalf("canonical JSON did not parse: %v", err)
+	}
+}
+
+// findRepoRoot walks up from the test's working dir until it finds a
+// directory containing both `libs/contracts` and `go/execution-kernel`.
+// Used by the shared-fixture goldensuite so the test works regardless
+// of `go test` cwd.
+func findRepoRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(cwd, "libs", "contracts")); err == nil {
+			if _, err := os.Stat(filepath.Join(cwd, "go", "execution-kernel")); err == nil {
+				return cwd, nil
+			}
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			return "", fmt.Errorf("repo root not found walking up from cwd")
+		}
+		cwd = parent
 	}
 }
