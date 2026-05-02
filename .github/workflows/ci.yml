@@ -13,6 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # nx affected needs the base ref's history to compute the
+          # diff. GitHub's shallow checkout doesn't fetch origin/main,
+          # so without this `git diff origin/main HEAD` fails with
+          # "ambiguous argument 'origin/main'". fetch-depth: 0 fetches
+          # full history; standard nx repo setup uses this.
+          fetch-depth: 0
 
       - uses: ./.github/actions/observe
 

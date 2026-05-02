@@ -55,7 +55,14 @@ ${lessonsBlock}
 ENTRY ID: ${entry.id}
 TARGET FILE: ${targetFile}
 
-YOUR FIRST ACTION: dispatch the \`read\` tool on ${targetFile}. Do not respond with text first. Read the file, understand the change required, then dispatch \`edit\` or \`write\` to make the change. Run \`exec\` if tests are needed. Finally dispatch \`exec\` with a git command to commit your work (e.g., git add -A && git commit -m "..."), so the apply pipeline can push the branch.
+WORKFLOW (in order):
+
+1. \`read\` ${targetFile}. Understand the change required.
+2. \`edit\` or \`write\` to make the change.
+3. **Commit immediately**: \`exec\` with \`git add -A && git commit -m "<entry-id>: one-line summary"\`. Commit your work BEFORE running tests. The apply pipeline only pushes committed work; uncommitted changes are dropped.
+4. (Optional) \`exec\` to run tests. Test failures are diagnostic — they go in your stdout for the reviewer to inspect, NOT a reason to discard your work. If tests fail, you may attempt a fix-up commit, but do not exit without at least one commit.
+
+If you finish without committing, the work is lost. If tests fail after your commit, that's a signal for the reviewer chain — your job is to produce work the reviewer can evaluate, not to ship perfectly-tested work in one shot. The review-graph (R1→R2→R3) catches what you couldn't.
 
 ENTRY DETAIL (frontmatter + description):
 ${entry.description}
@@ -66,7 +73,7 @@ CONSTRAINTS:
 - Forbid editing files not named in the entry's \`file\` field, and instruct the agent to \`read\` ONLY the target file before editing.
 - If you decide the entry is misclassified or requires human judgment, exit without committing — empty worktrees are not pushed.
 
-REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
+REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Commit BEFORE testing. Start by reading ${targetFile} now.`;
 }
 
 // Researcher prompt for the BacklogEntry path. The richer runner-level
