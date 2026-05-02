@@ -1951,3 +1951,22 @@ Scope:
 Cap: 5 minutes. Beyond that, the operator's experience of "PR open
 → review chain runs" gets too laggy. The design's policy assumes
 R0 typically lands within 60-120s; 5min is the upper bound.
+
+### `investigate-bucket-b-regression`
+
+```yaml
+id: investigate-bucket-b-regression
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: chitin-swarm-rollup alarms
+role: researcher
+```
+
+Auto-filed by chitin-alarm-feeder.timer at 2026-05-02T19:46:35.246Z from a swarm-rollup alarm:
+
+> BUCKET-B REGRESSION: 1/19 runs contaminated (5.3%) — PR #123 preflight may have regressed
+
+Researcher role: read the alarm + the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json`; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); propose either a fix entry or `status: needs_human` if the cause is non-obvious. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
