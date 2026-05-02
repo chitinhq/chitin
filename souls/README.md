@@ -59,6 +59,30 @@ Canonical souls originate from `chitinhq/soulforge` (archived). Experimental
 souls originate from `chitinhq/souls-lab` (archived). Both repos are
 private archives; this directory is the live, in-repo copy going forward.
 
+## Active-soul handoff
+
+Workspace skill `/soulswap` automates the routine handoff between souls:
+swap the active block in `~/.claude/CLAUDE.md`, append a scope note to the
+target soul's file, mark the outgoing soul's open scope note as completed,
+commit the soul-file changes. The skill source lives at
+`~/workspace/claude/skills/soulswap.md` (workspace-level, not chitin-tracked
+— sync via `scripts/sync-skills.sh`).
+
+Examples:
+
+- `/soulswap knuth "Phase C Health CLI — boundary-correctness"` — swap with scope
+- `/soulswap davinci` — swap to the sticky default
+- `/soulswap` — show current active soul + last 3 scope notes
+
+The skill enforces the conventions visible in `knuth.md` and `curie.md`:
+scope-note headers like `**Scope note (YYYY-MM-DD, active for ...):**` open
+the active period; `**Scope note (YYYY-MM-DD → YYYY-MM-DD, completed):**`
+closes it. It refuses to run on parse failures or dirty `souls/` working
+trees rather than risk corrupting state.
+
+Quorum votes, ELO updates, and experimental-to-canonical promotion stay
+manual — `/soulswap` is for routine scope handoffs only.
+
 ## Contributing
 
 Adding a new soul: put it in `experimental/`, provisional status, with the
