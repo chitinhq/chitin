@@ -111,6 +111,21 @@ describe('buildPromptForEntry', () => {
     }
   });
 
+  it('routes role: analyst to the dedicated analyst prompt (internal-telemetry lane)', () => {
+    const dispatched = buildPromptForEntry(makeEntry({ id: 'a-test', role: 'analyst' }));
+    expect(dispatched).toContain('analyst role');
+    expect(dispatched).toContain('a-test');
+    // The analyst prompt mandates the structured-output marker.
+    expect(dispatched).toContain('<<<ANALYSIS>>>');
+    // Names the python/analysis toolkit the role's job is to use.
+    expect(dispatched).toContain('python/analysis');
+    // Does NOT borrow programmer preamble — analyst output is reports,
+    // not commits.
+    expect(dispatched).not.toContain('TOOL DISPATCHES count');
+    // Names the report path convention so the apply step's lookup works.
+    expect(dispatched).toContain('python/analysis/out/a-test.md');
+  });
+
   it('falls back to programmer prompt when role is unknown (defensive)', () => {
     const fallback = buildPromptForEntry(makeEntry({ file: 'x.ts', role: 'time-traveler' }));
     expect(fallback).toContain('TOOL DISPATCHES count');  // programmer template signature

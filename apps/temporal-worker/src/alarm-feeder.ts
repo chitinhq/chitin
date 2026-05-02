@@ -120,10 +120,12 @@ export function readLatestRollup(rollupsDir: string): RollupShape | undefined {
 
 /**
  * Render a draft `in_design` backlog entry that the existing
- * groomer + downstream chain will pick up. Uses role:researcher so
- * the resulting workflow goes through the researcher prompt
- * template (PR #143) — alarms are usually "what regressed?
- * investigate" tasks, which is researcher-shape.
+ * groomer + downstream chain will pick up. Uses `role: analyst` —
+ * alarms surface from the swarm's INTERNAL telemetry (rollup,
+ * gov-decisions, swarm_runs), and processing internal telemetry is
+ * the analyst's scope per the design's §3 row. Researcher role is
+ * for EXTERNAL signal pulls (arxiv / reddit / openclaw) — separate
+ * lane.
  */
 export function renderAlarmEntry(alarm: string, entryId: string, now: string): string {
   return [
@@ -137,14 +139,14 @@ export function renderAlarmEntry(alarm: string, entryId: string, now: string): s
     'blocks: []',
     'file: TBD',
     'references_signal: chitin-swarm-rollup alarms',
-    'role: researcher',
+    'role: analyst',
     '```',
     '',
     `Auto-filed by chitin-alarm-feeder.timer at ${now} from a swarm-rollup alarm:`,
     '',
     `> ${alarm}`,
     '',
-    'Researcher role: read the alarm + the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json`; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); propose either a fix entry or `status: needs_human` if the cause is non-obvious. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.',
+    'Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.',
     '',
   ].join('\n');
 }
