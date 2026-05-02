@@ -113,9 +113,24 @@ Schema:
   `driver`, `dispatched_at`, `exit_code`, `duration_ms`,
   `commits_added`, `pr_url` (parsed from stdout via `extractPrUrl`-
   equivalent), `cost_usd` (parsed from claude-code-headless tail),
-  `model` (parsed from modelUsage), `bucket_b` (heuristic: diff is
-  byte-identical to writeWorktreeClaudeSettings output).
+  `model` (parsed from modelUsage), `bucket_b` (see heuristic note
+  below).
 - Window-filter helper matching `loaders.Window`.
+
+**`bucket_b` heuristic (don't byte-match a moving target):** the
+naive "diff equals `writeWorktreeClaudeSettings`'s exact output"
+fails the next time the worker tweaks JSON spacing, adds a field, or
+appends a trailing newline. Use a structural signature instead:
+
+- post-PR-#123, the apply-step revert SHOULD eliminate this case
+  entirely — the heuristic exists to detect *regression*, not to
+  recover from it
+- structural condition: PR's modified files set is exactly
+  `{.claude/settings.json}` AND every change to that file is
+  type=`M` (modification, not addition or deletion) AND
+  `commits_added == 1` (the auto-commit fallback)
+- when this fires, raise it as a regression alarm, not just a
+  bucket_b counter — apply-step must have failed to revert
 
 Implementation steps:
 - `python/analysis/swarm_runs.py`: `load_swarm_runs(state_dir, tmp_dir, window)` returning `list[SwarmRun]`.
@@ -149,12 +164,22 @@ daily rollup that flags drift.
 
 Output (Slack channel + structured stdout for journal):
 - 24h dispatches by driver
-- Bucket-B rate (target: 0%; alarm: > 5%)
+- Bucket-B rate (target: 0% post-PR #123 fix; alarm: > 0% =
+  regression of the apply-step revert)
 - Success rate per driver and per tier (alarm: < 70%)
 - Cost summary (claude-code-headless $/run; total)
 - Local-qwen idle-percentage (we're paying for cloud when the 3090
   could be working — alarm: > 80% T0 routed away from local-qwen)
-- Top 3 failure modes (timeout, exit_code=1 partial, contamination)
+- **Short-run rate per driver/tier** (runs with `duration_ms < 15s`
+  AND `commits_added == 0`). Overnight 2026-05-02 had two CCH T2
+  bucket-B runs at 7.8s and 9.0s — agent burned <10s and gave up.
+  That's a different failure mode from "agent worked, then declined"
+  and worth surfacing separately so prompt-tuning vs apply-step
+  fixes target the right thing. Alarm: > 25% short-run rate on any
+  driver suggests the prompt template doesn't fit that tier's
+  entries.
+- Top 3 failure modes (timeout, exit_code=1 partial, contamination,
+  short-run-no-work)
 
 Wire-up:
 - Cron: `chitin-swarm-rollup.timer` fires daily at 06:00 local.
