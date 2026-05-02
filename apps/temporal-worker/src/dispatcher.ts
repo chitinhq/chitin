@@ -50,9 +50,19 @@ const TMP_DIR = resolve(process.cwd(), 'tmp');
 // marker to allow re-dispatch.
 const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 
-// Tier → driver routing. The cheapest driver capable of the work.
+// Tier → driver routing. The cheapest reliable driver capable of the
+// work. local-qwen is architecturally the right T0 driver (free, on-
+// the-3090, mechanical) but qwen3-coder:30b on this rig is currently
+// unstable (ollama stream crashes mid-generation; agent
+// misinterprets relative paths as absolute; scope drift onto files
+// outside the entry). Slice 7-tuning's first live run uncovered all
+// three. Routing T0 → copilot temporarily until the qwen layer is
+// fixed (those fixes are backlog entries; the swarm itself produces
+// PRs for them via this same dispatcher). Cost: still $0 under
+// Jared's Copilot plan. One-line revert to local-qwen once the local
+// model is reliable.
 const TIER_DRIVER: Record<Tier, DriverId> = {
-  T0: 'local-qwen',                  // free, mechanical
+  T0: 'copilot',                     // Copilot GPT-4.1 free (was local-qwen — see comment)
   T1: 'copilot',                     // Copilot GPT-4.1 free
   T2: 'claude-code-headless',        // claude-haiku-4-5
   T3: 'claude-code-headless',        // claude-sonnet-4-6
