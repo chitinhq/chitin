@@ -1,0 +1,16 @@
+# Slice 7d: fires chitin-dispatcher.service every 5 minutes.
+
+[Unit]
+Description=Chitin swarm dispatcher — periodic backlog drain
+
+[Timer]
+# First tick 30s after boot (give the worker time to connect).
+OnBootSec=30s
+# Subsequent ticks every 5 min.
+OnUnitActiveSec=5min
+# If we missed a tick (system was off), don't catch up — just resume.
+Persistent=false
+Unit=chitin-dispatcher.service
+
+[Install]
+WantedBy=timers.target
