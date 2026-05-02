@@ -45,6 +45,65 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `dispatcher-respect-blocks-field`
+
+```yaml
+id: dispatcher-respect-blocks-field
+tier: T1
+status: ready
+estimated_loc: 60
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-blocks.test.ts
+references_finding: 2026-05-02-redundant-dispatch-during-in-flight-blockers
+role: programmer
+```
+
+The dispatcher's `pickEntryToDispatch` currently ignores the
+`blocks:` YAML field. Result: any entry with `blocks: [other-entry]`
+is claimable immediately even when `other-entry` is in-flight or
+hasn't shipped yet. This produced **two redundant swarm dispatches
+in this same session**:
+
+- PR #133 (`swarm: review-graph-executor`) opened while PR #132 was
+  in flight — same file path, same intent. Closed.
+- PR #135 (`swarm: agent-adversarial-review-pass`) opened while
+  PR #134 was in flight — same intent. Closed.
+
+The pattern is recoverable but expensive: each closed PR is wasted
+agent-run cost + reviewer time + dispatcher tick.
+
+Fix scope:
+
+1. Extend `pickEntryToDispatch` (in `dispatcher.ts`) to skip an
+   entry when ANY of its `blocks:` ids is one of:
+   - currently in-flight (matches a `swarm/` branch on origin that
+     has an open PR)
+   - referenced by a marker in `~/.cache/chitin/swarm-state/dispatched/`
+     whose corresponding workflow hasn't reached `dispatch_complete`
+2. Add a structured log line at the skip site:
+   `{msg: "skip entry: blocked-by", entry_id, blocked_by, blocker_state}`
+3. Tests: fixture-driven — three cases:
+   - blocked-by not-yet-dispatched → skip
+   - blocked-by in-flight (marker exists, no PR yet) → skip
+   - blocked-by shipped (PR open or merged) → don't skip — this entry
+     can be dispatched as a follow-up
+
+Edge cases:
+
+- `blocks: []` (empty list) — must be a no-op skip-check, not a crash.
+- Cycles (entry A blocks B, B blocks A) — the existing dispatcher
+  contract is "skip if any block fires"; cycles produce mutual skip,
+  which is the right outcome (operator inspects). Don't add cycle
+  detection.
+- `blocks: [unknown-entry-id]` — treat unknown blockers as not-yet-
+  dispatched (i.e., skip). Operator either fixes the typo or removes
+  the bogus blocker.
+
+T1 because mechanical: read the field, look at marker dir + origin
+branches, decide. No new agents, no new workflow shape.
+
+---
+
 ### `review-graph-executor`
 
 ```yaml
