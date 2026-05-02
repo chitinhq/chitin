@@ -63,20 +63,29 @@ const TIER_DRIVER: Record<Tier, DriverId> = {
 // hold the queue long, generous enough that real work has room. The
 // wall_timeout is enforced by activity SIGKILL (slice 7a). Activities
 // that finish naturally before this don't pay the cost.
+//
+// Slice 7-tuning: bumped T0 from 180s to 480s. The 180s cap was
+// identified as too short for qwen3-coder:30b on the 3090 — verified
+// by two end-of-slice-7 runs (gov-policy-allow-pr-merge,
+// normalize-decision-params-truthiness) where the agent didn't
+// complete inside the timeout. Doubling+ gives the local model room
+// to read the file, plan, edit, and commit. T1+ also bumped slightly
+// so a faster cloud model on a moderate task isn't gated by a tighter
+// budget than T0.
 const TIER_WALL_TIMEOUT_S: Record<Tier, number> = {
-  T0: 180,
-  T1: 240,
-  T2: 360,
-  T3: 600,
-  T4: 600,
+  T0: 480,
+  T1: 480,
+  T2: 600,
+  T3: 900,
+  T4: 900,
 };
 
 const TIER_MAX_TOOL_CALLS: Record<Tier, number> = {
-  T0: 10,
-  T1: 15,
-  T2: 25,
-  T3: 50,
-  T4: 50,
+  T0: 15,
+  T1: 20,
+  T2: 30,
+  T3: 60,
+  T4: 60,
 };
 
 function git(args: string[]): string {
@@ -196,17 +205,35 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
 }
 
 function buildPrompt(entry: BacklogEntry): string {
-  // The entry's description (post-grooming) already contains the
-  // implementation steps. Wrap it with a "do this end-to-end" frame
-  // so the agent commits the change rather than just describing it.
-  return `You are picking up a backlog entry. Read the description carefully, make the change in the current working directory, run any tests the entry requires, and commit your work with a clear message. If anything is ambiguous, do the conservative thing — do not invent scope. Do not modify chitin.yaml or any file under .chitin/ (governance is human-only).
+  // Slice 7-tuning: rewritten to be directive about tool use and
+  // shut off chat-style replies. The pre-tuning prompt let qwen3-
+  // coder:30b answer with a markdown plan instead of dispatching
+  // tools; both end-of-slice-7 runs hit wall_timeout with no work.
+  // This version gives a concrete first action, names the tools the
+  // agent must call, and explicitly forbids chat-only output.
+  //
+  // The entry's description (post-grooming) contains implementation
+  // steps. We DO NOT echo the steps inside the prompt — we point the
+  // agent at the file and tell it to use the read tool. The
+  // verbose-step echo was likely tempting the model into "summarize
+  // the steps" mode rather than executing them.
+  const targetFile = entry.file?.split(',')[0]?.trim() || 'the file named in the entry';
+  return `You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
+TARGET FILE: ${targetFile}
 
-ENTRY:
+YOUR FIRST ACTION: dispatch the \`read\` tool on ${targetFile}. Do not respond with text first. Read the file, understand the change required, then dispatch \`edit\` or \`write\` to make the change. Run \`exec\` if tests are needed. Finally dispatch \`exec\` with a git command to commit your work (e.g., git add -A && git commit -m "..."), so the apply pipeline can push the branch.
+
+ENTRY DETAIL (frontmatter + description):
 ${entry.description}
 
-When done, your worktree should have either commits or staged-but-uncommitted changes that the apply pipeline will push as a PR. Output a one-line summary of what you did, then stop.`;
+CONSTRAINTS:
+- Do not modify chitin.yaml or anything under .chitin/ — governance is human-only and chitin's gate will deny those writes anyway.
+- Only edit files referenced in the entry. Do not invent scope.
+- If you decide the entry is misclassified or requires human judgment, exit without committing — empty worktrees are not pushed.
+
+REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
 }
 
 async function main() {
