@@ -53,9 +53,15 @@ tier: T3
 status: ready
 estimated_loc: 400
 blocks: []
-file: apps/temporal-worker/src/review-graph.ts (new), apps/temporal-worker/src/workflow.ts, apps/temporal-worker/src/dispatcher.ts
+file: apps/temporal-worker/src/review-graph.ts, apps/temporal-worker/src/workflow.ts, apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/grooming/apply-workflow-result.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
+precondition: |
+  PR metadata (pr_url, pr_number, files-changed list) must be persisted
+  in tmp/result-<workflow>.json by the apply step before the
+  review-graph workflow can consume it. Today the envelope is just
+  ActivityResult — extending it to include PR metadata is part of
+  this entry's scope (apply-workflow-result.ts is in the file: list).
 ```
 
 Phase 2 of the factory design. Implements the §5 review-tier
@@ -97,6 +103,14 @@ Implementation steps:
 5. Auto-merge gate (separate entry, future) consumes review-graph's
    final decision — they're paired but not co-dependent.
 
+Note on `step_index`: the schema caps step_index at 3, which means
+the workflow can run R1 (step 1) → R2 (step 2) → R3 (step 3). R0 is
+the GitHub Copilot bot's server-side review (no chitin-side step
+index — it's pre-existing context, not a dispatched workflow). R4
+is operator escalation (no Temporal step — the workflow ends with a
+notification, not a child dispatch). So a chain that escalates from
+R0 fully to R4 uses 3 dispatch steps, fitting the cap exactly.
+
 Blocked-by: nothing (Phase 1 schema fields are in main as of PR #130).
 Pairs-with: `agent-adversarial-review-pass` (the R3 reviewer template
 this graph dispatches to).
@@ -113,7 +127,7 @@ id: agent-adversarial-review-pass
 tier: T3
 status: ready
 estimated_loc: 200
-blocks: []
+blocks: [review-graph-executor]
 file: apps/temporal-worker/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
@@ -159,9 +173,10 @@ Implementation steps:
 3. Test the structured output parses against a JSON schema (zod);
    the review-graph-executor's `escalateOneTier` reads `decision` +
    `severity` + `confidence` to decide next-tier.
-4. Document the four severity classes (🔴 real bug → block merge;
-   🟡 worth fixing but not blocking; 🟢 doc/nit; — escalate-tier
-   when 🔴 + confidence:low).
+4. Document the three severity classes (🔴 real bug → block merge;
+   🟡 worth fixing but not blocking; 🟢 doc/nit) — these are the
+   only severities; escalate-to-operator is decided by `decision`
+   + `confidence`, not severity.
 5. Pair-test with review-graph-executor — at least one integration
    test where R0+R1+R2 all approve but R3 finds a 🔴.
 
@@ -183,7 +198,7 @@ tier: T2
 status: ready
 estimated_loc: 200
 blocks: []
-file: docs/debt-ledger.md (new), python/analysis/debt.py (extend), apps/temporal-worker/src/grooming/parse-backlog.ts
+file: docs/debt-ledger.md, python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (debt-curator role) + §9 Phase 3
 role: programmer
 ```
@@ -254,7 +269,7 @@ tier: T2
 status: ready
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/researcher.ts (new), apps/temporal-worker/src/role-prompts.ts, infra/systemd/chitin-researcher.timer (new)
+file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/src/role-prompts.ts, infra/systemd/chitin-researcher.timer, infra/systemd/chitin-researcher.service, docs/roadmap.md
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role) + §9 Phase 3 + §10 (cadence open question)
 role: programmer
 ```
@@ -291,8 +306,10 @@ Implementation steps:
    raw text to the researcher-role agent for synthesis + 1-line
    summary.
 3. New systemd timer `chitin-researcher.timer` firing every 4h
-   (cadence is in the open-questions list — operator decides; default
-   4h until tuned).
+   plus the paired `chitin-researcher.service` (the unit the timer
+   activates — timers without paired services are inert). Cadence
+   is in the open-questions list (operator decides; default 4h
+   until tuned).
 4. Cap: max N candidate entries opened per run (default 5) so a
    bursty news day doesn't flood `roadmap.md`.
 5. Telemetry: candidate-entries-opened-per-run counter feeds the
