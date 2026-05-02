@@ -34,6 +34,8 @@ func main() {
 		cmdEmit(args)
 	case "chain-info":
 		cmdChainInfo(args)
+	case "chain-verify":
+		cmdChainVerify(args)
 	case "ingest-transcript":
 		cmdIngestTranscript(args)
 	case "ingest-otel":
@@ -104,13 +106,16 @@ func cmdEmit(args []string) {
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		exitErr("parse_event", err.Error())
 	}
+	// chain_id is now available — thread it through the post-parse error
+	// paths so failure JSON carries enough context to join records to
+	// the failing chain (#11). Pre-parse failures stay chain-less.
 	absDir, _ := filepath.Abs(*dir)
 	if err := kstate.Init(absDir, false); err != nil {
-		exitErr("init", err.Error())
+		exitErrWithChain("init", err.Error(), ev.ChainID)
 	}
 	idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
 	if err != nil {
-		exitErr("open_index", err.Error())
+		exitErrWithChain("open_index", err.Error(), ev.ChainID)
 	}
 	defer idx.Close()
 	// Reconcile the index against all JSONL files before every emit. This
@@ -118,7 +123,7 @@ func cmdEmit(args []string) {
 	// chain_index.sqlite) cannot cause a silent seq=0 fork. O(JSONL) per emit
 	// is acceptable at Phase 1.5 volumes; Phase 2 can add incremental reconcile.
 	if err := idx.RebuildFromJSONL(absDir); err != nil {
-		exitErr("rebuild_index", err.Error())
+		exitErrWithChain("rebuild_index", err.Error(), ev.ChainID)
 	}
 	em := emit.Emitter{
 		LogPath: filepath.Join(absDir, fmt.Sprintf("events-%s.jsonl", ev.RunID)),
@@ -126,7 +131,7 @@ func cmdEmit(args []string) {
 	}
 	em.EnableOTELFromEnv() // F4: opt-in via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 	if err := em.Emit(&ev); err != nil {
-		exitErr("emit", err.Error())
+		exitErrWithChain("emit", err.Error(), ev.ChainID)
 	}
 	out, _ := json.Marshal(map[string]any{
 		"ok":        true,
@@ -166,6 +171,63 @@ func cmdChainInfo(args []string) {
 		"exists":    true,
 		"last_seq":  info.LastSeq,
 		"last_hash": info.LastHash,
+	})
+	fmt.Println(string(out))
+}
+
+// cmdChainVerify is the Phase-1.5 stub for spec §6's `chain verify <session_id>`
+// (#12). Prints a one-liner explaining the feature lands in Phase 2 so
+// operators who try the documented command get a clear signal rather
+// than "unknown_subcommand". Re-uses chain.RebuildFromJSONL's linkage
+// validation as a partial verify: if the rebuild succeeds, the chain's
+// JSONL forms a valid linked list (seqs 0..N-1, prev_hash chains).
+//
+// Phase 2 will extend this to:
+//   - hash recomputation per event (not just linkage)
+//   - subagent parent_chain_id consistency
+//   - cross-chain ordering invariants (session_end is last, etc.)
+func cmdChainVerify(args []string) {
+	fs := flag.NewFlagSet("chain-verify", flag.ExitOnError)
+	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
+	sessionID := fs.String("session-id", "", "session_id (chain_id) to verify")
+	fs.Parse(args)
+	if *sessionID == "" {
+		exitErr("missing_session_id", "--session-id is required")
+	}
+	absDir, _ := filepath.Abs(*dir)
+	idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
+	if err != nil {
+		exitErrWithChain("open_index", err.Error(), *sessionID)
+	}
+	defer idx.Close()
+	// RebuildFromJSONL validates linkage for every chain in the dir
+	// (seqs contiguous, prev_hash chains correctly). If it succeeds,
+	// our chain's JSONL is internally consistent at the linkage level.
+	// A failure surfaces a specific chain + inconsistency in the error.
+	if err := idx.RebuildFromJSONL(absDir); err != nil {
+		exitErrWithChain("rebuild_index", err.Error(), *sessionID)
+	}
+	info, err := idx.Get(*sessionID)
+	if err != nil {
+		exitErrWithChain("lookup", err.Error(), *sessionID)
+	}
+	if info == nil {
+		out, _ := json.Marshal(map[string]any{
+			"verified":  false,
+			"reason":    "chain not found in index",
+			"chain_id":  *sessionID,
+			"phase_2_note": "full hash-recomputation verification lands in Phase 2",
+		})
+		fmt.Println(string(out))
+		return
+	}
+	out, _ := json.Marshal(map[string]any{
+		"verified":     true,
+		"chain_id":     *sessionID,
+		"last_seq":     info.LastSeq,
+		"last_hash":    info.LastHash,
+		"verified_via": "linkage-only (Phase 1.5 stub)",
+		"phase_2_note": "full hash-recomputation verification lands in Phase 2",
 	})
 	fmt.Println(string(out))
 }
@@ -266,6 +328,22 @@ func cmdIngestTranscript(args []string) {
 		// Validate before touching the chain index — illegal states caught here.
 		if err := ingest.ValidateEnvelopeTemplate(&tmpl); err != nil {
 			exitErr("invalid_envelope_template", err.Error())
+		}
+		// #14: cross-check that the template's session_id / chain_id match
+		// the --session-id flag the caller passed. Without this gate, a
+		// caller with kernel access could hand a template with a foreign
+		// chain_id (victim-session-id) while running ingest under their
+		// own --session-id, causing the kernel to emit into someone else's
+		// chain. Refuse the inconsistency.
+		if tmpl.SessionID != "" && tmpl.SessionID != *sessionID {
+			exitErr("envelope_template_mismatch",
+				fmt.Sprintf("template.session_id=%q does not match --session-id=%q",
+					tmpl.SessionID, *sessionID))
+		}
+		if tmpl.ChainID != "" && tmpl.ChainID != *sessionID {
+			exitErr("envelope_template_mismatch",
+				fmt.Sprintf("template.chain_id=%q does not match --session-id=%q",
+					tmpl.ChainID, *sessionID))
 		}
 		idx, err := chain.OpenIndex(filepath.Join(absDir, "chain_index.sqlite"))
 		if err != nil {
@@ -666,7 +744,22 @@ func cmdHealth(args []string) {
 }
 
 func exitErr(kind, msg string) {
-	out, _ := json.Marshal(map[string]string{"error": kind, "message": msg})
+	exitErrWithChain(kind, msg, "")
+}
+
+// exitErrWithChain emits the spec §6 error shape (#11):
+// {"error", "message", "chain_id"}. chain_id is omitted from the JSON
+// when empty so callers without a chain context don't pollute the
+// error envelope with a "" field. Use exitErr when no chain_id is
+// available; use exitErrWithChain to thread the chain context through
+// emit/index/gate failure paths so observability tools can join error
+// records to the failing chain.
+func exitErrWithChain(kind, msg, chainID string) {
+	body := map[string]string{"error": kind, "message": msg}
+	if chainID != "" {
+		body["chain_id"] = chainID
+	}
+	out, _ := json.Marshal(body)
 	fmt.Fprintln(os.Stderr, string(out))
 	os.Exit(2)
 }
