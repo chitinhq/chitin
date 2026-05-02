@@ -68,13 +68,33 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// subagents, schedule cron jobs. Cross-agent communication and scheduling
 	// → delegate.task. Bypass closure with `delegate_task`: any rule that
 	// catches one catches all forms.
-	case "sessions_send", "sessions_spawn", "subagents", "cron":
+	case "cron":
+		action := stringArg(args, "action")
+		name := stringArg(args, "name")
+		if action != "" && name != "" {
+			target := action + ":" + name
+			return Action{Type: ActDelegateTask, Target: target}, nil
+		}
+		// fallback to previous logic if fields missing
+		target := stringArg(args, "target")
+		if target == "" {
+			target = stringArg(args, "name")
+		}
+		if target == "" {
+			target = toolName
+		}
+		return Action{Type: ActDelegateTask, Target: target}, nil
+	case "subagents":
+		action := stringArg(args, "action")
+		agentId := stringArg(args, "agentId")
+		if action != "" && agentId != "" {
+			target := action + ":" + agentId
+			return Action{Type: ActDelegateTask, Target: target}, nil
+		}
+		// fallback to previous logic if fields missing
 		target := stringArg(args, "target")
 		if target == "" {
 			target = stringArg(args, "agentId")
-		}
-		if target == "" {
-			target = stringArg(args, "goal")
 		}
 		if target == "" {
 			target = toolName
