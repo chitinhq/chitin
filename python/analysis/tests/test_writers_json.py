@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timezone
 
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 from analysis.writers import build_finding, write_json
 
 

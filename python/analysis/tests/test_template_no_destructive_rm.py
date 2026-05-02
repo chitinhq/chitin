@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from analysis.templates.no_destructive_rm import draft
-from analysis.types import Decision, Pattern
+from analysis.models import Decision, Pattern
 
 
 def _pattern_with_targets(*targets):

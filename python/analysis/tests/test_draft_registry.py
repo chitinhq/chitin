@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from analysis.draft import draft_for_pattern, reason_no_template
-from analysis.types import Pattern
+from analysis.models import Pattern
 
 
 def _pattern(rule_id="unknown_rule", count=5):

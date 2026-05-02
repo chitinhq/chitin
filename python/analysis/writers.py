@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from analysis.types import Pattern, RuleDraft
+from analysis.models import Pattern, RuleDraft
 
 
 @dataclass(frozen=True)

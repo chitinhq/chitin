@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from analysis.templates import register
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 
 DOC_KEYWORDS = ("docs/", "wiki/", "README", "graphify-out/")
 

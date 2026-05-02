@@ -9,7 +9,7 @@ import json
 import urllib.request
 from typing import Iterable, Optional
 
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen3-coder"

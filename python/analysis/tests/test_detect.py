@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from analysis.detect import detect_patterns
-from analysis.types import Decision
+from analysis.models import Decision
 
 
 def _decision(ts="2026-04-25T08:00:00Z", allowed=False, rule_id="r1",

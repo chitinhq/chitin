@@ -9,7 +9,7 @@ import re
 from typing import Optional
 
 from analysis.templates import register
-from analysis.types import Pattern, PredictedImpact, RuleDraft
+from analysis.models import Pattern, PredictedImpact, RuleDraft
 
 # MUST stay in sync with the regex in `draft()` below. predicted_impact uses
 # this set, so any host added here must also appear in the emitted regex.
