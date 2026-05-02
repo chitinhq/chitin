@@ -1,0 +1,20 @@
+# One-shot service fired by chitin-swarm-rollup.timer.
+# Runs the Python rollup, posts to Slack if CHITIN_SLACK_WEBHOOK_URL is set,
+# and writes ~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json.
+# Exits non-zero if any health alarms fired (visible in journalctl --user -u chitin-swarm-rollup).
+
+[Unit]
+Description=Chitin swarm daily health rollup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-user secrets (CHITIN_SLACK_WEBHOOK_URL etc).
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+ExecStart=%h/workspace/chitin/scripts/swarm-daily-rollup.sh
+StandardOutput=journal
+StandardError=journal
+# 60s is generous for a pure-Python analysis pass over local files.
+TimeoutStartSec=60
