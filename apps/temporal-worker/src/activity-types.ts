@@ -3,6 +3,15 @@ export interface ActivityResult {
   stdout_tail: string;
   stderr_tail: string;
   duration_ms: number;
+  /**
+   * Structured summary of tool usage, parsed from openclaw JSON output (if present).
+   * Example: { calls: 3, tools: ["edit", "search"], failures: 1 }
+   */
+  tool_summary?: {
+    calls: number;
+    tools: string[];
+    failures: number;
+  };
   // Slice 5: present only when base_ref was set on the request and the
   // activity created a worktree. Apply-step uses worktree_path to push
   // the branch and open a PR.
