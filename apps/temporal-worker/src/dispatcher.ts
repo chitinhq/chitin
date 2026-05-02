@@ -145,11 +145,12 @@ function sanitize(s: string): string {
   return s.replace(/[^a-zA-Z0-9_\-:.]/g, '-');
 }
 
-// True if origin has any branch matching swarm/swarm-<entry-id>-* — i.e.,
-// the entry has been dispatched to completion (branch persists past PR
-// merge unless deleted, and stays through PR open). We fetch first so the
-// remote ref state is current; auto-prune deleted remote branches.
-function entryHasOriginBranch(entryId: string): boolean {
+// Refresh local view of origin's swarm/* refs. Called once per
+// pickEntryToDispatch tick so subsequent entryHasOriginBranch checks
+// (entry-level + blocks-level) hit cached refs rather than re-fetching
+// per call. Auto-prunes deleted remote branches so a merged-then-
+// deleted swarm/<id>-* doesn't keep the entry skipped.
+function gitFetchOriginRefs(): void {
   try {
     git(['fetch', '--prune', 'origin']);
   } catch (err) {
@@ -157,6 +158,15 @@ function entryHasOriginBranch(entryId: string): boolean {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+// True if origin has any branch matching swarm/swarm-<entry-id>-* — i.e.,
+// the entry has been dispatched to completion (branch persists past PR
+// merge unless deleted, and stays through PR open). Caller is
+// responsible for calling gitFetchOriginRefs() once per tick before the
+// loop — this helper deliberately does not fetch, so a single tick
+// scanning N entries × K blockers does at most one network round trip.
+function entryHasOriginBranch(entryId: string): boolean {
   try {
     const out = git([
       'for-each-ref',
@@ -209,6 +219,11 @@ function writeDispatchMarker(entryId: string, workflowId: string, tier: Tier, dr
 }
 
 function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
+  // One fetch per tick — entryHasOriginBranch reads cached refs after
+  // this. Without the hoist, an N-entry × K-blocker scan would do N×K
+  // network round trips per tick.
+  gitFetchOriginRefs();
+
   for (const entry of entries) {
     if (entry.status !== 'ready') continue;
     // T5 is human-only — skip even if the schema permits it (it doesn't,
@@ -235,35 +250,38 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
       });
       continue;
     }
-    // --- BLOCKS FIELD HANDLING ---
-    if (Array.isArray(entry.blocks) && entry.blocks.length > 0) {
-      for (const blockerId of entry.blocks) {
-        // Unknown blockers are treated as not-yet-dispatched (skip)
-        // Blocked if: blocker has a dispatch marker (in-flight, not complete), or no PR yet
-        if (entryHasDispatchMarker(blockerId)) {
-          log('info', 'skip entry: blocked-by', {
-            entry_id: entry.id,
-            blocked_by: blockerId,
-            blocker_state: 'dispatch_marker_present',
-          });
-          continue;
-        }
-        // If blocker has an origin branch, it's shipped (PR open or merged) — do not skip
-        if (!entryHasOriginBranch(blockerId)) {
-          log('info', 'skip entry: blocked-by', {
-            entry_id: entry.id,
-            blocked_by: blockerId,
-            blocker_state: 'not_yet_dispatched',
-          });
-          continue;
-        }
-      }
-      // If any blocker caused a skip, continue to next entry
-      // (Handled by continue in the loop above)
+    const unmetBlocker = findUnmetBlocker(entry, entryHasOriginBranch);
+    if (unmetBlocker !== undefined) {
+      log('info', 'skip entry: blocked-by', {
+        entry_id: entry.id,
+        blocked_by: unmetBlocker,
+      });
+      continue;
     }
     return entry;
   }
   return null;
+}
+
+// Invariant: an entry is blocked iff any id in entry.blocks does not
+// yet have a swarm/swarm-<id>-* branch on origin. The branch is the
+// load-bearing signal — it exists only after the apply step has
+// pushed, so its presence proves the blocker has shipped its work
+// (PR open or merged). The dispatch-marker file deliberately is NOT
+// consulted here: markers persist past completion (operator must
+// rm to retry), so a blocker that shipped would have BOTH a marker
+// and a branch — using the marker as a "still in flight" signal
+// would falsely block descendants forever.
+//
+// Returns the first unmet blocker id, or undefined when all blockers
+// are met (or there are no blockers). Pure of side effects so tests
+// can inject a fake `isShipped` predicate.
+export function findUnmetBlocker(
+  entry: BacklogEntry,
+  isShipped: (entryId: string) => boolean,
+): string | undefined {
+  if (!Array.isArray(entry.blocks) || entry.blocks.length === 0) return undefined;
+  return entry.blocks.find((blockerId) => !isShipped(blockerId));
 }
 
 export function buildPrompt(entry: BacklogEntry): string {
