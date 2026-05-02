@@ -80,10 +80,13 @@ const SCAN_PREFIXES = [
 // One ref candidate per regex match. The match is the longest
 // prefix-anchored path-shaped substring on the line. We post-process
 // to drop trailing markdown / punctuation that snuck in.
+//
+// Note: forward-slashes don't need escaping inside `new RegExp(...)`
+// — only inside `/.../`-literals, where they delimit the pattern.
+// SCAN_PREFIXES is a hardcoded constant of lowercase-alpha + slash;
+// no regex metacharacters to escape.
 const REF_RE = new RegExp(
-  '(?:' +
-    SCAN_PREFIXES.map((p) => p.replace(/\//g, '\\/')).join('|') +
-    ')[A-Za-z0-9_./@\\-]+',
+  '(?:' + SCAN_PREFIXES.join('|') + ')[A-Za-z0-9_./@\\-]+',
   'g',
 );
 

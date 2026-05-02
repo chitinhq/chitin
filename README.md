@@ -1,10 +1,17 @@
 # Chitin
 
-**Execution kernel for AI coding agents.** Every tool call across Claude Code, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack. Nx monorepo (Go + TypeScript). MIT licensed.
+**Execution kernel for AI coding agents.** Every tool call across Claude Code, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack. Nx monorepo (Go + TypeScript + Python). MIT licensed.
 
 > Principle: real execution before policy. Policy before automation. Automation gated by the same kernel.
 
-## Phase 1 — Claude Code capture→replay on a local workstation
+## Where chitin is today
+
+- **Kernel + governance** — Go binary fires on every PreToolUse hook, evaluates `chitin.yaml`, writes a hash-linked JSONL chain. Gate decisions are auditable; chain integrity is SHA-256-verified.
+- **OTEL emit (F4, 2026-05-02)** — kernel projects every chain event onto an OTLP/HTTP JSON span after the canonical write succeeds. One-way bridge: chain authoritative, OTEL non-authoritative. Opt-in via `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+- **Autonomous swarm runtime** — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. The factory's design lives in [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
+- **Self-feeding telemetry loop** — periodic scripts (researcher, lessons, debt-curator, groomer, alarm-feeder, stale-doc detector) keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions automatically.
+
+## Quick start
 
 ```bash
 pnpm install
@@ -14,15 +21,37 @@ pnpm exec nx run cli:build
 # Run a Claude Code session...
 ./dist/apps/cli/main.js events list
 ./dist/apps/cli/main.js replay <run_id>
+./dist/apps/cli/main.js health
 ```
+
+To run the autonomous swarm on your own rig, see [`infra/systemd/README.md`](./infra/systemd/README.md).
 
 ## Architecture
 
-- `apps/cli` — operator CLI (`chitin init | events list | events tail | replay`)
-- `libs/contracts` — canonical event schema (zod); Go types generated from this
-- `libs/telemetry` — JSONL tailer, SQLite indexer, replay streamer
-- `libs/adapters/claude-code` — monitor-only PreToolUse hook receiver (thin TS, exec's the Go kernel)
-- `go/execution-kernel` — canon, normalize, emit, hook. Only layer allowed side effects.
+```
+.
+├── apps/
+│   ├── cli/                          # operator CLI (`chitin`)
+│   ├── temporal-worker/              # autonomous swarm runtime + cron-fired scripts
+│   └── openclaw-plugin-governance/   # openclaw integration: chitin gates every openclaw tool call
+├── libs/
+│   ├── contracts/                    # canonical schemas (event chain, ExecutionRequest, envelope)
+│   └── telemetry/                    # JSONL tailer + SQLite indexer + replay streamer
+├── go/execution-kernel/              # the Go kernel — only layer allowed side effects
+├── python/analysis/                  # decisions / debt / souls streams + daily rollup + analyst recipes
+└── infra/systemd/                    # user-mode systemd units for the swarm
+```
+
+| Package | What it owns |
+|---------|--------------|
+| `apps/cli` | Operator CLI (`init`, `events list/tail/tree`, `replay`, `health`, `ledger`, `review`, `install`). [README](./apps/cli/README.md) |
+| `apps/temporal-worker` | Dispatcher, review-graph workflow, gatekeeper, role-typed prompts, all cron scripts. [README](./apps/temporal-worker/README.md) |
+| `apps/openclaw-plugin-governance` | openclaw plugin that wires chitin's policy gate into openclaw's tool-call lifecycle. [README](./apps/openclaw-plugin-governance/README.md) |
+| `libs/contracts` | Canonical schemas every chitin component agrees on. [README](./libs/contracts/README.md) |
+| `libs/telemetry` | Read-side of the event chain. [README](./libs/telemetry/README.md) |
+| `go/execution-kernel` | The Go kernel binary — `canon`, `normalize`, `emit`, `gov`, `hook`, `health`. The only layer allowed side effects. |
+| `python/analysis` | Decisions / debt / souls / swarm-runs / swarm-health / daily rollup + the analyst-role investigation recipe. |
+| `infra/systemd` | User-mode systemd units (worker + 7 cron timers). [README](./infra/systemd/README.md) |
 
 ## Where chitin writes data
 
@@ -49,16 +78,27 @@ For diagnostics, run `chitin health` — it reports on the resolved dir and exit
 - **Nx** — orchestrator (project graph, affected, module boundaries)
 - **Vite+** (`vp`) — TypeScript test/lint/format/build (Vitest, Oxlint, Oxfmt, Rolldown, tsgo)
 - **Go 1.22+** — execution kernel, run via `nx:run-commands`
+- **uv + pytest** — Python analysis lib (`python/analysis/`)
+- **Temporal** — workflow durability for the autonomous swarm
 
 ## Docs
 
-- [`docs/thesis.md`](./docs/thesis.md)
-- [`docs/operating-model.md`](./docs/operating-model.md)
-- [`docs/architecture.md`](./docs/architecture.md)
-- [`docs/event-model.md`](./docs/event-model.md)
+Core:
+- [`docs/thesis.md`](./docs/thesis.md) — what chitin is + isn't
+- [`docs/operating-model.md`](./docs/operating-model.md) — how chitin runs against an agent surface
+- [`docs/architecture.md`](./docs/architecture.md) — three-plane model (Temporal control / OpenClaw execution / Chitin enforcement)
+- [`docs/event-model.md`](./docs/event-model.md) — canonical event chain + OTEL projection
 - [`docs/toolchain.md`](./docs/toolchain.md)
 - [`docs/roadmap.md`](./docs/roadmap.md)
-- [`docs/archive-map.md`](./docs/archive-map.md)
+
+Autonomous swarm (factory model):
+- [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md) — the full §3-§9 station-taxonomy + review-tier escalation + auto-merge gates
+- [`docs/swarm-backlog.md`](./docs/swarm-backlog.md) — what the swarm picks up next
+- [`docs/swarm-lessons.md`](./docs/swarm-lessons.md) — auto-distilled lessons prepended to programmer prompts
+- [`docs/debt-ledger.md`](./docs/debt-ledger.md) — operator-curated + auto-curated debt
+- [`infra/systemd/README.md`](./infra/systemd/README.md) — install + operate the worker + 7 cron timers
+
+Archive: [`docs/archive-map.md`](./docs/archive-map.md)
 
 ## License
 
