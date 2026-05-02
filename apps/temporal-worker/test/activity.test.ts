@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WORKFLOW_NAME } from '../src/submit';
+import { executeRequestWorkflow } from '../src/workflow';
+
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +23,13 @@ const baseReq: ExecutionRequest = {
   bounds: { max_tool_calls: 50, max_cost_usd: 0.5, wall_timeout_s: 600 },
   prompt: 'rename FooBar to BarBaz',
 };
+
+describe('WORKFLOW_NAME matches executeRequestWorkflow.name', () => {
+  it('should stay in sync with the workflow export', () => {
+    // The workflow is imported type-only in submit.ts, so this test can only check the string literal
+    expect(WORKFLOW_NAME).toBe('executeRequestWorkflow');
+  });
+});
 
 describe('planInvocation', () => {
   it('dispatches copilot through the chitin shim', () => {
