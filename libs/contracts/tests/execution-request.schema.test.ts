@@ -86,8 +86,8 @@ describe('ExecutionRequestSchema', () => {
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 
-  it('rejects repo with ../foo', () => {
-    const bad = { ...validRequest, repo: '../foo/bar' };
+  it('rejects repo with ../foo (owner=.., name=foo — leading-dot tightening)', () => {
+    const bad = { ...validRequest, repo: '../foo' };
     expect(() => ExecutionRequestSchema.parse(bad)).toThrow();
   });
 
