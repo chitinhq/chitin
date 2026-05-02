@@ -120,6 +120,117 @@ alias logic for parity. Add a test that `read_file({file_path: "/x"})` and
 
 ---
 
+## Qwen-layer reliability (T0→copilot until these ship)
+
+These five entries together aim to flip `TIER_DRIVER[T0]` back from
+`copilot` to `local-qwen` in `dispatcher.ts`. Slice 7-tuning's first
+live run with `qwen3-coder:30b` on the 3090 surfaced all the gaps; each
+entry below targets one. Until they land, T0 routes to Copilot's free
+GPT-4.1 — same cost ($0 under Jared's plan), reliable tool dispatch.
+
+### `dispatcher-prompt-relative-path-prefix`
+
+```yaml
+id: dispatcher-prompt-relative-path-prefix
+tier: T1
+status: ready
+estimated_loc: 8
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts
+```
+
+The slice-7-tuning prompt names the entry's `file` field as the
+`TARGET FILE`. Live run: qwen3-coder:30b interpreted the relative path
+`apps/openclaw-plugin-governance/src/index.mjs` as absolute (prepended
+`/`), got `ENOENT` on `/apps/...`. Patch `buildPrompt` to prepend `./`
+to the target file so it's an explicit relative path: `./apps/foo`.
+Add a test asserting the prompt contains `./` + the path.
+
+---
+
+### `dispatcher-prompt-scope-discipline`
+
+```yaml
+id: dispatcher-prompt-scope-discipline
+tier: T1
+status: ready
+estimated_loc: 15
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts
+```
+
+Slice-7-tuning live run: agent picked `test/bridge.test.ts` instead of
+the entry's stated `src/index.mjs` — scope drift. Tighten
+`buildPrompt`: forbid editing files not named in the entry's `file`
+field, and instruct the agent to `read` ONLY the target file before
+editing. Add an integration check post-run: if the diff touches files
+outside the entry's `file` list, the apply step refuses to push and
+flags scope drift in the chain.
+
+---
+
+### `activity-include-hook-events-flag`
+
+```yaml
+id: activity-include-hook-events-flag
+tier: T1
+status: ready
+estimated_loc: 20
+blocks: []
+file: apps/temporal-worker/src/activity.ts
+```
+
+Add `--include-hook-events` to the `claude -p` invocation and the
+openclaw `agent` invocation (where supported). When the agent's tool
+calls fail (e.g., `ENOENT` on a misinterpreted path), the hook events
+in the structured stream-json output give the operator visibility
+without grepping verbose stderr. Update activity-types `ActivityResult`
+to expose a parsed `hookEvents` summary.
+
+---
+
+### `qwen-ollama-stream-instability-investigation`
+
+```yaml
+id: qwen-ollama-stream-instability-investigation
+tier: T2
+status: ready
+estimated_loc: 50
+blocks: []
+file: docs/observations/2026-05-XX-qwen-ollama-instability.md (new)
+```
+
+Slice-7-tuning live run errored: `Ollama API stream ended without a
+final response model=qwen3-coder:30b`. Investigate: ollama logs
+during the run, GPU memory pressure on the 3090, model load patterns,
+ollama version. Output is an observation doc with the failure mode
+characterized + a recommended fix (smaller model? quantization? other
+local model?). Doesn't touch code — needs T2 reasoning to read logs
+and characterize the failure.
+
+---
+
+### `dispatcher-flip-t0-back-to-local-qwen`
+
+```yaml
+id: dispatcher-flip-t0-back-to-local-qwen
+tier: T0
+status: blocked
+estimated_loc: 4
+blocks: [dispatcher-prompt-relative-path-prefix, dispatcher-prompt-scope-discipline, qwen-ollama-stream-instability-investigation]
+file: apps/temporal-worker/src/dispatcher.ts
+```
+
+Final entry in the qwen-layer arc. Once the three blockers above ship,
+flip `TIER_DRIVER[T0]` from `'copilot'` back to `'local-qwen'` in
+dispatcher.ts. Add a smoke-test record showing a productive T0 run
+end-to-end on local-qwen. Status `blocked` until the dependencies
+land — the dispatcher's `pickEntryToDispatch` doesn't currently
+respect blocks (slice 8 work) but a human reviewer will catch a
+premature merge.
+
+---
+
 ## In design (needs spec or breakdown before claimable)
 
 ### `wall-timeout-sigkill-propagation`

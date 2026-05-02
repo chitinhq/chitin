@@ -50,9 +50,19 @@ const TMP_DIR = resolve(process.cwd(), 'tmp');
 // marker to allow re-dispatch.
 const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 
-// Tier → driver routing. The cheapest driver capable of the work.
+// Tier → driver routing. The cheapest reliable driver capable of the
+// work. local-qwen is architecturally the right T0 driver (free, on-
+// the-3090, mechanical) but qwen3-coder:30b on this rig is currently
+// unstable (ollama stream crashes mid-generation; agent
+// misinterprets relative paths as absolute; scope drift onto files
+// outside the entry). Slice 7-tuning's first live run uncovered all
+// three. Routing T0 → copilot temporarily until the qwen layer is
+// fixed (those fixes are backlog entries; the swarm itself produces
+// PRs for them via this same dispatcher). Cost: still $0 under
+// Jared's Copilot plan. One-line revert to local-qwen once the local
+// model is reliable.
 const TIER_DRIVER: Record<Tier, DriverId> = {
-  T0: 'local-qwen',                  // free, mechanical
+  T0: 'copilot',                     // Copilot GPT-4.1 free (was local-qwen — see comment)
   T1: 'copilot',                     // Copilot GPT-4.1 free
   T2: 'claude-code-headless',        // claude-haiku-4-5
   T3: 'claude-code-headless',        // claude-sonnet-4-6
@@ -61,22 +71,37 @@ const TIER_DRIVER: Record<Tier, DriverId> = {
 
 // Per-entry wall_timeout — short enough that a stuck workflow doesn't
 // hold the queue long, generous enough that real work has room. The
-// wall_timeout is enforced by activity SIGKILL (slice 7a). Activities
-// that finish naturally before this don't pay the cost.
+// wall_timeout is enforced by activity SIGKILL (slice 7a) — stuck
+// processes get killed at exactly this+1s, regardless of how long the
+// budget is. So generous budgets cost nothing for healthy runs and
+// only cost time-to-fail-detection for stuck ones.
+//
+// Slice 7-tuning history:
+//   180s (slice 7) — too short, even healthy runs hit it
+//   480s (first tuning) — productive for copilot but local-qwen still
+//                         couldn't finish stable runs
+//   1200s/1800s (this tuning) — give complex T2+ work real room. The
+//                         SIGKILL fix means stuck = killed-at-budget,
+//                         not infinite hang, so 30min ceiling is safe.
+//
+// Operator override: if a specific entry needs even more (slice 3-style
+// rewrites that span dozens of files), override per workflow via
+// the request's bounds.wall_timeout_s — the dispatcher's tier value
+// is just the default.
 const TIER_WALL_TIMEOUT_S: Record<Tier, number> = {
-  T0: 180,
-  T1: 240,
-  T2: 360,
-  T3: 600,
-  T4: 600,
+  T0: 1200,  // 20 min — mechanical work has room to read, edit, test, commit
+  T1: 1200,  // 20 min
+  T2: 1800,  // 30 min — specialized reasoning + multi-file
+  T3: 1800,  // 30 min
+  T4: 1800,  // 30 min — even Opus gets a fair budget
 };
 
 const TIER_MAX_TOOL_CALLS: Record<Tier, number> = {
-  T0: 10,
-  T1: 15,
-  T2: 25,
-  T3: 50,
-  T4: 50,
+  T0: 15,
+  T1: 20,
+  T2: 30,
+  T3: 60,
+  T4: 60,
 };
 
 function git(args: string[]): string {
@@ -196,17 +221,35 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
 }
 
 function buildPrompt(entry: BacklogEntry): string {
-  // The entry's description (post-grooming) already contains the
-  // implementation steps. Wrap it with a "do this end-to-end" frame
-  // so the agent commits the change rather than just describing it.
-  return `You are picking up a backlog entry. Read the description carefully, make the change in the current working directory, run any tests the entry requires, and commit your work with a clear message. If anything is ambiguous, do the conservative thing — do not invent scope. Do not modify chitin.yaml or any file under .chitin/ (governance is human-only).
+  // Slice 7-tuning: rewritten to be directive about tool use and
+  // shut off chat-style replies. The pre-tuning prompt let qwen3-
+  // coder:30b answer with a markdown plan instead of dispatching
+  // tools; both end-of-slice-7 runs hit wall_timeout with no work.
+  // This version gives a concrete first action, names the tools the
+  // agent must call, and explicitly forbids chat-only output.
+  //
+  // The entry's description (post-grooming) contains implementation
+  // steps. We DO NOT echo the steps inside the prompt — we point the
+  // agent at the file and tell it to use the read tool. The
+  // verbose-step echo was likely tempting the model into "summarize
+  // the steps" mode rather than executing them.
+  const targetFile = entry.file?.split(',')[0]?.trim() || 'the file named in the entry';
+  return `You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
+TARGET FILE: ${targetFile}
 
-ENTRY:
+YOUR FIRST ACTION: dispatch the \`read\` tool on ${targetFile}. Do not respond with text first. Read the file, understand the change required, then dispatch \`edit\` or \`write\` to make the change. Run \`exec\` if tests are needed. Finally dispatch \`exec\` with a git command to commit your work (e.g., git add -A && git commit -m "..."), so the apply pipeline can push the branch.
+
+ENTRY DETAIL (frontmatter + description):
 ${entry.description}
 
-When done, your worktree should have either commits or staged-but-uncommitted changes that the apply pipeline will push as a PR. Output a one-line summary of what you did, then stop.`;
+CONSTRAINTS:
+- Do not modify chitin.yaml or anything under .chitin/ — governance is human-only and chitin's gate will deny those writes anyway.
+- Only edit files referenced in the entry. Do not invent scope.
+- If you decide the entry is misclassified or requires human judgment, exit without committing — empty worktrees are not pushed.
+
+REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Start by reading ${targetFile} now.`;
 }
 
 async function main() {
