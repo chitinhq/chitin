@@ -1,0 +1,16 @@
+# Timer for chitin-alarm-feeder.service.
+# Daily — fires after the rollup has settled (90min boot offset
+# stages it after rollup/lessons/debt-curator/groomer). Persistent
+# so a missed tick from a powered-off rig fires on the next boot.
+
+[Unit]
+Description=Chitin swarm alarm-feeder timer
+
+[Timer]
+OnUnitActiveSec=24h
+OnBootSec=90min
+Persistent=true
+Unit=chitin-alarm-feeder.service
+
+[Install]
+WantedBy=timers.target
