@@ -26,21 +26,25 @@ var reChitinAdminCmd = regexp.MustCompile(
 	`^(?:\s*(?:env\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+))*chitin-kernel(?:\s|$)`,
 )
 
-// isChitinAdminCommand returns true when action is a shell command
-// invoking chitin-kernel directly. Such commands bypass envelope spend
+// isChitinAdminCommand returns true when action's leading shell segment
+// invokes chitin-kernel directly. Such commands bypass envelope spend
 // (so an exhausted/closed envelope can be recovered from inside the
 // gated session via `envelope grant`) but are still subject to policy
 // evaluation — an operator who wants to deny chitin-kernel invocations
 // from the agent can add a shell.exec policy rule.
 //
-// The matcher only fires on Type=ActShellExec, so a chitin-kernel
-// command re-classified to a more specific type (none today, but
-// future re-tagging is possible) won't match.
+// Accepts any shell-derived action type (ActShellExec OR a re-tag like
+// ActFileRecursiveDelete that fired on a chained-segment match). Without
+// this breadth, `chitin-kernel envelope list && rm -rf /` would fail the
+// admin matcher because the rm-rf re-tag changes the action type away
+// from ActShellExec — the admin matcher needs to recognize that the
+// leading segment is still chitin-kernel.
 func isChitinAdminCommand(a gov.Action) bool {
-	if a.Type != gov.ActShellExec {
-		return false
+	switch a.Type {
+	case gov.ActShellExec, gov.ActFileRecursiveDelete:
+		return reChitinAdminCmd.MatchString(strings.TrimSpace(a.Target))
 	}
-	return reChitinAdminCmd.MatchString(strings.TrimSpace(a.Target))
+	return false
 }
 
 // runHookStdin is the production entry point for the Claude Code

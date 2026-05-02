@@ -15,12 +15,28 @@ escalation:
 
 invariantModes:
   no-governance-self-modification: enforce
+  no-rm-recursive: guide
   no-destructive-rm: guide
   no-force-push: enforce
   no-protected-push: guide
   no-env-file-write: enforce
+  no-remote-code-exec: guide
 
 rules:
+  # Direct rm-recursive — closes #58 (whitespace, quoted-flag, split-flag,
+  # reordered-flag bypass family). canon's IsRecursiveDelete re-tags any
+  # rm-with-recursive variant to file.recursive_delete; this rule fires
+  # regardless of how the command was spelled.
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked — use targeted file operations"
+    suggestion: "Use git rm <specific-files>, or rm <specific-file>. Mass deletion requires human review."
+    correctedCommand: "git rm <specific-files>"
+
+  # Substring fallback for obfuscated rm-rf inside execute_code (string
+  # concatenation, f-strings, pathlib.unlink wrappers) — canon can't see
+  # through these so the action stays shell.exec and we match by literal.
   - id: no-destructive-rm
     action: shell.exec
     effect: deny
@@ -41,12 +57,17 @@ rules:
     effect: deny
     reason: "Force push rewrites shared history"
 
+  # Closes #60: bare `git push` (no remote, or no explicit branch refspec
+  # like `HEAD:fix/x`) is treated as suspicious because gov can't verify
+  # the destination. canon emits the sentinel "<HEAD-implicit>" Target
+  # for this case so the rule's branches list catches it without
+  # driver-side cwd resolution.
   - id: no-protected-push
     action: git.push
     effect: deny
-    branches: [main, master]
-    reason: "Direct push to protected branch"
-    suggestion: "Push to a feature branch and open a pull request"
+    branches: [main, master, "<HEAD-implicit>"]
+    reason: "Direct push to protected branch (or bare push: branch unresolved, cannot verify protected status)"
+    suggestion: "Push to a feature branch with an explicit refspec and open a pull request"
     correctedCommand: "git push origin HEAD:fix/<issue>-<slug>"
 
   - id: no-env-file-write
@@ -73,11 +94,17 @@ rules:
     suggestion: "Use `terraform plan` first; if destroy is intended, it requires a human-approved path (not an agent action)"
     correctedCommand: "terraform plan"
 
-  - id: no-curl-pipe-bash
+  # Closes #61: broadens the prior curl-pipe-bash regex to catch wget,
+  # process substitution `bash <(curl ...)`, and the two-stage form
+  # `curl -o /tmp/x.sh && bash /tmp/x.sh`. canon's IsRemoteCodeExec
+  # detector annotates Action.Params["shape"]="remote-code-exec" so
+  # callers can also key off the canonical shape, but this regex on
+  # the raw command is sufficient for the most common forms.
+  - id: no-remote-code-exec
     action: shell.exec
     effect: deny
-    target_regex: '\bcurl\b[^|]*\|\s*(bash|sh)\b'
-    reason: "curl-pipe-bash executes untrusted remote code"
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Remote code execution: fetching and immediately running untrusted script"
     suggestion: "Download first (`curl -fsSLo /tmp/x.sh <url>`), inspect, then run explicitly if safe"
     correctedCommand: "curl -fsSLo /tmp/script.sh <url> && less /tmp/script.sh"
 

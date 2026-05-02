@@ -20,6 +20,11 @@ const (
 	ActFileWrite         ActionType = "file.write"
 	ActFileDelete        ActionType = "file.delete"
 	ActFileMove          ActionType = "file.move"
+	// ActFileRecursiveDelete: shell `rm` invocation with a recursive
+	// flag (any spelling/whitespace/quoting variant — closes #58).
+	// Re-tagged from shell.exec so the no-rm-recursive rule fires
+	// regardless of how the operator (or model) spells the command.
+	ActFileRecursiveDelete ActionType = "file.recursive_delete"
 	ActGitDiff           ActionType = "git.diff"
 	ActGitLog            ActionType = "git.log"
 	ActGitStatus         ActionType = "git.status"
