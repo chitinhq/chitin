@@ -235,6 +235,32 @@ function pickEntryToDispatch(entries: BacklogEntry[]): BacklogEntry | null {
       });
       continue;
     }
+    // --- BLOCKS FIELD HANDLING ---
+    if (Array.isArray(entry.blocks) && entry.blocks.length > 0) {
+      for (const blockerId of entry.blocks) {
+        // Unknown blockers are treated as not-yet-dispatched (skip)
+        // Blocked if: blocker has a dispatch marker (in-flight, not complete), or no PR yet
+        if (entryHasDispatchMarker(blockerId)) {
+          log('info', 'skip entry: blocked-by', {
+            entry_id: entry.id,
+            blocked_by: blockerId,
+            blocker_state: 'dispatch_marker_present',
+          });
+          continue;
+        }
+        // If blocker has an origin branch, it's shipped (PR open or merged) — do not skip
+        if (!entryHasOriginBranch(blockerId)) {
+          log('info', 'skip entry: blocked-by', {
+            entry_id: entry.id,
+            blocked_by: blockerId,
+            blocker_state: 'not_yet_dispatched',
+          });
+          continue;
+        }
+      }
+      // If any blocker caused a skip, continue to next entry
+      // (Handled by continue in the loop above)
+    }
     return entry;
   }
   return null;
