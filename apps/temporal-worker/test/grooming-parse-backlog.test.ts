@@ -207,17 +207,20 @@ prose.
     expect(entries[0].rawFrontmatter).toBe(yaml);
   });
 
-  it('parses the real swarm-backlog.md and finds in_design entries', () => {
+  it('parses the real swarm-backlog.md cleanly', () => {
     // Smoke test against the actual file (relies on cwd = repo root).
+    // Avoid pinning on a specific entry's status — the grooming pass that
+    // shipped with this slice promotes in_design → ready, so a status
+    // assertion would self-defeat the moment the dispatcher runs. Pin
+    // only on stable shape: parser doesn't error, finds plenty of
+    // entries, finds the well-known wall-timeout entry, and its tier is
+    // T2 regardless of where grooming has moved its status.
     const repoBacklog = join(process.cwd(), 'docs/swarm-backlog.md');
     const entries = parseBacklog(repoBacklog);
     expect(entries.length).toBeGreaterThan(5);
-    const inDesign = entries.filter((e) => e.status === 'in_design');
-    expect(inDesign.length).toBeGreaterThan(0);
-    // Spot-check: known entry from swarm-backlog.md
     const wallTimeout = entries.find((e) => e.id === 'wall-timeout-sigkill-propagation');
     expect(wallTimeout).toBeDefined();
-    expect(wallTimeout?.status).toBe('in_design');
     expect(wallTimeout?.tier).toBe('T2');
+    expect(['ready', 'in_design', 'needs_human']).toContain(wallTimeout!.status);
   });
 });
