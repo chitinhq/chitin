@@ -99,6 +99,62 @@ Synthesis rules:
 ${RESEARCHER_OUTPUT_INSTRUCTIONS}`;
 }
 
+// Analyst prompt for the BacklogEntry path. The analyst role owns
+// internal-telemetry analysis (gov-decisions chain, swarm rollups,
+// debt ledger). It's distinct from researcher (which pulls EXTERNAL
+// signals — arxiv, reddit, openclaw): analyst processes the swarm's
+// own audit trail to find regressions, debt patterns, success-rate
+// dips, and proposes either a fix entry or a needs_human escalation.
+//
+// Why a dedicated template (vs reusing programmer): the analyst is
+// expected to NOT write code. Its output is a finding + recommended
+// action, parsed via `<<<ANALYSIS>>>` so the apply step records a
+// markdown report rather than expecting a code commit. An empty
+// worktree on success is the EXPECTED outcome.
+function buildAnalystEntryPrompt(entry: BacklogEntry): string {
+  return `You are playing the analyst role in chitin's autonomous swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3 for the role's scope.
+
+Your toolkit is \`python/analysis/\`: a typed library of loaders + reports against chitin's canonical event chain. The lib already produces three streams:
+
+  - \`analysis.decisions\` — per-rule deny/allow analysis of governance decisions
+  - \`analysis.debt\` — debt-ledger loader + reporting
+  - \`analysis.swarm_health\` — daily rollup (bucket-B rate, success-by-tier, alarms[])
+  - \`analysis.swarm_runs\` — per-run records (driver, tier, exit_code, duration_ms)
+
+Source data:
+  - \`~/.cache/chitin/.../events-*.jsonl\` — gov-decisions chain (canonical)
+  - \`~/.cache/chitin/swarm-state/dispatched/<entry-id>.json\` — dispatch markers
+  - \`~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json\` — daily rollup
+  - \`tmp/result-swarm-*.json\` — workflow result envelopes
+  - \`docs/debt-ledger.md\` — operator-curated + auto-curated debt
+
+ENTRY ID: ${entry.id}
+ROLE: analyst
+
+ENTRY DETAIL:
+${entry.description}
+
+What good output looks like:
+- Run an existing analysis module (\`python -m analysis.swarm_health\` etc.) OR author a one-off Python query against the chain JSONL.
+- Surface the smallest set of facts that explain WHY the entry was filed (root cause, not symptoms).
+- Recommend a concrete next action: a fix-shape backlog entry, a tier-rule change, a debt-ledger promotion, or \`status: needs_human\` if the cause is non-obvious.
+
+Output rules:
+- Write your findings to \`python/analysis/out/${entry.id}.md\` (the apply step picks up files in this directory). Use the existing analysis writers in \`python/analysis/writers.py\` so format stays consistent across runs.
+- Empty worktree on completion is EXPECTED for the analyst role — your output is the markdown report under \`out/\`, not a code change. The apply step understands this.
+- Do NOT modify code under \`apps/\`, \`go/\`, or \`libs/\`. Pure analysis is your scope; if the analysis surfaces a code change, that's a follow-up backlog entry.
+- Do NOT modify chitin.yaml or anything under .chitin/ — governance is human-only.
+- If you cannot reproduce the regression or the rollup data is missing, exit cleanly with a stub report saying so. Better silent than guessed.
+
+At the END of your run, emit EXACTLY ONE JSON object on a single line, prefixed with the literal token \`<<<ANALYSIS>>>\` and nothing else after the closing brace on that line:
+
+<<<ANALYSIS>>>{"root_cause":"<one sentence>","recommended_action":"file-fix-entry"|"needs_human"|"no-action","report_path":"python/analysis/out/${entry.id}.md","confidence":"high"|"medium"|"low"}
+
+If you couldn't determine a root cause, emit:
+
+<<<ANALYSIS>>>{"root_cause":"unable to determine","recommended_action":"needs_human","report_path":"python/analysis/out/${entry.id}.md","confidence":"low"}`;
+}
+
 // Stub for the remaining non-programmer roles. Future entries replace
 // these with real per-role prompts (reviewer reads the PR's diff; qa
 // runs validation suites; etc.). For now the stub frames the role and
@@ -144,7 +200,9 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
   'tech-writer': (entry) => buildStubPrompt('tech-writer', entry),
-  analyst: (entry) => buildStubPrompt('analyst', entry),
+  // Analyst uses its dedicated entry-level template. Internal-telemetry
+  // analysis distinct from researcher's external-signal pulls.
+  analyst: buildAnalystEntryPrompt,
   refactorer: (entry) => buildStubPrompt('refactorer', entry),
   'debt-curator': (entry) => buildStubPrompt('debt-curator', entry),
 };
@@ -184,4 +242,5 @@ export const __test__ = {
   ROLE_VOCAB,
   buildStubPrompt,
   buildResearcherEntryPrompt,
+  buildAnalystEntryPrompt,
 };

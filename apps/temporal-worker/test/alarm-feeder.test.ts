@@ -92,14 +92,14 @@ describe('readLatestRollup', () => {
 // ─── renderAlarmEntry ────────────────────────────────────────────────────
 
 describe('renderAlarmEntry', () => {
-  it("renders an in_design backlog entry with role:researcher", () => {
+  it("renders an in_design backlog entry with role:analyst (internal-telemetry lane)", () => {
     const out = renderAlarmEntry(
       'BUCKET-B REGRESSION: 1/19 runs contaminated',
       'investigate-bucket-b-regression',
       '2026-05-02T18:00:00Z',
     );
     expect(out).toContain('### `investigate-bucket-b-regression`');
-    expect(out).toContain('role: researcher');
+    expect(out).toContain('role: analyst');
     expect(out).toContain('status: in_design');
     expect(out).toContain('BUCKET-B REGRESSION');
     expect(out).toContain('chitin-alarm-feeder.timer');
@@ -182,7 +182,7 @@ describe('runAlarmFeeder', () => {
     const md = readFileSync(backlogPath, 'utf8');
     expect(md).toContain('### `investigate-bucket-b-regression`');
     expect(md).toContain('### `investigate-success-rate-drop`');
-    expect(md).toContain('role: researcher');
+    expect(md).toContain('role: analyst');
     // Telemetry shape
     const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
     expect(parsed.component).toBe('alarm-feeder');
