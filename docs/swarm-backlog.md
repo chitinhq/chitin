@@ -597,8 +597,10 @@ var docs).
 
 ## Research-informed (added 2026-05-02 from SoTA + OpenClaw survey)
 
-These entries are derived from `docs/observations/2026-05-02-self-improving-swarm-sota.md`
-and `docs/observations/2026-05-02-openclaw-usage-survey.md`. Status `in_design`
+These entries are derived from two observation docs that ship in PR #107
+(not yet on `main`): `docs/observations/2026-05-02-self-improving-swarm-sota.md`
+and `docs/observations/2026-05-02-openclaw-usage-survey.md`. To read them,
+either merge #107 first or `gh pr checkout 107`. Status `in_design`
 until the user reviews and promotes — they touch architecture and need a
 human green-light.
 
@@ -609,7 +611,7 @@ id: role-typed-backlog-entries
 tier: T2
 status: in_design
 estimated_loc: 200
-blocks: [lessons-learned-sidecar, multi-step-flows]
+blocks: []
 file: apps/temporal-worker/src/grooming/parse-backlog.ts, apps/temporal-worker/src/dispatcher.ts, docs/swarm-backlog.md
 ```
 
@@ -641,7 +643,7 @@ id: lessons-learned-sidecar
 tier: T1
 status: in_design
 estimated_loc: 80
-blocks: []
+blocks: [role-typed-backlog-entries]
 file: docs/swarm-lessons.md (new), apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/dispatcher.ts
 ```
 
@@ -649,6 +651,15 @@ After every merged swarm PR, the apply step distills one sentence
 ("when X file pattern, prefer Y") and appends to `docs/swarm-lessons.md`.
 Dispatcher prepends recent lessons (top N) to the prompt so workers
 benefit from past runs without burning tokens on full context.
+
+> Implementation note: `apply-workflow-result.ts` currently skips
+> auto-committing untracked-only changes (`git diff --shortstat` check)
+> and skips push/PR when there are no existing commits. The first lesson
+> append on a fresh worktree would be dropped. Mitigation: commit an
+> empty (tracked) `docs/swarm-lessons.md` as part of this entry's
+> first PR so subsequent appends produce trackable diffs, OR add an
+> explicit-track branch in the apply heuristic for this file. Decide
+> when implementing.
 
 Why: the SoTA review highlighted "long-term memory + global
 observability" as the leader-agent pattern. Chitin already has the
@@ -726,7 +737,7 @@ tier: T2
 status: in_design
 estimated_loc: 150
 blocks: []
-file: apps/temporal-worker/src/activity.ts, libs/otel/ (existing)
+file: apps/temporal-worker/src/activity.ts, libs/telemetry/src/ (existing)
 ```
 
 Emit OTEL spans in the format expected by `abhi1693/openclaw-mission-control`
@@ -752,7 +763,7 @@ Implementation steps:
 id: openclaw-temporal-issue-10164-public-comment
 tier: T3
 status: in_design
-estimated_loc: 80 (mostly outreach prose)
+estimated_loc: 80
 blocks: []
 file: docs/outreach/2026-openclaw-issue-10164-comment.md (new)
 ```
@@ -761,7 +772,7 @@ OpenClaw closed issue #10164 (native Temporal integration) as not
 planned. Chitin's three-plane architecture is exactly the answer
 upstream's users were asking for. This entry produces a comment on
 that closed issue (non-spammy, factual) pointing at chitin as a
-community-built option.
+community-built option. (~80 LOC, mostly outreach prose.)
 
 Why: openclaw-usage-survey identified this as the strategic outreach
 opportunity. Public visibility, free distribution, aligns with
@@ -850,8 +861,9 @@ file: apps/temporal-worker/src/integrations/notebooklm/ (new)
 
 Use the playwright driver to upload a markdown source to NotebookLM,
 trigger summary generation, and pull the resulting artifact (audio
-overview, FAQ, study guide). Output goes into the `wiki/` system
-(see `claude/skills/wiki.md`) as a digestible source.
+overview, FAQ, study guide). Output goes into the workspace-level
+`/wiki` skill (defined in the parent workspace's `CLAUDE.md`, not in
+this repo) as a digestible source.
 
 Why: user asked for this directly. NotebookLM produces dense
 artifacts (audio overviews especially) that are useful for solo
