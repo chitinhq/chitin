@@ -210,6 +210,8 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   analyst: buildAnalystEntryPrompt,
   refactorer: (entry) => buildStubPrompt('refactorer', entry),
   'debt-curator': (entry) => buildStubPrompt('debt-curator', entry),
+  // Comment-responder role: stub, replaced by dedicated template in follow-up entry.
+  'comment-responder': (entry) => buildStubPrompt('comment-responder', entry),
 };
 
 const ROLE_VOCAB = new Set<string>(Object.keys(ROLE_PROMPTS));
