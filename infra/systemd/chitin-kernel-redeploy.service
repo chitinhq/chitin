@@ -1,0 +1,18 @@
+[Unit]
+Description=Rebuild + reinstall chitin-kernel from main
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/workspace/chitin/scripts/install-kernel.sh
+
+# Resource caps
+MemoryMax=2G
+CPUQuota=200%
+TimeoutStartSec=300
+
+# Don't auto-restart — a build failure wants operator attention
+Restart=no
+
+[Install]
+WantedBy=default.target
