@@ -1,0 +1,22 @@
+{
+  "name": "@chitin/doc",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "generators": "./generators.json",
+  "scripts": {
+    "test": "vitest run tests"
+  },
+  "nx": {
+    "tags": ["layer:tooling"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run --config tools/generators/spec-plan-doc/vitest.config.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  }
+}

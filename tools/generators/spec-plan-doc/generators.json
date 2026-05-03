@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nrwl/nx/master/packages/nx/schemas/generators-schema.json",
+  "generators": {
+    "spec": {
+      "factory": "./src/spec/index.ts",
+      "schema": "./src/spec/schema.json",
+      "description": "Generate a design spec in docs/superpowers/specs/<date>-<id>-design.md"
+    },
+    "plan": {
+      "factory": "./src/plan/index.ts",
+      "schema": "./src/plan/schema.json",
+      "description": "Generate an implementation plan in docs/superpowers/plans/<date>-<id>.md"
+    },
+    "observation": {
+      "factory": "./src/observation/index.ts",
+      "schema": "./src/observation/schema.json",
+      "description": "Generate an observation doc in docs/observations/<date>-<id>.md"
+    }
+  }
+}

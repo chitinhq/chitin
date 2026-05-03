@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "title": "plan",
+  "description": "Generate an implementation plan in docs/superpowers/plans/",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Document identifier (kebab-case)",
+      "$default": { "$source": "argv", "index": 0 },
+      "x-prompt": "Document id (kebab-case, e.g. my-feature):"
+    },
+    "title": {
+      "type": "string",
+      "description": "Document title (defaults to title-cased id)"
+    },
+    "lens": {
+      "type": "string",
+      "description": "Active soul/lens during planning",
+      "default": "da Vinci"
+    },
+    "status": {
+      "type": "string",
+      "description": "Document status",
+      "default": "draft"
+    },
+    "spec": {
+      "type": "string",
+      "description": "Path or reference to the companion design spec",
+      "default": ""
+    },
+    "tldr": {
+      "type": "string",
+      "description": "One-sentence goal / TL;DR",
+      "default": ""
+    }
+  },
+  "required": ["id"]
+}
