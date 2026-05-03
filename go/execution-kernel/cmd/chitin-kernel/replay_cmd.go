@@ -147,8 +147,90 @@ func cmdChain(args []string) {
 		cmdChainSnapshot(args[1:])
 	case "stats":
 		cmdChainStats(args[1:])
+	case "recommend-tier":
+		cmdChainRecommendTier(args[1:])
 	default:
 		exitErr("chain_unknown_subcommand", args[0])
+	}
+}
+
+// cmdChainRecommendTier — chitin-kernel chain recommend-tier
+// --action-type=<t> [--threshold=<f>] [--min-sample=<n>] [--json]
+//
+// Reads chain history; recommends the lowest tier (T0..T4) that
+// has historically met the success threshold for an action type.
+// Foundation for `everything-starts-at-T0` data-driven routing.
+func cmdChainRecommendTier(args []string) {
+	actionType := ""
+	threshold := 0.85
+	minSample := 10
+	jsonOut := false
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--action-type="):
+			actionType = a[len("--action-type="):]
+		case strings.HasPrefix(a, "--threshold="):
+			if f, err := strconv.ParseFloat(a[len("--threshold="):], 64); err == nil {
+				threshold = f
+			}
+		case strings.HasPrefix(a, "--min-sample="):
+			if n, err := strconv.Atoi(a[len("--min-sample="):]); err == nil {
+				minSample = n
+			}
+		case a == "--json":
+			jsonOut = true
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain recommend-tier --action-type=<t> [flags]
+
+Reads chain history; recommends the lowest tier (T0..T4) that has
+historically met the success threshold for an action type.
+
+Flags:
+  --action-type=<t>    Required. e.g., file.write, shell.exec, git.commit
+  --threshold=<f>      Success rate threshold (default 0.85)
+  --min-sample=<n>     Minimum decisions for confidence (default 10)
+  --json               Emit structured JSON
+
+Output:
+  recommended_tier:     T0..T4
+  reason:               One-line explanation
+  insufficient_signal:  true if recommendation is below confidence
+  per_agent:            Stats by agent
+  sample_size:          Total decisions across agents
+
+Use case:
+  Dispatcher reads this before dispatching an entry; uses the
+  recommendation as the starting tier instead of the static
+  tier→driver map. Realizes the everything-starts-at-T0 vision.`)
+			os.Exit(0)
+		}
+	}
+	if actionType == "" {
+		exitErr("recommend_tier_no_action", "--action-type=<t> required")
+	}
+	rec, err := replay.RecommendStartingTier(actionType, threshold, minSample)
+	if err != nil {
+		exitErr("recommend_tier_failed", err.Error())
+	}
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rec)
+		return
+	}
+	fmt.Printf("chitin recommend-tier — action_type=%s\n", rec.ActionType)
+	fmt.Printf("  recommended:        %s\n", rec.RecommendedTier)
+	fmt.Printf("  reason:             %s\n", rec.Reason)
+	fmt.Printf("  sample_size:        %d\n", rec.SampleSize)
+	fmt.Printf("  insufficient:       %t\n", rec.InsufficientSignal)
+	if len(rec.PerAgent) > 0 {
+		fmt.Println()
+		fmt.Printf("  per-agent stats:\n")
+		fmt.Printf("    %-25s %5s %10s %10s %10s %10s\n", "agent", "tier", "decisions", "allows", "denies", "success%")
+		for agent, s := range rec.PerAgent {
+			fmt.Printf("    %-25s %5s %10d %10d %10d %9.1f%%\n",
+				agent, s.MappedTier, s.Decisions, s.Allows, s.Denies, s.SuccessRate*100)
+		}
 	}
 }
 
