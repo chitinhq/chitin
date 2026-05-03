@@ -73,7 +73,10 @@ CONSTRAINTS:
 - Forbid editing files not named in the entry's \`file\` field, and instruct the agent to \`read\` ONLY the target file before editing.
 - If you decide the entry is misclassified or requires human judgment, exit without committing — empty worktrees are not pushed.
 
-REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Commit BEFORE testing. Start by reading ${targetFile} now.`;
+REMEMBER: chat replies do nothing. Tool calls are the only thing that produces work. Commit BEFORE testing. Start by reading ${targetFile} now.
+
+// pnpm discipline: If you edit any package.json, you MUST run `pnpm install --no-frozen-lockfile` before committing. This ensures pnpm-lock.yaml is updated and consistent. Do not commit a package.json change without a matching lockfile update.
+`;
 }
 
 // Researcher prompt for the BacklogEntry path. The richer runner-level
