@@ -4986,3 +4986,90 @@ matrix becomes its own scope-down entry as it ships.
 - [ ] Each matrix row reaches "✓" status (or operator decision: "won't ship — explain why")
 - [ ] tier-router-by-data primitive proven against 30+ days of chain telemetry
 - [ ] End-to-end smoke: a swarm dispatch starts at T0, escalates through router heuristics + advisor consultation, reaches successful completion (or operator-takeover) without any operator manual intervention
+## Ecosystem opportunity — chain as the substrate (filed 2026-05-03 evening)
+
+### `chitin-ecosystem-opportunity-rollup`
+
+```yaml
+id: chitin-ecosystem-opportunity-rollup
+tier: T5
+status: in_design
+estimated_loc: TBD (rollup of independently-shippable pieces below)
+blocks: []
+file: TBD
+references_finding: 2026-05-03 evening operator framing — chitin's chain + governance substrate enables a marketplace of plugins, replay/simulation tooling, predictive models, and third-party analysis
+role: architect
+```
+
+Operator framing 2026-05-03 evening:
+
+> "I really like this because that means that everything that an
+> agent does becomes auditable. Replayable, you know. What's the
+> thing where you can, like, simulate? Like, you can simulate and
+> what will happen based off of past data and heuristics. Eventually
+> we could have you know, a Python, like, kind of model that runs.
+> There's just so many things we can do with this kind of setup.
+> And by we I mean like the ecosystem. If people get in line with
+> it and like it it could there's a lot that could be done here,
+> right, that could add you know, awesome, like, governance,
+> heuristics, analysis on the chain, things like that."
+
+Tonight's substrate (chain + router + plugins + advisor) enables
+an ecosystem layer chitin doesn't have to build all of. Each
+ecosystem capability is its own scope-down entry; this rollup
+keeps them aligned with the substrate.
+
+### What the chain enables
+
+| Capability | What it is | Why chitin's substrate uniquely enables it |
+|---|---|---|
+| **Auditability** | Operator + auditor can reconstruct any session's full decision trail from chain events | Hash-chained events make tampering detectable; OTEL projection makes external auditors viable |
+| **Replayability** | Replay a session's events into a sandbox, re-evaluate gate decisions against current policy → see what TODAY's policy would have done | Chain captures every input + decision; gov.Gate is pure-function over (policy, action) |
+| **Simulation** | Given a proposed action + heuristics + recent chain, predict outcome (would advisor fire? would gate deny?) | Heuristics are pure; advisor + kernel are wrap-able as a simulator harness |
+| **Predictive model** | Python ML model trained on chain → "this action class on this driver succeeds 87% of the time" | Chain is structured + emits per-decision telemetry; analysis lib already in chitin (`python/analysis/`) |
+| **Counterfactual analysis** | "What if we had used T0 instead of T3 here?" — re-run the entry through a different tier | Tier-router is policy-driven; pure functions over input |
+| **Plugin marketplace** | Third parties ship heuristic + advisor plugins; operator declares trust policy | Plugin loader (PR #235) + trust allowlist (PR #237) — substrate is in place |
+| **Cross-org governance baselines** | Industry-standard policy bundles (security baseline, financial-compliance baseline) shipped as chitin.yaml fragments | Policy is YAML; rules are composable |
+
+### Concrete shipping pieces (each is its own scope-down entry; T2-T3)
+
+1. **`chain-replay-cli`** (T2, ~250 LOC) — `chitin chain replay <session_id> [--policy <path>]` re-evaluates a session's gate decisions against current (or specified) policy. Output: per-event decision diff (today_decision vs replay_decision).
+
+2. **`chain-simulate-action`** (T2, ~200 LOC) — `chitin simulate <hook_input.json>` runs the heuristics + advisor against a synthetic action without executing it. Useful for operator's "would this be allowed?" pre-check.
+
+3. **`analysis-action-success-by-driver`** (T2, ~300 LOC, Python) — extends `python/analysis/swarm_health.py` with per-action_class-by-tier success rates. Output: input data for `tier-router-by-data` (filed in `everything-governs-everything-recursively`).
+
+4. **`chain-predict-outcome`** (T3, ~500 LOC, Python) — Naive-Bayes or logistic-regression model trained on chain events: given (action_type, target, agent, recent_outcomes), predict P(success). Reads trained model at hook time; advisor.when can include `predicted_failure_above_threshold`.
+
+5. **`policy-bundles-marketplace-spec`** (T3, ~400 LOC docs + schema) — declared schema + manifest for sharable chitin.yaml policy bundles. Operator: `chitin policy install @<vendor>/<bundle>` — pulls from a registry, verifies signature, installs into chitin.yaml under a `policies:` array. Bundles are composable.
+
+6. **`plugin-marketplace-spec`** (T3, ~400 LOC docs + schema + example) — declared shape for npm-distributable router plugins. Includes `@chitin/router-plugin-api` package, plugin manifest schema, example plugin, and registry-hosting decision (npm vs custom).
+
+7. **`chain-snapshot-export`** (T2, ~200 LOC) — `chitin chain export <session_id> --format=json|otlp|sigstore` produces an immutable snapshot suitable for external audit / regulatory submission. Includes hash-chain proof.
+
+8. **`chain-replay-as-memory-context`** (T3, ~400 LOC) — when a NEW agent picks up a task related to a prior session, surface the prior session's chain as MEMORY CONTEXT in the new agent's prompt. Operator framing 2026-05-03 evening: "the next agent can easily replay what's happened.. and we can have that replay in our memory layer too." Concrete shape: `chitin chain summarize <session_id>` produces a markdown summary suitable for prompt injection (decisions made, files touched, open questions, advisor nudges). Related-session detection: heuristic match on entry_id substring + file paths overlap. Composes with existing shared-memory primitive (per-workflow JSON scratchpad in PR #230) and the Hindsight evaluation track for cross-context recall.
+
+### What this means strategically
+
+Chitin becomes a **substrate**, not a product. The product layer (replay UI, simulation playground, predictive dashboard, plugin marketplace, policy bundles) can come from the ecosystem.
+
+This is the verifiable-execution-layer pitch made concrete: chitin
+provides the chain + governance primitives; everyone else builds
+on top. Chitin's role: keep the substrate sharp (kernel
+deterministic, chain immutable, hooks fast), publish stable
+APIs, document the patterns.
+
+The two operator-asks today — "make chitin bulletproof" and
+"the ecosystem could do a lot here" — are the same ask viewed
+from inside-out vs outside-in: a bulletproof substrate IS what
+makes ecosystem participation safe + valuable.
+
+**Acceptance:**
+- [ ] At least 3 of the 7 scope-down entries shipped (chitin
+      proves the substrate by building the most critical
+      consumer-side pieces first)
+- [ ] At least 1 third-party-shaped artifact: a policy bundle OR
+      a plugin OR a docs landing page that's operator-followable
+      from "I want to write a chitin plugin" to "my plugin runs"
+- [ ] OTEL emit + chain snapshot proven across the wire (someone
+      else can ingest chitin's chain into their own tooling)
