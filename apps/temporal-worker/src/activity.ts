@@ -602,6 +602,14 @@ function findMatchingOpenBrace(s: string, end: number): number {
 // proxies this for the terminal-state Slack digest.
 export { runGatekeeperNotify } from './gatekeeper.ts';
 
+// Re-export runCommentResponderEnqueue so the worker registers it
+// as an activity. reviewGraphWorkflow calls this after a
+// 'request-changes' verdict to spawn a comment-responder workflow
+// that addresses the findings. Workflows can't spawn arbitrary
+// top-level workflows directly (executeChild creates a parent-
+// child); the activity bridges via a normal Temporal client.
+export { runCommentResponderEnqueue } from './comment-responder/enqueue-activity.ts';
+
 export const __test__ = {
   parseToolSummary,
   planInvocation,

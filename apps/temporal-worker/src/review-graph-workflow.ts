@@ -443,6 +443,25 @@ const { runGatekeeperNotify } = proxyActivities<{
   retry: { maximumAttempts: 1 },
 });
 
+// Activity proxy for the comment-responder enqueue. 30s — the
+// activity opens a Temporal connection, calls workflow.start, and
+// closes. Best-effort: activity returns enqueued=false rather than
+// throwing on dispatch errors so a missing comment-responder never
+// fails the review-graph workflow.
+const { runCommentResponderEnqueue } = proxyActivities<{
+  runCommentResponderEnqueue(input: {
+    pr_url: string;
+    repo: string;
+  }): Promise<{
+    enqueued: boolean;
+    workflow_id?: string;
+    reason?: string;
+  }>;
+}>({
+  startToCloseTimeout: '30 seconds',
+  retry: { maximumAttempts: 1 },
+});
+
 /**
  * The Temporal workflow chitin's review-graph runs as. Thin shell —
  * dispatches each reviewer via `executeChild(executeRequestWorkflow,
@@ -481,7 +500,46 @@ export async function reviewGraphWorkflow(input: ReviewGraphInput): Promise<Revi
     // (worker offline, etc.). The workflow still returns its result.
   }
 
+  // Chain to comment-responder when the loop's verdict requests
+  // implementor changes. The chained workflow runs as a peer (top-
+  // level), reads the same PR via gh, evaluates each finding, and
+  // pushes a fix commit + replies to threads. Other terminal
+  // actions skip:
+  //   - 'approve'                  — no findings to act on
+  //   - 'escalate-to-operator'     — operator pickup, agent shouldn't
+  //                                  preempt the human
+  //   - 'parse-failure-at-r4'      — no clean signal to act on
+  //
+  // Best-effort: the activity returns enqueued=false on dispatch
+  // errors rather than throwing, and we silently swallow Temporal
+  // rejections (same shape as the gatekeeper notify above). A
+  // missing chain is no worse than the pre-this-PR baseline — the
+  // operator still gets the gatekeeper digest.
+  if (shouldChainCommentResponder(result.action, input.pr_meta.pr_url)) {
+    try {
+      await runCommentResponderEnqueue({
+        pr_url: input.pr_meta.pr_url!,
+        repo: input.repo,
+      });
+    } catch {
+      // Same fall-through as above — never let a chain-dispatch
+      // error fail the parent workflow.
+    }
+  }
+
   return result;
+}
+
+/**
+ * Pure: should the workflow chain to a comment-responder for this
+ * outcome? Extracted so tests can pin every (action, pr_url)
+ * combination without standing up a Temporal worker.
+ */
+export function shouldChainCommentResponder(
+  action: ReviewGraphAction,
+  pr_url: string | undefined,
+): boolean {
+  return action === 'request-changes' && Boolean(pr_url);
 }
 
 export const __test__ = {
