@@ -1,0 +1,18 @@
+[Unit]
+Description=Trigger chitin-kernel-redeploy every 15 min
+Documentation=file:%h/workspace/chitin/docs/runbooks/chitin-kernel-redeploy.md
+
+[Timer]
+# Fire 2 minutes after boot to catch any drift accumulated while the
+# rig was off. After that, every 15 minutes.
+OnBootSec=2min
+OnUnitActiveSec=15min
+
+# Persistent=true means missed runs (rig asleep / off) trigger
+# immediately on resume rather than waiting for the next slot.
+Persistent=true
+
+Unit=chitin-kernel-redeploy.service
+
+[Install]
+WantedBy=timers.target

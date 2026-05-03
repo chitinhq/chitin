@@ -1,0 +1,27 @@
+[Unit]
+Description=Rebuild + reinstall chitin-kernel from main
+Documentation=file:%h/workspace/chitin/docs/runbooks/chitin-kernel-redeploy.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Idempotent. Decides on its own whether to rebuild based on git
+# state + binary mtime; safe to fire arbitrarily often.
+ExecStart=%h/workspace/chitin/scripts/install-kernel.sh
+
+# Resource caps — go build may use ~500 MB and a few cores.
+MemoryMax=2G
+CPUQuota=200%
+
+# A hung build (network stall, repo lock, etc.) shouldn't block the
+# next timer fire forever.
+TimeoutStartSec=300
+
+# Don't restart on failure — a build failure is a real signal that
+# wants operator attention; auto-retry would just paper over it.
+# The next timer fire will retry naturally on a 15-min cadence.
+Restart=no
+
+[Install]
+WantedBy=default.target

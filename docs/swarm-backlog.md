@@ -3838,3 +3838,41 @@ Auto-filed by chitin-alarm-feeder.timer at 2026-05-03T03:45:14.730Z from a swarm
 > LOW SUCCESS: driver=claude-code-headless 56% (5/9)
 
 Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
+
+## Auto-rebuild + redeploy chitin-kernel (filed 2026-05-03, in flight via PR #222)
+
+### `auto-rebuild-redeploy-chitin-kernel`
+
+```yaml
+id: auto-rebuild-redeploy-chitin-kernel
+tier: T2
+status: in_flight
+estimated_loc: 200
+blocks: []
+file: scripts/install-kernel.sh, infra/systemd/chitin-kernel-redeploy.service, infra/systemd/chitin-kernel-redeploy.timer, docs/runbooks/chitin-kernel-redeploy.md
+references_finding: docs/observations/2026-05-03-low-success-alarm-investigation.md
+role: programmer
+```
+
+Closes the deploy-lag gap that produced the 2026-05-03 low-success
+alarm. PRs touching `go/` or `chitin.yaml` only take effect when an
+operator manually rebuilds, so policy fixes can sit in main for
+hours-to-days. The systemd-timer fires `scripts/install-kernel.sh`
+every 15 minutes — pulls main, decides if rebuild needed (commits
+touch go/ or chitin.yaml OR binary mtime is older than tracked
+sources), rebuilds, smoke-tests via a canned `Task` PreToolUse hook
+payload (asserts the closed-enum normalizer is present), rolls back
+to `chitin-kernel.prev` on smoke failure.
+
+Five exit codes for telemetry consumers (0 noop / 0 ok / 1
+pull-conflict / 2 build-fail / 3 smoke-fail-rollback-ok / 4
+smoke-fail-rollback-failed). Verified end-to-end on the rig:
+forced-rebuild path (touch source + rerun) builds in ~700ms;
+no-op path returns instantly with structured log line.
+
+**Acceptance:**
+- [x] `scripts/install-kernel.sh` no-ops cleanly when no go/ or chitin.yaml changes since last run
+- [x] Script rebuilds + reinstalls when go/ or chitin.yaml changes
+- [x] Smoke-test (canned `Task` PreToolUse evaluate) exits 0 against the new binary OR the script auto-rolls-back
+- [ ] systemd timer + service install cleanly via `systemctl --user enable --now chitin-kernel-redeploy.timer` (operator step on merge)
+- [x] Runbook in docs/runbooks/chitin-kernel-redeploy.md
