@@ -4344,8 +4344,10 @@ estimated_loc: 500
 blocks: [per-role-lessons-files, copilot-review-lessons-extractor, code-pattern-lessons]
 file: apps/temporal-worker/src/lessons-curator/dispatch.ts, apps/temporal-worker/src/lessons-curator/prompt.ts (or skill folder), apps/temporal-worker/src/lessons-curator/cluster.ts (deterministic), infra/systemd/chitin-lessons-curator.{service,timer}, docs/runbooks/chitin-lessons-curator.md
 references_finding: 2026-05-03 operator framing — "this is all data for us to see how to improve the swarm" + "shift majority of work left, push towards T0 doing majority of work"
-role: lessons-curator
+role: analyst
 ```
+
+Note on role: filed under `analyst` (the closest existing role — work is analyzing PR-review patterns and producing structured output) to satisfy the backlog-shape linter's RoleSchema check. The implementation will likely introduce a dedicated `lessons-curator` role once the work is scoped — if so, this entry's role + the `add lessons-curator to RoleSchema` step in acceptance criteria below get bundled. Until then `analyst` is the load-bearing label.
 
 The first three entries above are PASSIVE infrastructure
 (per-role files, review-comment ingestion, structured schema).
