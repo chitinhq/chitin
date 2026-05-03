@@ -138,7 +138,7 @@ describe('slice 6a — writeWorktreeClaudeSettings', () => {
     rmSync(scratch, { recursive: true, force: true });
   });
 
-  it('creates .claude/settings.json with a PreToolUse chitin-kernel hook', () => {
+  it('creates .claude/settings.json with a PreToolUse router-hook entrypoint', () => {
     writeWorktreeClaudeSettings(scratch);
     const settingsPath = join(scratch, '.claude/settings.json');
     expect(existsSync(settingsPath)).toBe(true);
@@ -147,9 +147,13 @@ describe('slice 6a — writeWorktreeClaudeSettings', () => {
     expect(Array.isArray(hooks)).toBe(true);
     expect(hooks.length).toBeGreaterThan(0);
     const cmd = hooks[0]?.hooks?.[0]?.command;
-    expect(cmd).toContain('chitin-kernel');
-    expect(cmd).toContain('gate evaluate');
-    expect(cmd).toContain('--hook-stdin');
+    // The hook command points at chitin-router-hook (which has a hot-path
+    // bypass that exec's chitin-kernel directly when the operator hasn't
+    // touched ~/.chitin/router-enabled). The command therefore contains
+    // chitin-router-hook in default install; older builds pointed at
+    // chitin-kernel directly. Either path is valid; assert on the
+    // structural shape (hook present + agent param) instead of binary name.
+    expect(cmd).toMatch(/chitin-(router-hook|kernel)/);
     expect(cmd).toContain('--agent=claude-code');
   });
 
