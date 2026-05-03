@@ -4523,4 +4523,91 @@ all acceptance criteria met."
       synthetic entry id appears in synthetic PR title →
       auto-flipper proposes status update
 - [ ] Test: entry id NOT in any PR title → no action
+## Formalize the no-GitHub-issues choice (filed 2026-05-03)
+
+### `formalize-no-github-issues-decision`
+
+```yaml
+id: formalize-no-github-issues-decision
+tier: T2
+status: ready
+estimated_loc: 100
+blocks: []
+file: docs/decisions/2026-05-03-no-github-issues.md, docs/superpowers/plans/2026-05-02-scheduler-design.md
+references_finding: 2026-05-03 operator question — "did we decide to no longer use gh issues?"
+role: tech-writer
+```
+
+The chitin workflow drifted away from per-PR GitHub issues months
+ago — closed-issue history shows the OLD pattern (`[swarm/T1]
+openclaw-tool-coverage-audit` etc.) ending around 2026-04-23. Today
+the only open issues (#22, #13, #4) are real bug reports filed by
+humans, not work-tracking artifacts. The active work surface is
+`docs/swarm-backlog.md`: the dispatcher reads markdown directly,
+PRs reference backlog-entry-IDs in titles, lessons-extractor
+reads from PRs not issues.
+
+Operator framing 2026-05-03: "I agree [with formalizing no-issues]
+because I think our scheduler will eventually be the backlog
+instead of a flat file."
+
+So the decision has TWO components:
+
+1. **Today's formalization** (status quo): GitHub issues are
+   reserved for outside-the-swarm bug reports filed by humans.
+   The swarm doesn't create issues. Backlog entries in
+   `docs/swarm-backlog.md` are the kanban + work-tracking
+   surface.
+
+2. **Forward direction**: the flat-file backlog is INTERIM.
+   `libs/scheduler` (life scheduling lib being built) will
+   eventually subsume the swarm backlog — backlog entries become
+   scheduler items with the same `status`/`tier`/`role`/`blocks`
+   shape as today, plus deadline + window-pref fields native to
+   the scheduler. `apps/scheduler-dashboard` (the planned Angular
+   UI) becomes the kanban view across both life-scheduling work
+   AND swarm-backlog work. No separate "swarm-backlog-kanban-view"
+   app needed — the scheduler-dashboard handles both.
+
+This entry's job is the docs + decision record, not the
+implementation. Implementation lands in scheduler entries.
+
+Steps:
+
+1. Add a one-page decision doc at `docs/decisions/2026-05-03-no-github-issues.md`
+   (or amend CONTRIBUTING.md if that file exists / is the right
+   home — operator's call). Sections:
+   - Decision (what's true today)
+   - Why (the structural reasons: backlog file beats issues for
+     machine-readable kanban with deps + blocks; lessons + PR
+     workflow already routes around issues; no operator-side
+     gain)
+   - Forward direction (the scheduler subsumes the backlog;
+     the flat file is interim)
+   - Exception (real bug reports filed by humans use issues
+     normally; the no-issues rule is for SWARM work-tracking,
+     not all GitHub usage)
+   - When this decision should be revisited (if the swarm
+     stops scaling under operator-side visibility; if external
+     contributors need an issues-mediated entrypoint; if the
+     scheduler absorption stalls)
+
+2. Forward-pointer in `docs/superpowers/plans/2026-05-02-scheduler-design.md`:
+   add a note that the scheduler is also slated to subsume the
+   swarm backlog, with the data model implications (status/tier/
+   role/blocks fields, dispatcher reads scheduler API instead of
+   markdown).
+
+3. Optional: add a short note to `docs/swarm-backlog.md`'s file
+   header explaining "this file is the interim work-tracking
+   surface; expect migration to the scheduler when libs/scheduler
+   ships its workflow-item shape."
+
+**Acceptance:**
+- [ ] `docs/decisions/2026-05-03-no-github-issues.md` exists with
+      the five sections above
+- [ ] Scheduler design doc has the forward-pointer
+- [ ] swarm-backlog.md header notes the interim status (optional)
+- [ ] Existing 3 open issues (#22, #13, #4) are NOT closed by
+      this entry — they're real bug reports
 - [ ] CI green
