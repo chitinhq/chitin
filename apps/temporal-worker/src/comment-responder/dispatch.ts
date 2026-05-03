@@ -14,7 +14,9 @@
 // reviewer comments AND no comment-responder workflow is currently
 // running for this PR.
 
+import { randomUUID } from 'node:crypto';
 import type { Client } from '@temporalio/client';
+import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
 import type { executeRequestWorkflow } from '../workflow.ts';
 import type { BacklogEntry } from '../grooming/parse-backlog.ts';
@@ -47,11 +49,20 @@ export interface EnqueueCommentResponderResult {
 
 /**
  * Stable workflow id for the comment-respond cycle on a given PR.
- * Re-dispatches reuse the id once the previous workflow completes;
- * a still-running workflow blocks new dispatch (Temporal's
- * id-reuse-policy = AllowDuplicate by default; we rely on the
- * ingester's "no responder running for this PR" check before
- * calling enqueue).
+ * Re-dispatches against this id are governed by two policies set
+ * explicitly on the start call below:
+ *   - workflowIdReusePolicy: default (ALLOW_DUPLICATE) — a new
+ *     run can start once the previous run is in a Closed state.
+ *   - workflowIdConflictPolicy: USE_EXISTING — if a run is still
+ *     RUNNING, the start returns a handle to the running workflow
+ *     instead of throwing WorkflowExecutionAlreadyStartedError.
+ * Combined: concurrent ingester ticks against the same PR don't
+ * inflate the ingester's `errors` counter; a closed run for the
+ * same PR is naturally re-runnable on subsequent ticks.
+ *
+ * Belt-and-suspenders: the ingester also has a "no responder
+ * running for this PR" check upstream of enqueue, so the
+ * USE_EXISTING path is the safety net, not the primary defense.
  */
 export function commentResponderWorkflowIdForPr(prNumber: number): string {
   return `comment-respond-pr-${prNumber}`;
@@ -90,15 +101,22 @@ export function buildCommentResponderRequest(
   const driver = input.driver ?? 'copilot';
   const tier = input.tier ?? 'T2';
 
-  return {
+  // Validate via the schema rather than asserting. Other dispatch
+  // paths in this worker use ExecutionRequestSchema.parse() so
+  // contract drift fails fast at the dispatch site, not later
+  // inside the workflow. (Copilot review #211 round-2 #6.)
+  return ExecutionRequestSchema.parse({
     schema_version: '1',
     workflow_id: workflowId,
     // run_id must be UNIQUE PER EXECUTION — the kernel writes
     // canonical events to `.chitin/events-<run_id>.jsonl`, so a
     // stable run_id collapses repeat dispatches' telemetry into a
-    // single file and breaks per-run auditability. (Copilot review
-    // #212 #3; same fix as peer-reviewer/dispatch.ts.)
-    run_id: `${workflowId}-${Date.now()}`,
+    // single file and breaks per-run auditability. randomUUID()
+    // avoids the millisecond-collision risk that a bare Date.now()
+    // suffix has when concurrent dispatches fire in the same tick.
+    // (Copilot review #212 #3 + round-2 #1; same shape as
+    // peer-reviewer/dispatch.ts.)
+    run_id: `${workflowId}-${randomUUID()}`,
     repo: input.repo,
     task_class: 'bug_fix',              // closest fit — addressing review-flagged issues
     risk_level: 'medium',               // commits land on PR branch
@@ -116,7 +134,7 @@ export function buildCommentResponderRequest(
     // base_ref intentionally absent — agent does its own
     // `gh pr checkout` so a worktree set up by the activity would
     // collide with the agent's branch state.
-  } as ExecutionRequest;
+  });
 }
 
 /**
@@ -150,6 +168,11 @@ export async function enqueueCommentResponder(
       args: [request],
       taskQueue: input.taskQueue,
       workflowId: request.workflow_id,
+      // Stable per-PR workflow id: USE_EXISTING returns a handle to
+      // the running workflow rather than throwing
+      // WorkflowExecutionAlreadyStartedError on concurrent ingester
+      // ticks. (Copilot review #211 round-2 #2.)
+      workflowIdConflictPolicy: 'USE_EXISTING',
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -515,11 +515,22 @@ export async function runIngesterTick(opts: {
       }
     }
 
-    // Comment-responder fires when there are unresolved Copilot
-    // comments above the threshold. Same threshold as the §5
-    // matrix's R1 escalation (>2 comments) so the responder fires
-    // on roughly the same PRs that get an R1 reviewer. Skip if one
-    // is already running.
+    // Comment-responder fires when the PR has more than
+    // COMMENT_RESPONDER_THRESHOLD raw Copilot inline review
+    // comments. NOTE: the count is total inline comments returned
+    // by `/pulls/{n}/comments` — it does NOT distinguish resolved
+    // vs unresolved threads, so once a responder run completes the
+    // count remains above threshold and the next ingester tick
+    // will redispatch. That respawn is gated by the
+    // `runningAgents` check (one in flight blocks the next), but
+    // not by a "previously responded" check. Both gaps are
+    // tracked as backlog follow-ups
+    // (`pr-event-ingester-comment-count-is-unresolved` +
+    // `pr-event-ingester-dedup-against-completed-workflows`,
+    // PR #223).
+    // Same threshold as the §5 matrix's R1 escalation (>2
+    // comments) so the responder fires on roughly the same PRs
+    // that get an R1 reviewer.
     const responderWorkflowId = commentResponderWorkflowIdForPr(pr.number);
     const commentCount = pr.copilotCommentCount ?? 0;
     if (commentCount > COMMENT_RESPONDER_THRESHOLD && !runningAgents.has(responderWorkflowId)) {

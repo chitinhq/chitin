@@ -12,7 +12,9 @@
 // flagged on PR #207, where apply-workflow-result would otherwise
 // try to push an empty diff as a no-op PR.
 
+import { randomUUID } from 'node:crypto';
 import type { Client } from '@temporalio/client';
+import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
 import type { executeRequestWorkflow } from '../workflow.ts';
 import type { BacklogEntry } from '../grooming/parse-backlog.ts';
@@ -95,7 +97,11 @@ export function buildPeerReviewerRequest(
   const driver = input.driver ?? 'copilot';
   const tier = input.tier ?? 'T2';
 
-  return {
+  // Validate via the schema rather than asserting. Other dispatch
+  // paths in this worker use ExecutionRequestSchema.parse() so
+  // contract drift fails fast at the dispatch site, not later
+  // inside the workflow. (Copilot review #211 round-2 #4.)
+  return ExecutionRequestSchema.parse({
     schema_version: '1',
     workflow_id: workflowId,
     // run_id must be UNIQUE PER EXECUTION — the kernel writes
@@ -103,8 +109,10 @@ export function buildPeerReviewerRequest(
     // stable run_id collapses repeat dispatches' telemetry into a
     // single file and breaks per-run auditability. workflow_id is
     // stable per PR (for Temporal dedup); run_id is per-dispatch.
-    // (Copilot review #212 #2.)
-    run_id: `${workflowId}-${Date.now()}`,
+    // randomUUID() avoids the millisecond-collision risk that a
+    // bare Date.now() suffix has when concurrent dispatches fire
+    // in the same tick. (Copilot review #212 #2 + round-2 #1.)
+    run_id: `${workflowId}-${randomUUID()}`,
     repo: input.repo,
     task_class: 'exploration',          // closest fit for read-only review
     risk_level: 'low',
@@ -120,7 +128,7 @@ export function buildPeerReviewerRequest(
     role: 'peer-reviewer',
     tier,
     // base_ref intentionally absent — no worktree, no apply step.
-  } as ExecutionRequest;
+  });
 }
 
 /**
@@ -154,6 +162,13 @@ export async function enqueuePeerReviewer(
       args: [request],
       taskQueue: input.taskQueue,
       workflowId: request.workflow_id,
+      // Stable per-PR workflow id means concurrent ingester ticks
+      // can race a workflow.start() against an already-running run.
+      // USE_EXISTING returns a handle to the running workflow rather
+      // than throwing WorkflowExecutionAlreadyStartedError, so the
+      // ingester doesn't inflate its `errors` counter on the race.
+      // (Copilot review #211 round-2 #2.)
+      workflowIdConflictPolicy: 'USE_EXISTING',
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
