@@ -247,7 +247,8 @@ describe('ExecutionRequestSchema', () => {
   it('accepts each valid role value', () => {
     const roles = [
       'researcher', 'product', 'groomer', 'architect', 'programmer',
-      'reviewer', 'qa', 'gatekeeper', 'tech-writer', 'analyst',
+      'reviewer', 'peer-reviewer', 'comment-responder',
+      'qa', 'gatekeeper', 'tech-writer', 'analyst',
       'refactorer', 'debt-curator',
     ] as const;
     for (const role of roles) {

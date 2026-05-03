@@ -3182,6 +3182,350 @@ Steps:
 - [ ] systemd shows the unit alongside existing chitin-* services
 
 
+
+## Skill-folder cohort — authoring + linter + migration + cost report + tier-router
+
+Filed 2026-05-03, then amended same-day to reflect Anthropic's
+skill-folder direction over inline-prompt walkthroughs. Skill folders
+(SKILL.md + supporting markdown + scripts + examples) are the new
+canonical source of truth for agent capability; the existing
+prompt.ts builders (programmer, researcher, analyst, comment-responder
+in #207, peer-reviewer in #207) become migration targets, not
+templates for new work.
+
+Five entries, ordered:
+1. skill-authoring-best-practices-doc (T1, blocking) — canonical
+   skill-authoring guide, replaces the originally-filed
+   prompt-authoring doc.
+2. lint-skill-folder-shape (T1) — structural linter over
+   apps/temporal-worker/skills/**/SKILL.md.
+3. skill-folder-dispatcher-stitcher (T2) — adapter for tiers
+   without harness-native skill discovery (Copilot CLI, ollama
+   models including the new GLM-4.7-flash T0). Loads SKILL.md
+   plus referenced files into the agent's prompt at dispatch
+   time so SKILL.md is the single source of truth across tiers.
+4. migrate-role-prompts-to-skill-folders (T2, blocked on #3) —
+   move the five existing prompt.ts builders to skill folders;
+   the prompt.ts files become thin shims that read SKILL.md.
+5. tier-router-with-advisor-consultation (T2) — slice 4 of the
+   predictive-execution-policy design spec
+   (docs/superpowers/specs/2026-05-03-predictive-execution-policy-design.md
+   §3) — concrete backlog version. Higher-tier advisor consultation
+   for lower-tier dispatches, especially relevant once GLM-4.7-flash
+   is doing T0 work that hits judgment calls.
+6. skill-runtime-cost-report-cli (T2) — telemetry-driven feedback
+   on which skills are expensive at runtime; closes the loop on
+   lower-class-model efficacy.
+
+The order matters: doc first (canonical reference), then the
+mechanical pieces (linter, stitcher, migration), then the
+empirical loops (cost report, tier router).
+
+### `skill-authoring-best-practices-doc`
+
+```yaml
+id: skill-authoring-best-practices-doc
+tier: T1
+status: ready
+estimated_loc: 500
+blocks: [lint-skill-folder-shape]
+file: docs/skill-authoring.md (new)
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3
+role: tech-writer
+```
+
+Canonical authoring guide for chitin's skill-folder shape. Anthropic's
+public guidance on skills is the starting point; chitin-specific
+extensions cover tier-shape (T0 vs T4 skills look different) and the
+stitcher (how SKILL.md flows through to non-Claude-Code tiers).
+
+Sections to cover:
+
+- **Skill-folder anatomy:** SKILL.md (always), referenced markdown
+  for templates / rubrics / examples, optional scripts/ for
+  delegated CLI calls. Each file's purpose explicit.
+- **SKILL.md frontmatter:** activation triggers (when does the harness
+  load this skill?), required tools, output format, tier hint.
+- **Progressive disclosure:** SKILL.md is the read-first artifact.
+  Drill-down files load only when the agent decides they're
+  relevant. Implication: SKILL.md must summarize sufficiently.
+- **Speak as the model, don't narrate at it:** "You are X. Do Y."
+  beats "The X role does Y."
+- **Tool descriptions explain WHEN, not WHAT:** the model already
+  knows what `gh pr diff` does; tell it when to call it.
+- **Negative-space rules:** explicit DON'T sections; pattern-matching
+  drift is the primary failure mode for lower-class models.
+- **Lower-class-model adaptations:** break tasks into N explicit
+  steps; cap tool count; pin output format; smaller working
+  memory means less context-juggling per step.
+- **Source-of-truth for verifications:** any "verify against X"
+  instruction names X explicitly.
+- **Composition:** when one skill builds on another, both load.
+  Document the import-shape (relative path? skill-name reference?).
+- **Tier-shape variations:** T0 skills target small models — short,
+  imperative, low tool count. T4 skills can be richer. Examples of
+  each.
+
+Each practice tagged `lintable: yes/no` for the followup linter.
+Cite Anthropic's skill docs by URL. Reference each existing chitin
+prompt.ts file (which migrates to a skill folder per entry #4) as a
+worked example.
+
+**Acceptance:**
+- [ ] Doc covers all 10 sections above with concrete examples
+- [ ] Each practice tagged lintable: yes/no
+- [ ] At least 2 worked examples drawn from chitin's own
+      (post-migration) skill folders
+- [ ] Stale-doc detector confirms the doc lands cleanly
+
+### `lint-skill-folder-shape`
+
+```yaml
+id: lint-skill-folder-shape
+tier: T1
+status: ready
+estimated_loc: 300
+blocks: []
+file: tools/lint/skill-folder-shape.ts (new), tools/lint/tests/skill-folder-shape.test.ts (new)
+references_finding: 2026-05-03-skill-authoring-quality-gate
+role: programmer
+```
+
+Structural linter over apps/temporal-worker/skills/**/. Same shape
+as the three linters from #204/#205/#206: pure rules + dynamic-import
+I/O + nx target + CI step. Soft-blocked on the skill-authoring doc
+(linter rules cite specific sections).
+
+Lintable rules (the practices tagged "lintable: yes" in the doc):
+
+- Every skill folder has a SKILL.md (the entry point).
+- SKILL.md has required frontmatter fields: name, activation,
+  tools (or "no tools"), tier_hint.
+- Referenced files (templates, examples) actually exist at the
+  paths SKILL.md cites.
+- SKILL.md token count caps per tier_hint: T0 ≤ 1.5K, T1 ≤ 3K,
+  T2-T4 ≤ 6K.
+- Tool count caps per tier: T0 ≤ 6, T1 ≤ 12, T2-T4 ≤ 25.
+- Required sections: SKILL.md must include INVARIANTS and DON'T
+  blocks (negative-space rules).
+- Output marker convention: any structured emit uses
+  `<<<NAME>>>{json}` and the marker is named in SKILL.md.
+- Source-of-truth check: any line containing verify/validate/confirm
+  must reference a file/path/test on the same or next line.
+
+Steps:
+1. Pure rules over parsed SKILL.md (markdown AST) + filesystem walk.
+2. Wire into @chitin/tooling-lint as `lint:skill-folder-shape`.
+3. CI step.
+4. Backfill: clean any reported gaps after the migration entry
+   moves the existing prompt.ts files to skill folders.
+
+**Acceptance:**
+- [ ] All 8 rules implemented + unit-tested
+- [ ] Linter runs as @chitin/tooling-lint:lint:skill-folder-shape
+- [ ] CI green on current main after migration entry lands
+- [ ] Per-tier budget rules tunable via env or config
+
+### `skill-folder-dispatcher-stitcher`
+
+```yaml
+id: skill-folder-dispatcher-stitcher
+tier: T2
+status: ready
+estimated_loc: 400
+blocks: [migrate-role-prompts-to-skill-folders]
+file: apps/temporal-worker/src/skill-loader/stitcher.ts (new), apps/temporal-worker/src/skill-loader/tests/stitcher.test.ts (new)
+references_finding: 2026-05-03-cross-tier-skill-loading
+role: programmer
+```
+
+The skill-folder pattern depends on the harness for discovery
+(Claude Code headless = T3-T4 native; Copilot CLI / ollama models
+including the new T0 GLM-4.7-flash = no native skill loading). The
+stitcher closes that gap so SKILL.md is the single source of truth
+across all tiers.
+
+What it does:
+- Given a role + entry, locates the corresponding skill folder
+  (apps/temporal-worker/skills/<role>/).
+- Reads SKILL.md and any files SKILL.md references.
+- For T3-T4 (Claude Code headless): copies the skill folder into
+  the agent's working dir; the harness handles loading.
+- For T0-T2 (Copilot CLI, ollama): inlines SKILL.md + referenced
+  templates into the prompt string at dispatch time. Falls back to
+  the same shape current prompt.ts builders produce — but the
+  source is markdown, not TypeScript.
+- Substitutes entry-specific values (entry.id, entry.description,
+  PR URL, etc.) via simple template variables (`{{entry.id}}`).
+- Caches the load step (in-process LRU); skill folders are static
+  files that change rarely.
+
+Steps:
+1. Implement stitcher as a pure function over (role, entry, tier)
+   → string (the assembled prompt).
+2. Tests with synthesized skill folders + entries.
+3. Integrate into role-prompts.ts: builders call into the stitcher
+   with the role name; stitcher reads from disk.
+4. Caching layer with explicit invalidation (env var or TTL).
+
+**Acceptance:**
+- [ ] Stitcher loads SKILL.md + referenced files for a sample role
+- [ ] Tier-shape branching: T3-T4 returns folder path; T0-T2
+      returns inlined string
+- [ ] Variable substitution (entry.id et al)
+- [ ] Caching with measurable hit rate on repeat dispatches
+- [ ] Round-trip: a SKILL.md authored per the linter rules produces
+      a runnable prompt at every tier
+
+### `migrate-role-prompts-to-skill-folders`
+
+```yaml
+id: migrate-role-prompts-to-skill-folders
+tier: T2
+status: ready
+estimated_loc: 600
+blocks: []
+file: apps/temporal-worker/skills/{programmer,researcher,analyst,comment-responder,peer-reviewer}/SKILL.md (new), apps/temporal-worker/src/role-prompts.ts (refactor)
+references_finding: 2026-05-03-skill-folder-migration
+role: programmer
+```
+
+Move the five existing prompt.ts builders to skill folders per the
+authoring doc. The prompt.ts files become thin shims that call the
+stitcher rather than building strings inline.
+
+Per role:
+- apps/temporal-worker/skills/<role>/SKILL.md: the role frame +
+  workflow, lifted from the existing prompt.ts string (rewritten
+  to authoring-doc shape).
+- apps/temporal-worker/skills/<role>/<supporting>.md: per-skill
+  rubrics, templates, examples extracted from the inline prompt.
+- apps/temporal-worker/src/<role>/prompt.ts: simplifies to
+  `(entry) => stitcher.assemble('<role>', entry, tier)`.
+
+Migration order: simplest first. peer-reviewer (read-only) →
+analyst (recipe-driven) → researcher → comment-responder (write
+flow) → programmer (most context).
+
+**Acceptance:**
+- [ ] All 5 existing roles have skill folders that pass
+      lint-skill-folder-shape
+- [ ] role-prompts.ts builders reduce to stitcher calls
+- [ ] All existing tests still pass (the stitcher's output is
+      observably equivalent for tiers without harness skill support)
+- [ ] Smoke test: a real dispatch at T2 produces the same agent
+      behavior pre/post migration
+
+### `tier-router-with-advisor-consultation`
+
+```yaml
+id: tier-router-with-advisor-consultation
+tier: T2
+status: ready
+estimated_loc: 500
+blocks: []
+file: libs/governance/src/advisor.ts (new), libs/governance/src/decide.ts (extend), libs/governance/tests/advisor.test.ts (new)
+references_design: docs/superpowers/specs/2026-05-03-predictive-execution-policy-design.md §3
+role: programmer
+```
+
+Concrete implementation of slice 4 from the predictive-execution-
+policy spec — the kernel + tiered advisor pattern. Especially load-
+bearing once GLM-4.7-flash is doing T0 work that hits judgment
+calls the local model can't resolve confidently.
+
+What it adds:
+- AdvisorRequest and AdvisorResponse types (the consultation
+  contract — recommendation, reason, agent_guidance, structured
+  artifacts).
+- Escalation heuristic (deterministic): when does a ToolCallRequest
+  warrant advisor consultation? Initial signals — low classifier
+  confidence, no exact policy match, blast_vector non-trivial,
+  or N consecutive denies in session.
+- Advisor dispatch — calls into a higher-tier model with limited
+  context (NOT the full agent transcript; just the ExecutionRequest
+  + relevant policy + recent chain events). Structured output
+  parsed back as AdvisorResponse.
+- Chain-event recording: every consultation goes on the chain as
+  an `advisor_consultation` event with tier, inputs, outputs,
+  and latency. Audit + future training data.
+- Policy diff queueing: advisor's PolicyDiff artifacts queue at
+  docs/policy-diffs/ for human review (not auto-applied; that
+  reintroduces nondeterminism the kernel-as-authority forbids).
+
+Routing table: (action_class, blast_vector) → advisor tier. Direct
+routing (T0 → T2 for shell_exec, T0 → T3 for irreversible-external),
+not strict chain. Configurable via libs/governance/src/advisor-route.ts
+table.
+
+Steps:
+1. Types + escalation heuristic (pure logic, unit-testable).
+2. Advisor dispatch (calls the swarm's existing tier-driver
+   infrastructure to spawn a one-shot higher-tier model).
+3. Chain-event emission (extends the existing F4 OTEL emit work).
+4. Policy diff queueing (markdown sidecars under docs/policy-diffs/).
+5. Tests: heuristic table-test, dispatch with mocked client,
+   chain-event shape.
+
+**Acceptance:**
+- [ ] Heuristic table-tested across all (action_class,
+      blast_vector) combinations
+- [ ] Mocked-client dispatch produces correct AdvisorResponse shape
+- [ ] Chain emits advisor_consultation event with required fields
+- [ ] Policy diffs land at docs/policy-diffs/ with metadata
+- [ ] Demo: trigger a T0 dispatch with an unfamiliar tool call;
+      observe T2 consultation in chain; observe lower-tier
+      compliance with the recommendation
+
+### `skill-runtime-cost-report-cli`
+
+```yaml
+id: skill-runtime-cost-report-cli
+tier: T2
+status: ready
+estimated_loc: 350
+blocks: []
+file: apps/cli/src/commands/skill-cost-report.ts (new), libs/telemetry/src/skill-cost.ts (new)
+references_finding: 2026-05-03-lower-tier-skill-efficacy
+role: programmer
+```
+
+`chitin skill-cost-report --skill <name> [--since <duration>] [--tier <T>]`
+queries the canonical chain for skill-tagged tool-call events and
+produces a cost summary per skill / tier:
+
+- Tokens per dispatch (prompt + completion) split into cached vs
+  uncached.
+- Tool-call count per dispatch (mean, p95).
+- Tool-call output size (median, p95) — surfaces tools returning
+  mostly-discardable structure (MCP candidates).
+- Cache hit rate (post-hoc).
+- Cost in USD if applicable.
+- Lower-tier degradation flag: T0/T1 dispatches with notably
+  higher retry rate vs T2+ → "tier model under-fit" signal.
+- Advisor-consultation count per dispatch — reads the
+  advisor_consultation events from `tier-router-with-advisor-
+  consultation` (#5). High consultation rate at a tier suggests
+  the tier model is being asked work it can't do alone.
+
+The MCP-decision rubric falls out of the data: when a tool
+consistently returns large output the model only summarizes,
+that's an MCP-shaped opportunity.
+
+Steps:
+1. libs/telemetry: add a query helper for skill + tier rollups.
+2. apps/cli: add the skill-cost-report command, output options
+   (--format text|json|markdown).
+3. Document the queries; common presets (--last-week, --tier T0).
+4. Tests against a synthesized chain.
+
+**Acceptance:**
+- [ ] Report runs against current main's chain data and produces
+      sensible per-skill rollups
+- [ ] MCP-candidate flag fires for at least one skill
+- [ ] Tier-degradation flag fires correctly on synthesized chain
+      with T0 retries
+- [ ] Advisor-consultation rate visible per skill / tier
 ## Strategic evaluations — community signal vs current architecture
 
 Filed 2026-05-03 in response to community signal about
