@@ -147,6 +147,8 @@ importers:
         specifier: '*'
         version: 4.3.6
 
+  libs/scheduler: {}
+
   libs/telemetry:
     dependencies:
       '@chitin/contracts':

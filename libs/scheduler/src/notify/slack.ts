@@ -1,9 +1,13 @@
 // Slack notifier for scheduler events — outbound-only, no interactivity.
 //
 // Webhook config (in priority order):
-//   1. ~/.chitin/secrets/slack-webhook.url (one line, trimmed; gitignored)
+//   1. <chitin-home>/secrets/slack-webhook.url (one line, trimmed; gitignored)
 //   2. CHITIN_SLACK_WEBHOOK_URL environment variable
 // If neither is present every notify* call is a no-op.
+//
+// `chitin-home` resolves via, in order: $CHITIN_HOME, then ~/.chitin. Tests
+// and CI rely on $CHITIN_HOME redirection; hard-coding ~/.chitin would
+// silently miss the webhook in those setups.
 //
 // Failure model: 3 s timeout, errors swallowed to stderr. Slack visibility
 // is nice-to-have; the scheduler must never stall waiting for it.
@@ -19,9 +23,15 @@ import { homedir } from 'node:os';
 
 const SLACK_TIMEOUT_MS = 3_000;
 
+function chitinHome(): string {
+  const env = process.env.CHITIN_HOME?.trim();
+  if (env) return env;
+  return join(homedir(), '.chitin');
+}
+
 function loadWebhookUrl(): string | undefined {
   try {
-    const secretPath = join(homedir(), '.chitin', 'secrets', 'slack-webhook.url');
+    const secretPath = join(chitinHome(), 'secrets', 'slack-webhook.url');
     const url = readFileSync(secretPath, 'utf8').trim();
     if (url) return url;
   } catch {
@@ -236,7 +246,11 @@ export async function notifySwarmPrMerged(ev: SwarmPrMerged): Promise<void> {
 }
 
 // --- Smoke test ---
-// Invariant: --test (no --live) never calls fetch; --test --live calls fetch exactly once.
+// Invariants:
+//   --test (no --live):    never calls fetch (dry-run, prints payload)
+//   --test --live:         attempts ≤1 fetch; postSlack returns early when
+//                          SLACK_WEBHOOK_URL is unset, so the call count is
+//                          0 in unconfigured envs and exactly 1 when configured.
 
 export async function runSmokeTest(opts: { live?: boolean } = {}): Promise<void> {
   const payload: SlackPayload = {
