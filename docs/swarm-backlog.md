@@ -4533,7 +4533,7 @@ tier: T2
 status: ready
 estimated_loc: 100
 blocks: []
-file: CONTRIBUTING.md (or new docs/decisions/no-github-issues.md), docs/superpowers/plans/2026-05-02-scheduler-design.md (forward-pointer)
+file: docs/decisions/2026-05-03-no-github-issues.md, docs/superpowers/plans/2026-05-02-scheduler-design.md
 references_finding: 2026-05-03 operator question — "did we decide to no longer use gh issues?"
 role: tech-writer
 ```
@@ -4605,7 +4605,7 @@ Steps:
 
 **Acceptance:**
 - [ ] `docs/decisions/2026-05-03-no-github-issues.md` exists with
-      the four sections above
+      the five sections above
 - [ ] Scheduler design doc has the forward-pointer
 - [ ] swarm-backlog.md header notes the interim status (optional)
 - [ ] Existing 3 open issues (#22, #13, #4) are NOT closed by
