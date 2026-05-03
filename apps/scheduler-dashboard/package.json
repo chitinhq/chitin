@@ -1,0 +1,72 @@
+{
+  "name": "@chitin/scheduler-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "ng serve --port 3737",
+    "build": "ng build",
+    "test": "ng test --no-watch",
+    "server": "tsx server.ts"
+  },
+  "nx": {
+    "tags": ["layer:scheduler", "scope:app"],
+    "targets": {
+      "serve": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec ng serve --port 3737",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "build": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec ng build",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec ng test --no-watch",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "server": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx server.ts",
+          "cwd": "{projectRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@angular/animations": "^19.0.0",
+    "@angular/common": "^19.0.0",
+    "@angular/compiler": "^19.0.0",
+    "@angular/core": "^19.0.0",
+    "@angular/forms": "^19.0.0",
+    "@angular/platform-browser": "^19.0.0",
+    "@angular/platform-browser-dynamic": "^19.0.0",
+    "@angular/router": "^19.0.0",
+    "rxjs": "^7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.14.0",
+    "express": "^5.0.0",
+    "multer": "^2.0.0",
+    "cors": "^2.8.5",
+    "better-sqlite3": "^12.9.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^19.0.0",
+    "@angular/cli": "^19.0.0",
+    "@angular/compiler-cli": "^19.0.0",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
+    "@types/cors": "^2.8.17",
+    "@types/better-sqlite3": "^7.6.13",
+    "typescript": "~5.6.0"
+  }
+}

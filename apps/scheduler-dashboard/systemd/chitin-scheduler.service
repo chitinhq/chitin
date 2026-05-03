@@ -1,0 +1,13 @@
+[Unit]
+Description=Chitin scheduler tick — notify upcoming items
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/chitin scheduler tick
+Environment=HOME=%h
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run chitin scheduler tick every 5 minutes
+Requires=chitin-scheduler.service
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=chitin-scheduler.service
+
+[Install]
+WantedBy=timers.target
