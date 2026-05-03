@@ -191,7 +191,11 @@ importers:
         specifier: '*'
         version: 12.9.0
 
-  tools/lint: {}
+  tools/lint:
+    dependencies:
+      '@chitin/contracts':
+        specifier: workspace:*
+        version: link:../../libs/contracts
 
 packages:
 
