@@ -2596,15 +2596,25 @@ Steps:
    companion systemd timer separately or fold into the dispatcher
    tick).
 2. For each open PR not authored by the dispatcher (i.e., no
-   `swarm/` branch prefix), check if a `review-graph-<pr_number>`
-   workflow already exists in Temporal. Skip if so.
+   `swarm/` branch prefix), check if a review-graph workflow with
+   id `${parent_workflow_id}-review-graph` already exists in
+   Temporal. The `parent_workflow_id` for ingester-spawned graphs
+   is `pr-ingest-<pr_number>` — see step 4 — giving a stable id
+   per PR. Skip if the workflow already exists.
 3. Read PR metadata: review comment count, diff size, files
-   touched. Match against §5 trigger matrix
-   (`apps/temporal-worker/src/review-graph.ts: computeStartingTier`).
+   touched. Match against the §5 trigger matrix in
+   `apps/temporal-worker/src/review-graph.ts: computeStartingTier`,
+   which returns a `ReviewTier` (R0–R4). R0 means "no chitin
+   dispatch needed; Copilot's server-side review covers it"; R4
+   means "ping operator." R1–R3 are the dispatchable tiers.
 4. Synthesize a `BacklogEntry`-shaped object for the existing
-   `enqueueReviewGraph` API. Use `tier` from the §5 matrix; `role:
-   reviewer`; `file:` from the PR's changed-files list. The
-   `parent_workflow_id` is null/synthetic (use `pr-ingest-<pr>`).
+   `enqueueReviewGraph` API. The reviewer's *driver tier* (T0–T4)
+   is what gets stamped on the BacklogEntry's `tier:` field — that
+   value is read by the dispatcher's tier-driver map. The reviewer
+   *review tier* (R0–R4) is computed inside the workflow from the
+   same PR metadata via `computeStartingTier`, so it doesn't go on
+   the BacklogEntry. Set `role: reviewer`, `file:` from the PR's
+   changed-files list, `parent_workflow_id: pr-ingest-<pr_number>`.
 5. `enqueueReviewGraph(...)`. The graph runs as it does today; the
    PR gets the same R1 → R2 → R3 escalation chain.
 6. Write a chain event of kind `pr_ingest_decision` per evaluated
@@ -2629,20 +2639,26 @@ Tests:
 
 ---
 
-### `comment-responder` role
+### `comment-responder`
 
 ```yaml
-id: comment-responder-role
-tier: T3
+id: comment-responder
+tier: T2
 status: ready
 estimated_loc: 350
 blocks: []
-blockedBy: [pr-event-ingester]
 file: apps/temporal-worker/src/role-prompts.ts (extend), apps/temporal-worker/src/comment-responder/* (new), libs/contracts/src/execution-request.schema.ts (extend RoleSchema)
 references_finding: 2026-05-03-no-comment-responder-role
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (role registry)
 role: programmer
 ```
+
+> **Dependency:** soft-blocked on `pr-event-ingester` shipping first
+> — without the ingester, the responder has no upstream trigger for
+> human/interactive-opened PRs. Backlog parser only reads `blocks:`
+> (forward direction); `pr-event-ingester`'s entry above already
+> declares `blocks: [comment-responder]`, which is sufficient. The
+> dispatcher will not pick this up before its blocker.
 
 The factory's `reviewer` role (R1-R3) produces *findings* on a PR.
 There is no role responsible for *acting on* findings — pulling the
@@ -2679,9 +2695,10 @@ Steps:
    companion to `review-graph-dispatch.ts`. Triggered by the
    review-graph (or by `pr-event-ingester` directly) when a PR's
    comment count crosses a threshold AND the PR has no in-flight
-   comment-responder workflow. Tier defaults to T2 (Copilot Sonnet);
-   escalates to T3 (claude-code-headless Opus) if the responder fails
-   or stalls — same ladder shape as the implementor escalation.
+   comment-responder workflow. Default driver tier is T2 (Copilot
+   Sonnet); escalates to T3 (claude-code-headless Opus) if the
+   responder fails or stalls — same ladder shape as the implementor
+   escalation. The frontmatter `tier: T2` matches this default.
 4. Wire into the §5 review-graph: when a reviewer flags 🟡 / 🔴
    findings, instead of ending the chain, dispatch a
    comment-responder for the same PR. Re-run the reviewer chain on
@@ -2705,4 +2722,65 @@ PRs. Once both ship, the chain is: ingester → review-graph (R1+) →
 findings → comment-responder → fix commit → review-graph re-runs →
 gatekeeper auto-merge (or operator at R4). That closes the loop the
 factory design described.
+
+### `swarm-implementor-pnpm-lock-discipline`
+
+```yaml
+id: swarm-implementor-pnpm-lock-discipline
+tier: T2
+status: ready
+estimated_loc: 50
+blocks: []
+file: apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/src/gatekeeper.ts
+references_finding: 2026-05-03-swarm-cohort-lockfile-drift
+role: programmer
+```
+
+Three of seven open swarm PRs from the 2026-05-02 → 03 overnight run
+(#189 nx-angular-workspace-install, #193 scheduler-dashboard-angular,
+#195 slack-l2-actions) failed CI with `ERR_PNPM_OUTDATED_LOCKFILE` — the
+implementor agent edited a `package.json` (root, scheduler-dashboard, or
+slack-app) without regenerating `pnpm-lock.yaml`.
+
+The pattern is structural, not per-PR: the implementor harness lacks a
+post-edit gate that detects "package.json modified, pnpm-lock.yaml not
+modified" and runs `pnpm install` (or fails the run with a clear message).
+Adding the dep manually as a JSON edit and skipping `pnpm install` is the
+fast path the model takes when not corrected.
+
+Three places this can be enforced (pick one — the cheapest is best):
+
+1. **Pre-commit hook in implementor worktree** — refuse to stage
+   `package.json` changes without a matching `pnpm-lock.yaml` change.
+   Cheapest, but only fires at the implementor's commit step.
+2. **Role-prompt rule** in `apps/temporal-worker/src/role-prompts.ts`
+   ("if you edit package.json, run `pnpm install --no-frozen-lockfile`
+   before committing"). Soft enforcement, but cheap and reusable.
+3. **Dispatcher post-write check** — after the implementor returns, the
+   dispatcher inspects the worktree diff; if `package.json` is dirty and
+   `pnpm-lock.yaml` is not, the dispatcher runs `pnpm install` itself
+   before `git push`. Hard enforcement, slightly more work.
+
+Recommended: (2) + (3). Role-prompt sets the expectation; dispatcher
+post-check enforces it in case the agent forgets. Same shape as the
+existing `gatekeeper.ts` post-write checks for governance paths.
+
+Steps:
+1. Add the rule to the relevant role-prompt section in `role-prompts.ts`
+   (probably the `programmer` role; check current shape).
+2. Extend `gatekeeper.ts` (or wherever post-write inspection lives) with
+   a `pnpm-lock-coherent` invariant: package.json modified ⇒ lockfile
+   must be modified. On violation, run `pnpm install` in the worktree,
+   stage the lockfile, append a chain event noting the auto-fix.
+3. Tests: synthesize a worktree with the violation; assert the
+   gatekeeper auto-fix lands the right files.
+
+**Acceptance:**
+- [ ] Role-prompt mentions the rule
+- [ ] Gatekeeper auto-fixes a worktree where `package.json` changed and
+      lockfile didn't
+- [ ] Backfill: re-run one of #189/#193/#195 (or synthesize the
+      pattern); after the post-write check, `pnpm install
+      --frozen-lockfile` succeeds
+- [ ] CI green
 
