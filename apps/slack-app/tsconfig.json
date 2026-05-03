@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "types": ["node"],
+    // Source files import sibling .ts modules directly (matches the rest
+    // of the repo's nodenext + customConditions:["chitin"] setup so tsx
+    // and vitest run from .ts without a build step).
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*", "tests/**/*"],
+  "references": [
+    { "path": "../../libs/contracts" }
+  ]
+}
