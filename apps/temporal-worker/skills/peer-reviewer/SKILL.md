@@ -26,26 +26,31 @@ YOUR WORKFLOW:
 
    Make NO review comments or other side effects. The dispatcher's apply step would otherwise pick up an empty worktree and produce a bogus no-op PR (you're supposed to be read-only). Bail before that happens.
 
-1. Read the PR diff:
+1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** Then pass them through every `gh` command via the `--repo` flag. You're running in a tempdir without a git repository, so plain `gh pr ...` invocations would fail with "not in a git repo." Format every gh call like:
    ```
-   gh pr diff <pr_number>
-   ```
-
-2. Read the PR description (for stated scope/intent):
-   ```
-   gh pr view <pr_number> --json title,body
+   gh pr <subcmd> --repo <owner>/<repo> <pr_number> [args...]
    ```
 
-3. For each meaningful chunk of the diff, evaluate against the [five-axis review checklist](./checklist.md).
-
-4. Compose your findings as a single review comment, posted via:
+2. Read the PR diff:
    ```
-   gh pr review <pr_number> --comment --body "<your structured review>"
+   gh pr diff --repo <owner>/<repo> <pr_number>
+   ```
+
+3. Read the PR description (for stated scope/intent):
+   ```
+   gh pr view --repo <owner>/<repo> <pr_number> --json title,body
+   ```
+
+4. For each meaningful chunk of the diff, evaluate against the [five-axis review checklist](./checklist.md).
+
+5. Compose your findings as a single review comment, posted via:
+   ```
+   gh pr review --repo <owner>/<repo> <pr_number> --comment --body "<your structured review>"
    ```
 
    Format the body using the [structured review template](./review-template.md).
 
-5. Emit your final structured signal so the runner can record outcomes:
+6. Emit your final structured signal so the runner can record outcomes:
    ```
    <<<PEER_REVIEW>>>{"red": <n>, "yellow": <n>, "green": <n>, "verdict": "<APPROVE|REQUEST_CHANGES|OBSERVE>"}
    ```
