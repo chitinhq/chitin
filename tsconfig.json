@@ -11,6 +11,21 @@
     },
     {
       "path": "./libs/adapters/claude-code"
+    },
+    {
+      "path": "./libs/adapters/ollama-local"
+    },
+    {
+      "path": "./libs/adapters/openclaw"
+    },
+    {
+      "path": "./apps/temporal-worker"
+    },
+    {
+      "path": "./apps/cli"
+    },
+    {
+      "path": "./libs/governance"
     }
   ]
 }

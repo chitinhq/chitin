@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, chmodSync, unlinkSync, rmdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterAll } from 'vitest';
@@ -15,7 +15,9 @@ function makeTmpDir(): string {
 afterAll(() => {
   for (const d of tmpDirs) {
     try {
-      rmdirSync(d, { recursive: true });
+      // rmSync replaces deprecated rmdirSync({recursive:true}); newer
+      // @types/node no longer accepts the recursive option on rmdirSync.
+      rmSync(d, { recursive: true, force: true });
     } catch {
       /* best effort */
     }

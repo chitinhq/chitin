@@ -216,8 +216,10 @@ export function scanForMarkersGitGrep(scanRoot: string): DebtCandidateInput[] {
       { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
     );
   } catch (err) {
-    // git grep exits non-zero when there are no matches.
-    if ((err as NodeJS.ErrnoException).code === 1 || (err as { status?: number }).status === 1) {
+    // git grep exits with status=1 specifically when there are no
+    // matches (distinct from a real failure, which uses higher codes
+    // or surfaces as ErrnoException for missing-binary cases).
+    if ((err as { status?: number }).status === 1) {
       return [];
     }
     throw err;
