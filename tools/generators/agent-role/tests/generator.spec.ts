@@ -130,7 +130,8 @@ describe('agentRoleGenerator — AST updates', () => {
     await agentRoleGenerator(tree, { name: 'new-role', shape: 'reviewer' });
 
     const content = tree.read('apps/temporal-worker/src/role-prompts.ts', 'utf-8')!;
-    expect(content).toContain("from './new-role/prompt.ts'");
+    // ts-morph may use single or double quotes; check the path substring only
+    expect(content).toContain('./new-role/prompt.ts');
     expect(content).toContain('buildNewRolePrompt');
   });
 
@@ -167,7 +168,8 @@ describe('agentRoleGenerator — idempotency', () => {
     await agentRoleGenerator(tree, { name: 'dup-role', shape: 'patcher' });
 
     const content = tree.read('apps/temporal-worker/src/role-prompts.ts', 'utf-8')!;
-    const matches = content.match(/from '\.\/dup-role\/prompt\.ts'/g) ?? [];
+    // Match either quote style — ts-morph may emit double quotes
+    const matches = content.match(/from ['"]\.\/dup-role\/prompt\.ts['"]/g) ?? [];
     expect(matches).toHaveLength(1);
   });
 
