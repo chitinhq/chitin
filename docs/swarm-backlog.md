@@ -2561,7 +2561,7 @@ That's the cohort. PRs Z, B, M, E run in parallel tonight; tomorrow operator mer
 ```yaml
 id: pr-event-ingester
 tier: T2
-status: shipped
+status: partial
 estimated_loc: 250
 blocks: [comment-responder]
 file: apps/temporal-worker/src/pr-event-ingester.ts (new), apps/temporal-worker/src/worker.ts (wire)
@@ -2644,7 +2644,7 @@ Tests:
 ```yaml
 id: comment-responder
 tier: T2
-status: shipped
+status: partial
 estimated_loc: 350
 blocks: []
 file: apps/temporal-worker/src/role-prompts.ts (extend), apps/temporal-worker/src/comment-responder/* (new), libs/contracts/src/execution-request.schema.ts (extend RoleSchema)
@@ -4443,7 +4443,7 @@ tier: T2
 status: ready
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher.test.ts, apps/temporal-worker/src/grooming/parse-backlog.ts
+file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-skip-shipped.test.ts, apps/temporal-worker/src/grooming/parse-backlog.ts
 references_finding: 2026-05-03 cascade — swarm dispatched #216 (comment-responder) and #218 (pr-event-ingester) against entries already implemented by hand-merged PRs, producing regressive stub PRs that had to be closed
 role: programmer
 ```
@@ -4466,40 +4466,61 @@ entries as still-available and dispatched them. The agents tried
 to implement entries that were already shipped, producing
 regressive stub PRs (closed with comments).
 
-Two paths to fix (groomer should pick one):
+Three approaches in order of confidence (groomer picks the
+right combo):
 
-(a) **Heuristic: "recent commits touched the entry's `file:` paths"**
-    — at dispatch time, run `git log --since="14 days" --
-    <file_paths>`; if any commits are present, skip + log
-    `entry-likely-shipped`. Cheap; false-positives possible
-    (touched-but-not-shipped); operator promotes back to ready
-    by editing the entry.
+(a) **Backlog-side: title-substring scan of recent merged PRs**
+    (the auto-flipper). A `chitin-shipped-entry-flipper.timer`
+    scans merged PRs from the last N days; for each, find any
+    backlog entry whose id appears in the PR title. For matches,
+    file a PR (or auto-edit) flipping `status: ready → status:
+    partial` (NOT directly to shipped — the operator inspects
+    + promotes). Closes the dispatch-against-shipped gap from
+    the merge side. PR-mediated so misclassifications are
+    caught at review.
 
-(b) **Strict: parse the entry's `file:` field + verify each path
-    has the expected content** — for entries with concrete file
-    targets, `git show HEAD:<path>` and check for a sentinel
-    (entry-id in a comment, function name match, etc). More
-    complex; more accurate; requires entries to declare a
-    sentinel.
+(b) **Strict sentinel check** — for entries that DECLARE a
+    `sentinel:` field (function name / file path / chain-event
+    type), the dispatcher verifies the sentinel exists in HEAD
+    via `git grep` or `git show HEAD:<path>` before dispatching.
+    Requires backlog-schema extension. More accurate than (a)
+    when applicable; only works for entries that opted in.
 
-The simpler (a) is enough for the documented incident class.
-Optionally pair with a `chitin-shipped-entry-flipper.timer` that
-scans recent merged PRs (lessons-extractor pattern) and
-opportunistically flips matching entries to `status: shipped`
-based on title-substring match. Closes the gap from the merged-PR
-side too.
+(c) **Heuristic file-path check** — Copilot review on this
+    entry's first draft flagged the brittleness: 14-day file-path
+    scan flags ALL ready entries that share any file with a
+    recent commit. The backlog has multiple independent ready
+    entries targeting `apps/temporal-worker/src/dispatcher.ts`;
+    one recent dispatcher commit would suppress all of them
+    for two weeks. Plus the `file:` field today routinely
+    includes annotations like `(new)`, `(extend)`, `(new dir)`,
+    `*` — opaque strings that break path-parsing. (c) is OFF
+    THE TABLE until the backlog schema is tightened to
+    machine-parseable file lists.
+
+So the safe shippable shape is **(a) first, (b) optional**.
+(a) catches the today-observed incident class without the
+false-positive risk of (c). The auto-flipper sets `partial`
+not `shipped` because Copilot was right that the existing
+`pr-event-ingester` + `comment-responder` entries had
+chain-event acceptance items still unshipped — partial is
+the more honest status for "implementation merged but not
+all acceptance criteria met."
 
 **Acceptance:**
-- [ ] Dispatcher's pre-dispatch check rejects entries whose
-      `file:` paths have recent (last 14 days) commits
-- [ ] Rejection is logged as `entry-likely-shipped` + the matching
-      commit shas, so the operator can verify + promote back
-- [ ] Test: synthetic entry with `file: docs/test-only.md` + a
-      recent git commit touching that file → dispatcher skips
-- [ ] Test: synthetic entry with no recent commits on its file:
-      paths → dispatcher proceeds normally
-- [ ] Optional: `chitin-shipped-entry-flipper.{service,timer}`
-      that scans merged PRs for entry-id matches in titles, flips
-      `status: ready → status: shipped` on match (PR-shaped
-      change, operator merges)
+- [ ] `chitin-shipped-entry-flipper.{service,timer}` scans merged
+      PRs from last N days (default 7), finds entries whose id
+      appears in PR title, files a PR or commits the status flip
+      (`ready` → `partial`)
+- [ ] Auto-flipper logs each match with: pr_url, entry_id,
+      old_status, new_status; rejection reasons logged when no
+      action is taken
+- [ ] Operator can suspend via `systemctl --user stop
+      chitin-shipped-entry-flipper.timer`
+- [ ] Optional: backlog-schema extension to add a `sentinel:`
+      field; dispatcher reads it and verifies before dispatch
+- [ ] Test (in `apps/temporal-worker/test/dispatcher-skip-shipped.test.ts`):
+      synthetic entry id appears in synthetic PR title →
+      auto-flipper proposes status update
+- [ ] Test: entry id NOT in any PR title → no action
 - [ ] CI green
