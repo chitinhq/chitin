@@ -37,7 +37,7 @@
 // reads from disk.
 
 import { readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -66,8 +66,15 @@ export interface ParsedSkill {
 /**
  * Pure: split a SKILL.md text into (frontmatter, body). The
  * frontmatter is YAML between `---` delimiters at the top of the
- * file. Frontmatter is optional — files without it are treated as
- * body-only with empty frontmatter.
+ * file. SplitFrontmatter is tolerant — missing or unclosed
+ * frontmatter is treated as body-only — but `loadSkill` later
+ * requires a `name:` field via `parseSimpleYaml`. SKILL.md files
+ * without a frontmatter block (or without `name:`) will fail at
+ * `loadSkill`, not here.
+ *
+ * Newline handling: strips one leading newline (\n OR \r\n) from
+ * the body so a clean body starts on its own line regardless of
+ * the original file's line endings.
  */
 export function splitFrontmatter(text: string): {
   frontmatterText: string;
@@ -85,16 +92,25 @@ export function splitFrontmatter(text: string): {
   }
   const frontmatterText = afterFirst.slice(0, closeIdx);
   // Skip past the closing `---` line, plus its newline.
-  const afterClose = afterFirst.slice(closeIdx + '\n---'.length);
-  const body = afterClose.startsWith('\n') ? afterClose.slice(1) : afterClose;
-  return { frontmatterText, body };
+  let afterClose = afterFirst.slice(closeIdx + '\n---'.length);
+  // Normalize CRLF → LF for the leading-newline strip so files
+  // authored on Windows produce identical bodies to LF files.
+  if (afterClose.startsWith('\r\n')) {
+    afterClose = afterClose.slice(2);
+  } else if (afterClose.startsWith('\n')) {
+    afterClose = afterClose.slice(1);
+  }
+  return { frontmatterText, body: afterClose };
 }
 
 /**
  * Pure: minimal YAML parser sufficient for the flat key:value-and-
- * inline-list frontmatter we use. Mirrors the parser already in
- * apps/temporal-worker/src/grooming/parse-backlog.ts so the stitcher
- * doesn't pull a yaml lib in.
+ * inline-list frontmatter we use. Inspired by the parser in
+ * apps/temporal-worker/src/grooming/parse-backlog.ts (and consistent
+ * with its quoted/unquoted scalar handling), but extends it with
+ * inline arrays and indented block arrays needed for SKILL.md
+ * frontmatter (`tools: [a, b]` and the multiline list shape).
+ * Avoids pulling a yaml lib in.
  *
  * Recognized shapes:
  *   key: value
@@ -297,12 +313,19 @@ export function renderSkill(
  * The harness then handles native skill discovery.
  */
 export function materializePath(folder: string): string {
-  // Just confirm the folder exists; the activity does the actual copy.
+  // Confirm the folder exists AND is a directory; the activity
+  // does the actual copy. Pointing materializePath at a regular
+  // file would silently succeed under a bare `statSync` and then
+  // fail at copy-time with a confusing error, so reject up-front.
+  let stat;
   try {
-    statSync(folder);
+    stat = statSync(folder);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`stitcher: skill folder ${folder} does not exist: ${msg}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`stitcher: skill folder ${folder} is not a directory`);
   }
   return resolve(folder);
 }
@@ -318,6 +341,3 @@ export function skillFolderForRole(rootDir: string, role: string): string {
   return join(rootDir, SKILLS_ROOT, role);
 }
 
-// Suppress dirname-imported warning in cases where this module is
-// imported but not all helpers are used.
-void dirname;

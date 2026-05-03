@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import {
   inlineCompanions,
   loadSkill,
@@ -12,6 +12,22 @@ import {
   substituteVars,
   skillFolderForRole,
 } from '../src/skill-loader/stitcher.ts';
+
+// Track temp dirs created by the tests below so afterEach can
+// rmrf them. Otherwise each CI run + each local run accumulates
+// scratch dirs under $TMPDIR (Copilot review #213 #3).
+const tmpDirs: string[] = [];
+function tmp(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tmpDirs.push(dir);
+  return dir;
+}
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    const dir = tmpDirs.pop()!;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe('splitFrontmatter', () => {
   it('extracts YAML frontmatter and body', () => {
@@ -32,6 +48,15 @@ describe('splitFrontmatter', () => {
     const text = '---\nname: foo\n\nNo closing fence';
     const { frontmatterText } = splitFrontmatter(text);
     expect(frontmatterText).toBe('');
+  });
+
+  it('strips a leading CRLF off the body (windows-authored files)', () => {
+    // The body must not begin with a stray \r when the file was
+    // saved with CRLF line endings. (Copilot review #213 #7.)
+    const text = '---\r\nname: foo\r\n---\r\nThe body.\r\n';
+    const { body } = splitFrontmatter(text);
+    expect(body).toBe('The body.\r\n');
+    expect(body.startsWith('\r')).toBe(false);
   });
 });
 
@@ -173,7 +198,7 @@ describe('renderSkillBody — composition', () => {
 
 describe('loadSkill / renderSkill — fixture roundtrip', () => {
   function makeFixture(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-skill-'));
+    const dir = tmp('chitin-skill-');
     writeFileSync(
       join(dir, 'SKILL.md'),
       `---
@@ -217,12 +242,12 @@ See [the checklist](./checklist.md).
   });
 
   it('throws when SKILL.md is missing', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-empty-'));
+    const dir = tmp('chitin-empty-');
     expect(() => loadSkill(dir)).toThrow(/SKILL\.md/);
   });
 
   it('throws when a companion file is referenced but missing', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chitin-broken-'));
+    const dir = tmp('chitin-broken-');
     writeFileSync(
       join(dir, 'SKILL.md'),
       `---\nname: broken\n---\n\n[missing](./not-here.md)`,
@@ -231,11 +256,48 @@ See [the checklist](./checklist.md).
   });
 });
 
+describe('materializePath', () => {
+  it('rejects a path that exists but is not a directory', () => {
+    // Pointing materializePath at a regular file would silently
+    // pass `statSync` but later fail at copy-time with a
+    // confusing error (Copilot review #213 #1).
+    const dir = tmp('chitin-mat-');
+    const filePath = join(dir, 'not-a-folder.txt');
+    writeFileSync(filePath, 'I am a file, not a directory.');
+    // Lazy import of materializePath so this test stays adjacent
+    // to the splitFrontmatter shape; no need to hoist the import.
+    const { materializePath } = require('../src/skill-loader/stitcher.ts');
+    expect(() => materializePath(filePath)).toThrow(/not a directory/);
+  });
+
+  it('rejects a path that does not exist', () => {
+    const { materializePath } = require('../src/skill-loader/stitcher.ts');
+    expect(() => materializePath('/nonexistent/skill-folder')).toThrow(
+      /does not exist/,
+    );
+  });
+});
+
 describe('skillFolderForRole', () => {
   it('resolves the conventional path', () => {
+    // Build the expected path with `path.join` so the assertion
+    // matches the platform `skillFolderForRole` runs on (Windows
+    // backslash vs POSIX forward-slash). Hardcoded POSIX would make
+    // the test platform-dependent for an aspect that isn't part
+    // of the function's contract.
     expect(skillFolderForRole('/repo', 'peer-reviewer')).toBe(
-      '/repo/apps/temporal-worker/skills/peer-reviewer',
+      join('/repo', 'apps', 'temporal-worker', 'skills', 'peer-reviewer'),
     );
+  });
+
+  it('produces a POSIX path on POSIX hosts', () => {
+    // Where we DO want POSIX-shape, use posix.join explicitly so
+    // the assertion is unambiguous about what's being tested.
+    if (process.platform !== 'win32') {
+      expect(skillFolderForRole('/repo', 'peer-reviewer')).toBe(
+        posix.join('/repo', 'apps', 'temporal-worker', 'skills', 'peer-reviewer'),
+      );
+    }
   });
 });
 
