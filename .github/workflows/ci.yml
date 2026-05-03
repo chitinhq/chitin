@@ -137,5 +137,14 @@ jobs:
           # the prompts map silently fails at dispatch time.
           pnpm exec nx run @chitin/tooling-lint:lint:role-coverage
 
+      - name: Backlog entry shape lint
+        run: |
+          # Structural linter — every entry in docs/swarm-backlog.md
+          # has heading id matching frontmatter id, valid tier, valid
+          # status, role in RoleSchema, no `blockedBy:` (parser only
+          # reads `blocks:`). Catches the format-drift pattern from
+          # PR #200's review.
+          pnpm exec nx run @chitin/tooling-lint:lint:backlog-entry-shape
+
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
