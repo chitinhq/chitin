@@ -3838,3 +3838,137 @@ Auto-filed by chitin-alarm-feeder.timer at 2026-05-03T03:45:14.730Z from a swarm
 > LOW SUCCESS: driver=claude-code-headless 56% (5/9)
 
 Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
+## Follow-ups from low-success alarm (2026-05-03)
+
+Filed by the investigation in
+`docs/observations/2026-05-03-low-success-alarm-investigation.md`.
+The alarm fired on 5/9 c-c-h success rate; root cause was a
+21-hour-deploy-lag on `~/.local/bin/chitin-kernel` (PR #171's
+closed-enum normalizer in source but not in the running binary).
+Operational fix (rebuild + agent reset) applied alongside this
+PR. Two structural follow-ups below.
+
+### `auto-rebuild-redeploy-chitin-kernel`
+
+```yaml
+id: auto-rebuild-redeploy-chitin-kernel
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: scripts/install-kernel.sh, ops/systemd/chitin-kernel-redeploy.service, ops/systemd/chitin-kernel-redeploy.timer
+references_finding: docs/observations/2026-05-03-low-success-alarm-investigation.md
+role: programmer
+```
+
+Close the deploy-lag gap that produced the 2026-05-03 low-success
+alarm. PRs touching `go/` or `chitin.yaml` only take effect when
+an operator manually runs `go build`. The swarm runs unattended;
+nobody redeploys; policy fixes sit dark for hours-to-days.
+
+The simplest mechanic that closes the gap (avoid GitHub Actions
+because the binary needs to land on the operator's rig, not in CI):
+
+1. **`scripts/install-kernel.sh`** — idempotent shell script that
+   - `cd /home/red/workspace/chitin && git fetch origin && git
+     pull --ff-only origin main`
+   - if `git diff --quiet HEAD@{1} HEAD -- go/ chitin.yaml` returns
+     non-zero (i.e. changes), rebuild via `go build -o
+     ~/.local/bin/chitin-kernel ./go/execution-kernel/cmd/chitin-kernel`
+   - log start + end + sha + duration to the chain (use
+     `chitin-kernel emit` if the previous binary was healthy enough
+     to call, otherwise stderr); the log line is the operator's
+     "what changed when" trail
+   - exit 0 on no-op; exit 0 on rebuild-success; exit non-zero on
+     git-pull-conflict OR build-failure (neither should auto-recover —
+     surface to the operator)
+
+2. **`ops/systemd/chitin-kernel-redeploy.service`** — oneshot unit
+   that runs the script under the operator's user (NOT root — the
+   binary lives under `~/.local/bin`).
+
+3. **`ops/systemd/chitin-kernel-redeploy.timer`** — `OnUnitActiveSec=15min`,
+   `OnBootSec=2min`, `Persistent=true`. 15-minute redeploy cadence
+   keeps the lag bounded; persistent + boot-delay handles
+   reboots cleanly. Operator can suspend by `systemctl --user stop
+   chitin-kernel-redeploy.timer` without breaking anything.
+
+4. **Rollback rule:** if the new build fails to start (smoke-test:
+   `chitin-kernel gate evaluate --hook-stdin --agent=smoke` with a
+   canned input must exit 0 within 2s), restore the previous binary
+   from `~/.local/bin/chitin-kernel.prev` (kept by the script) and
+   chain-log the rollback. We don't want a bad merge to brick the
+   gate for the swarm.
+
+5. **README + telemetry:** `docs/runbooks/chitin-kernel-redeploy.md`
+   covering install, suspend, manual override, where the chain
+   logs land. Operator should be able to read "when did the kernel
+   last update" off the chain in one query.
+
+**Acceptance:**
+- [ ] `scripts/install-kernel.sh` no-ops cleanly when no go/ or
+      chitin.yaml changes since last run
+- [ ] Script rebuilds + reinstalls when go/ or chitin.yaml changes
+- [ ] Smoke-test (canned `Task` PreToolUse evaluate) exits 0
+      against the new binary OR the script auto-rolls-back
+- [ ] systemd timer + service install cleanly via
+      `systemctl --user enable --now chitin-kernel-redeploy.timer`
+- [ ] Chain emits a `kernel_redeploy` event per rebuild with
+      `{old_sha, new_sha, duration_ms, smoke_test_passed}`
+- [ ] Runbook in docs/runbooks/
+
+### `scheduler-gov-rule-retier-or-action-class`
+
+```yaml
+id: scheduler-gov-rule-retier-or-action-class
+tier: T5
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: docs/swarm-backlog.md (the scheduler-gov-rule entry), chitin.yaml (potentially), libs/governance/ (potentially)
+references_finding: docs/observations/2026-05-03-low-success-alarm-investigation.md
+role: architect
+```
+
+The `scheduler-gov-rule` entry is the 4th failure in the
+2026-05-03 alarm window. It asks the swarm to add a new chitin
+governance rule by editing `chitin.yaml`, but chitin's own
+`no-governance-self-modification: enforce` rule denies the write.
+The agent has no path to complete the task as specified;
+deterministic 0-commits failure on every dispatch.
+
+Operator decision required. Two paths:
+
+(a) **Re-tier the entry to T5 (human action).** Match the
+    existing convention that human operators author governance
+    edits. Simple, correct, but limits the swarm's reach into
+    governance evolution work — and there's a real argument that
+    the swarm SHOULD be able to propose governance edits as long
+    as the actual write goes through review. This option is
+    "narrow swarm authority on chitin.yaml; humans only."
+
+(b) **Add a `chitin.gov.proposed-rule.add` action class.**
+    The swarm's writes to `chitin.yaml` are intercepted and
+    rerouted to a structured proposal: "agent X proposes adding
+    rule Y for reason Z." A human reviews + approves. On approve,
+    the proposal becomes an actual chitin.yaml edit (still
+    operator-authored, but seeded by the agent). Bigger lift;
+    same protective property; preserves swarm-author capability.
+
+Both are valid. (b) is the better long-term shape if the swarm
+authoring governance becomes a regular pattern — but the data we
+have today is: ONE entry hit this. (a) is correct if it's an
+edge case; (b) is correct if it becomes a routine.
+
+**Acceptance:**
+- [ ] Operator picks (a) or (b) and records reasoning
+- [ ] If (a): scheduler-gov-rule entry's `tier:` field updated to
+      `T5` and `status:` updated; entry's prose updated to make
+      the human-action requirement explicit
+- [ ] If (b): action-class definition + policy rule + intercept
+      logic filed as a programmer-tier follow-up; scheduler-gov-rule
+      entry stays as-is and waits on the action-class shipping
+- [ ] Either way: groomer-side check that catches the pattern (
+      "entry asks for a write to chitin.yaml under writepolicy=branch
+      → flag for human review") so the next entry of this shape
+      doesn't slip through unnoticed
