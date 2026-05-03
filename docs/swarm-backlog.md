@@ -3737,8 +3737,13 @@ What this requires (decomposed for grooming):
 5. **Sample skill folders for the killer workflows.**
    - `research-via-notebook-lm`: drive a NotebookLM session, query,
      export results to a markdown artifact in the repo
-   - `sync-chatgpt-context-to-repo`: pull recent ChatGPT context,
+   - `sync-chatgpt-to-chitin-context`: pull recent ChatGPT context,
      write a structured summary to `~/.chitin/context/chatgpt/`
+     (the artifact lives in chitin's home-directory state, not the
+     repo — distinct from the research workflow above which DOES
+     write into the repo. Renamed from the original
+     `…to-repo` shape since the path was global state, not
+     repo-scoped, and that ambiguity matters for replay/storage)
    - `extract-deck-from-doc`: drive a slide-deck generator, produce
      a copyable artifact
    These follow the SKILL.md pattern proven by peer-reviewer +
@@ -3806,6 +3811,14 @@ Steps when this entry is picked up:
       no-outbound-messages-without-approval, no-financial-transactions)
 - [ ] Cross-context memory entry filed (Hindsight re-evaluation +
       ChatGPT export ingester)
+- [ ] Sample-skill entries filed for at least the three workflows
+      named in rule 5 (`research-via-notebook-lm`,
+      `sync-chatgpt-to-chitin-context`, `extract-deck-from-doc`),
+      each as its own programmer-tier scope-down with concrete
+      browser-driver bounds + acceptance criteria. Without this
+      checkbox the entry could mark complete after only the
+      policy/memory follow-ups land, leaving the killer-workflow
+      cohort unfiled.
 
 ### `investigate-low-success`
 
