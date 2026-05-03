@@ -7,9 +7,19 @@ export interface KernelResult {
   error?: Error;
 }
 
+// Node's spawnSync default maxBuffer is ~1 MiB. Some chitin-kernel
+// commands (notably `envelope list --limit=0` and large `decisions`
+// windows) can exceed that and surface as ENOBUFS / spawn_failed.
+// 64 MiB is generous for any realistic chitin output and still safe
+// against runaway memory in pathological cases.
+const KERNEL_MAX_BUFFER = 64 * 1024 * 1024;
+
 export function runKernel(args: string[]): KernelResult {
   const bin = process.env['CHITIN_KERNEL_BINARY'] ?? 'chitin-kernel';
-  const res = spawnSync(bin, args, { encoding: 'utf8' });
+  const res = spawnSync(bin, args, {
+    encoding: 'utf8',
+    maxBuffer: KERNEL_MAX_BUFFER,
+  });
   return {
     stdout: res.stdout ?? '',
     stderr: res.stderr ?? '',

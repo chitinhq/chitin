@@ -24,18 +24,17 @@ Model Context Protocol over stdio.
 claude mcp add chitin -- npx tsx /path/to/chitin/apps/mcp-server/src/main.ts
 ```
 
-Or point at a built dist:
-
-```bash
-claude mcp add chitin /path/to/chitin/dist/apps/mcp-server/main.js
-```
+The server runs straight from TypeScript via `tsx`. There's no
+build/dist target in this slice — invoking the source file directly
+is the supported install path. A pre-bundled distribution lands
+in a follow-up if/when the standalone-binary use case arrives.
 
 ### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `CHITIN_KERNEL_BINARY` | `chitin-kernel` | Path to the chitin-kernel binary |
-| `CHITIN_BUDGET_DIR` | `~/.chitin` | Directory used by envelope and decisions tools |
+| `CHITIN_HOME` | `~/.chitin` | Chitin state dir; matches the Go kernel's override |
 
 ## Development
 
@@ -43,6 +42,6 @@ claude mcp add chitin /path/to/chitin/dist/apps/mcp-server/main.js
 # Run directly with tsx
 pnpm exec tsx apps/mcp-server/src/main.ts
 
-# Build
-pnpm nx build mcp-server
+# Run the (libs/mcp-chitin) tests
+pnpm exec nx run @chitin/mcp-server:test
 ```

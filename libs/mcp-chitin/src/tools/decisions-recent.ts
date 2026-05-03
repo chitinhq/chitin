@@ -27,7 +27,10 @@ export interface DecisionEntry {
 
 function resolveDir(dir?: string): string {
   if (dir) return dir;
-  const fromEnv = process.env['CHITIN_BUDGET_DIR'];
+  // The Go kernel resolves the chitin state dir via $CHITIN_HOME; using
+  // any other env name here would let the MCP server read from a
+  // different directory than `chitin-kernel` writes to. Stay aligned.
+  const fromEnv = process.env['CHITIN_HOME'];
   if (fromEnv) return fromEnv;
   return join(homedir(), '.chitin');
 }

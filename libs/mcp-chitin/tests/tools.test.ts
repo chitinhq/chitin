@@ -5,22 +5,46 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { KernelError, parseKernelJSON, runKernel } from '../src/kernel.js';
 import { decisionsRecentTool } from '../src/tools/decisions-recent.js';
 import { envelopeGrantTool } from '../src/tools/envelope-grant.js';
+import { envelopeListTool } from '../src/tools/envelope-list.js';
+import { envelopeCloseTool } from '../src/tools/envelope-close.js';
+import { gateStatusTool } from '../src/tools/gate-status.js';
+import { gateResetTool } from '../src/tools/gate-reset.js';
+import { chainInfoTool } from '../src/tools/chain-info.js';
+import { chainVerifyTool } from '../src/tools/chain-verify.js';
+
+// All tool tests share one fixture for "kernel binary missing" — that's
+// the cheapest way to exercise every tool's error path without spinning
+// up a real kernel. CHITIN_KERNEL_BINARY is set to a path that can't
+// exist; the tool wrapper should surface KernelError(kind='spawn_failed').
+const NONEXISTENT_BINARY = '/nonexistent-binary-xyz';
+
+function withMissingBinary(fn: () => void): void {
+  const prev = process.env['CHITIN_KERNEL_BINARY'];
+  process.env['CHITIN_KERNEL_BINARY'] = NONEXISTENT_BINARY;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env['CHITIN_KERNEL_BINARY'];
+    else process.env['CHITIN_KERNEL_BINARY'] = prev;
+  }
+}
 
 // ── kernel utilities ──────────────────────────────────────────────────────────
 
 describe('runKernel', () => {
   it('returns nonzero status when binary is missing', () => {
-    process.env['CHITIN_KERNEL_BINARY'] = '/nonexistent-binary-xyz';
-    const result = runKernel(['anything']);
-    expect(result.error).toBeDefined();
-    delete process.env['CHITIN_KERNEL_BINARY'];
+    withMissingBinary(() => {
+      const result = runKernel(['anything']);
+      expect(result.error).toBeDefined();
+    });
   });
 });
 
 describe('parseKernelJSON', () => {
-  it('throws KernelError with kind=spawn_failed when binary is missing', () => {
-    const result = runKernel(['anything']);
-    // Simulate a missing binary result
+  it('throws KernelError with kind=spawn_failed on synthetic spawn-failure result', () => {
+    // Synthesize the spawn-failure shape directly — no need to actually
+    // spawn a missing binary here (was a real-binary side effect bug
+    // Copilot flagged in #191's review).
     expect(() =>
       parseKernelJSON({ stdout: '', stderr: '', status: -1, error: new Error('ENOENT') }),
     ).toThrowError(KernelError);
@@ -59,9 +83,62 @@ describe('parseKernelJSON', () => {
 
 describe('envelopeGrantTool', () => {
   it('throws KernelError when chitin-kernel is missing', () => {
-    process.env['CHITIN_KERNEL_BINARY'] = '/nonexistent-binary-xyz';
-    expect(() => envelopeGrantTool({ id: 'test-id', calls: 10 })).toThrowError(KernelError);
-    delete process.env['CHITIN_KERNEL_BINARY'];
+    withMissingBinary(() => {
+      expect(() => envelopeGrantTool({ id: 'test-id', calls: 10 })).toThrowError(KernelError);
+    });
+  });
+});
+
+// ── error-path coverage for every other exported tool ────────────────────────
+// Cheap "kernel binary missing → KernelError" tests, one per tool. This
+// covers basic argument wiring + spawn-failure handling for the seven
+// tools that previously had no test coverage.
+
+describe('envelopeListTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => envelopeListTool({ limit: 5 })).toThrowError(KernelError);
+    });
+  });
+});
+
+describe('envelopeCloseTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => envelopeCloseTool({ id: 'test-id' })).toThrowError(KernelError);
+    });
+  });
+});
+
+describe('gateStatusTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => gateStatusTool({ agent: 'claude-code' })).toThrowError(KernelError);
+    });
+  });
+});
+
+describe('gateResetTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => gateResetTool({ agent: 'claude-code' })).toThrowError(KernelError);
+    });
+  });
+});
+
+describe('chainInfoTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => chainInfoTool({ chainId: 'test-session' })).toThrowError(KernelError);
+    });
+  });
+});
+
+describe('chainVerifyTool', () => {
+  it('throws KernelError when chitin-kernel is missing', () => {
+    withMissingBinary(() => {
+      expect(() => chainVerifyTool({ sessionId: 'test-session' })).toThrowError(KernelError);
+    });
   });
 });
 

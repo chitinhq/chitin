@@ -51,12 +51,28 @@ server.tool(
   'Grant additional budget to an existing envelope.',
   {
     id: z.string().min(1).describe('Envelope ID'),
-    calls: z.number().int().optional().describe('Delta to add to max_tool_calls'),
-    bytes: z.number().int().optional().describe('Delta to add to max_input_bytes'),
-    usd: z.number().optional().describe('Delta to add to budget_usd'),
+    // Deltas must be non-negative — this tool grants budget; reductions
+    // (and especially negative deltas that could re-open a closed
+    // envelope) are not allowed via MCP. Non-int values rejected by the
+    // outer int() constraint.
+    calls: z.number().int().nonnegative().optional().describe('Non-negative delta to add to max_tool_calls'),
+    bytes: z.number().int().nonnegative().optional().describe('Non-negative delta to add to max_input_bytes'),
+    usd: z.number().nonnegative().optional().describe('Non-negative delta to add to budget_usd'),
     reason: z.string().optional().describe('Operator-supplied reason recorded in audit log'),
   },
-  (args) => run(() => { envelopeGrantTool(args); return { ok: true }; }),
+  (args) => {
+    // Require at least one positive delta. An empty grant call would
+    // still touch closed_at and write a 0-delta audit row, which
+    // contradicts the tool's stated intent ("Grant additional budget").
+    const totalDelta = (args.calls ?? 0) + (args.bytes ?? 0) + (args.usd ?? 0);
+    if (totalDelta <= 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'error: chitin_envelope_grant requires at least one positive delta among {calls, bytes, usd}' }],
+        isError: true,
+      };
+    }
+    return run(() => { envelopeGrantTool(args); return { ok: true }; });
+  },
 );
 
 server.tool(
@@ -107,7 +123,7 @@ server.tool(
   'chitin_decisions_recent',
   'Return the most recent governance decisions from the local decision log.',
   {
-    dir: z.string().optional().describe('Path to .chitin state dir (default: CHITIN_BUDGET_DIR or ~/.chitin)'),
+    dir: z.string().optional().describe('Path to chitin state dir (default: $CHITIN_HOME or ~/.chitin)'),
     windowHours: z.number().positive().optional().describe('Only return decisions within this many hours (default: 24)'),
     limit: z.number().int().positive().optional().describe('Max decisions to return (default: 100)'),
   },
