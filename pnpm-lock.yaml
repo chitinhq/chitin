@@ -105,6 +105,18 @@ importers:
         specifier: '*'
         version: 14.0.3
 
+  apps/mcp-server:
+    dependencies:
+      '@chitin/mcp-chitin':
+        specifier: workspace:*
+        version: link:../../libs/mcp-chitin
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.25.2
+        version: 1.29.0(zod@4.3.6)
+      zod:
+        specifier: '*'
+        version: 4.3.6
+
   apps/openclaw-plugin-governance:
     dependencies:
       openclaw:
@@ -158,6 +170,8 @@ importers:
       zod:
         specifier: '*'
         version: 4.3.6
+
+  libs/mcp-chitin: {}
 
   libs/scheduler:
     dependencies:

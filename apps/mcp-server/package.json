@@ -1,0 +1,30 @@
+{
+  "name": "@chitin/mcp-server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "bin": {
+    "chitin-mcp-server": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "nx": {
+    "tags": ["layer:mcp", "scope:app"],
+    "targets": {
+      "run": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx apps/mcp-server/src/main.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@chitin/mcp-chitin": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "zod": "*"
+  }
+}
