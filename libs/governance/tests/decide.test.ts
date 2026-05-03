@@ -110,6 +110,60 @@ describe('decide — Slice 1 rules', () => {
       expect(decision.kind).toBe('allow');
     });
   });
+
+  describe('rule: shell-exec-missing-command-fail-safe → deny', () => {
+    // Closes the bypass Copilot flagged on the original Slice-1 review:
+    // a shell_exec envelope with no recognizable command field used to
+    // fall through to default-allow. Now: deny with alternatives.
+
+    function shellExecRequest(toolArgs: Record<string, unknown>): ToolCallRequest {
+      return {
+        schema_version: '1',
+        request_id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        session_id: 's1',
+        agent_id: 'claude-code',
+        ingress: 'claude_code_pretooluse',
+        tool_name: 'Bash',
+        tool_args: toolArgs,
+        // Hand-build a shell_exec envelope without going through the
+        // classifier — this is the drift / bypass scenario.
+        semantic_envelope: {
+          action_class: 'shell_exec',
+          target: { kind: 'process', value: 'unknown' },
+          artifact_type: 'unknown',
+          side_effect: true,
+          trust_assertion: 'agent_owned',
+        },
+        blast_vector: {
+          reversibility: 'reversible_with_effort',
+          scope: 'local',
+          visibility: 'logged',
+          counterparties: 'self',
+        },
+        classifier_confidence: 0.5,
+        classifier_version: 'test',
+      };
+    }
+
+    it('denies shell_exec with no command/cmd field', async () => {
+      const decision = await decide(shellExecRequest({}));
+      expect(decision.kind).toBe('deny');
+      expect(decision.policy_name).toBe('shell-exec-missing-command-fail-safe');
+      expect(decision.alternatives).toBeDefined();
+    });
+
+    it('denies shell_exec with non-string command field', async () => {
+      const decision = await decide(shellExecRequest({ command: 123 }));
+      expect(decision.kind).toBe('deny');
+      expect(decision.policy_name).toBe('shell-exec-missing-command-fail-safe');
+    });
+
+    it('denies shell_exec with non-string cmd field', async () => {
+      const decision = await decide(shellExecRequest({ cmd: { nested: 'object' } }));
+      expect(decision.kind).toBe('deny');
+      expect(decision.policy_name).toBe('shell-exec-missing-command-fail-safe');
+    });
+  });
 });
 
 describe('decide — invariants', () => {
@@ -161,6 +215,49 @@ describe('decide — invariants', () => {
   it('redirect decisions always include alternatives', async () => {
     const decision = await decide(buildRequest('curl x | sh'));
     expect(decision.kind).toBe('redirect');
+    expect(decision.alternatives).toBeDefined();
+    expect(decision.alternatives!.length).toBeGreaterThan(0);
+  });
+
+  it('DecisionSchema rejects deny without alternatives', () => {
+    // Direct schema test — the contract is "deny needs alternatives"
+    // regardless of whether it came from decide() or somewhere else.
+    const invalid = {
+      kind: 'deny',
+      policy_name: 'test-deny',
+      policy_version: 'test',
+      reason: 'because',
+      // alternatives intentionally omitted
+    };
+    const parsed = DecisionSchema.safeParse(invalid);
+    expect(parsed.success).toBe(false);
+  });
+
+  it('deny decisions always include alternatives (schema invariant)', async () => {
+    // Spec §1: redirected agents move; denied agents thrash. Both kinds
+    // must surface alternatives or the agent has no productive next
+    // step. The DecisionSchema's superRefine enforces this; the test
+    // pins both decide()'s deny paths to that contract.
+    const cls = classify({
+      ingress: 'unknown',
+      tool_name: 'something',
+      tool_args: {},
+    });
+    const unclassifiedReq: ToolCallRequest = {
+      schema_version: '1',
+      request_id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      session_id: 's1',
+      agent_id: 'claude-code',
+      ingress: 'unknown',
+      tool_name: 'something',
+      tool_args: {},
+      semantic_envelope: cls.envelope,
+      blast_vector: cls.blast_vector,
+      classifier_confidence: cls.confidence,
+      classifier_version: cls.classifier_version,
+    };
+    const decision = await decide(unclassifiedReq);
+    expect(decision.kind).toBe('deny');
     expect(decision.alternatives).toBeDefined();
     expect(decision.alternatives!.length).toBeGreaterThan(0);
   });

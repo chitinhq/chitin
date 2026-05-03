@@ -93,8 +93,16 @@ function classifyShellExec(command: string): ClassifyOutput {
   // gh pr create / merge — observable, network egress, partially reversible.
   const isGhPrOp = /^gh\s+pr\s+(create|merge|close|review)\b/.test(trimmed);
 
-  // rm -rf — destructive, but local. Reversible only via filesystem snapshot.
-  const isRmRf = /^rm\s+-(?:[a-zA-Z]*r[a-zA-Z]*f|[a-zA-Z]*f[a-zA-Z]*r)\b/.test(trimmed);
+  // rm -rf — destructive, but local. The bytes are irreversibly deleted;
+  // whether that's a recoverable consequence depends on what was at the
+  // path (e.g., node_modules can be reinstalled). Detect any rm command
+  // whose flag block contains both `r` and `f`. Linear-time check on
+  // the matched flags string — explicitly avoids the polynomial regex
+  // shape GitHub Advanced Security flagged in Slice-1's first review.
+  const rmFlagMatch = /^rm\s+-([a-zA-Z]+)\b/.exec(trimmed);
+  const isRmRf = rmFlagMatch !== null
+    && rmFlagMatch[1].includes('r')
+    && rmFlagMatch[1].includes('f');
 
   let blast: BlastVector;
   let confidence: number;

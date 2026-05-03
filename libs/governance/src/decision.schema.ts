@@ -56,11 +56,19 @@ export const DecisionSchema = z
         message: 'rewrite_args is required when kind=rewrite',
       });
     }
-    if (decision.kind === 'redirect' && (!decision.alternatives || decision.alternatives.length === 0)) {
+    // Both redirect and deny must surface alternatives. Without them,
+    // the agent has no productive next step and falls back to thrash —
+    // which is the exact failure mode the redirect/deny + alternatives
+    // pattern exists to prevent. Spec §1: "Redirected agent keeps
+    // moving. Denied agent thrashes."
+    if (
+      (decision.kind === 'redirect' || decision.kind === 'deny') &&
+      (!decision.alternatives || decision.alternatives.length === 0)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['alternatives'],
-        message: 'redirect must surface at least one alternative path',
+        message: `${decision.kind} must surface at least one alternative path`,
       });
     }
   });

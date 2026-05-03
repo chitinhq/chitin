@@ -4,11 +4,27 @@ import { z } from 'zod';
 // Spec: docs/superpowers/specs/2026-05-03-predictive-execution-policy-design.md §2.
 //
 // Treated as a vector, not a scalar, because folding into a single
-// "risk score" loses information policy needs. A `Bash rm -rf node_modules`
-// has small blast (irreversible × local × silent × self) — scary verb,
-// recoverable. A `slack.delete_channel` has huge blast
-// (irreversible × external × public_broadcast × team) — trivial call,
-// unrecoverable. A scalar can't see the difference.
+// "risk score" loses information policy needs. Two examples that read
+// the same as a scalar but have very different blast vectors:
+//
+//   `Bash rm -rf node_modules`
+//     reversibility=irreversible   (the deleted bytes can't come back)
+//     scope=local                  (only this machine)
+//     visibility=silent            (no one else observes it)
+//     counterparties=self          (no one else is affected)
+//   → Scary verb, but the BUSINESS consequence is small because every
+//     other axis is trivial and the deleted artifact (node_modules) is
+//     regenerable. Reversibility describes the operation, not the
+//     consequence.
+//
+//   `slack.delete_channel`
+//     reversibility=irreversible   (channel + history gone)
+//     scope=external               (Slack is external to this project)
+//     visibility=public_broadcast  (channel members all observe)
+//     counterparties=team          (everyone in the channel is affected)
+//   → Trivial call, but huge blast — three of four axes are at maximum.
+//
+// A scalar "risk score" cannot distinguish these. A vector can.
 
 export const ReversibilitySchema = z.enum([
   'reversible',

@@ -53,7 +53,33 @@ export async function decide(request: ToolCallRequest): Promise<Decision> {
       ? request.tool_args.command
       : typeof request.tool_args.cmd === 'string'
       ? request.tool_args.cmd
-      : '';
+      : null;
+
+    // Fail-safe: a shell_exec envelope without a recognizable command
+    // string indicates an ingress-adapter shape drift OR a malicious
+    // attempt to bypass shell_exec rules by stripping the command field.
+    // Either way: treat as unclassified-equivalent and deny. This
+    // closes a bypass Copilot flagged in Slice-1's first review.
+    if (command === null) {
+      return {
+        kind: 'deny',
+        policy_name: 'shell-exec-missing-command-fail-safe',
+        policy_version: POLICY_VERSION,
+        reason:
+          'A shell_exec tool call was received without a recognizable ' +
+          'command string in tool_args.command or tool_args.cmd. The ' +
+          'classifier shape and the decide-path shape are out of sync, ' +
+          'or the call is shaped to bypass the shell_exec rules. ' +
+          'Slice-1 fail-safe: deny.',
+        alternatives: [
+          'Re-emit the call through the documented ingress shape ' +
+            '(claude_code_pretooluse + Bash + tool_args.command, ' +
+            'or openclaw_before_tool_call + shell.exec + tool_args.cmd)',
+          'Ask the user to extend the classifier for a new ingress shape',
+        ],
+      };
+    }
+
     const trimmed = command.trim();
 
     // Rule 1: curl|sh — fetches and executes unverified content. Redirect

@@ -52,18 +52,36 @@ tool call be allowed?). Different concerns, deliberately distinct names.
 
 ## Usage (planned, when ingress wires up in Slice 1.5)
 
+`classify()` and `decide()` are deliberately separate so the chain
+records both the classifier output and the decision. Slice-1's API is
+two steps; the SDK shape in Slice 1.5 will likely fold them into a
+single `adjudicate()` for ergonomics, while keeping the underlying
+two-step pipeline available for callers that want the intermediate
+envelope (e.g., to emit a separate chain event for the classification).
+
 ```ts
-import { classify, decide } from '@chitin/governance'
+import { classify, decide, type ToolCallRequest } from '@chitin/governance'
 
 // At a Claude Code PreToolUse hook handler:
-const request = classify({
+const cls = classify({
   ingress: 'claude_code_pretooluse',
-  tool_name: hookInput.tool_name,
-  tool_args: hookInput.tool_input,
-  session_id: hookInput.session_id,
-  agent_id: 'claude-code',
-  // ...
+  tool_name: hookInput.tool_name,             // e.g., 'Bash'
+  tool_args: hookInput.tool_input,            // e.g., { command: '...' }
 })
+
+const request: ToolCallRequest = {
+  schema_version: '1',
+  request_id:    crypto.randomUUID(),         // ULID also acceptable
+  session_id:    hookInput.session_id,
+  agent_id:      'claude-code',
+  ingress:       'claude_code_pretooluse',
+  tool_name:     hookInput.tool_name,
+  tool_args:     hookInput.tool_input,
+  semantic_envelope:     cls.envelope,
+  blast_vector:          cls.blast_vector,
+  classifier_confidence: cls.confidence,
+  classifier_version:    cls.classifier_version,
+}
 
 const decision = await decide(request)
 // decision.kind: 'allow' | 'deny' | 'rewrite' | 'redirect' | ...
