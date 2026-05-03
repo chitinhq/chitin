@@ -98,7 +98,13 @@ export function buildPeerReviewerRequest(
   return {
     schema_version: '1',
     workflow_id: workflowId,
-    run_id: `${workflowId}-attempt-1`,
+    // run_id must be UNIQUE PER EXECUTION — the kernel writes
+    // canonical events to `.chitin/events-<run_id>.jsonl`, so a
+    // stable run_id collapses repeat dispatches' telemetry into a
+    // single file and breaks per-run auditability. workflow_id is
+    // stable per PR (for Temporal dedup); run_id is per-dispatch.
+    // (Copilot review #212 #2.)
+    run_id: `${workflowId}-${Date.now()}`,
     repo: input.repo,
     task_class: 'exploration',          // closest fit for read-only review
     risk_level: 'low',

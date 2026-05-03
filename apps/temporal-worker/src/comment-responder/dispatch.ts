@@ -93,7 +93,12 @@ export function buildCommentResponderRequest(
   return {
     schema_version: '1',
     workflow_id: workflowId,
-    run_id: `${workflowId}-attempt-1`,
+    // run_id must be UNIQUE PER EXECUTION — the kernel writes
+    // canonical events to `.chitin/events-<run_id>.jsonl`, so a
+    // stable run_id collapses repeat dispatches' telemetry into a
+    // single file and breaks per-run auditability. (Copilot review
+    // #212 #3; same fix as peer-reviewer/dispatch.ts.)
+    run_id: `${workflowId}-${Date.now()}`,
     repo: input.repo,
     task_class: 'bug_fix',              // closest fit — addressing review-flagged issues
     risk_level: 'medium',               // commits land on PR branch
