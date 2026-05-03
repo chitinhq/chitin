@@ -21,6 +21,18 @@
   "scripts": {
     "test": "vitest run test/"
   },
+  "nx": {
+    "tags": ["layer:app"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run apps/openclaw-plugin-governance/test",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
