@@ -28,11 +28,12 @@ YOUR WORKFLOW (one tool call per step where possible):
 
    Make NO edits, commits, or comments. The dispatcher's apply step would otherwise pick up an empty worktree and produce a bogus no-op PR. Bail before that happens.
 
-1. Use the `exec` tool to checkout the PR's branch:
+1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** You're running in an empty tempdir (no git repo, no working clone), so `gh pr checkout <pr_number>` would fail with "not in a git repo." Clone the repo first into the cwd, then check out the PR's branch:
    ```
+   gh repo clone <owner>/<repo> .
    gh pr checkout <pr_number>
    ```
-   (pr_number from ENTRY DETAIL above.)
+   The first command clones into `.` (cwd); the second switches the worktree to the PR's branch so subsequent edits + commits land on it.
 
 2. Pull all unresolved inline comments:
    ```
@@ -67,7 +68,7 @@ YOUR WORKFLOW (one tool call per step where possible):
 
    These per-thread replies are the durable record. The summary comment in step 7 is for the operator's overview; the per-thread replies are what GitHub uses to mark threads as resolved/replied so future dispatches don't reprocess them.
 
-7. Post a [structured summary comment](./summary-template.md) on the PR via `gh pr comment <pr_number>`.
+7. Post a [structured summary comment](./summary-template.md) on the PR via `gh pr comment --repo <owner>/<repo> <pr_number>`.
 
 8. Emit your final structured signal so the runner can record outcomes:
    ```
