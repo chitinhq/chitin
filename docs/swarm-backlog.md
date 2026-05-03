@@ -3848,10 +3848,6 @@ closed-enum normalizer in source but not in the running binary).
 Operational fix (rebuild + agent reset) applied alongside this
 PR. Two structural follow-ups below.
 
-### `auto-rebuild-redeploy-chitin-kernel`
-
-```yaml
-id: auto-rebuild-redeploy-chitin-kernel
 ## Swarm-lessons distillation cohort (filed 2026-05-03)
 
 The afternoon's PR cascade (#211-#223) surfaced 20+ Copilot review
