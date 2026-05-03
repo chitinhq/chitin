@@ -3661,3 +3661,180 @@ Steps when this entry is picked up:
       add-hermes-model
 - [ ] Implementation entry filed (or explicit "no action" with
       reasoning recorded for the next time the signal returns)
+
+### `personal-computer-use-substrate`
+
+```yaml
+id: personal-computer-use-substrate
+tier: T5
+status: in_design
+estimated_loc: TBD (substrate-spanning)
+blocks: []
+file: TBD (libs/governance/, libs/adapters/openclaw/, apps/openclaw-plugin-governance/, new browser-driver plugin)
+references_finding: 2026-05-03 operator conversation — extending chitin's wedge from coding agents to personal computer-use agents
+role: architect
+```
+
+Operator framing (2026-05-03): "OpenClaw has a lot of plugins. I've heard
+things where it'll go open an LLC for me, or accidentally delete all my
+email. What I want is for it to talk to my ChatGPT, sync project + Claude
+Code memory + ChatGPT memory + personal-life schedule, do research via
+NotebookLM, build decks I can copy back into the repo. The browser is
+the surface. Chitin is the safety boundary." Filed as a T5 strategic
+evaluation, NOT committed to building yet — coding-agent wedge is still
+not empirically proven (comment-responder + peer-reviewer just shipped
+2026-05-03 and have <24h of production data).
+
+Why this fits chitin's wedge: today chitin governs *coding* agents on
+one machine. Personal computer-use agents are the same shape — tool
+calls, blast radius, hash-chained log — over a much larger surface
+(browser, apps, files). The verifiable-execution-layer pitch holds in
+both domains. Specifically the "open an LLC for me" failure mode is
+exactly the threat chitin's policy gate is designed to catch: a
+governance rule like `no-financial-transactions` denies the form-submit
+before the model can complete the LLC filing.
+
+What this requires (decomposed for grooming):
+
+1. **Browser-automation driver as an OpenClaw plugin.** Wrap Playwright
+   or Anthropic's computer-use API. Emits each browser action as a
+   `ToolCallRequest` so chitin's `before_tool_call` hook fires per
+   click / type / form-submit. Biggest piece — browser automation on
+   modern dynamic UIs (ChatGPT, Notion, Gmail) needs vision+text
+   models for navigation; Playwright alone won't cut it on those
+   surfaces.
+
+2. **Action-class taxonomy expansion in `libs/governance`.** Add
+   `browser_navigate`, `browser_click`, `browser_type`,
+   `browser_form_submit`, `browser_screenshot` to `SemanticEnvelope`.
+   Each gets a default blast-vector profile (navigate=reversible,
+   form_submit=often-irreversible, screenshot=self-only).
+
+3. **Conservative default policies for personal-machine threat
+   model.** PC has email, banking, signed-in social — blast radius is
+   bigger than a coding worktree. Default rules:
+   `read-only-by-default` (deny everything except explicitly-granted
+   action classes), `no-outbound-messages-without-approval` (any
+   send-mail / send-DM / post-tweet escalates to operator),
+   `no-financial-transactions` (deny by domain on banking + payment
+   providers).
+
+4. **Cross-context memory bridge.** Today chitin's chain is the
+   unifying log for coding agents. Extending it to personal life
+   means:
+   - Ingest ChatGPT conversation exports (their JSON dump format) →
+     chain events
+   - Ingest NotebookLM artifacts when produced → chain events
+   - Link to existing scheduler library (`libs/scheduler/`) for life
+     calendar
+   - Hindsight-style retrieval over the unified log: "what did I
+     research on topic X?" becomes a chain query
+   - Note: Hindsight (vectorize-io/hindsight) was previously evaluated
+     as not-load-bearing for the coding-agent case; for *personal-
+     life cross-context recall* the recall/retain/reflect pattern fits
+     directly. Re-evaluate if (b) below ships.
+
+5. **Sample skill folders for the killer workflows.**
+   - `research-via-notebook-lm`: drive a NotebookLM session, query,
+     export results to a markdown artifact in the repo
+   - `sync-chatgpt-to-chitin-context`: pull recent ChatGPT context,
+     write a structured summary to `~/.chitin/context/chatgpt/`
+     (the artifact lives in chitin's home-directory state, not the
+     repo — distinct from the research workflow above which DOES
+     write into the repo. Renamed from the original
+     `…to-repo` shape since the path was global state, not
+     repo-scoped, and that ambiguity matters for replay/storage)
+   - `extract-deck-from-doc`: drive a slide-deck generator, produce
+     a copyable artifact
+   These follow the SKILL.md pattern proven by peer-reviewer +
+   comment-responder migrations.
+
+Risk to flag honestly (operator-stated):
+
+- **Scope creep.** Browser automation is its own deep domain. Doing it
+  well (modern UIs, vision-aided nav, anti-bot evasion) is a real
+  engineering investment — not a weekend.
+- **Personal-machine threat model.** The blast radius IS bigger than a
+  coding agent in a worktree. Conservative defaults (rule 3 above) are
+  table stakes; the hard part is the human-in-the-loop UX for granting
+  one-shot exceptions without becoming approval-fatigue spam.
+- **Two unproven layers stacked.** Coding-agent wedge is <24h-old in
+  production as of filing. Widening to personal computer-use before
+  that wedge is empirically sound is putting two unproven layers on
+  top of each other. The strategic discipline is: nail one, then
+  expand.
+
+Recommended posture (until a forcing function appears):
+
+(a) **Status quo: file, don't commit.** This entry preserves the trail
+    + decomposition. Don't build yet. Coding-agent wedge needs a week
+    of production data; personal computer-use is the next wedge, not
+    the current one.
+
+(b) **One-workflow vertical slice if a forcing function appears.**
+    "Drive Chrome → open NotebookLM → ask a research question → copy
+    result to a markdown file in the repo. Every action goes through
+    chitin's gate. Every action in the chain. Nothing else." That's
+    a complete vertical slice; learn whether OpenClaw + Playwright is
+    tractable, whether `before_tool_call` fires correctly on browser
+    actions, what the action-class taxonomy needs. ~5 days of work; if
+    it ships and works, the next two workflows become incremental.
+
+Forcing functions that would bump this from (a) to (b): a talk demo
+(2026-05-07 talk), an investor meeting where the demo lands harder
+than coding-agent governance, a content piece where computer-use
+governance is the headline. Without one, hold at (a).
+
+Steps when this entry is picked up:
+
+1. Confirm or refute the "Triton" / chitin disambiguation in the
+   operator's framing — operator referenced a "Triton" for the safety
+   layer; clarify whether that's chitin (homophone) or a separate
+   product they want to evaluate alongside.
+2. Identify the forcing function (if any) — without one, the
+   recommendation is (a) status quo.
+3. If (b): scope down rule 1 (browser driver) into the smallest
+   shippable plugin — single workflow, single browser, no vision-aided
+   navigation, no anti-bot — and file as a programmer-tier entry.
+4. Decompose rules 2 + 3 (action classes + default policies) into
+   parallel scope-down entries; both are libs/governance edits and
+   fit the same backlog cadence as the coding-agent governance work.
+
+**Acceptance:**
+- [ ] "Triton" disambiguation resolved
+- [ ] Forcing function identified (or "none, hold at status quo"
+      explicitly recorded)
+- [ ] If (b) chosen: vertical-slice entry filed with one workflow,
+      one browser, one chain proof
+- [ ] Action-class taxonomy update entry filed (libs/governance)
+- [ ] Default-policy entry filed (read-only-by-default,
+      no-outbound-messages-without-approval, no-financial-transactions)
+- [ ] Cross-context memory entry filed (Hindsight re-evaluation +
+      ChatGPT export ingester)
+- [ ] Sample-skill entries filed for at least the three workflows
+      named in rule 5 (`research-via-notebook-lm`,
+      `sync-chatgpt-to-chitin-context`, `extract-deck-from-doc`),
+      each as its own programmer-tier scope-down with concrete
+      browser-driver bounds + acceptance criteria. Without this
+      checkbox the entry could mark complete after only the
+      policy/memory follow-ups land, leaving the killer-workflow
+      cohort unfiled.
+
+### `investigate-low-success`
+
+```yaml
+id: investigate-low-success
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: chitin-swarm-rollup alarms
+role: analyst
+```
+
+Auto-filed by chitin-alarm-feeder.timer at 2026-05-03T03:45:14.730Z from a swarm-rollup alarm:
+
+> LOW SUCCESS: driver=claude-code-headless 56% (5/9)
+
+Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
