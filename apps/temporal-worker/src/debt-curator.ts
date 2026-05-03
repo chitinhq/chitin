@@ -204,8 +204,13 @@ const SCAN_REGEX = `(^|[^a-zA-Z])(//|#|--|\\*)[[:space:]]*(${SCAN_MARKERS.join('
 
 /**
  * Live scanner using `git grep`. Returns one candidate per match.
- * Errors (no git, repo too small) are caught and surface as empty —
- * the runner's idempotency rules handle that.
+ *
+ * Error contract:
+ *   - "no matches" (status=1) → returns [] (empty, normal case)
+ *   - missing git binary, repo permission errors, ENOBUFS, etc.
+ *     (any other status, or ErrnoException) → re-throws. The runner's
+ *     idempotency rules surface a real failure rather than masking it
+ *     as "nothing to do."
  */
 export function scanForMarkersGitGrep(scanRoot: string): DebtCandidateInput[] {
   let raw: string;
@@ -216,8 +221,10 @@ export function scanForMarkersGitGrep(scanRoot: string): DebtCandidateInput[] {
       { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
     );
   } catch (err) {
-    // git grep exits non-zero when there are no matches.
-    if ((err as NodeJS.ErrnoException).code === 1 || (err as { status?: number }).status === 1) {
+    // Only status=1 (no matches) is benign. Anything else — higher
+    // status codes, missing-binary ErrnoException — is a real failure
+    // and re-thrown.
+    if ((err as { status?: number }).status === 1) {
       return [];
     }
     throw err;

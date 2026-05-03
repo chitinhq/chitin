@@ -236,10 +236,6 @@ function readDispatchMarker(entryId: string): DispatchMarker | null {
   }
 }
 
-function entryHasDispatchMarker(entryId: string): boolean {
-  return readDispatchMarker(entryId) !== null;
-}
-
 function writeDispatchMarker(
   entryId: string,
   workflowId: string,

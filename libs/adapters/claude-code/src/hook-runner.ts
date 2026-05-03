@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hookToEventType } from './hook-dispatch';
+import { hookToEventType } from './hook-dispatch.js';
 
 export interface HookInput {
   hook_event_name: string;

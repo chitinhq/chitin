@@ -2784,3 +2784,54 @@ Steps:
       --frozen-lockfile` succeeds
 - [ ] CI green
 
+### `tc-extend-to-tests-and-tools`
+
+```yaml
+id: tc-extend-to-tests-and-tools
+tier: T1
+status: ready
+estimated_loc: 200
+blocks: []
+file: libs/*/tsconfig.spec.json (new), libs/*/tsconfig.json (add references), tools/lint/tsconfig.json (new)
+references_finding: 2026-05-03-typecheck-coverage-gap
+role: programmer
+```
+
+The CI typecheck gate added in PR #203 catches accumulated errors in
+each project's `src/**/*.ts` (via tsconfig.lib.json) but misses:
+
+- **Lib tests** (`libs/*/tests/*.ts`): they're not in any tsconfig
+  the typecheck target reaches. A test that imports a non-existent
+  symbol or has a type error still merges green.
+- **`tools/`**: only `tools/lint/` has its own package + tsconfig
+  (added in PR #204). Other tools/ scripts (`generate-go-types.ts`,
+  `lint/role-coverage.ts` if/when added) are unchecked.
+- **Root configs** (`vite.config.ts`, etc.): not in any project ref.
+
+Apps' tests ARE covered today (each app's tsconfig.json includes
+tests/). Libs aren't, by current convention.
+
+Fix: each lib gets a `tsconfig.spec.json` that includes both `src/`
+and `tests/`, referenced from `tsconfig.json` so `tsc --build`
+catches it. The nx typecheck target then walks all references.
+
+Steps:
+1. For each `libs/*/`, add `tsconfig.spec.json` extending the base,
+   `include: ["src/**/*.ts", "tests/**/*.ts"]`.
+2. Update each `libs/*/tsconfig.json` `references` to include
+   `./tsconfig.spec.json`.
+3. Add `tools/*/tsconfig.json` for tooling scripts that aren't yet
+   workspace packages.
+4. Verify `pnpm exec nx run-many -t typecheck` covers the whole
+   workspace. Document in CI yml comment.
+
+**Acceptance:**
+- [ ] Every `libs/*/tests/*.ts` is type-checked by the existing
+      typecheck CI gate
+- [ ] Every `tools/*/*.ts` either has its own tsconfig or is part
+      of an existing workspace package
+- [ ] A test introducing a deliberate type error fails the
+      `TypeScript typecheck (Nx affected)` step (proves the gate
+      now catches what it used to miss)
+- [ ] CI green on current main
+

@@ -7,5 +7,13 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src/**/*", "tests/**/*"]
+  "include": ["src/**/*", "tests/**/*"],
+  "references": [
+    {
+      "path": "../../libs/telemetry"
+    },
+    {
+      "path": "../../libs/contracts"
+    }
+  ]
 }
