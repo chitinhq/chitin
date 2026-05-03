@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
 )
 
@@ -32,6 +33,11 @@ type Result struct {
 	Diffs        []DecisionDiff `json:"diffs"`
 	Summary      Summary        `json:"summary"`
 	PolicyPath   string         `json:"policy_path,omitempty"`
+	// GovRuleCount records how many gov.Policy rules were active at
+	// replay time. 0 means no chitin.yaml resolved at policyCwd, so
+	// kernel-rule replay was skipped — operator can spot a misnamed
+	// --policy-cwd flag at a glance.
+	GovRuleCount int `json:"gov_rule_count"`
 }
 
 // DecisionDiff captures one event whose original decision differs
@@ -39,11 +45,17 @@ type Result struct {
 type DecisionDiff struct {
 	Ts             string `json:"ts"`
 	ToolName       string `json:"tool_name"`
+	ActionType     string `json:"action_type,omitempty"`
 	ActionTarget   string `json:"action_target"`
 	OriginalRule   string `json:"original_rule"`
 	OriginalAllow  bool   `json:"original_allow"`
 	ReplayedAllow  bool   `json:"replayed_allow"`
+	ReplayedRule   string `json:"replayed_rule,omitempty"`
 	ReplayedReason string `json:"replayed_reason,omitempty"`
+	// Layer indicates where the difference originated: "kernel" (a
+	// gov.Policy rule changed), "heuristic" (a router heuristic
+	// changed), or "" if both produced the same delta.
+	Layer string `json:"layer,omitempty"`
 }
 
 // Summary aggregates the diff counts.
@@ -56,22 +68,37 @@ type Summary struct {
 // Run replays the chain events for a session against the current
 // policy at policyCwd. Returns the diff result.
 //
-// Note: today's MVP replays HEURISTIC decisions only. Replaying
-// FULL kernel deny rules requires loading gov.Policy + replicating
-// the chain-original action's normalization — left as a
-// follow-up entry. Today's diff catches blast-radius / floundering
-// changes which is the meaningful operator-facing signal.
+// Replays BOTH layers in the order they fire at runtime:
+//  1. Kernel deny rules (gov.Policy.Evaluate) — reconstructs a
+//     gov.Action from chain-recorded action_type+action_target and
+//     evaluates against the current chitin.yaml.
+//  2. Router heuristics (blast-radius today; floundering is per-
+//     window so it's stateful and skipped in single-event replay).
+//
+// Kernel deny short-circuits: if gov.Policy denies, heuristics
+// aren't run for that event — same as the live hook.
+//
+// Falls open on either layer: if chitin.yaml isn't found at
+// policyCwd we skip kernel-rule replay; if router policy is empty
+// we skip heuristic replay. The diff still surfaces whatever layer
+// IS configured.
 func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 	events := router.ReadChainEvents(sessionID)
 	if len(events) == 0 {
 		return nil, fmt.Errorf("replay: no chain events for session %s", sessionID)
 	}
 
-	policy := router.LoadPolicy(policyCwd)
+	routerPolicy := router.LoadPolicy(policyCwd)
+	govPolicy, _, govErr := gov.LoadWithInheritance(policyCwd)
+	govLoaded := govErr == nil
 
 	result := &Result{
 		SessionID:   sessionID,
 		TotalEvents: len(events),
+		PolicyPath:  policyCwd,
+	}
+	if govLoaded {
+		result.GovRuleCount = len(govPolicy.Rules)
 	}
 
 	for _, ev := range events {
@@ -81,6 +108,7 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 		result.Decisions++
 
 		toolName, _ := ev.Payload["tool_name"].(string)
+		actionType, _ := ev.Payload["action_type"].(string)
 		actionTarget, _ := ev.Payload["action_target"].(string)
 		originalRule, _ := ev.Payload["rule_id"].(string)
 		originalAllow := false
@@ -88,27 +116,49 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 			originalAllow = true
 		}
 
-		// Replay heuristic decisions: reconstruct a HookInput from
-		// the recorded fields and re-score with current policy.
-		hookInput := router.HookInput{
-			ToolName: toolName,
-			// Best-effort reconstruction — chain doesn't preserve full
-			// tool_input, only the normalized action_type + target.
-			ToolInput: map[string]interface{}{
-				"file_path": actionTarget,
-				"command":   actionTarget,
-			},
-			Cwd:       policyCwd,
-			SessionID: sessionID,
-		}
-
 		replayedAllow := true
 		replayedReason := ""
-		if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Enabled {
-			score := router.ScoreBlastRadius(hookInput, cfg.Threshold)
-			if score.Fired {
+		replayedRule := ""
+		layer := ""
+
+		// Layer 1: kernel deny rules. Best-effort reconstruction —
+		// chain preserves action_type + target, which is exactly
+		// what gov.Policy rules match against.
+		if govLoaded && actionType != "" {
+			act := gov.Action{
+				Type:   gov.ActionType(actionType),
+				Target: actionTarget,
+				Path:   policyCwd,
+			}
+			d := govPolicy.Evaluate(act)
+			if !d.Allowed {
 				replayedAllow = false
-				replayedReason = "blast-radius:" + score.Reason
+				replayedRule = d.RuleID
+				replayedReason = "kernel:" + d.Reason
+				layer = "kernel"
+			}
+		}
+
+		// Layer 2: heuristics. Only runs if kernel allowed (matches
+		// live hook semantics — kernel deny short-circuits).
+		if replayedAllow {
+			hookInput := router.HookInput{
+				ToolName: toolName,
+				ToolInput: map[string]interface{}{
+					"file_path": actionTarget,
+					"command":   actionTarget,
+				},
+				Cwd:       policyCwd,
+				SessionID: sessionID,
+			}
+			if cfg, ok := routerPolicy.Heuristics["blast_radius"]; ok && cfg.Enabled {
+				score := router.ScoreBlastRadius(hookInput, cfg.Threshold)
+				if score.Fired {
+					replayedAllow = false
+					replayedRule = "blast_radius"
+					replayedReason = "blast-radius:" + score.Reason
+					layer = "heuristic"
+				}
 			}
 		}
 
@@ -116,11 +166,14 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 			result.Diffs = append(result.Diffs, DecisionDiff{
 				Ts:             ev.Ts,
 				ToolName:       toolName,
+				ActionType:     actionType,
 				ActionTarget:   actionTarget,
 				OriginalRule:   originalRule,
 				OriginalAllow:  originalAllow,
 				ReplayedAllow:  replayedAllow,
+				ReplayedRule:   replayedRule,
 				ReplayedReason: replayedReason,
+				Layer:          layer,
 			})
 			if !replayedAllow {
 				result.Summary.NowDenied++
@@ -140,9 +193,13 @@ func WriteHumanReport(w io.Writer, r *Result) {
 	fmt.Fprintf(w, "chitin chain replay — session %s\n", r.SessionID)
 	fmt.Fprintf(w, "  total events:    %d\n", r.TotalEvents)
 	fmt.Fprintf(w, "  decisions:       %d\n", r.Decisions)
+	fmt.Fprintf(w, "  gov rules:       %d\n", r.GovRuleCount)
 	fmt.Fprintf(w, "  unchanged:       %d\n", r.Summary.UnchangedDecisions)
 	fmt.Fprintf(w, "  now-denied:      %d\n", r.Summary.NowDenied)
 	fmt.Fprintf(w, "  now-allowed:     %d\n", r.Summary.NowAllowed)
+	if r.GovRuleCount == 0 {
+		fmt.Fprintf(w, "  note:            no chitin.yaml at %q — kernel-rule replay skipped (heuristic-only)\n", r.PolicyPath)
+	}
 	if len(r.Diffs) == 0 {
 		fmt.Fprintln(w, "\n  No diffs — current policy produces the same decisions as the recorded run.")
 		return
@@ -159,10 +216,14 @@ func WriteHumanReport(w io.Writer, r *Result) {
 		if len(target) > 60 {
 			target = target[:60] + "…"
 		}
-		fmt.Fprintf(w, "    [%s] %s on %q  (orig: %s/%s)  %s  (reason: %s)\n",
+		layerTag := d.Layer
+		if layerTag == "" {
+			layerTag = "-"
+		}
+		fmt.Fprintf(w, "    [%s] %s on %q  (orig: %s/%s)  %s  [%s/%s] %s\n",
 			d.Ts, d.ToolName, target,
 			boolToStr(d.OriginalAllow), d.OriginalRule,
-			dir, d.ReplayedReason,
+			dir, layerTag, d.ReplayedRule, d.ReplayedReason,
 		)
 	}
 }
