@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@chitin/contracts": "workspace:*",
+    "@chitin/scheduler": "workspace:*",
     "@chitin/telemetry": "workspace:*",
     "commander": "*",
     "chokidar": "*"
