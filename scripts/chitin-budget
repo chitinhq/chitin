@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# chitin-budget — surface per-driver spend + remaining quota.
+#
+# Sources:
+#   - swarm-rollup JSONs at ~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json
+#     (cost_total_usd, cost_by_driver fields)
+#   - operator-defined caps at ~/.chitin/budgets.json (optional)
+#
+# Modes:
+#   chitin-budget                  → human-readable summary
+#   chitin-budget --json           → raw JSON
+#   chitin-budget --check          → exit 1 if any driver over cap
+#                                    (intended for CI / pre-dispatch)
+#
+# Cap config shape (~/.chitin/budgets.json):
+#   {
+#     "claude-code-headless": {"daily_usd": 10, "weekly_usd": 50},
+#     "copilot": {"daily_usd": 0, "weekly_usd": 0},
+#     "local-glm-flash": {"daily_usd": 0, "weekly_usd": 0}
+#   }
+# A cap of 0 means "free / no spend expected" (informational only).
+
+set -euo pipefail
+
+ROLLUP_DIR="${CHITIN_SWARM_ROLLUP_DIR:-$HOME/.cache/chitin/swarm-rollups}"
+BUDGETS_FILE="${CHITIN_BUDGETS_FILE:-$HOME/.chitin/budgets.json}"
+
+mode="human"
+for arg in "$@"; do
+  case "$arg" in
+    --json) mode="json" ;;
+    --check) mode="check" ;;
+    --help|-h)
+      cat <<USAGE
+Usage: chitin-budget [--json|--check]
+
+Surfaces per-driver cost from the swarm-daily-rollup JSONs.
+
+  (no flag)   human-readable summary
+  --json      raw JSON: { driver, today_usd, week_usd, cap_daily, cap_weekly, over_cap }
+  --check     exit 1 if any driver is over its daily OR weekly cap;
+              exit 0 otherwise. Useful for pre-dispatch gating.
+
+Sources:
+  ~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json     spend
+  ~/.chitin/budgets.json                              caps (optional)
+
+Caps file shape:
+  { "<driver>": { "daily_usd": <n>, "weekly_usd": <n> } }
+USAGE
+      exit 0
+      ;;
+  esac
+done
+
+if [[ ! -d "$ROLLUP_DIR" ]]; then
+  if [[ "$mode" == "json" ]]; then
+    echo '{"error":"no-rollup-dir","path":"'"$ROLLUP_DIR"'"}'
+  else
+    echo "chitin-budget: no rollup data at $ROLLUP_DIR" >&2
+    echo "  (chitin-swarm-rollup.timer should populate this; check it's running)" >&2
+  fi
+  exit 0
+fi
+
+# Load caps if present
+if [[ -f "$BUDGETS_FILE" ]]; then
+  caps=$(cat "$BUDGETS_FILE")
+else
+  caps='{}'
+fi
+
+# Latest available rollup (most-recent .json in the dir). The
+# chitin-swarm-rollup.timer fires at 06:00 UTC for the previous 24h
+# window — so today's file may not exist until 06:00.
+today=$(date -u +%Y-%m-%d)
+today_file=""
+if [[ -f "$ROLLUP_DIR/$today.json" ]]; then
+  today_file="$ROLLUP_DIR/$today.json"
+else
+  # Fall back to the most recent rollup file
+  latest=$(ls -1 "$ROLLUP_DIR"/*.json 2>/dev/null | tail -1 || true)
+  [[ -n "$latest" ]] && today_file="$latest"
+fi
+
+# Week window: last 7 days (rollup files are daily-summaries with a
+# 24h window each; sum cost_by_driver across the last 7 of them).
+week_files=()
+for i in 0 1 2 3 4 5 6; do
+  d=$(date -u -d "-${i} days" +%Y-%m-%d)
+  f="$ROLLUP_DIR/$d.json"
+  [[ -f "$f" ]] && week_files+=("$f")
+done
+
+# Build slurpfile args. jq's --slurpfile takes ONE file per use;
+# repeated --slurpfile <var> calls accumulate into an array.
+slurp_args=()
+slurp_args+=(--slurpfile todays "${today_file:-/dev/null}")
+for f in "${week_files[@]}"; do
+  slurp_args+=(--slurpfile weeks "$f")
+done
+[[ ${#week_files[@]} -eq 0 ]] && slurp_args+=(--slurpfile weeks /dev/null)
+
+# Collect per-driver today + week sums via jq
+build_data=$(jq -n \
+  --argjson caps "$caps" \
+  "${slurp_args[@]}" '
+  def safe_today: if ($todays | length) > 0 then ($todays[0].cost_by_driver // {}) else {} end;
+  def safe_week_sum:
+    [($weeks // [])[].cost_by_driver // {}]
+    | reduce .[] as $d ({}; . as $acc | $d | to_entries | reduce .[] as $kv ($acc; .[$kv.key] = ((.[$kv.key] // 0) + $kv.value)));
+  (safe_today | keys + (safe_week_sum | keys) | unique) as $drivers
+  | [$drivers[] as $d | {
+      driver: $d,
+      today_usd: ((safe_today[$d] // 0) | (. * 1000 | floor) / 1000),
+      week_usd: ((safe_week_sum[$d] // 0) | (. * 1000 | floor) / 1000),
+      cap_daily: (($caps[$d].daily_usd) // null),
+      cap_weekly: (($caps[$d].weekly_usd) // null),
+      over_cap: false
+    } | . + {
+      over_cap: (
+        (.cap_daily != null and .cap_daily > 0 and .today_usd > .cap_daily) or
+        (.cap_weekly != null and .cap_weekly > 0 and .week_usd > .cap_weekly)
+      )
+    }]
+' 2>/dev/null) || build_data='[]'
+
+case "$mode" in
+  json)
+    echo "$build_data"
+    ;;
+  check)
+    over_count=$(echo "$build_data" | jq '[.[] | select(.over_cap)] | length')
+    if [[ "$over_count" -gt 0 ]]; then
+      echo "$build_data" | jq -r '.[] | select(.over_cap) | "[OVER CAP] \(.driver): today=$\(.today_usd) (cap $\(.cap_daily // "—")), week=$\(.week_usd) (cap $\(.cap_weekly // "—"))"' >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  human)
+    echo "chitin-budget — per-driver spend"
+    echo "  today  = $today (UTC)"
+    echo "  window = last 7 days"
+    echo
+    printf "  %-25s %10s %10s %12s %12s %s\n" \
+      "driver" "today \$" "week \$" "cap-daily" "cap-weekly" "status"
+    printf "  %-25s %10s %10s %12s %12s %s\n" \
+      "-------" "------" "------" "---------" "----------" "------"
+    echo "$build_data" | jq -r '.[] | [.driver,
+      ("$" + (.today_usd | tostring)),
+      ("$" + (.week_usd | tostring)),
+      (if .cap_daily then "$" + (.cap_daily | tostring) else "—" end),
+      (if .cap_weekly then "$" + (.cap_weekly | tostring) else "—" end),
+      (if .over_cap then "OVER"
+       elif .cap_daily == null and .cap_weekly == null then "untracked"
+       elif (.cap_daily // 0) == 0 and (.cap_weekly // 0) == 0 then "free"
+       else "ok" end)
+    ] | @tsv' | while IFS=$'\t' read -r driver today week capd capw status; do
+      printf "  %-25s %10s %10s %12s %12s %s\n" "$driver" "$today" "$week" "$capd" "$capw" "$status"
+    done
+    echo
+    if [[ ! -f "$BUDGETS_FILE" ]]; then
+      echo "  (no caps configured; create $BUDGETS_FILE to set per-driver limits)"
+    fi
+    ;;
+esac

@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-driver budget caps consumed by chitin-budget. Copy to ~/.chitin/budgets.json. cap=0 marks 'free' (informational); null/missing marks 'untracked' (no cap enforcement). chitin-budget --check exits 1 when any driver is over either cap.",
+  "claude-code-headless": { "daily_usd": 10, "weekly_usd": 50 },
+  "copilot": { "daily_usd": 0, "weekly_usd": 0 },
+  "local-glm-flash": { "daily_usd": 0, "weekly_usd": 0 },
+  "local-qwen": { "daily_usd": 0, "weekly_usd": 0 },
+  "local-deepseek": { "daily_usd": 0, "weekly_usd": 0 }
+}
