@@ -99,12 +99,21 @@ type PluginConfig struct {
 	TimeoutMs int                    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 }
 
+// PluginsTrustConfig — operator allowlist for declared plugins.
+// See plugins.TrustPolicy for verification semantics.
+type PluginsTrustConfig struct {
+	Mode          string            `yaml:"mode,omitempty" json:"mode,omitempty"`
+	TrustedPaths  []string          `yaml:"trusted_paths,omitempty" json:"trusted_paths,omitempty"`
+	TrustedHashes map[string]string `yaml:"trusted_hashes,omitempty" json:"trusted_hashes,omitempty"`
+}
+
 // Policy — full router policy from chitin.yaml `router:` section.
 type Policy struct {
-	Enabled    bool                       `yaml:"enabled" json:"enabled"`
-	Heuristics map[string]HeuristicConfig `yaml:"heuristics" json:"heuristics"`
-	Advisor    AdvisorConfig              `yaml:"advisor" json:"advisor"`
-	Plugins    []PluginConfig             `yaml:"plugins,omitempty" json:"plugins,omitempty"`
+	Enabled      bool                       `yaml:"enabled" json:"enabled"`
+	Heuristics   map[string]HeuristicConfig `yaml:"heuristics" json:"heuristics"`
+	Advisor      AdvisorConfig              `yaml:"advisor" json:"advisor"`
+	Plugins      []PluginConfig             `yaml:"plugins,omitempty" json:"plugins,omitempty"`
+	PluginsTrust PluginsTrustConfig         `yaml:"plugins_trust,omitempty" json:"plugins_trust,omitempty"`
 }
 
 // DefaultPolicy is used when chitin.yaml omits the router section.

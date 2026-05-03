@@ -112,7 +112,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 	// plugin wall time at the slowest plugin's timeout.
 	var pluginResults []router.NamedHeuristicScore
 	if len(policy.Plugins) > 0 {
-		pluginResults = router.RunPlugins(context.Background(), policy.Plugins, hookInput, errOut)
+		pluginResults = router.RunPlugins(context.Background(), policy.Plugins, policy.PluginsTrust, hookInput, errOut)
 		for _, r := range pluginResults {
 			if r.Score.Fired {
 				outcome.AnyFired = true

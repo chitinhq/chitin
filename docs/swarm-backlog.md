@@ -4817,3 +4817,172 @@ twice (TS interface + Go interface).
 - [ ] Built-in heuristics ported to plugin shape; tonight's tests still pass
 - [ ] Example custom plugin documented in `docs/runbooks/chitin-router.md`
 - [ ] CI green
+
+## Recursive governance + everything-starts-at-T0 (filed 2026-05-03 evening)
+
+### `everything-governs-everything-recursively`
+
+```yaml
+id: everything-governs-everything-recursively
+tier: T5
+status: in_design
+estimated_loc: TBD (multi-subsystem; this entry captures the architectural principle)
+blocks: []
+file: TBD (cross-cutting; spans router, gov, scheduler, lessons-curator)
+references_finding: 2026-05-03 evening operator framing — chitin must be bulletproof; every action surface must be governed including plugin side effects, advisor recommendations, and recursive escalation chains
+role: architect
+```
+
+Operator framing 2026-05-03 evening (one session):
+
+> "I thought about the plug in loader. Right? Like, needs to govern
+> everything. Right? So, even if I write a custom Python plugin,
+> with a side effect, but the side effect is bad or it's, like,
+> dangerous. There needs to be a policy allows it or it'll get
+> destroyed."
+
+> "We need probably a way to look into what — like, if you're
+> running a Python library or you're running a TypeScript library,
+> like, we need to audit what is it gonna be doing. Right?
+> Probably still with Go. Like, Go needs probably do that since
+> it's fast, and then still stop it like, that'll stop us from,
+> like, if we're using something like an openclaw plug in you
+> know, at the tool call layer, we be able to see that or an MCP
+> tool. We should be able to see and prevent bad actions from
+> that."
+
+> "What if you escalate to the higher agent, and it does something
+> that's wrong? The chitin still should still catch that. Right?
+> Or what if it tries, but it fails? Then maybe you need to
+> escalate to a higher an even higher agent up to tier four,
+> even."
+
+> "I feel like there's an endless amount of things that we can
+> govern, but we need to identify those, and we need to try to
+> to make sure that chitin is pretty bulletproof."
+
+> "You could eventually have all actions start on tier zero. If
+> this works correctly. Right? Like, then you wouldn't actually
+> be doing, like, routing or anything through anything but the
+> kernel. So you could try to have t zero take a stab, and the
+> second it starts to fail escalate. If that fails escalate, and
+> then that's how you run into tier four. But then we'll get
+> better heuristics and analysis data as we go to know like,
+> alright, like certain things probably need to start at a higher
+> level rather than us, you know, arbitrarily saying what needs
+> to use, what model. And what driver, you know? Over time, we
+> should get enough data to be like, oh, like, this can only
+> handle these types of actions. Right? Or this can like, t zero
+> can handle this action, but it needs to have a t four plan
+> first."
+
+This entry is the architectural ROLLUP of three intertwined principles:
+
+### Principle 1 — Recursive governance
+
+Every entity that emits side effects goes through the kernel.
+This includes:
+
+- The agent (already wired via PreToolUse hook)
+- Plugins (router-plugin-loader; needs trust-allowlist + side-effect
+  gate)
+- Advisor recommendations (when an advisor says "do X" the agent's
+  X-execution still goes through the kernel)
+- Higher-tier escalations (T1's tool calls go through the kernel
+  same as T0's; chain bounded by max chain depth)
+- MCP tools (today partially; openclaw plugins in particular
+  need to be governed at the MCP-tool-call layer)
+
+The kernel is the SINGLE choke point. Anything that can do real
+work must pass through it.
+
+### Principle 2 — Plugin auditing
+
+Operator-declared plugins (router-plugin-loader) must be:
+
+- Trust-verified at load (allowlist of paths + content hashes —
+  shipped as `router-plugin-allowlist`)
+- Side-effect-gated at runtime (plugin's tool calls go through
+  the kernel; today plugins are NOT gated this way)
+- Optionally: statically analyzed for declared capability matching
+  (deferred to future work)
+
+The "Go is fast" framing matters here — static analysis + trust
+verification belong in the kernel binary, not in TS. Hot path
+stays cheap.
+
+### Principle 3 — Everything starts at T0 (the data-driven tier ladder)
+
+The end-state of the shift-left thesis. Today tier→driver mapping
+is operator-declared (T0=local-glm-flash, T1=copilot, etc). Future:
+all actions START at T0; the router escalates ONLY when:
+
+- T0 fails (heuristics flag low success on this action class)
+- T0 gets stuck (floundering detected)
+- T0's advisor verdict says "this needs higher tier"
+
+Over time, accumulated chain data tells us:
+- Which action classes CAN'T succeed at T0 (auto-route to T1+)
+- Which action classes need a T4 plan THEN T0 execution
+- Which action classes are pure-T0 (no escalation ever needed)
+
+The chitin chain + lessons-curator (PR #224) + router-heuristics
+together form the data substrate for this. The accumulated
+"escalation telemetry by action class" becomes input to a
+tier-router-by-data primitive that supersedes the static
+tier→driver map.
+
+### Concrete shipping pieces (each is its own scope-down entry)
+
+1. **`router-plugin-side-effect-gate`** (T3, ~300 LOC) — plugins'
+   own tool calls go through the kernel. Plugin runtime emits
+   structured action declarations; kernel's gov.Gate evaluates
+   each before plugin proceeds.
+2. **`router-plugin-static-audit`** (T3, ~400 LOC) — static-
+   analysis pass over plugin code (Python AST, TS AST) before
+   load. Reports declared capability set; reject if it exceeds
+   manifest's declared scope.
+3. **`mcp-tool-governance`** (T2, ~250 LOC) — extend the
+   PreToolUse hook adapter to recognize MCP tool calls (today
+   covered partially). Each MCP tool call → kernel verdict.
+4. **`recursive-escalation-budget`** (T2, ~150 LOC) — bound the
+   chain depth across recursive escalations. Today the router
+   has chain.max_depth=3 for advisor chains; same primitive
+   needs to apply to agent escalations.
+5. **`tier-router-by-data`** (T3, ~500 LOC) — new heuristic +
+   policy primitive: read chain telemetry for action_class →
+   {success_rate by tier} → recommend starting tier. Operator
+   reviews + promotes recommendations. Eventually replaces
+   static tier→driver map.
+6. **`pre-action-analysis-plugin-class`** (T2, ~200 LOC) — new
+   plugin TYPE: `pre_action_analysis`. Runs analysis BEFORE the
+   action it gates (e.g., `nx affected -t test` before git
+   commit). Returns block/allow + reason. Different shape from
+   heuristic plugins (which only score; pre-action plugins can
+   block).
+
+### Bulletproofness checklist (operator-facing)
+
+For chitin to be bulletproof, every action surface must be
+governable. The current matrix (2026-05-03 evening):
+
+| Surface | Governed? | Where |
+|---|---|---|
+| Claude Code agent tool calls | ✓ | PreToolUse hook → router |
+| Copilot CLI tool calls | ✓ | acpx hook → router |
+| Openclaw agent tool calls | ✓ | chitin-governance plugin |
+| Router heuristic plugins (input scoring) | partial | trust allowlist (PR for `router-plugin-allowlist`) |
+| Router heuristic plugins (their own side effects) | NO | `router-plugin-side-effect-gate` (T3) |
+| Router advisor recommendations | partial | advisor returns nudge; agent's enacting tool call IS governed |
+| MCP tools | partial | `mcp-tool-governance` (T2) |
+| Higher-tier escalation tool calls | ✓ | recursive — same hook fires |
+| Pre-action analysis (e.g., test-before-commit) | NO | `pre-action-analysis-plugin-class` (T2) |
+| Plugin static capability declaration | NO | `router-plugin-static-audit` (T3) |
+
+This entry's job is the rollup + breakdown. Each row of the
+matrix becomes its own scope-down entry as it ships.
+
+**Acceptance:**
+- [ ] Each matrix row reaches "✓" status (or operator decision: "won't ship — explain why")
+- [ ] tier-router-by-data primitive proven against 30+ days of chain telemetry
+- [ ] End-to-end smoke: a swarm dispatch starts at T0, escalates through router heuristics + advisor consultation, reaches successful completion (or operator-takeover) without any operator manual intervention
