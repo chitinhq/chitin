@@ -44,10 +44,17 @@ The kernel is authority for which decision applies. Advisors and verifiers contr
 
 Raw tool calls are too brittle for policy. Pattern matching `Bash` args produces fragile rules that obfuscation defeats.
 
-The semantic envelope is the load-bearing abstraction:
+The semantic envelope is the load-bearing abstraction. The type carrying it
+is named `ToolCallRequest` to avoid collision with the existing
+`ExecutionRequest` in `libs/contracts/src/execution-request.schema.ts`,
+which is the *workflow-level* dispatch contract (what task should this
+agent run?). `ToolCallRequest` is the *tool-call-level* adjudication
+contract (should this specific tool call be allowed?). Different layers,
+different concerns; deliberately distinct names so import sites are
+unambiguous.
 
 ```
-ExecutionRequest {
+ToolCallRequest {
   // Identity
   request_id:     string  // ULID, chain-linkable
   session_id:     string
@@ -112,7 +119,7 @@ Default to C1. Escalate to C2/C3 on heuristic match (e.g., `tool_name` not in C1
 The kernel makes decisions deterministically. Advisors are consultative.
 
 ```
-                  ExecutionRequest
+                  ToolCallRequest
                          │
                          ▼
                 ┌────────────────┐
@@ -357,12 +364,12 @@ Chitin does **not** see what a child process does after `Bash` returns. For that
 
 This spec describes a complete architecture. The implementation lands in slices, each independently shippable and dogfoodable.
 
-### Slice 1 — `ExecutionRequest` + `decide()` + one ingress
+### Slice 1 — `ToolCallRequest` + `decide()` + one ingress
 
 **Goal:** prove the substrate. One canonical contract, one synchronous decision call, two ingress paths sharing one adjudicator.
 
 Ingredients:
-- `libs/governance/contracts/` — `ExecutionRequest`, `Decision`, `BlastVector`, `SemanticEnvelope` (Go + TS, schema-locked)
+- `libs/governance/contracts/` — `ToolCallRequest`, `Decision`, `BlastVector`, `SemanticEnvelope` (Go + TS, schema-locked)
 - `libs/governance/classifier/` — C1 deterministic table for one action class (`shell_exec` via Bash)
 - `libs/governance/decide/` — synchronous policy evaluation, three rules:
   - `curl|sh` → `redirect` with alternatives
@@ -377,7 +384,7 @@ Ingredients:
 
 ### Slice 2 — Blast vector + observed-vs-predicted
 
-Add `BlastVector` to `ExecutionRequest`. Classifier emits `predicted_blast`. PostExec emits `observed_blast`. Chain captures both. CLI report (`chitin policy report --since=24h`) aggregates by class and surfaces deltas.
+Add `BlastVector` to `ToolCallRequest`. Classifier emits `predicted_blast`. PostExec emits `observed_blast`. Chain captures both. CLI report (`chitin policy report --since=24h`) aggregates by class and surfaces deltas.
 
 ### Slice 3 — `allow_with_auto_undo` for one action class
 
@@ -410,7 +417,7 @@ Against accumulated chain history. Skip until enough data.
 The shippable artifact users import:
 
 ```ts
-import { Adjudicator, ExecutionRequest } from '@chitin/governance'
+import { Adjudicator, ToolCallRequest } from '@chitin/governance'
 
 const adj = new Adjudicator({
   classifier: builtin,
@@ -439,7 +446,7 @@ The SDK + the report CLI together prove the platform shape with no new infra. Ho
 
 Briefly, to make boundaries explicit:
 
-- **MCP-specific hooks** (`PreMCPCall`, `PostMCPCall`) — violates the "MCP is just one ingress" insight. There is one canonical `PreExecution` gate over `ExecutionRequest`; MCP normalizes into it like any other ingress.
+- **MCP-specific hooks** (`PreMCPCall`, `PostMCPCall`) — violates the "MCP is just one ingress" insight. There is one canonical `PreExecution` gate over `ToolCallRequest`; MCP normalizes into it like any other ingress.
 - **Cloud-first / SaaS-first roll-out** — Phase 4, not Phase 2. A hosted dashboard before users have policies is putting the cart before the horse.
 - **Marketplace of community policies** — same. Earn it after users exist.
 - **Auto-applied advisor recommendations** — the advisor is consultative; auto-applying its outputs reintroduces the nondeterminism we banned. Queue for review.
