@@ -156,6 +156,8 @@ importers:
         specifier: '*'
         version: 12.9.0
 
+  tools/lint: {}
+
 packages:
 
   '@agentclientprotocol/sdk@0.21.0':

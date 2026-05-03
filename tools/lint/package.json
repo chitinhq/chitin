@@ -1,0 +1,28 @@
+{
+  "name": "@chitin/tooling-lint",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run tests"
+  },
+  "nx": {
+    "tags": ["layer:tooling"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run --config tools/lint/vitest.config.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "lint:layer-tag-coverage": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx tools/lint/layer-tag-coverage.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  }
+}

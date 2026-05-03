@@ -26,6 +26,7 @@ export default [
             { sourceTag: 'layer:governance', onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
             { sourceTag: 'layer:adapter',    onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
             { sourceTag: 'layer:cli',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
+            { sourceTag: 'layer:app',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
             { sourceTag: 'layer:kernel',     onlyDependOnLibsWithTags: [] },
           ],
         },

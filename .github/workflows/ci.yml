@@ -98,5 +98,14 @@ jobs:
             --base=${{ steps.nx-base.outputs.base }} \
             --parallel=3
 
+      - name: Layer-tag coverage lint
+        run: |
+          # Structural linter — every layer:* nx tag in any workspace
+          # package.json must have a matching depConstraints entry in
+          # eslint.config.mjs. Catches the omission pattern that hit
+          # PRs #194/#195/#199/#192-cli-edge with the same Copilot
+          # comment one ticket at a time.
+          pnpm exec nx run @chitin/tooling-lint:lint:layer-tag-coverage
+
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
