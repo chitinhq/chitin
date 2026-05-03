@@ -3975,3 +3975,184 @@ edge case; (b) is correct if it becomes a routine.
       "entry asks for a write to chitin.yaml under writepolicy=branch
       → flag for human review") so the next entry of this shape
       doesn't slip through unnoticed
+## Swarm-loop hardening — deferred from Copilot review on PRs #211, #212
+
+These three entries were identified by Copilot review during the
+peer-reviewer + comment-responder cohort but deferred out of the
+critical-fix PRs to keep them small. They share a theme: the
+swarm dispatch loop is functional today, but its idempotency over
+PR state is not. Without these, the loop will:
+
+- silently skip dispatch-decision regressions (no test coverage);
+- re-fire peer reviews every 5 min after the prior review completes
+  (dedup is against running workflows, not completed-once);
+- re-fire comment-responders even when no new comments have arrived
+  (commentCount is total, not "new since last responder run").
+
+Each is small (50-150 LOC). Bundling here so the operator can
+groom them into a single follow-up cohort or pick one off
+individually.
+
+### `pr-event-ingester-extract-decision-helper`
+
+```yaml
+id: pr-event-ingester-extract-decision-helper
+tier: T2
+status: ready
+estimated_loc: 100
+blocks: []
+file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/test/pr-event-ingester.test.ts
+references_finding: Copilot review on PR #211 #4 + PR #212 #1 (same finding, different PR)
+role: programmer
+```
+
+The new per-PR agent dispatch logic in `pr-event-ingester.ts`
+(always enqueue peer-reviewer; enqueue comment-responder when
+`copilotCommentCount > COMMENT_RESPONDER_THRESHOLD`; dedup against
+`runningAgents`) is not exercised by tests. The existing test suite
+covers only `pickPrsToIngest` (the pure classification helper).
+The dispatch decision branching includes:
+
+- threshold check on `copilotCommentCount`
+- dedup check against `runningAgents` set (workflow_id presence)
+- per-decision counter accounting (`peer_reviewers_enqueued`,
+  `comment_responders_enqueued`)
+- error accounting on individual dispatch failure (the loop
+  shouldn't break the whole tick)
+
+Steps:
+
+1. Extract the per-PR dispatch decision into a pure helper
+   `decideAgentDispatches(pr, runningAgents, opts):
+   { dispatchPeerReviewer: boolean, dispatchCommentResponder: boolean,
+     reasons: { skip_peer_reviewer?: string, skip_comment_responder?: string } }`.
+   Mirror the shape of `pickPrsToIngest`'s return: structured
+   decisions, not booleans.
+
+2. Ingester's main loop calls the helper, then maps decisions to
+   dispatch + counter increments.
+
+3. Tests for the helper (in the existing `pr-event-ingester.test.ts`):
+   - peer-reviewer always proposed when no run is running
+   - peer-reviewer skipped when its workflow_id is in runningAgents
+   - comment-responder skipped below threshold
+   - comment-responder proposed at + above threshold
+   - comment-responder skipped when its workflow_id is in
+     runningAgents (regardless of comment count)
+   - reasons match expectations on each skip
+
+**Acceptance:**
+- [ ] `decideAgentDispatches` is a pure function with no
+      Temporal-client dependency
+- [ ] Existing ingester behavior is observably identical
+      (`pickPrsToIngest` tests still pass)
+- [ ] Six new helper tests cover the matrix above
+- [ ] CI green
+
+### `pr-event-ingester-dedup-against-completed-workflows`
+
+```yaml
+id: pr-event-ingester-dedup-against-completed-workflows
+tier: T3
+status: ready
+estimated_loc: 200
+blocks: []
+file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/src/peer-reviewer/dispatch.ts, apps/temporal-worker/src/comment-responder/dispatch.ts
+references_finding: Copilot review on PR #212 #4
+role: programmer
+```
+
+`listRunningAgentWorkflows` only returns workflows in
+`ExecutionStatus="Running"`. After a peer-reviewer's run completes
+on PR #207, the next ingester tick (5 min later) will see no
+running workflows for `peer-review-pr-207` — and will dispatch
+another peer review for the same unchanged PR. The dispatch will
+keep posting duplicate review comments every 5 minutes.
+
+The robust fix is dedup against PR state rather than workflow
+state: each peer-reviewer run is per (PR#, head_sha). A new
+commit pushed to the PR → new review needed; same head_sha → no
+review needed.
+
+Two implementation paths to consider during grooming:
+
+(a) **Marker-file dedup** (mirrors the dispatcher's existing
+    `~/.cache/chitin/swarm-state/dispatched/<entry-id>.json`
+    pattern): per-PR marker at
+    `~/.cache/chitin/peer-reviewer-state/pr-<n>.json` recording
+    `{ head_sha, ran_at, workflow_run_id }`. Ingester reads the
+    marker before dispatch and skips if `head_sha` matches the PR's
+    current HEAD. Peer-reviewer (the agent) writes the marker when
+    its run completes successfully.
+
+(b) **Temporal visibility query against completed workflows**:
+    list completed workflows with `WorkflowId="peer-review-pr-<n>"`,
+    inspect their result envelope for the recorded head_sha. More
+    Temporal-native; doesn't introduce new state. Risk: workflow
+    history retention windows may evict old runs.
+
+Same shape applies to comment-responder, with the additional
+twist that a comment-responder run can produce new commits +
+new pushes; head_sha will change as a result OF the run.
+Idempotency key for comment-responder is probably (PR#,
+unresolved_comment_set_hash) rather than head_sha — needs a
+groomer-pass before code lands.
+
+**Acceptance:**
+- [ ] Peer-reviewer is dispatched at most ONCE per (PR#, head_sha)
+- [ ] Comment-responder dispatch is gated on a similar idempotency
+      key (decision in design phase, then implement)
+- [ ] Ingester does not re-fire either agent on the same PR every
+      tick after the first run completes
+- [ ] Tests: same PR ingested twice across two ticks dispatches
+      exactly once unless head_sha changes
+
+### `pr-event-ingester-comment-count-is-unresolved`
+
+```yaml
+id: pr-event-ingester-comment-count-is-unresolved
+tier: T2
+status: ready
+estimated_loc: 100
+blocks: [pr-event-ingester-dedup-against-completed-workflows]
+file: apps/temporal-worker/src/pr-event-ingester.ts
+references_finding: Copilot review on PR #212 #5
+role: programmer
+```
+
+`copilotCommentCount` (the value compared against
+`COMMENT_RESPONDER_THRESHOLD`) is the total number of Copilot
+inline comments returned by `/pulls/{n}/comments`. Once a
+responder run completes, the historical Copilot comments are
+still there — so every later ingester tick will re-enqueue
+another comment-responder for the same PR even if all threads
+were already replied-to.
+
+GitHub's review-comment API distinguishes:
+
+- root-level vs threaded (`in_reply_to_id` is null vs set)
+- resolved vs unresolved (via the GraphQL endpoint;
+  `pullRequestReviewThread.isResolved`)
+
+The threshold check should count root-level UNRESOLVED comments
+from reviewers. Two engineering pieces:
+
+1. Replace `gh api repos/.../pulls/<n>/comments` with the GraphQL
+   endpoint that exposes `isResolved` per-thread.
+2. Filter to (a) root-level (not in_reply_to), (b) unresolved,
+   (c) authored by a reviewer (Copilot, github-advanced-security,
+   reviewers — exclude the operator's own comments).
+
+`blocks: pr-event-ingester-dedup-against-completed-workflows` —
+this fix only matters once the broader dedup story is in place;
+without it, the dedup-by-completion change supersedes the count
+distinction (responder won't refire anyway).
+
+**Acceptance:**
+- [ ] `copilotCommentCount` reflects unresolved-root-level reviewer
+      comments only
+- [ ] Resolved threads do not contribute to the threshold count
+- [ ] Test: PR with 5 root-level Copilot comments, 3 marked
+      resolved → count returns 2
+- [ ] Test: PR with 5 reviewer comments, 5 reply comments
+      (`in_reply_to_id` set) → count returns 5 (only root-level)
