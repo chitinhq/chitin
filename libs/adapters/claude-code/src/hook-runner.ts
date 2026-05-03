@@ -13,6 +13,12 @@ export interface HookInput {
   error?: string;
   session_id?: string;
   prompt?: string;
+  // SubagentStop-specific (captured in 2026-04-19 + 2026-05-02 lab notes).
+  // Used as the subagent's chain key so its session_end lands on its OWN
+  // chain instead of corrupting the parent session's chain — closes #21.
+  agent_id?: string;
+  agent_type?: string;
+  agent_transcript_path?: string;
   [key: string]: unknown;
 }
 
@@ -46,8 +52,20 @@ export function runHook(input: HookInput, ctx: AdapterContext): HookResult {
     eventType === 'intended' || eventType === 'executed' || eventType === 'failed'
       ? 'tool_call'
       : 'session';
-  const parentChainID: string | null =
-    chainType === 'tool_call' ? ctx.sessionID : null;
+  // parent_chain_id derivation:
+  //   tool_call events    → ctx.sessionID (the session that fired the tool)
+  //   SubagentStop        → ctx.sessionID (the parent session that spawned the subagent — #21)
+  //   other session events → null (top-level session has no parent)
+  let parentChainID: string | null = null;
+  if (chainType === 'tool_call') {
+    parentChainID = ctx.sessionID;
+  } else if (input.hook_event_name === 'SubagentStop' && chainID !== ctx.sessionID) {
+    // The subagent's session_end is keyed on agent_id; its parent IS
+    // the session that spawned it. Without this branch the subagent's
+    // chain would have parent_chain_id=null and look like a top-level
+    // session, losing the parent linkage analytics need.
+    parentChainID = ctx.sessionID;
+  }
 
   const payload = buildPayload(eventType, input);
 
@@ -97,6 +115,15 @@ export function runHook(input: HookInput, ctx: AdapterContext): HookResult {
 }
 
 function deriveChainID(input: HookInput, ctx: AdapterContext): string {
+  // SubagentStop closes the subagent's chain, NOT the parent's. The
+  // hook stdin carries `agent_id` (per the 2026-04-19 + 2026-05-02 lab
+  // captures) — that's the subagent's stable identifier and the right
+  // chain key. Without this branch, every subagent return would emit
+  // session_end on the parent chain_id and corrupt the parent chain.
+  // Closes #21.
+  if (input.hook_event_name === 'SubagentStop' && typeof input.agent_id === 'string' && input.agent_id !== '') {
+    return input.agent_id;
+  }
   if (input.tool_use_id) return input.tool_use_id;
   return ctx.sessionID;
 }
