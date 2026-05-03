@@ -202,8 +202,13 @@ export function listOpenPrs(repo: string): OpenPrSummary[] {
       repo,
       '--state',
       'open',
+      // Cap high enough that no realistic chitin-shaped repo blows
+      // past it. gh's hard cap on `pr list --limit` is 1000; setting
+      // exactly that maxes the page size. If the repo ever grows
+      // beyond 1000 open PRs, real pagination via `--paginate`
+      // becomes necessary — until then this is fine.
       '--limit',
-      '50',
+      '1000',
       '--json',
       'number,title,headRefName,additions,deletions,changedFiles,isDraft,url',
     ],
@@ -231,9 +236,20 @@ export function enrichPr(repo: string, pr: OpenPrSummary): OpenPrSummary {
   }
   let copilotCommentCount: number | undefined;
   try {
+    // /pulls/{n}/comments returns ALL inline review comments — humans,
+    // bots, and Copilot. The §5 trigger matrix only escalates on
+    // Copilot's R0 review (see review-graph.ts:computeStartingTier
+    // "copilot_comment_count" branch), so we filter by author.login.
+    // GitHub's Copilot review bot logs in as `copilot-pull-request-reviewer[bot]`;
+    // be tolerant of the historical `Copilot` capitalization too.
     const commentsOut = execFileSync(
       'gh',
-      ['api', `repos/${repo}/pulls/${pr.number}/comments`, '--jq', 'length'],
+      [
+        'api',
+        `repos/${repo}/pulls/${pr.number}/comments`,
+        '--jq',
+        '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or .user.login == "Copilot")] | length',
+      ],
       { encoding: 'utf8' },
     );
     copilotCommentCount = parseInt(commentsOut.trim(), 10);
@@ -279,7 +295,12 @@ export async function runIngesterTick(opts: {
   dryRun?: boolean;
   log?: (line: string) => void;
 }): Promise<IngesterTickResult> {
-  const log = opts.log ?? ((line) => console.error(line));
+  // Default logger to console.log to match the convention of other
+  // timer-style runners in this repo (alarm-feeder.ts:164,
+  // groomer.ts:174, lessons.ts:382, stale-doc-detector.ts:285).
+  // Sending normal-tick output to stderr would have systemd treat
+  // every successful run as an error and create monitor noise.
+  const log = opts.log ?? ((line) => console.log(line));
   const result: IngesterTickResult = {
     evaluated: 0,
     ingested: 0,
@@ -345,6 +366,14 @@ export async function runIngesterTick(opts: {
             parent_workflow_id: parentWorkflowIdForPr(decision.pr.number),
             pr_url: decision.pr.url,
             worktree: undefined,                  // ingester has no worktree
+            // Pass through the PrMeta we already classified — without
+            // this, enqueueReviewGraph rebuilds from the (empty)
+            // worktree and the §5 trigger matrix re-runs against
+            // diff_loc=0 / files_changed=0 / no Copilot count, so
+            // every ingested PR collapses back to R0→R1. Threading
+            // pr_meta keeps the R2/R3/T5 escalations the ingester
+            // computed in pickPrsToIngest().
+            pr_meta: decision.pr_meta,
             entry: synthesizeBacklogEntry(decision.pr),
             repo: opts.repo,
             log,
