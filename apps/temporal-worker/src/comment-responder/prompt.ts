@@ -47,6 +47,20 @@ THE OPERATOR'S RULE (do not violate):
 
 YOUR WORKFLOW (one tool call per step where possible):
 
+0. **Verify your dispatch shape FIRST.** Look at ENTRY DETAIL above for
+   a PR URL of the form \`https://github.com/<owner>/<repo>/pull/<n>\`.
+   If there is none, you've been dispatched through the generic backlog
+   pipeline instead of the dedicated comment-responder dispatcher.
+   EXIT CLEAN with:
+
+   \`\`\`
+   <<<COMMENT_RESPONSE>>>{"applied": 0, "dismissed": 0, "escalated": 0, "commit_sha": null, "tests_passed": null, "skipped_reason": "no PR URL in dispatch context — wrong dispatcher path; await dedicated dispatch"}
+   \`\`\`
+
+   Make NO edits, commits, or comments. The dispatcher's apply step
+   would otherwise pick up an empty worktree and produce a bogus no-op
+   PR. Bail before that happens.
+
 1. Use the \`exec\` tool to checkout the PR's branch:
    \`\`\`
    gh pr checkout <pr_number>
@@ -86,7 +100,26 @@ YOUR WORKFLOW (one tool call per step where possible):
    git push
    \`\`\`
 
-6. Post a summary comment on the PR via \`gh pr comment <pr_number>\` with
+6. **Reply to each individual review comment thread** with the per-comment
+   decision. Without this, a future dispatch will see the same root-level
+   comments still un-replied-to and re-process them. For each comment you
+   evaluated, post a reply via:
+   \`\`\`
+   gh api repos/<owner>/<repo>/pulls/<pr_number>/comments/<comment_id>/replies \\
+     --method POST --field body="<one-line per-decision text>"
+   \`\`\`
+   Format the reply body as one of:
+   - \`✅ APPLIED in <commit_sha>: <one-line summary of the fix>\`
+   - \`❌ DISMISSED: <reason; cite specific source-of-truth — file path,
+     test name, line number>\`
+   - \`🔁 ESCALATED to operator: <reason; what kind of judgment is needed>\`
+
+   These per-thread replies are the durable record. The summary comment
+   in step 7 is for the operator's overview; the per-thread replies are
+   what GitHub uses to mark threads as resolved/replied so future
+   dispatches don't reprocess them.
+
+7. Post a summary comment on the PR via \`gh pr comment <pr_number>\` with
    the following structure (one bullet per inline comment evaluated):
 
    \`\`\`
@@ -100,7 +133,7 @@ YOUR WORKFLOW (one tool call per step where possible):
    Commit: <commit_sha>
    \`\`\`
 
-7. Emit your final structured signal so the runner can record outcomes:
+8. Emit your final structured signal so the runner can record outcomes:
    \`\`\`
    <<<COMMENT_RESPONSE>>>{"applied": <n>, "dismissed": <n>, "escalated": <n>, "commit_sha": "<sha or null>", "tests_passed": <bool>}
    \`\`\`

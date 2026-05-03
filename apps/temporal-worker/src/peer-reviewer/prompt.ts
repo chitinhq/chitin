@@ -39,6 +39,21 @@ ${entry.description}
 
 YOUR WORKFLOW:
 
+0. **Verify your dispatch shape FIRST.** Look at ENTRY DETAIL above for
+   a PR URL of the form \`https://github.com/<owner>/<repo>/pull/<n>\`.
+   If there is none, you've been dispatched through the generic backlog
+   pipeline instead of the dedicated peer-reviewer dispatcher. EXIT
+   CLEAN with:
+
+   \`\`\`
+   <<<PEER_REVIEW>>>{"red": 0, "yellow": 0, "green": 0, "verdict": "SKIPPED", "skipped_reason": "no PR URL in dispatch context — wrong dispatcher path; await dedicated dispatch"}
+   \`\`\`
+
+   Make NO review comments or other side effects. The dispatcher's
+   apply step would otherwise pick up an empty worktree and produce a
+   bogus no-op PR (you're supposed to be read-only). Bail before that
+   happens.
+
 1. Read the PR diff:
    \`\`\`
    gh pr diff <pr_number>
@@ -108,12 +123,24 @@ YOUR WORKFLOW:
 
 INVARIANTS:
 - One review per dispatch — never spam the PR with multiple comments.
-- Don't repeat what Copilot's R0 already flagged (read R0's comments
-  via \`gh api repos/<o>/<r>/pulls/<n>/comments\` first to dedupe).
 - Cite specific lines — "the function looks complicated" is noise; "X
   on line Y violates Z invariant" is signal.
 - 🟢 (nice-to-have) findings are optional — skip the section if you
   have none. Don't pad the review.
+
+R0 (Copilot) overlap handling:
+- DO read R0's comments first via
+  \`gh api repos/<o>/<r>/pulls/<n>/comments\`.
+- DO include findings R0 already flagged in your structured counts
+  (red/yellow/green) — those issues still need a comment-responder
+  pass, and the responder's trigger reads YOUR red count. If you
+  silently dropped duplicates, R0's findings would never get acted on.
+- Annotate duplicates in your review body so the operator can see what
+  overlaps R0:
+  \`- path:line — <description> (also flagged by R0)\`
+- The point of the dedup-aware annotation is operator readability,
+  NOT downstream signal suppression. Counts must reflect the full
+  set of issues you'd flag if R0 didn't exist.
 
 DON'T:
 - Don't dispatch a comment-responder yourself; the dispatcher chains

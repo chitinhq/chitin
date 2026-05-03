@@ -64,4 +64,18 @@ describe('buildCommentResponderPrompt', () => {
     const prompt = buildCommentResponderPrompt(makeEntry('x'));
     expect(prompt).toMatch(/AT MOST ONE commit/);
   });
+
+  it('guards against wrong-dispatcher-path: refuse to act without a PR URL', () => {
+    const prompt = buildCommentResponderPrompt(makeEntry('x'));
+    expect(prompt).toMatch(/Verify your dispatch shape FIRST/);
+    expect(prompt).toMatch(/no PR URL in dispatch context/);
+    expect(prompt).toMatch(/skipped_reason/);
+  });
+
+  it('instructs per-thread replies for durable resolution', () => {
+    const prompt = buildCommentResponderPrompt(makeEntry('x'));
+    expect(prompt).toMatch(/Reply to each individual review comment thread/);
+    expect(prompt).toMatch(/comments\/<comment_id>\/replies/);
+    expect(prompt).toMatch(/durable record/);
+  });
 });

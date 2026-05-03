@@ -60,8 +60,22 @@ describe('buildPeerReviewerPrompt', () => {
     expect(prompt).toMatch(/Don't checkout the branch/);
   });
 
-  it('requires deduping against R0 (Copilot) before posting', () => {
+  it('reads R0 (Copilot) comments first but counts duplicates in red/yellow/green', () => {
+    // PR #207 review: silently dropping duplicates would suppress the
+    // very findings that should drive the comment-responder. Counts
+    // must reflect the full set; duplicates are annotated in the
+    // review body, not removed from the structured signal.
     const prompt = buildPeerReviewerPrompt(makeEntry('x'));
-    expect(prompt).toMatch(/Don't repeat what Copilot's R0 already flagged/);
+    expect(prompt).toMatch(/DO read R0's comments first/);
+    expect(prompt).toMatch(/include findings R0 already flagged in your structured counts/);
+    expect(prompt).toMatch(/also flagged by R0/);
+    expect(prompt).toMatch(/operator readability/);
+  });
+
+  it('guards against wrong-dispatcher-path: refuse to act without a PR URL', () => {
+    const prompt = buildPeerReviewerPrompt(makeEntry('x'));
+    expect(prompt).toMatch(/Verify your dispatch shape FIRST/);
+    expect(prompt).toMatch(/no PR URL in dispatch context/);
+    expect(prompt).toMatch(/SKIPPED/);
   });
 });

@@ -201,15 +201,25 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   // comments) that a single BacklogEntry can't carry. See
   // docs/design/2026-05-02-swarm-as-software-factory.md §5.
   reviewer: (entry) => buildStubPrompt('reviewer', entry),
-  // Peer-reviewer fires per-PR alongside Copilot R0 — independent
-  // second opinion, non-escalating. See docs/design/2026-05-02-swarm-
-  // as-software-factory.md §5; dispatched by `pr-event-ingester` (or
-  // its successor) when a PR opens.
+  // Peer-reviewer + comment-responder are registered here so the
+  // role-coverage linter passes (every Role in RoleSchema must have
+  // a builder). BUT: the generic backlog dispatcher
+  // (apps/temporal-worker/src/dispatcher.ts) sets
+  // write_policy='worktree' and runs apply-workflow-result for every
+  // dispatch, which is wrong for these roles:
+  //   - peer-reviewer is read-only (write_policy=none) — apply step
+  //     would push an accidental edit as a PR
+  //   - comment-responder commits to the PR's branch
+  //     (write_policy=branch); apply step would try to push + open a
+  //     SECOND PR on top of the responder's commit
+  // Until the pr-event-ingester (#202) extends to dispatch these
+  // through a dedicated path with the right bounds, both prompts'
+  // first-step instructions detect "no PR URL in the entry" and exit
+  // clean — refusing to act when the dispatch shape is wrong. The
+  // dedicated dispatch path lands in the comment-responder /
+  // peer-reviewer wiring follow-up entries from PR #200's
+  // factory-gaps backlog.
   'peer-reviewer': buildPeerReviewerPrompt,
-  // Comment-responder reads PR review comments, evaluates each on
-  // merit (per the operator's "do NOT dismiss as noise" rule), and
-  // pushes a fix commit + summary. Closes the loop the swarm was
-  // missing this morning (PRs #196-#199 sat un-actioned).
   'comment-responder': buildCommentResponderPrompt,
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
