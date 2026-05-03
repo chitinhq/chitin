@@ -47,12 +47,17 @@ describe('findRoleCoverageGaps', () => {
     expect(gaps.missingPrompts).toEqual(['alpha', 'mu', 'zeta']);
   });
 
-  it('current chitin RoleSchema vs ROLE_PROMPTS — symmetric (regression guard)', () => {
-    // Snapshot of the current set as of 2026-05-03; if either side
-    // changes (PR adds a role or builder), this test forces both
-    // sides to stay in sync. Same protection as the lint, but at
-    // unit-test time.
-    const roles = new Set([
+  it('expected role vocabulary as of 2026-05-03 (snapshot)', () => {
+    // Documentation-style snapshot — fixes the role list at a known
+    // point in time. NOT a live comparison against RoleSchema or
+    // ROLE_PROMPTS (those live in production code; the live check is
+    // the linter's job, run via
+    // `nx run @chitin/tooling-lint:lint:role-coverage`).
+    //
+    // The snapshot's job is to make any *change* to the role
+    // vocabulary surface as a test diff — adding a role here forces
+    // a deliberate test edit, which forces author-time attention.
+    const expectedRoles = [
       'researcher',
       'product',
       'groomer',
@@ -65,9 +70,11 @@ describe('findRoleCoverageGaps', () => {
       'analyst',
       'refactorer',
       'debt-curator',
-    ]);
-    const prompts = new Set(roles);
-    const gaps = findRoleCoverageGaps(roles, prompts);
+    ];
+    expect(expectedRoles.length).toBe(12);
+    // Self-symmetric — sanity for the snapshot itself, not a real
+    // drift check.
+    const gaps = findRoleCoverageGaps(new Set(expectedRoles), new Set(expectedRoles));
     expect(gaps.missingPrompts).toEqual([]);
     expect(gaps.orphanedPrompts).toEqual([]);
   });

@@ -65,7 +65,19 @@ export async function loadRoleSchemaValues(): Promise<Set<string>> {
   if (!Array.isArray(opts)) {
     throw new Error('RoleSchema.options is not an array (zod shape changed?)');
   }
-  return new Set(opts.filter((v): v is string => typeof v === 'string'));
+  // Throw — not silently filter — on non-string entries. Silently
+  // dropping would let a broken zod version produce an incorrect
+  // role set, which the linter would then "pass" against. The
+  // linter is a correctness gate; partial truths defeat its purpose.
+  const nonStringIdx = opts.findIndex((v) => typeof v !== 'string');
+  if (nonStringIdx >= 0) {
+    throw new Error(
+      `RoleSchema.options[${nonStringIdx}] is not a string ` +
+      `(got ${typeof opts[nonStringIdx]}). zod shape may have changed; ` +
+      `the linter cannot trust this set.`,
+    );
+  }
+  return new Set(opts as string[]);
 }
 
 /**
