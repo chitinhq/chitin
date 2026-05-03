@@ -28,22 +28,17 @@ set -euo pipefail
 ROUTER_SENTINEL="${CHITIN_ROUTER_SENTINEL:-$HOME/.chitin/router-enabled}"
 
 if [[ ! -e "$ROUTER_SENTINEL" ]]; then
-  # Fast path: forward stdin to chitin-kernel directly. Same shape
-  # as the pre-router hook config.
+  # Fast path: forward stdin to the deterministic kernel directly.
+  # Same shape as the pre-router hook config; ~3-10ms cold start.
   exec chitin-kernel gate evaluate --hook-stdin "$@"
 fi
 
-# Slow path: the router is enabled. Run the TS pipeline.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HOOK_TS="$REPO_ROOT/apps/temporal-worker/src/router/hook-wrapper.ts"
-
-if [[ ! -f "$HOOK_TS" ]]; then
-  # Fail open — emit allow so an installation problem doesn't brick the agent
-  echo '{"decision":"allow","source":"kernel-allow"}'
-  echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"error\",\"component\":\"chitin-router-hook\",\"msg\":\"hook-ts-not-found\",\"path\":\"$HOOK_TS\"}" >&2
-  exit 0
-fi
-
-cd "$REPO_ROOT"
-exec pnpm exec tsx "$HOOK_TS" "$@"
+# Router-enabled path: kernel binary's `router evaluate` subcommand
+# runs the SAME deterministic kernel + heuristics (in-process Go) +
+# advisor (subprocess to `claude -p`). ~26ms cold start when no
+# heuristic fires; +LLM latency when advisor is consulted.
+#
+# The TS substrate at apps/temporal-worker/src/router/ remains in
+# the repo as the design substrate; the Go path is the production
+# hot path going forward.
+exec chitin-kernel router evaluate --hook-stdin "$@"
