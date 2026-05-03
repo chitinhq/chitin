@@ -50,7 +50,7 @@ the swarm cannot quietly grant itself broader permissions.
 ```yaml
 id: dispatcher-respect-blocks-field
 tier: T1
-status: ready
+status: partial
 estimated_loc: 60
 blocks: []
 file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-blocks.test.ts
@@ -266,7 +266,7 @@ hallucination here is what makes the auto-merge gate unsafe.
 ```yaml
 id: tech-debt-ledger
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: docs/debt-ledger.md, python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
@@ -337,7 +337,7 @@ locks in the debt vocabulary across the codebase.
 ```yaml
 id: debt-ledger-analysis-loader
 tier: T1
-status: ready
+status: partial
 estimated_loc: 120
 blocks: []
 file: python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
@@ -399,7 +399,7 @@ T1 — mechanical parse + project + helper.
 ```yaml
 id: researcher-role-prompt-template
 tier: T1
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: apps/temporal-worker/src/researcher-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/researcher-prompts.test.ts
@@ -446,7 +446,7 @@ different agent persona.
 ```yaml
 id: chitin-researcher-systemd-units
 tier: T1
-status: ready
+status: partial
 estimated_loc: 60
 blocks: [external-signal-fetchers]
 file: infra/systemd/chitin-researcher.service, infra/systemd/chitin-researcher.timer, infra/systemd/README.md
@@ -491,7 +491,7 @@ T1 — straight unit-file authoring.
 ```yaml
 id: external-signal-fetchers
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: [researcher-role-prompt-template]
 file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/test/researcher.test.ts, docs/roadmap.md
@@ -644,7 +644,7 @@ dispatcher PR is filed, individual follow-ups (e.g.,
 ```yaml
 id: qwen-ollama-config-bump-and-validate
 tier: T2
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: docs/runbooks/local-qwen-stack.md (new), apps/temporal-worker/src/activity.ts
@@ -685,7 +685,7 @@ T2 because it crosses systemd, ollama config, and verification work.
 ```yaml
 id: analysis-swarm-runs-loader
 tier: T1
-status: ready
+status: partial
 estimated_loc: 120
 blocks: []
 file: python/analysis/swarm_runs.py (new), python/analysis/tests/test_swarm_runs.py (new)
@@ -743,7 +743,7 @@ aggregations). No external services, no model calls.
 ```yaml
 id: swarm-daily-rollup-healthcheck
 tier: T2
-status: ready
+status: partial
 estimated_loc: 150
 blocks: [analysis-swarm-runs-loader]
 file: python/analysis/swarm_health.py (new), scripts/swarm-daily-rollup.sh (new), infra/systemd/chitin-swarm-rollup.timer (new)
@@ -793,7 +793,7 @@ its first real consumer.
 ```yaml
 id: dispatcher-preflight-scrub-claude-settings-backup
 tier: T1
-status: ready
+status: partial
 estimated_loc: 40
 blocks: []
 file: apps/temporal-worker/src/dispatcher.ts
@@ -950,7 +950,7 @@ to expose a parsed `hookEvents` summary.
 ```yaml
 id: qwen-ollama-stream-instability-investigation
 tier: T2
-status: ready
+status: partial
 estimated_loc: 50
 blocks: []
 file: docs/observations/2026-05-XX-qwen-ollama-instability.md (new)
@@ -1010,7 +1010,7 @@ that reject `../foo`, `..foo/bar`, `foo/../bar`, and accept `chitinhq/chitin`.
 ```yaml
 id: read-vs-read_file-file_path-alias
 tier: T0
-status: ready
+status: partial
 estimated_loc: 6
 blocks: []
 file: go/execution-kernel/internal/gov/normalize.go
@@ -1080,7 +1080,7 @@ Implementation steps:
 ```yaml
 id: tools-summary-structured-result
 tier: T1
-status: ready
+status: partial
 estimated_loc: 40
 blocks: []
 file: apps/temporal-worker/src/activity-types.ts, src/activity.ts
@@ -1119,7 +1119,7 @@ Implementation steps:
 ```yaml
 id: cron-subagents-image-granular-targets
 tier: T1
-status: ready
+status: partial
 estimated_loc: 40
 blocks: []
 file: go/execution-kernel/internal/gov/normalize.go
@@ -1255,7 +1255,7 @@ Implementation steps:
 ```yaml
 id: openclaw-tool-coverage-audit
 tier: T1
-status: ready
+status: partial
 estimated_loc: 40
 blocks: []
 file: docs/observations/2026-05-XX-openclaw-tool-coverage.md (new)
@@ -2288,7 +2288,7 @@ Eight entries covering the scheduler, MCP server, and Slack integrations. Locked
 ```yaml
 id: nx-angular-workspace-install
 tier: T1
-status: ready
+status: partial
 estimated_loc: 30
 blocks: []
 file: package.json, pnpm-lock.yaml
@@ -2343,7 +2343,7 @@ Steps:
 ```yaml
 id: mcp-server-chitin-cli
 tier: T2
-status: ready
+status: partial
 estimated_loc: 400
 blocks: []
 file: libs/mcp-chitin/, apps/mcp-server/
@@ -2423,7 +2423,7 @@ Enforces the hard rule architecturally:
 ```yaml
 id: scheduler-rank-ingest-notify
 tier: T2
-status: ready
+status: partial
 estimated_loc: 400
 blocks: [scheduler-lib-foundation]
 file: libs/scheduler/src/rank.ts, libs/scheduler/src/ingest.ts, libs/scheduler/src/notify.ts, libs/scheduler/src/notify/ntfy.ts, libs/scheduler/src/notify/slack.ts, libs/scheduler/tests/, apps/cli/src/commands/scheduler.ts
@@ -2523,7 +2523,7 @@ Steps:
 ```yaml
 id: slack-l2-actions
 tier: T3
-status: ready
+status: partial
 estimated_loc: 400
 blocks: [mcp-server-chitin-cli]
 file: apps/slack-app/, libs/mcp-chitin/ (uses)
