@@ -2,6 +2,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Item, TaskItem, EventItem, BacklogItem } from '../schema.js';
+import { ItemSchema } from '../schema.js';
 
 const CREATE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
@@ -166,7 +167,11 @@ export class ItemStore {
   update(id: string, patch: Partial<Item>): void {
     const existing = this.get(id);
     if (!existing) throw new Error(`Item not found: ${id}`);
-    const merged = { ...existing, ...patch, id } as Item;
+    // Re-validate the merged shape via the discriminated union before
+    // persisting. Without this, callers can patch into invalid states
+    // — e.g., switch item_type from `task` to `event` without a `start`,
+    // or set a status outside the allowed set — and reads later break.
+    const merged = ItemSchema.parse({ ...existing, ...patch, id });
     this.add(merged);
   }
 

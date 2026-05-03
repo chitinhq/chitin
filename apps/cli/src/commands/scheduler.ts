@@ -89,6 +89,19 @@ export function registerScheduler(program: Command): void {
 
         const result = rank(ctx);
 
+        // Persist scheduled_start back to each task whose slot was
+        // assigned. Without this, `scheduler tick` filtering by
+        // task.scheduled_start matches nothing — the rank output is
+        // ephemeral. Round-trip through the store closes that loop.
+        const slotMap = new Map(result.slots.map((s) => [s.item_id, s]));
+        for (const item of result.ordered) {
+          if (item.item_type !== 'task') continue;
+          const slot = slotMap.get(item.id);
+          if (!slot) continue;
+          if (item.scheduled_start === slot.start) continue;
+          store.update(item.id, { scheduled_start: slot.start });
+        }
+
         if (opts.format === 'json') {
           console.log(JSON.stringify(result, null, 2));
           return;
@@ -101,7 +114,6 @@ export function registerScheduler(program: Command): void {
 
         console.log(`Today — ${now.slice(0, 10)}\n`);
 
-        const slotMap = new Map(result.slots.map((s) => [s.item_id, s]));
         for (const item of result.ordered) {
           const slot = slotMap.get(item.id);
           const slotStr = slot ? `  → ${slot.start.slice(11, 16)}–${slot.end.slice(11, 16)}` : '  → unslotted';

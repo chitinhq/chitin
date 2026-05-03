@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { register, dispatch, registeredNotifiers } from '../src/notify.js';
+import { register, dispatch, registeredNotifiers, __test__ } from '../src/notify.js';
 import type { Item } from '../src/index.js';
 
 function makeTask(): Item {
@@ -14,7 +14,11 @@ function makeTask(): Item {
 
 describe('notify registry', () => {
   beforeEach(() => {
-    // Clear registry between tests by registering over existing names
+    // Actually clear the registry between tests. The previous beforeEach
+    // was a no-op, so registry entries leaked across tests and made
+    // assertions order-dependent (e.g., registeredNotifiers() returning
+    // names from earlier tests). Use the test-only clearRegistry helper.
+    __test__.clearRegistry();
   });
 
   it('registers and dispatches a notifier', async () => {
