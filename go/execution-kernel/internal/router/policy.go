@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // FindChitinYaml walks up from startCwd looking for chitin.yaml.
@@ -176,5 +178,27 @@ func LoadPolicy(cwd string) Policy {
 	if section == "" {
 		return DefaultPolicy()
 	}
-	return parseRouterSection(section)
+	policy := parseRouterSection(section)
+	// Plugins use a real YAML parse since they're a list-of-maps
+	// shape the hand-rolled parser doesn't handle. Failures here
+	// just leave Plugins empty (graceful no-op — the rest of the
+	// hand-rolled parse already populated heuristics + advisor).
+	policy.Plugins = parsePluginsViaYAML(string(data))
+	return policy
+}
+
+// parsePluginsViaYAML extracts router.plugins from chitin.yaml using
+// a real YAML parser. The hand-rolled parseRouterSection above
+// handles flat key:value but not list-of-maps. For tonight's
+// MVP, parse the whole YAML and pluck the plugins slice.
+func parsePluginsViaYAML(yamlBody string) []PluginConfig {
+	var top struct {
+		Router struct {
+			Plugins []PluginConfig `yaml:"plugins"`
+		} `yaml:"router"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlBody), &top); err != nil {
+		return nil
+	}
+	return top.Router.Plugins
 }

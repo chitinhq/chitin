@@ -86,11 +86,25 @@ type AdvisorConfig struct {
 	Model string `yaml:"model" json:"model"`
 }
 
+// PluginConfig — declared plugin from chitin.yaml `router.plugins[]`.
+// The runtime spawns the plugin per tool call (when the policy
+// triggers it). See internal/router/plugins/loader.go for the
+// wire protocol.
+type PluginConfig struct {
+	Name      string                 `yaml:"name" json:"name"`
+	Type      string                 `yaml:"type" json:"type"`           // heuristic | advisor
+	Runtime   string                 `yaml:"runtime" json:"runtime"`     // python3 | node | bun | bash
+	Module    string                 `yaml:"module" json:"module"`       // path to script
+	Config    map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
+	TimeoutMs int                    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+}
+
 // Policy — full router policy from chitin.yaml `router:` section.
 type Policy struct {
 	Enabled    bool                       `yaml:"enabled" json:"enabled"`
 	Heuristics map[string]HeuristicConfig `yaml:"heuristics" json:"heuristics"`
 	Advisor    AdvisorConfig              `yaml:"advisor" json:"advisor"`
+	Plugins    []PluginConfig             `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 }
 
 // DefaultPolicy is used when chitin.yaml omits the router section.
