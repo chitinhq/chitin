@@ -1,0 +1,7 @@
+{
+  "name": "chitin-router-plugin-tool-call-rate-limit-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Example chitin router heuristic plugin (TypeScript). See plugin.ts."
+}
