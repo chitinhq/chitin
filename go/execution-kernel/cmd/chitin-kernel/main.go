@@ -58,6 +58,8 @@ func main() {
 		cmdGate(args)
 	case "envelope":
 		cmdEnvelope(args)
+	case "router":
+		cmdRouter(args)
 	case "drive":
 		if len(args) < 1 {
 			exitErr("drive_no_driver", "usage: chitin-kernel drive <driver> [flags]")
