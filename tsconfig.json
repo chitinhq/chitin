@@ -11,6 +11,9 @@
     },
     {
       "path": "./libs/adapters/claude-code"
+    },
+    {
+      "path": "./libs/scheduler"
     }
   ]
 }
