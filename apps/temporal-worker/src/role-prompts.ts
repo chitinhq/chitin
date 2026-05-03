@@ -52,7 +52,24 @@ ${lessonsBlock}
 `
     : '';
 
-  return `${lessonsHeader}You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
+  // Memory-context primitive: prior chain sessions related to
+  // this entry (by entry-id substring or file-path overlap) get
+  // their summaries injected. Lets the next agent learn from
+  // prior attempts without restarting the conversation. Graceful
+  // no-op if the kernel binary doesn't support `chain summarize`
+  // / `chain related` (older builds) — empty string.
+  const filePaths = entry.file?.split(',').map((f) => f.trim()).filter(Boolean) ?? [];
+  let memoryContext = '';
+  try {
+    // Lazy require keeps this off the hot path when the binary
+    // shell-out fails or is unavailable in test environments.
+    const { buildPriorSessionContext } = require('./router/prior-session-context.ts');
+    memoryContext = buildPriorSessionContext({ id: entry.id, filePaths }, 3);
+  } catch {
+    /* graceful no-op */
+  }
+
+  return `${lessonsHeader}${memoryContext}You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
 TARGET FILE: ${targetFile}
