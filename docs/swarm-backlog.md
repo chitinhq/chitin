@@ -2561,7 +2561,7 @@ That's the cohort. PRs Z, B, M, E run in parallel tonight; tomorrow operator mer
 ```yaml
 id: pr-event-ingester
 tier: T2
-status: ready
+status: shipped
 estimated_loc: 250
 blocks: [comment-responder]
 file: apps/temporal-worker/src/pr-event-ingester.ts (new), apps/temporal-worker/src/worker.ts (wire)
@@ -2644,7 +2644,7 @@ Tests:
 ```yaml
 id: comment-responder
 tier: T2
-status: ready
+status: shipped
 estimated_loc: 350
 blocks: []
 file: apps/temporal-worker/src/role-prompts.ts (extend), apps/temporal-worker/src/comment-responder/* (new), libs/contracts/src/execution-request.schema.ts (extend RoleSchema)
@@ -4432,3 +4432,74 @@ T4 only when the heuristic flags ambiguity.
 - [ ] Runbook: install / verify / suspend / manual override / how
       to read the chain output / **how to evaluate when step 3
       can collapse to T0** (the next shift-left target)
+
+## Dispatcher: skip already-implemented entries (filed 2026-05-03)
+
+### `dispatcher-skip-already-implemented-entries`
+
+```yaml
+id: dispatcher-skip-already-implemented-entries
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher.test.ts, apps/temporal-worker/src/grooming/parse-backlog.ts
+references_finding: 2026-05-03 cascade — swarm dispatched #216 (comment-responder) and #218 (pr-event-ingester) against entries already implemented by hand-merged PRs, producing regressive stub PRs that had to be closed
+role: programmer
+```
+
+The dispatcher's "is this entry available to dispatch?" check today
+relies on:
+
+1. `status: ready` in the backlog frontmatter
+2. Marker file at `~/.cache/chitin/swarm-state/dispatched/<entry-id>.json`
+   absent OR escalation-eligible (failed prior tier)
+3. No swarm branch matching `swarm/swarm-<entry-id>-*` on origin
+
+This MISSES the case where a hand-merged PR shipped the entry's
+work without flipping the entry's status to `shipped`. Today's
+2026-05-03 cascade hit this: the operator merged comment-responder
++ pr-event-ingester implementations via #207/#211/#215. Those PRs
+didn't update `status: ready → status: shipped` in
+`docs/swarm-backlog.md`, so the dispatcher's next tick saw the
+entries as still-available and dispatched them. The agents tried
+to implement entries that were already shipped, producing
+regressive stub PRs (closed with comments).
+
+Two paths to fix (groomer should pick one):
+
+(a) **Heuristic: "recent commits touched the entry's `file:` paths"**
+    — at dispatch time, run `git log --since="14 days" --
+    <file_paths>`; if any commits are present, skip + log
+    `entry-likely-shipped`. Cheap; false-positives possible
+    (touched-but-not-shipped); operator promotes back to ready
+    by editing the entry.
+
+(b) **Strict: parse the entry's `file:` field + verify each path
+    has the expected content** — for entries with concrete file
+    targets, `git show HEAD:<path>` and check for a sentinel
+    (entry-id in a comment, function name match, etc). More
+    complex; more accurate; requires entries to declare a
+    sentinel.
+
+The simpler (a) is enough for the documented incident class.
+Optionally pair with a `chitin-shipped-entry-flipper.timer` that
+scans recent merged PRs (lessons-extractor pattern) and
+opportunistically flips matching entries to `status: shipped`
+based on title-substring match. Closes the gap from the merged-PR
+side too.
+
+**Acceptance:**
+- [ ] Dispatcher's pre-dispatch check rejects entries whose
+      `file:` paths have recent (last 14 days) commits
+- [ ] Rejection is logged as `entry-likely-shipped` + the matching
+      commit shas, so the operator can verify + promote back
+- [ ] Test: synthetic entry with `file: docs/test-only.md` + a
+      recent git commit touching that file → dispatcher skips
+- [ ] Test: synthetic entry with no recent commits on its file:
+      paths → dispatcher proceeds normally
+- [ ] Optional: `chitin-shipped-entry-flipper.{service,timer}`
+      that scans merged PRs for entry-id matches in titles, flips
+      `status: ready → status: shipped` on match (PR-shaped
+      change, operator merges)
+- [ ] CI green
