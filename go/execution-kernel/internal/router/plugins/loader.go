@@ -62,11 +62,31 @@ type PluginInput struct {
 }
 
 // PluginOutput is what the plugin writes to stdout.
+//
+// Two plugin shapes are supported:
+//
+//  1. HEURISTIC plugins — score the action; firing flags it for
+//     advisor consultation but doesn't block on its own. Set
+//     Fired but leave Block false.
+//
+//  2. PRE-ACTION ANALYSIS plugins — block the action directly
+//     based on a deterministic check (e.g., "no commit until tests
+//     pass"). Set both Fired AND Block=true. The router emits a
+//     kernel-level deny with the plugin's Reason as the message;
+//     no advisor consultation is needed (plugin verdict is
+//     authoritative).
+//
+// A plugin can switch shape per-invocation: heuristic-fire on
+// one input and block-fire on another.
 type PluginOutput struct {
 	Score  float64                `json:"score"`
 	Fired  bool                   `json:"fired"`
 	Reason string                 `json:"reason"`
 	Axis   map[string]interface{} `json:"axis,omitempty"`
+	// Block — when true AND Fired is true, the router denies the
+	// action directly with Reason as the deny message; advisor
+	// not consulted.
+	Block bool `json:"block,omitempty"`
 }
 
 // runtimeCommand maps a runtime label to the exec.Command shape.

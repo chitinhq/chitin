@@ -120,6 +120,25 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	}
 
+	// Pre-action analysis short-circuit: if any plugin fired with
+	// block=true, deny immediately with the plugin's reason. The
+	// advisor is NOT consulted — pre-action plugins have
+	// authoritative verdict (e.g., "no commit until tests pass" is
+	// a deterministic check, not a judgment call).
+	for _, r := range pluginResults {
+		if r.Score.Fired && r.Block {
+			composed := map[string]string{
+				"decision": "block",
+				"reason":   "pre-action-analysis (" + r.Name + "): " + r.Score.Reason,
+			}
+			body, _ := json.Marshal(composed)
+			_, _ = out.Write(body)
+			_, _ = out.Write([]byte{'\n'})
+			writeRouterTelemetry(errOut, "pre-action-block", outcome, false)
+			return claudecode.ExitBlock
+		}
+	}
+
 	// Decide whether to invoke the advisor
 	kernelDeny := kernelCode == claudecode.ExitBlock
 	wantAdvisor := false
