@@ -23,13 +23,16 @@ interface DriverInvocation {
 // Per-driver openclaw agent mapping (slice 3). Each local-* driver routes to
 // a distinct openclaw agent so reasoning and mechanical models can be
 // configured independently — the spec calls for qwen3-coder for mechanical
-// (local-qwen), glm-5.1:cloud for reasoning (local-glm), deepseek for code
-// (local-deepseek). Override per driver via env var, e.g.
-// CHITIN_AGENT_LOCAL_QWEN=my-agent. Falls back to `main` if neither env var
-// nor the default mapping resolves the driver — `main` always exists.
+// (local-qwen), glm-5.1:cloud for reasoning (local-glm), glm-4.7-flash for
+// local mechanical (local-glm-flash, added 2026-05-03 to replace copilot at
+// T0 once the model is hot on the 3090), deepseek for code (local-deepseek).
+// Override per driver via env var, e.g. CHITIN_AGENT_LOCAL_QWEN=my-agent.
+// Falls back to `main` if neither env var nor the default mapping resolves
+// the driver — `main` always exists.
 const DRIVER_AGENT_MAP: Record<string, string> = {
   'local-qwen': 'qwen-agent',
   'local-glm': 'glm-agent',
+  'local-glm-flash': 'glm-flash-agent',
   'local-deepseek': 'deepseek-agent',
 };
 
@@ -132,6 +135,7 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
     }
     case 'local-qwen':
     case 'local-glm':
+    case 'local-glm-flash':
     case 'local-deepseek':
       // Dispatch through openclaw + chitin-governance plugin. The plugin
       // is loaded at openclaw startup (~/.openclaw/openclaw.json plugins.allow
@@ -360,7 +364,7 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     // files. We provision a per-workflow OPENCLAW_STATE_DIR with a remapped
     // openclaw.json instead of mutating the user's global config.
     const localDriver = req.allowed_drivers.find((d) =>
-      d === 'local-qwen' || d === 'local-glm' || d === 'local-deepseek',
+      d === 'local-qwen' || d === 'local-glm' || d === 'local-glm-flash' || d === 'local-deepseek',
     );
     if (localDriver) {
       const agentId = resolveAgent(localDriver as DriverId);

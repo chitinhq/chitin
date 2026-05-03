@@ -61,15 +61,14 @@ const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 
 // Tier → driver routing. The cheapest reliable driver capable of the
 // work. local-qwen is architecturally the right T0 driver (free, on-
-// the-3090, mechanical) but qwen3-coder:30b on this rig is currently
-// unstable (ollama stream crashes mid-generation; agent
-// misinterprets relative paths as absolute; scope drift onto files
-// outside the entry). Slice 7-tuning's first live run uncovered all
-// three. Routing T0 → copilot temporarily until the qwen layer is
-// fixed (those fixes are backlog entries; the swarm itself produces
-// PRs for them via this same dispatcher). Cost: still $0 under
-// Jared's Copilot plan. One-line revert to local-qwen once the local
-// model is reliable.
+// the-3090, mechanical) but qwen3-coder:30b on this rig was unstable
+// (ollama stream crashes mid-generation; agent misinterprets relative
+// paths as absolute; scope drift onto files outside the entry). T0
+// routed to copilot through 2026-05-02. As of 2026-05-03, T0 routes
+// to local-glm-flash (glm-4.7-flash:latest, hot on the 3090, 32K
+// context, 19 GB on disk). Operator can revert to copilot via env
+// override CHITIN_TIER_DRIVER_T0=copilot if local model regresses.
+//
 // 2026-05-02: T2 temporarily routed to copilot. The overnight 2026-05-02
 // run produced 4/4 bucket-B contaminated PRs on T2/T3 claude-code-
 // headless (and 1/5 successes total). Root cause: the worker's
@@ -81,13 +80,31 @@ const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 // auto-commit path; once it's been live for a swarm cycle and the
 // rate stays at 0, flip T2 (and T3) back to claude-code-headless.
 // See docs/observations/2026-05-02-bucket-b-after-action.md.
-const TIER_DRIVER: Record<Tier, DriverId> = {
-  T0: 'copilot',                     // Copilot GPT-4.1 free (was local-qwen — see comment)
+const TIER_DRIVER_DEFAULTS: Record<Tier, DriverId> = {
+  T0: 'local-glm-flash',             // glm-4.7-flash:latest on the 3090 via ollama
   T1: 'copilot',                     // Copilot GPT-4.1 free
-  T2: 'copilot',                     // (was claude-code-headless — see comment above; flip back after CCH bucket-B rate stays at 0)
+  T2: 'copilot',                     // (was claude-code-headless — see comment above)
   T3: 'claude-code-headless',        // claude-sonnet-4-6
   T4: 'claude-code-headless',        // claude-opus-4-7
 };
+
+// Operator can override per-tier driver routing via env:
+// CHITIN_TIER_DRIVER_T0=copilot pulls T0 back to copilot at runtime
+// without a code change. Useful for hotfixes when a local model
+// regresses or is offline.
+function envDriverOverride(tier: Tier): DriverId | undefined {
+  const v = process.env[`CHITIN_TIER_DRIVER_${tier}`];
+  if (!v || !v.trim()) return undefined;
+  return v.trim() as DriverId;
+}
+
+const TIER_DRIVER: Record<Tier, DriverId> = (Object.keys(TIER_DRIVER_DEFAULTS) as Tier[]).reduce(
+  (acc, tier) => {
+    acc[tier] = envDriverOverride(tier) ?? TIER_DRIVER_DEFAULTS[tier];
+    return acc;
+  },
+  {} as Record<Tier, DriverId>,
+);
 
 // Per-entry wall_timeout — short enough that a stuck workflow doesn't
 // hold the queue long, generous enough that real work has room. The
