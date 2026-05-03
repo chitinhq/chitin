@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EnvelopeSchema } from './envelope.schema';
+import { EnvelopeSchema } from './envelope.schema.js';
 import {
   SessionStartPayloadSchema,
   UserPromptPayloadSchema,
@@ -13,7 +13,7 @@ import {
   WebhookReceivedPayloadSchema,
   WebhookFailedPayloadSchema,
   SessionStuckPayloadSchema,
-} from './payloads.schema';
+} from './payloads.schema.js';
 
 const envShape = EnvelopeSchema.shape;
 

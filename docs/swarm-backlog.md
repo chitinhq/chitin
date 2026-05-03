@@ -2784,3 +2784,400 @@ Steps:
       --frozen-lockfile` succeeds
 - [ ] CI green
 
+### `tc-extend-to-tests-and-tools`
+
+```yaml
+id: tc-extend-to-tests-and-tools
+tier: T1
+status: ready
+estimated_loc: 200
+blocks: []
+file: libs/*/tsconfig.spec.json (new), libs/*/tsconfig.json (add references), tools/lint/tsconfig.json (new)
+references_finding: 2026-05-03-typecheck-coverage-gap
+role: programmer
+```
+
+The CI typecheck gate added in PR #203 catches accumulated errors in
+each project's `src/**/*.ts` (via tsconfig.lib.json) but misses:
+
+- **Lib tests** (`libs/*/tests/*.ts`): they're not in any tsconfig
+  the typecheck target reaches. A test that imports a non-existent
+  symbol or has a type error still merges green.
+- **`tools/`**: only `tools/lint/` has its own package + tsconfig
+  (added in PR #204). Other tools/ scripts (`generate-go-types.ts`,
+  `lint/role-coverage.ts` if/when added) are unchecked.
+- **Root configs** (`vite.config.ts`, etc.): not in any project ref.
+
+Apps' tests ARE covered today (each app's tsconfig.json includes
+tests/). Libs aren't, by current convention.
+
+Fix: each lib gets a `tsconfig.spec.json` that includes both `src/`
+and `tests/`, referenced from `tsconfig.json` so `tsc --build`
+catches it. The nx typecheck target then walks all references.
+
+Steps:
+1. For each `libs/*/`, add `tsconfig.spec.json` extending the base,
+   `include: ["src/**/*.ts", "tests/**/*.ts"]`.
+2. Update each `libs/*/tsconfig.json` `references` to include
+   `./tsconfig.spec.json`.
+3. Add `tools/*/tsconfig.json` for tooling scripts that aren't yet
+   workspace packages.
+4. Verify `pnpm exec nx run-many -t typecheck` covers the whole
+   workspace. Document in CI yml comment.
+
+**Acceptance:**
+- [ ] Every `libs/*/tests/*.ts` is type-checked by the existing
+      typecheck CI gate
+- [ ] Every `tools/*/*.ts` either has its own tsconfig or is part
+      of an existing workspace package
+- [ ] A test introducing a deliberate type error fails the
+      `TypeScript typecheck (Nx affected)` step (proves the gate
+      now catches what it used to miss)
+- [ ] CI green on current main
+
+## Tooling cohort — generators + structural linters
+
+Filed 2026-05-03 after this morning's review-loop cycle surfaced the
+same omission patterns across multiple swarm PRs: missing `layer:*`
+depConstraints (PRs #194, #195, #199), backlog entry heading-id /
+frontmatter-id mismatch (#200), absent `tsconfig` extending base
+(#195), and missing role-prompt entries when a new role is added.
+
+Each of these is a *structural* failure that current code review
+catches one PR at a time. Linters and generators move the catch from
+review-time to author-time (or eliminate the failure mode entirely
+by scaffolding correctly from day zero).
+
+Order is deliberate: linters first (highest leverage — they apply to
+every existing code path, not just new ones); then generators
+(ossify shape, only worth it once the shape is stable).
+
+### `lint-role-coverage`
+
+```yaml
+id: lint-role-coverage
+tier: T1
+status: ready
+estimated_loc: 100
+blocks: []
+file: tools/lint/role-coverage.ts (new), package.json (add lint script), .github/workflows/ci.yml (wire)
+references_finding: 2026-05-03-role-prompts-drift-risk
+role: programmer
+```
+
+Compile-time guarantee that every `Role` enum value in
+`libs/contracts/src/execution-request.schema.ts` has a corresponding
+`ROLE_PROMPTS` entry in `apps/temporal-worker/src/role-prompts.ts`.
+Today, adding a role to the enum without touching the prompts map
+fails silently at dispatch time (the dispatcher tries to build
+a prompt for the unknown role). Lint catches it at PR time.
+
+Steps:
+1. Author `tools/lint/role-coverage.ts` — read RoleSchema's enum
+   values, read `ROLE_PROMPTS` keys, assert symmetric difference is
+   empty.
+2. Add `lint:role-coverage` script to root `package.json`.
+3. Wire into CI as a separate gate.
+4. Tests with synthesized RoleSchema + ROLE_PROMPTS shapes (no
+   @chitin/contracts dependency — pass as args).
+
+**Acceptance:**
+- [ ] Lint catches a role added to RoleSchema but not ROLE_PROMPTS
+- [ ] Lint catches a ROLE_PROMPTS key not in RoleSchema (other direction)
+- [ ] CI green on current main; both halves of the symmetric check
+- [ ] Wired into the `test` job's gate set
+
+### `lint-layer-tag-coverage`
+
+```yaml
+id: lint-layer-tag-coverage
+tier: T1
+status: ready
+estimated_loc: 150
+blocks: []
+file: tools/lint/layer-tag-coverage.ts (new), package.json
+references_finding: 2026-05-03-layer-tag-omission-pattern
+role: programmer
+```
+
+For every `nx.tags` entry in any workspace `package.json` that
+starts with `layer:`, assert there's a matching `depConstraints`
+entry in `eslint.config.mjs`. Today, four separate Copilot review
+cycles (PRs #194, #195, #199, #192-cli-edge) caught the same
+omission: a new layer tag was added without a corresponding
+depConstraint, so the boundary rule didn't actually constrain the
+new layer. Lint moves the catch from review-time to author-time.
+
+Steps:
+1. Walk all `package.json` files under `apps/` and `libs/` (skip
+   node_modules), collect `layer:*` tags from `nx.tags`.
+2. Parse `eslint.config.mjs` (use a TS AST walker; the file is
+   structured), extract `sourceTag` values from `depConstraints`.
+3. Assert: every `layer:*` tag in (1) has a matching `sourceTag`
+   in (2). Allow extra depConstraints (some layers — `kernel` —
+   exist but no package carries them yet; warn, don't fail).
+4. Wire into CI alongside `lint-role-coverage`.
+
+**Acceptance:**
+- [ ] Catches a new `layer:foo` tag without a depConstraint
+- [ ] Allows depConstraints without a matching tag (warn only)
+- [ ] CI green on current main
+- [ ] Backfill — running once on main with current PRs cohort
+      flags zero false positives
+
+### `lint-backlog-entry-shape`
+
+```yaml
+id: lint-backlog-entry-shape
+tier: T1
+status: ready
+estimated_loc: 200
+blocks: []
+file: tools/lint/backlog-entry-shape.ts (new), package.json, ci.yml
+references_finding: 2026-05-03-backlog-entry-format-drift
+role: programmer
+```
+
+Validates `docs/swarm-backlog.md` entries against the parser's
+expectations:
+
+- Heading id (` ### \`<id>\` `) matches frontmatter `id:` field
+  (Copilot caught this on PR #200 — comment-responder vs
+  comment-responder-role)
+- `tier:` is one of T0..T5 (or absent)
+- `role:` is in RoleSchema (so the dispatcher can find a prompt
+  builder)
+- `status:` is in the parser's accepted set (in_design / ready /
+  in_flight / done / blocked)
+- `blocks:` and similar lists parse as YAML arrays
+- No `blockedBy:` field (the parser only reads `blocks:` — wrong
+  field is silent footgun, also from PR #200's review)
+
+Steps:
+1. Reuse `parseBacklog` from
+   `apps/temporal-worker/src/grooming/parse-backlog.ts`.
+2. Run it; collect parse errors + cross-check id matching.
+3. Validate `role` against `RoleSchema`.
+4. CI gate on PRs that touch `docs/swarm-backlog.md`.
+
+**Acceptance:**
+- [ ] Catches heading vs frontmatter id mismatch
+- [ ] Catches `blockedBy:` field
+- [ ] Catches role not in RoleSchema
+- [ ] Catches malformed YAML in entries
+- [ ] CI green on current backlog
+
+### `nx-generator-agent-role`
+
+```yaml
+id: nx-generator-agent-role
+tier: T2
+status: ready
+estimated_loc: 350
+blocks: []
+file: tools/generators/agent-role/*
+references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3
+role: programmer
+```
+
+`nx g @chitin/agent-role <name> --shape <reviewer|patcher|analyst|researcher>`
+scaffolds the cross-cutting set every new agent role touches:
+
+- libs/contracts/src/execution-request.schema.ts: add `<name>` to RoleSchema
+- apps/temporal-worker/src/role-prompts.ts: register prompt builder + import
+- apps/temporal-worker/src/<name>/prompt.ts: shape-appropriate prompt template
+- apps/temporal-worker/src/<name>/dispatch.ts: enqueue helper companion
+- apps/temporal-worker/src/<name>/index.ts: barrel
+- apps/temporal-worker/test/<name>.test.ts: stub tests covering invariants
+
+The `--shape` flag picks defaults:
+- `reviewer`: bounds matching R1-R3 (read-only, network=allowlist),
+  prompt template "review the diff at the PR URL"
+- `patcher`: bounds for write+commit+push (network=allowlist,
+  write_policy=branch), prompt template "address each comment on
+  merit"
+- `analyst`: bounds for python-tooling (network=allowlist,
+  write_policy=worktree), prompt template "investigate, write report"
+- `researcher`: bounds for outbound web (network=open,
+  write_policy=none), prompt template "fetch + summarize"
+
+Steps:
+1. Standard nx generator scaffold (TypeScript + JSON schema for
+   args validation).
+2. Templates with `<%= name %>` substitution.
+3. AST-aware updates for RoleSchema + role-prompts.ts (don't
+   regex; use ts-morph or jsonc-eslint-parser).
+4. Tests for the generator itself (run it against a fixture
+   workspace, assert files generated correctly).
+
+**Acceptance:**
+- [ ] Generator runs cleanly against a fresh workspace fixture
+- [ ] All four shapes produce compilable scaffolds
+- [ ] RoleSchema + role-prompts.ts updated AST-aware (idempotent —
+      re-running is a no-op when role already exists)
+- [ ] lint-role-coverage passes on the generated workspace
+- [ ] Generated tests pass on first run
+
+### `nx-generator-workspace-lib`
+
+```yaml
+id: nx-generator-workspace-lib
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: []
+file: tools/generators/workspace-lib/*
+references_finding: 2026-05-03-workspace-lib-package-json-convention-discovery
+role: programmer
+```
+
+`nx g @chitin/workspace-lib <name> --layer <layer>` scaffolds the
+chitin-flavored library shape: package.json with the right
+`nx:run-commands` test target, tsconfig.json + tsconfig.lib.json
+extending base, src/index.ts, tests/, **AND** automatically adds the
+layer to `eslint.config.mjs` depConstraints.
+
+Would have prevented at minimum:
+- PR #194's missing `layer:scheduler` depConstraint
+- PR #195's missing `layer:slack` depConstraint + missing
+  tsconfig-extends-base + missing `allowImportingTsExtensions`
+- PR #199's missing `layer:governance` depConstraint
+- PR #194's missing tsconfig + tsconfig.lib files entirely
+
+Each of those was a separate Copilot review cycle on the same
+omission pattern.
+
+Steps:
+1. Templates for package.json, tsconfig.json, tsconfig.lib.json,
+   src/index.ts, tests/.gitkeep.
+2. AST-aware update to eslint.config.mjs (add depConstraint with
+   defaults: layer can depend on contracts + telemetry).
+3. Flag `--allows-deps <comma,sep,layers>` to override the default
+   outbound rule.
+
+**Acceptance:**
+- [ ] Generated lib passes typecheck + tests on first run
+- [ ] eslint depConstraints regenerate correctly for new layer
+- [ ] lint-layer-tag-coverage passes on generated lib
+- [ ] Idempotent: re-running with same name + layer is a no-op
+
+### `nx-generator-backlog-entry`
+
+```yaml
+id: nx-generator-backlog-entry
+tier: T1
+status: ready
+estimated_loc: 200
+blocks: []
+file: tools/generators/backlog-entry/*, scripts/swarm-backlog-add.ts (new wrapper)
+references_finding: 2026-05-03-backlog-entry-format-drift
+role: programmer
+```
+
+Interactive scaffold for `docs/swarm-backlog.md` entries. Prompts
+for id, tier, status, role (picker over RoleSchema), file scope,
+blocks, references_finding/spec/design. Emits a properly-shaped
+section into the file at the right insertion point with heading id
+matching frontmatter id (today's PR #200 footgun).
+
+Validates against `parseBacklog` before writing — refuses to add
+malformed entries.
+
+Steps:
+1. CLI wrapper using commander or similar.
+2. Use jsonc-eslint-parser or yaml lib to emit the frontmatter.
+3. Round-trip through `parseBacklog` to validate.
+4. Insert at end-of-file before any final prose paragraph.
+
+**Acceptance:**
+- [ ] Generator emits a valid entry parseable by parseBacklog
+- [ ] Heading id matches frontmatter id (verified post-write)
+- [ ] Refuses to write a duplicate id (idempotent + safe)
+- [ ] Tab-completes role choices from RoleSchema
+
+### `nx-generator-app`
+
+```yaml
+id: nx-generator-app
+tier: T2
+status: ready
+estimated_loc: 300
+blocks: []
+file: tools/generators/app/*
+role: programmer
+```
+
+`nx g @chitin/app <name> [--daemon]` scaffolds an app shape:
+package.json with `nx:run-commands` run + test targets,
+tsconfig.json + tsconfig.spec.json (extending base), src/main.ts
+stub, tests/, README. With `--daemon`: also emits
+systemd .service + .timer templates under `apps/<name>/systemd/`
+following the `chitin-<name>.{service,timer}` convention used by
+dispatcher/researcher/groomer/etc.
+
+Same layer-tag depConstraint update as the workspace-lib generator.
+
+**Acceptance:**
+- [ ] Generated app boots via `nx run @chitin/<name>:run`
+- [ ] --daemon variant produces working systemd units
+- [ ] lint-layer-tag-coverage passes
+
+### `nx-generator-spec-plan-doc`
+
+```yaml
+id: nx-generator-spec-plan-doc
+tier: T2
+status: ready
+estimated_loc: 150
+blocks: []
+file: tools/generators/spec-plan-doc/*
+role: programmer
+```
+
+Templates for the structured docs at `docs/superpowers/{specs,plans,observations}/`.
+Each follows a consistent shape: Date / Status / Active lens /
+Supersedes / TL;DR / numbered sections. Generator auto-stamps the
+date, prompts for the rest, emits a starter section outline.
+
+```
+nx g @chitin/doc spec <id>         → docs/superpowers/specs/<date>-<id>-design.md
+nx g @chitin/doc plan <id>         → docs/superpowers/plans/<date>-<id>.md
+nx g @chitin/doc observation <id>  → docs/observations/<date>-<id>.md
+```
+
+**Acceptance:**
+- [ ] Each shape produces a spec/plan/observation with the right
+      preamble, dated correctly
+- [ ] Frontmatter metadata (active lens, status) filled per flag
+      defaults
+
+### `systemd-unit-generator`
+
+```yaml
+id: systemd-unit-generator
+tier: T1
+status: ready
+estimated_loc: 150
+blocks: []
+file: tools/generators/systemd-unit/*, scripts/install-systemd-units.sh (refresh)
+role: programmer
+```
+
+The systemd timer/service pair has a consistent shape; chitin
+already has 8 of them (dispatcher / researcher / groomer /
+debt-curator / lessons / alarm-feeder / stale-doc-detector /
+swarm-rollup). Adding pr-event-ingester (in-flight) and future
+periodic tasks repeats the same boilerplate.
+
+Steps:
+1. Templates for `.service` (one-shot exec + StandardOutput=journal)
+   and `.timer` (OnCalendar / OnUnitActiveSec).
+2. Update install-systemd-units.sh to symlink the new pair.
+3. Document the default behavior (one-shot, journal logging,
+   per-tick timing).
+
+**Acceptance:**
+- [ ] Generated pair installs cleanly via existing install script
+- [ ] Timer fires at the configured interval
+- [ ] systemd shows the unit alongside existing chitin-* services
+

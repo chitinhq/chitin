@@ -47,6 +47,13 @@ export interface EnqueueReviewGraphInput {
   /** Repo slug, e.g. 'chitinhq/chitin'. Used by reviewer agents to
    *  call gh CLI. */
   repo: string;
+  /** Optional pre-built PrMeta. When set, the dispatcher skips its
+   *  worktree-derived rebuild and threads this object through to
+   *  reviewGraphWorkflow as-is. Callers like `pr-event-ingester`
+   *  that don't have a worktree but DO have authoritative diff
+   *  stats from `gh pr view` should pass this so the §5 trigger
+   *  matrix evaluates against real metadata, not zeros. */
+  pr_meta?: PrMeta;
   /** Optional log sink (defaults to console.log). Tests inject. */
   log?: (line: string) => void;
 }
@@ -141,13 +148,23 @@ export async function enqueueReviewGraph(
     return { enqueued: false };
   }
 
-  const reviewGraphInput = buildReviewGraphInput(
-    input.parent_workflow_id,
-    input.pr_url,
-    input.worktree,
-    input.entry,
-    input.repo,
-  );
+  // If a pre-built PrMeta was provided (pr-event-ingester path),
+  // thread it through unchanged. Otherwise fall back to the
+  // worktree-derived rebuild (programmer-success path).
+  const reviewGraphInput = input.pr_meta
+    ? {
+        parent_workflow_id: input.parent_workflow_id,
+        pr_meta: input.pr_meta,
+        entry: input.entry,
+        repo: input.repo,
+      }
+    : buildReviewGraphInput(
+        input.parent_workflow_id,
+        input.pr_url,
+        input.worktree,
+        input.entry,
+        input.repo,
+      );
 
   // Reviewer chain workflow_id derives from the parent. Keep it
   // greppable so the operator can correlate `swarm-<entry>-<ts>` to

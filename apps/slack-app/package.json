@@ -1,0 +1,33 @@
+{
+  "name": "@chitin/slack-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "test": "vitest run tests"
+  },
+  "nx": {
+    "tags": ["layer:slack", "scope:app"],
+    "targets": {
+      "start": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx apps/slack-app/src/main.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run apps/slack-app/tests",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@chitin/contracts": "workspace:*"
+  }
+}
