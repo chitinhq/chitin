@@ -127,6 +127,16 @@ jobs:
           # comment one ticket at a time.
           pnpm exec nx run @chitin/tooling-lint:lint:layer-tag-coverage
 
+      - name: Role coverage lint
+        run: |
+          # Structural linter — every Role enum value in
+          # libs/contracts/src/execution-request.schema.ts has a
+          # matching ROLE_PROMPTS builder in
+          # apps/temporal-worker/src/role-prompts.ts (and vice versa).
+          # Without this, adding a role to RoleSchema without touching
+          # the prompts map silently fails at dispatch time.
+          pnpm exec nx run @chitin/tooling-lint:lint:role-coverage
+
       - name: Backlog entry shape lint
         run: |
           # Structural linter — every entry in docs/swarm-backlog.md

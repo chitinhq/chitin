@@ -26,6 +26,13 @@
           "cwd": "{workspaceRoot}"
         }
       },
+      "lint:role-coverage": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx tools/lint/role-coverage.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      },
       "lint:backlog-entry-shape": {
         "executor": "nx:run-commands",
         "options": {
