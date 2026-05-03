@@ -142,6 +142,8 @@ func cmdChain(args []string) {
 		cmdChainSummarize(args[1:])
 	case "related":
 		cmdChainRelated(args[1:])
+	case "snapshot":
+		cmdChainSnapshot(args[1:])
 	default:
 		exitErr("chain_unknown_subcommand", args[0])
 	}
