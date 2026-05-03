@@ -2555,3 +2555,65 @@ Steps:
 ---
 
 That's the cohort. PRs Z, B, M, E run in parallel tonight; tomorrow operator merges in order, the dispatcher picks up the next wave (C → D, S1, S2). All eight unblocked-or-soft-blocked.
+
+### `swarm-implementor-pnpm-lock-discipline`
+
+```yaml
+id: swarm-implementor-pnpm-lock-discipline
+tier: T2
+status: ready
+estimated_loc: 50
+blocks: []
+file: apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/src/gatekeeper.ts
+references_finding: 2026-05-03-swarm-cohort-lockfile-drift
+role: programmer
+```
+
+Three of seven open swarm PRs from the 2026-05-02 → 03 overnight run
+(#189 nx-angular-workspace-install, #193 scheduler-dashboard-angular,
+#195 slack-l2-actions) failed CI with `ERR_PNPM_OUTDATED_LOCKFILE` — the
+implementor agent edited a `package.json` (root, scheduler-dashboard, or
+slack-app) without regenerating `pnpm-lock.yaml`.
+
+The pattern is structural, not per-PR: the implementor harness lacks a
+post-edit gate that detects "package.json modified, pnpm-lock.yaml not
+modified" and runs `pnpm install` (or fails the run with a clear message).
+Adding the dep manually as a JSON edit and skipping `pnpm install` is the
+fast path the model takes when not corrected.
+
+Three places this can be enforced (pick one — the cheapest is best):
+
+1. **Pre-commit hook in implementor worktree** — refuse to stage
+   `package.json` changes without a matching `pnpm-lock.yaml` change.
+   Cheapest, but only fires at the implementor's commit step.
+2. **Role-prompt rule** in `apps/temporal-worker/src/role-prompts.ts`
+   ("if you edit package.json, run `pnpm install --no-frozen-lockfile`
+   before committing"). Soft enforcement, but cheap and reusable.
+3. **Dispatcher post-write check** — after the implementor returns, the
+   dispatcher inspects the worktree diff; if `package.json` is dirty and
+   `pnpm-lock.yaml` is not, the dispatcher runs `pnpm install` itself
+   before `git push`. Hard enforcement, slightly more work.
+
+Recommended: (2) + (3). Role-prompt sets the expectation; dispatcher
+post-check enforces it in case the agent forgets. Same shape as the
+existing `gatekeeper.ts` post-write checks for governance paths.
+
+Steps:
+1. Add the rule to the relevant role-prompt section in `role-prompts.ts`
+   (probably the `programmer` role; check current shape).
+2. Extend `gatekeeper.ts` (or wherever post-write inspection lives) with
+   a `pnpm-lock-coherent` invariant: package.json modified ⇒ lockfile
+   must be modified. On violation, run `pnpm install` in the worktree,
+   stage the lockfile, append a chain event noting the auto-fix.
+3. Tests: synthesize a worktree with the violation; assert the
+   gatekeeper auto-fix lands the right files.
+
+**Acceptance:**
+- [ ] Role-prompt mentions the rule
+- [ ] Gatekeeper auto-fixes a worktree where `package.json` changed and
+      lockfile didn't
+- [ ] Backfill: re-run one of #189/#193/#195 (or synthesize the
+      pattern); after the post-write check, `pnpm install
+      --frozen-lockfile` succeeds
+- [ ] CI green
+
