@@ -16,6 +16,8 @@ import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { RESEARCHER_OUTPUT_INSTRUCTIONS } from './researcher-prompts.ts';
 import { getRecentLessonsSync } from './lessons.ts';
+import { buildCommentResponderPrompt } from './comment-responder/prompt.ts';
+import { buildPeerReviewerPrompt } from './peer-reviewer/prompt.ts';
 
 // How many of the most-recent lessons to prepend to a programmer
 // prompt. Picked low enough that the overhead per dispatch is small,
@@ -199,6 +201,26 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   // comments) that a single BacklogEntry can't carry. See
   // docs/design/2026-05-02-swarm-as-software-factory.md §5.
   reviewer: (entry) => buildStubPrompt('reviewer', entry),
+  // Peer-reviewer + comment-responder are registered here so the
+  // role-coverage linter passes (every Role in RoleSchema must have
+  // a builder). BUT: the generic backlog dispatcher
+  // (apps/temporal-worker/src/dispatcher.ts) sets
+  // write_policy='worktree' and runs apply-workflow-result for every
+  // dispatch, which is wrong for these roles:
+  //   - peer-reviewer is read-only (write_policy=none) — apply step
+  //     would push an accidental edit as a PR
+  //   - comment-responder commits to the PR's branch
+  //     (write_policy=branch); apply step would try to push + open a
+  //     SECOND PR on top of the responder's commit
+  // Until the pr-event-ingester (#202) extends to dispatch these
+  // through a dedicated path with the right bounds, both prompts'
+  // first-step instructions detect "no PR URL in the entry" and exit
+  // clean — refusing to act when the dispatch shape is wrong. The
+  // dedicated dispatch path lands in the comment-responder /
+  // peer-reviewer wiring follow-up entries from PR #200's
+  // factory-gaps backlog.
+  'peer-reviewer': buildPeerReviewerPrompt,
+  'comment-responder': buildCommentResponderPrompt,
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
   'tech-writer': (entry) => buildStubPrompt('tech-writer', entry),

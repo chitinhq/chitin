@@ -64,6 +64,8 @@ describe('findRoleCoverageGaps', () => {
       'architect',
       'programmer',
       'reviewer',
+      'peer-reviewer',
+      'comment-responder',
       'qa',
       'gatekeeper',
       'tech-writer',
@@ -71,7 +73,7 @@ describe('findRoleCoverageGaps', () => {
       'refactorer',
       'debt-curator',
     ];
-    expect(expectedRoles.length).toBe(12);
+    expect(expectedRoles.length).toBe(14);
     // Self-symmetric — sanity for the snapshot itself, not a real
     // drift check.
     const gaps = findRoleCoverageGaps(new Set(expectedRoles), new Set(expectedRoles));
