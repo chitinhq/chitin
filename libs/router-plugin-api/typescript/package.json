@@ -1,0 +1,12 @@
+{
+  "name": "@chitin/router-plugin-api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "description": "Opt-in side-effect gate for chitin router plugin authors. See index.ts for the gateAction() API.",
+  "license": "MIT"
+}
