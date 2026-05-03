@@ -106,6 +106,20 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	}
 
+	// Run plugins (operator-declared, in any runtime). Each plugin
+	// is its own subprocess; failures fall through (logged to
+	// stderr; treated as no-signal). Concurrent execution caps total
+	// plugin wall time at the slowest plugin's timeout.
+	var pluginResults []router.NamedHeuristicScore
+	if len(policy.Plugins) > 0 {
+		pluginResults = router.RunPlugins(context.Background(), policy.Plugins, hookInput, errOut)
+		for _, r := range pluginResults {
+			if r.Score.Fired {
+				outcome.AnyFired = true
+			}
+		}
+	}
+
 	// Decide whether to invoke the advisor
 	kernelDeny := kernelCode == claudecode.ExitBlock
 	wantAdvisor := false
@@ -123,6 +137,13 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			case "kernel_denied":
 				if kernelDeny {
 					wantAdvisor = true
+				}
+			case "plugin_fired":
+				for _, r := range pluginResults {
+					if r.Score.Fired {
+						wantAdvisor = true
+						break
+					}
 				}
 			}
 			if wantAdvisor {
