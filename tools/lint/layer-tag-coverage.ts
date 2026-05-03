@@ -15,34 +15,51 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ── Pure logic ──────────────────────────────────────────────────────
 
 export interface PackageJsonShape {
   /** Path relative to repo root, for error messages. */
   path: string;
-  /** Parsed JSON. Only `nx.tags` matters for this linter. */
+  /** Parsed JSON. The linter inspects `nx.tags` (package.json shape)
+   *  AND `tags` at the root (project.json shape) — both are valid
+   *  Nx tag locations. */
   json: unknown;
 }
 
 /**
- * Extract `layer:*` tags from a package.json's `nx.tags` array.
- * Tolerant: returns an empty list if `nx.tags` is missing or not an
- * array (those packages aren't covered by the boundary rule, which
- * is fine — the linter's job is to spot OPT-IN omissions).
+ * Extract `layer:*` tags from a package.json's `nx.tags` array OR a
+ * project.json's root-level `tags` array. Both are valid in nx —
+ * libs/adapters/* in this repo use project.json; libs/* + apps/* use
+ * package.json. Walking both keeps the linter from missing the
+ * adapters' tags (and any future project.json-shaped projects).
+ *
+ * Tolerant: returns an empty list if neither location has tags. Those
+ * packages aren't covered by the boundary rule, which is fine — the
+ * linter's job is to spot OPT-IN omissions.
  */
 export function extractLayerTagsFromPackageJson(
   pkg: PackageJsonShape,
 ): string[] {
   const json = pkg.json;
   if (!json || typeof json !== 'object') return [];
+  const tagSources: unknown[] = [];
+
+  // package.json shape: nx.tags
   const nxField = (json as { nx?: unknown }).nx;
-  if (!nxField || typeof nxField !== 'object') return [];
-  const tagsField = (nxField as { tags?: unknown }).tags;
-  if (!Array.isArray(tagsField)) return [];
-  return tagsField
-    .filter((t): t is string => typeof t === 'string' && t.startsWith('layer:'));
+  if (nxField && typeof nxField === 'object') {
+    const t = (nxField as { tags?: unknown }).tags;
+    if (Array.isArray(t)) tagSources.push(...t);
+  }
+
+  // project.json shape: root-level tags
+  const rootTags = (json as { tags?: unknown }).tags;
+  if (Array.isArray(rootTags)) tagSources.push(...rootTags);
+
+  return tagSources.filter(
+    (t): t is string => typeof t === 'string' && t.startsWith('layer:'),
+  );
 }
 
 /**
@@ -119,22 +136,31 @@ export function findCoverageGaps(
 // ── I/O wrappers ───────────────────────────────────────────────────
 
 /**
- * Walk a workspace root for package.json files under `apps/` and
- * `libs/`, skipping node_modules and dist. Returns parsed JSON keyed
- * by repo-relative path.
+ * Walk a workspace root for package.json AND project.json files
+ * under `apps/`, `libs/`, `tools/`, and `go/`, skipping node_modules
+ * and dist. Returns parsed JSON keyed by repo-relative path.
+ *
+ * Both file shapes are walked because Nx accepts tags in either:
+ * package.json (`nx.tags`) for inferred projects, project.json (root
+ * `tags`) for explicit ones. Limiting to one location would silently
+ * skip the other — exactly the omission the linter is supposed to catch.
  */
 export function loadWorkspacePackageJsons(rootDir: string): PackageJsonShape[] {
-  const targets = ['apps', 'libs'];
+  // Top-level dirs that can contain workspace projects. Includes
+  // `tools/` (this lib lives there) and `go/` (the Go kernel carries
+  // an Nx project.json with layer:kernel; otherwise that tag is
+  // mis-reported as orphaned).
+  const targets = ['apps', 'libs', 'tools', 'go'];
   const out: PackageJsonShape[] = [];
   for (const top of targets) {
     const topPath = join(rootDir, top);
     if (!safeIsDir(topPath)) continue;
-    walkForPackageJsons(topPath, rootDir, out);
+    walkForProjectFiles(topPath, rootDir, out);
   }
   return out;
 }
 
-function walkForPackageJsons(
+function walkForProjectFiles(
   dir: string,
   rootDir: string,
   out: PackageJsonShape[],
@@ -155,8 +181,8 @@ function walkForPackageJsons(
       continue;
     }
     if (stat.isDirectory()) {
-      walkForPackageJsons(full, rootDir, out);
-    } else if (entry === 'package.json') {
+      walkForProjectFiles(full, rootDir, out);
+    } else if (entry === 'package.json' || entry === 'project.json') {
       const rel = full.startsWith(rootDir + '/')
         ? full.slice(rootDir.length + 1)
         : full;
@@ -164,8 +190,8 @@ function walkForPackageJsons(
         const raw = readFileSync(full, 'utf8');
         out.push({ path: rel, json: JSON.parse(raw) });
       } catch {
-        // Ignore unreadable / malformed package.json files; the
-        // linter shouldn't fail the run because of unrelated bugs.
+        // Ignore unreadable / malformed files; the linter shouldn't
+        // fail the run because of unrelated bugs.
       }
     }
   }
@@ -188,9 +214,12 @@ function safeIsDir(p: string): boolean {
 export async function loadDepConstraints(
   configPath: string,
 ): Promise<ReadonlyArray<{ sourceTag?: unknown }>> {
+  // pathToFileURL handles cross-platform encoding correctly. A naïve
+  // `file://${resolve(configPath)}` produces `file://C:\...` on
+  // Windows, which Node's import() rejects.
   const url = configPath.startsWith('file://')
     ? configPath
-    : `file://${resolve(configPath)}`;
+    : pathToFileURL(resolve(configPath)).href;
   const mod = await import(url) as { default: unknown };
   const config = mod.default;
   if (!Array.isArray(config)) {

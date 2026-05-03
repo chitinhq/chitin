@@ -46,6 +46,24 @@ describe('extractLayerTagsFromPackageJson', () => {
     expect(extractLayerTagsFromPackageJson(pkg(undefined))).toEqual([]);
     expect(extractLayerTagsFromPackageJson(pkg('not an object'))).toEqual([]);
   });
+
+  it('reads tags from a project.json-shape (root-level tags array)', () => {
+    // libs/adapters/* and go/execution-kernel use project.json with
+    // root-level `tags` rather than the nx.tags nested under nx.
+    expect(extractLayerTagsFromPackageJson({
+      path: 'libs/adapters/openclaw/project.json',
+      json: { name: '@chitin/adapter-openclaw', tags: ['layer:adapter'] },
+    })).toEqual(['layer:adapter']);
+  });
+
+  it('reads tags from BOTH nx.tags and root tags when both present', () => {
+    // Edge case: a file shaped like both. Both are valid Nx locations;
+    // either could land a tag. Walk both, combine, filter.
+    expect(extractLayerTagsFromPackageJson(pkg({
+      nx: { tags: ['layer:contracts'] },
+      tags: ['layer:adapter'],
+    })).sort()).toEqual(['layer:adapter', 'layer:contracts']);
+  });
 });
 
 describe('extractDepConstraintLayerTags', () => {
