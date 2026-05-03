@@ -53,7 +53,11 @@ export async function drainOnce(
     return { events, nextOffset: start, nextCarry: carry };
   }
   const stream = createReadStream(filePath, { start, end: size - 1 });
-  let buf = carry.length > 0 ? Buffer.from(carry) : Buffer.alloc(0);
+  // Type as the wider Buffer<ArrayBufferLike> so concat()'s output (whose
+  // backing buffer type is the lower bound) is assignable. Buffer.from /
+  // alloc default to Buffer<ArrayBuffer>; without this widening the
+  // assignment from Buffer.concat would fail under strict node types.
+  let buf: Buffer<ArrayBufferLike> = carry.length > 0 ? Buffer.from(carry) : Buffer.alloc(0);
   let emittedBytes = 0; // total bytes (line + \n) shifted out of buf
 
   for await (const chunk of stream as AsyncIterable<Buffer>) {

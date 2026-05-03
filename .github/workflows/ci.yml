@@ -89,6 +89,26 @@ jobs:
             echo "base=HEAD~1" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: TypeScript typecheck (Nx affected)
+        run: |
+          # `tsc --build` over project references runs on every TS
+          # project the diff touches (transitively). Catches the
+          # accumulated noUnusedLocals / extension-less import / type-
+          # mismatch errors that were sitting on main as of 2026-05-03.
+          # Same affected logic as Vitest; docs-only PRs skip cleanly.
+          #
+          # Coverage gap acknowledged: this gate runs each project's
+          # tsconfig.lib.json which only includes `src/**/*.ts`. Lib
+          # tests (tests/), tools/, and root configs aren't covered —
+          # regressions there still merge green. Apps' tests ARE
+          # covered (their tsconfig.json includes tests/). The
+          # structural fix is per-lib tsconfig.spec.json + project
+          # references; filed as `tc-extend-to-tests-and-tools` in
+          # docs/swarm-backlog.md.
+          pnpm exec nx affected -t typecheck \
+            --base=${{ steps.nx-base.outputs.base }} \
+            --parallel=3
+
       - name: Vitest (Nx affected)
         run: |
           # nx affected exits 0 with no output when nothing's affected
