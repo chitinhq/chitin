@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
@@ -73,16 +74,74 @@ Examples:
 	replay.WriteHumanReport(os.Stdout, result)
 }
 
+// cmdChainSummarize dispatches `chitin-kernel chain summarize`.
+// Produces a compact markdown block suitable for prompt injection
+// into a NEXT agent's context (memory-context primitive).
+func cmdChainSummarize(args []string) {
+	sessionID := ""
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--session="):
+			sessionID = a[len("--session="):]
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, "Usage: chitin-kernel chain summarize --session=<id>")
+			os.Exit(0)
+		}
+	}
+	if sessionID == "" {
+		exitErr("chain_summarize_no_session", "--session=<id> required")
+	}
+	out, err := replay.Summarize(sessionID)
+	if err != nil {
+		exitErr("chain_summarize_failed", err.Error())
+	}
+	fmt.Print(out)
+}
+
+// cmdChainRelated dispatches `chitin-kernel chain related`.
+// Lists session IDs related to a given entry hint, most-recent
+// + best-match first.
+func cmdChainRelated(args []string) {
+	entryID := ""
+	maxResults := 5
+	var filePaths []string
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--entry-id="):
+			entryID = a[len("--entry-id="):]
+		case strings.HasPrefix(a, "--file="):
+			filePaths = append(filePaths, a[len("--file="):])
+		case strings.HasPrefix(a, "--max="):
+			if n, err := strconv.Atoi(a[len("--max="):]); err == nil {
+				maxResults = n
+			}
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, "Usage: chitin-kernel chain related --entry-id=<id> [--file=<path>...] [--max=<n>]")
+			os.Exit(0)
+		}
+	}
+	ids, err := replay.FindRelatedSessions(entryID, filePaths, maxResults)
+	if err != nil {
+		exitErr("chain_related_failed", err.Error())
+	}
+	for _, id := range ids {
+		fmt.Println(id)
+	}
+}
+
 // cmdChain dispatches `chitin-kernel chain <subcommand>`. Today
-// only `replay` is wired here; chain-info/chain-verify already
-// exist as top-level subcommands and will be folded in over time.
+// `replay`, `summarize`, and `related` are wired here.
 func cmdChain(args []string) {
 	if len(args) < 1 {
-		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay> [flags]")
+		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|summarize|related> [flags]")
 	}
 	switch args[0] {
 	case "replay":
 		cmdChainReplay(args[1:])
+	case "summarize":
+		cmdChainSummarize(args[1:])
+	case "related":
+		cmdChainRelated(args[1:])
 	default:
 		exitErr("chain_unknown_subcommand", args[0])
 	}
