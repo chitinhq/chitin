@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
-import type { AdapterContext } from './hook-runner';
+import type { AdapterContext } from './hook-runner.js';
 
 const KERNEL_BIN_ENV = 'CHITIN_KERNEL_BINARY';
 

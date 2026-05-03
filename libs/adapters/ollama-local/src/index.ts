@@ -1,1 +1,1 @@
-export * from './ollama-wrapper';
+export * from './ollama-wrapper.js';
