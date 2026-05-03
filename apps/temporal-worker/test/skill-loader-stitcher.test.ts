@@ -5,6 +5,7 @@ import { join, posix } from 'node:path';
 import {
   inlineCompanions,
   loadSkill,
+  materializePath,
   parseSimpleYaml,
   renderSkill,
   renderSkillBody,
@@ -164,6 +165,28 @@ describe('inlineCompanions', () => {
     ).toThrow(/\.\./);
   });
 
+  it('does not match POSIX-absolute paths in markdown links (regex shape)', () => {
+    // `[bad](/etc/passwd.md)` — the regex requires either `./`
+    // prefix or no `/` chars in a bare `.md` name. POSIX-absolute
+    // paths fail BOTH alternatives → no match → no file read.
+    // Naturally fail-safe; the Windows-absolute case is the real
+    // attack vector since backslashes match the bare-name shape.
+    const body = '[bad](/etc/secret.md)';
+    expect(inlineCompanions(body, () => 'never')).toBe(body);
+  });
+
+  it('rejects Windows-absolute companion paths', () => {
+    // Windows-shape absolute paths like `C:\secret.md` would be
+    // accepted by the second alternative of the regex
+    // (`[^)\s/]+\.md`). The win32.isAbsolute guard rejects them
+    // BEFORE join() is called (where they'd escape the skill
+    // folder on Windows). (Copilot review #213 #1, security.)
+    const body = '[bad](C:\\secret.md)';
+    expect(() =>
+      inlineCompanions(body, () => 'never reached'),
+    ).toThrow(/must be relative/);
+  });
+
   it('does not match bare ../ (no leading ./) — those silently pass through', () => {
     // The regex requires `./` or a `.md`-suffixed bare name, so `../x`
     // doesn't match and isn't inlined. That's a fail-safe: the link is
@@ -264,14 +287,10 @@ describe('materializePath', () => {
     const dir = tmp('chitin-mat-');
     const filePath = join(dir, 'not-a-folder.txt');
     writeFileSync(filePath, 'I am a file, not a directory.');
-    // Lazy import of materializePath so this test stays adjacent
-    // to the splitFrontmatter shape; no need to hoist the import.
-    const { materializePath } = require('../src/skill-loader/stitcher.ts');
     expect(() => materializePath(filePath)).toThrow(/not a directory/);
   });
 
   it('rejects a path that does not exist', () => {
-    const { materializePath } = require('../src/skill-loader/stitcher.ts');
     expect(() => materializePath('/nonexistent/skill-folder')).toThrow(
       /does not exist/,
     );

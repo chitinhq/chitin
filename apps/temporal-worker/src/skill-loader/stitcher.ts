@@ -37,7 +37,7 @@
 // reads from disk.
 
 import { readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, win32 } from 'node:path';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -236,6 +236,14 @@ export function inlineCompanions(
       // Reject parent traversal explicitly.
       if (path.includes('..')) {
         throw new Error(`stitcher: companion path must not include ".."  — got ${path}`);
+      }
+      // Reject ABSOLUTE paths (POSIX `/etc/x.md` AND Windows
+      // `C:\foo.md` / `\\server\share\x.md`). Without this guard,
+      // `join(skill.folder, 'C:\\secret.md')` on Windows returns
+      // the absolute path verbatim and reads outside the skill
+      // folder. (Copilot review #213 #1 second-round — security.)
+      if (isAbsolute(path) || win32.isAbsolute(path)) {
+        throw new Error(`stitcher: companion path must be relative — got ${path}`);
       }
       const cleanPath = path.startsWith('./') ? path.slice(2) : path;
       const content = loadCompanion(cleanPath);
