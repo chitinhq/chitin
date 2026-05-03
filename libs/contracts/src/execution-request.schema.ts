@@ -36,18 +36,20 @@ export const TierSchema = z.enum(['T0', 'T1', 'T2', 'T3', 'T4']);
 // Absent = generic programmer (the slice-7b dispatcher's pre-Phase-1
 // behavior). Existing manual dispatches keep working.
 export const RoleSchema = z.enum([
-  'researcher',     // Pull external signals (arxiv, Reddit, openclaw, ollama)
-  'product',        // Turn signals into 1-paragraph problem statements
-  'groomer',        // Tier-classify, size, identify file scope, mark blockers
-  'architect',      // Write design docs / ADRs
-  'programmer',     // Read entry's file:, edit, commit, push (the current swarm)
-  'reviewer',       // Tier-escalating review (R0-R3, see design §5)
-  'qa',             // Generate / run E2E tests; smoke-test
-  'gatekeeper',     // CI + reviews + telemetry → merge or escalate
-  'tech-writer',    // Update wiki + ADRs + runbooks; lessons-learned
-  'analyst',        // Author analysis-lib queries; explain telemetry
-  'refactorer',     // Find duplication / dead code / hot-path debt
-  'debt-curator',   // Maintain debt-ledger; surface debt that blocks other work
+  'researcher',         // Pull external signals (arxiv, Reddit, openclaw, ollama)
+  'product',            // Turn signals into 1-paragraph problem statements
+  'groomer',            // Tier-classify, size, identify file scope, mark blockers
+  'architect',          // Write design docs / ADRs
+  'programmer',         // Read entry's file:, edit, commit, push (the current swarm)
+  'reviewer',           // Tier-escalating review (R0-R3, see design §5)
+  'peer-reviewer',      // Independent second-opinion per PR, parallel to Copilot R0
+  'comment-responder',  // Read PR review comments, evaluate, push fix commits
+  'qa',                 // Generate / run E2E tests; smoke-test
+  'gatekeeper',         // CI + reviews + telemetry → merge or escalate
+  'tech-writer',        // Update wiki + ADRs + runbooks; lessons-learned
+  'analyst',            // Author analysis-lib queries; explain telemetry
+  'refactorer',         // Find duplication / dead code / hot-path debt
+  'debt-curator',       // Maintain debt-ledger; surface debt that blocks other work
 ]);
 
 // Driver tiers for the swarm. The 2026-04-30 framing that excluded

@@ -16,6 +16,8 @@ import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { RESEARCHER_OUTPUT_INSTRUCTIONS } from './researcher-prompts.ts';
 import { getRecentLessonsSync } from './lessons.ts';
+import { buildCommentResponderPrompt } from './comment-responder/prompt.ts';
+import { buildPeerReviewerPrompt } from './peer-reviewer/prompt.ts';
 
 // How many of the most-recent lessons to prepend to a programmer
 // prompt. Picked low enough that the overhead per dispatch is small,
@@ -199,6 +201,16 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   // comments) that a single BacklogEntry can't carry. See
   // docs/design/2026-05-02-swarm-as-software-factory.md §5.
   reviewer: (entry) => buildStubPrompt('reviewer', entry),
+  // Peer-reviewer fires per-PR alongside Copilot R0 — independent
+  // second opinion, non-escalating. See docs/design/2026-05-02-swarm-
+  // as-software-factory.md §5; dispatched by `pr-event-ingester` (or
+  // its successor) when a PR opens.
+  'peer-reviewer': buildPeerReviewerPrompt,
+  // Comment-responder reads PR review comments, evaluates each on
+  // merit (per the operator's "do NOT dismiss as noise" rule), and
+  // pushes a fix commit + summary. Closes the loop the swarm was
+  // missing this morning (PRs #196-#199 sat un-actioned).
+  'comment-responder': buildCommentResponderPrompt,
   qa: (entry) => buildStubPrompt('qa', entry),
   gatekeeper: (entry) => buildStubPrompt('gatekeeper', entry),
   'tech-writer': (entry) => buildStubPrompt('tech-writer', entry),
