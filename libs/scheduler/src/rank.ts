@@ -27,10 +27,12 @@ export interface RankResult {
 // Within non-deadline tasks, lower priority number = earlier position.
 // Tie-breaker: lexicographic id (stable, deterministic).
 
+// hhmm values are interpreted as UTC so slot timestamps match the ISO strings
+// in RankContext.now and EventItem.start (both RFC3339/UTC).
 function parseHHMM(date: Date, hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
   const d = new Date(date);
-  d.setHours(h, m, 0, 0);
+  d.setUTCHours(h, m, 0, 0);
   return d.getTime();
 }
 

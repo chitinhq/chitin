@@ -89,6 +89,9 @@ importers:
       '@chitin/contracts':
         specifier: workspace:*
         version: link:../../libs/contracts
+      '@chitin/scheduler':
+        specifier: workspace:*
+        version: link:../../libs/scheduler
       '@chitin/telemetry':
         specifier: workspace:*
         version: link:../../libs/telemetry
@@ -140,6 +143,15 @@ importers:
   libs/adapters/openclaw: {}
 
   libs/contracts: {}
+
+  libs/scheduler:
+    dependencies:
+      better-sqlite3:
+        specifier: '*'
+        version: 12.9.0
+      zod:
+        specifier: '*'
+        version: 4.3.6
 
   libs/telemetry:
     dependencies:
