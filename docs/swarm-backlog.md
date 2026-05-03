@@ -3852,6 +3852,124 @@ PR. Two structural follow-ups below.
 
 ```yaml
 id: auto-rebuild-redeploy-chitin-kernel
+## Swarm-lessons distillation cohort (filed 2026-05-03)
+
+The afternoon's PR cascade (#211-#223) surfaced 20+ Copilot review
+findings across two rounds. Patterns recurring across PRs:
+`Date.now()` for unique IDs, `as ExecutionRequest` instead of
+`Schema.parse()`, stable workflow_id without explicit conflict
+policy, Windows-absolute path injection in user content, ops/
+vs infra/ convention drift, CRLF body handling, deploy lag.
+
+Operator framing (2026-05-03): "this is all data for us to see
+how to improve the swarm" — the manual review-and-fix loop being
+done in this session IS the swarm-improvement signal. Today's
+`chitin-lessons.timer` distills one-sentence summaries from
+merged-PR commit messages and prepends them to the **programmer**
+prompt only. That's undersized for what the data says.
+
+Four entries below close the gap. The first three are
+infrastructure (per-role files, Copilot-review ingestion,
+code-pattern lesson schema); the fourth is the T4 distillation
+agent that turns the manual cascade-review work into a scheduled
+swarm role. Together they make the lessons loop genuinely
+self-improving — patterns Copilot catches today become lessons
+the agents read tomorrow, without operator transcription.
+
+### `per-role-lessons-files`
+
+```yaml
+id: per-role-lessons-files
+tier: T2
+status: ready
+estimated_loc: 150
+blocks: []
+file: docs/swarm-lessons/, apps/temporal-worker/src/lessons.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/src/grooming/parse-backlog.ts (role label per PR)
+references_finding: 2026-05-03 PR cascade — peer-reviewer + comment-responder roles produce review findings but don't get lessons today
+role: programmer
+```
+
+Today's `docs/swarm-lessons.md` is one flat file prepended to the
+programmer prompt. peer-reviewer + comment-responder + analyst
+get nothing — yet they are the roles producing the review-cycle
+findings we'd most want to learn from.
+
+Steps:
+
+1. Migrate `docs/swarm-lessons.md` → `docs/swarm-lessons/programmer.md`
+   (preserve content; this is the existing scope).
+2. Add empty `docs/swarm-lessons/{peer-reviewer,comment-responder,
+   analyst}.md` with the same header format.
+3. Lessons extractor (`apps/temporal-worker/src/lessons.ts`)
+   reads the merged PR's role label (the dispatch marker
+   `~/.cache/chitin/swarm-state/dispatched/<entry-id>.json`
+   already records it) and routes the distilled lesson to the
+   right per-role file.
+4. `role-prompts.ts` reads the per-role lessons file at prompt
+   build time; falls back to `programmer.md` for roles without a
+   dedicated file (graceful degradation).
+5. Tests: extractor routes correctly per role; role-prompts
+   prepends the right file; missing role file doesn't crash.
+
+**Acceptance:**
+- [ ] `docs/swarm-lessons/<role>.md` exists for each role in
+      `RoleSchema`
+- [ ] Extractor distills + appends to the correct file based on
+      the merged PR's role
+- [ ] Each role's prompt includes its own lessons block (verified
+      via prompt snapshot tests)
+- [ ] CI green
+
+### `copilot-review-lessons-extractor`
+
+```yaml
+id: copilot-review-lessons-extractor
+tier: T3
+status: ready
+estimated_loc: 300
+blocks: [per-role-lessons-files]
+file: apps/temporal-worker/src/lessons.ts (extends), apps/temporal-worker/src/lessons/copilot-review-distill.ts, apps/temporal-worker/test/copilot-review-distill.test.ts
+references_finding: 2026-05-03 PR cascade — Copilot reviews are the richest lesson signal; today's extractor reads commit messages only
+role: programmer
+```
+
+Today's lesson distillation reads a merged PR's title + first
+body paragraph + a couple of file/diff signals. The richest signal
+in this afternoon's cascade was IN THE REVIEW COMMENTS, not the
+commit messages. Examples:
+
+- "`Date.now()` can collide under concurrent dispatch in the same
+  millisecond — prefer `crypto.randomUUID()`" — this is a Copilot
+  comment, not a commit message
+- "buildPeerReviewerRequest ends with `} as ExecutionRequest` —
+  other dispatch paths use `ExecutionRequestSchema.parse(...)`" —
+  Copilot comment
+
+Extend the lessons extractor to fetch each merged PR's
+`/pulls/{n}/comments` (review comments) + `/pulls/{n}/reviews`
+(top-level reviews). Distill lessons from comments where:
+- The comment is from `copilot-pull-request-reviewer` or other
+  reviewer accounts
+- A subsequent commit on the PR addresses the comment (commit
+  diff overlaps the comment's file/line, OR commit message
+  references the comment)
+
+Per-comment-resolved lessons go to the same per-role file as
+above (entry blocks on `per-role-lessons-files`).
+
+**Acceptance:**
+- [ ] Extractor pulls `/pulls/{n}/comments` for each merged PR
+- [ ] Heuristic identifies comment→fix-commit pairs (file/line
+      overlap OR commit-msg cite)
+- [ ] Distilled lesson includes the BUGGY pattern and the FIX
+      pattern (depends on `code-pattern-lessons` for schema)
+- [ ] Tests with fixture PR comments + commits
+- [ ] CI green
+
+### `code-pattern-lessons`
+
+```yaml
+id: code-pattern-lessons
 tier: T2
 status: ready
 estimated_loc: 200
@@ -4156,3 +4274,163 @@ distinction (responder won't refire anyway).
       resolved → count returns 2
 - [ ] Test: PR with 5 reviewer comments, 5 reply comments
       (`in_reply_to_id` set) → count returns 5 (only root-level)
+file: docs/swarm-lessons/<role>.md (format change), apps/temporal-worker/src/lessons.ts (entry parser), apps/temporal-worker/src/role-prompts.ts (renderer)
+references_finding: 2026-05-03 PR cascade — one-sentence lesson loses the WHY and the SHAPE
+role: programmer
+```
+
+Current lesson schema:
+```
+- 2026-05-03 #207 — Don't dismiss Copilot comments as noise; verify each on merit.
+```
+
+Loses the WHY (what was the original failure mode?) and the
+SHAPE (what does the buggy code look like vs the fixed code?).
+Programmers reading "don't use Date.now() for unique IDs" still
+have to learn what `randomUUID` looks like in our context.
+
+Proposed schema (markdown sections, each labeled):
+```
+## #211 (2026-05-03, programmer) — Date.now() for unique IDs collides under concurrency
+
+### Bad
+```ts
+run_id: `${workflowId}-${Date.now()}`
+```
+
+### Good
+```ts
+import { randomUUID } from 'node:crypto';
+run_id: `${workflowId}-${randomUUID()}`
+```
+
+### Why
+Concurrent dispatches in the same millisecond produce
+identical run_ids → kernel writes both runs to the same
+`.chitin/events-<run_id>.jsonl` → per-run audit trail lost.
+Caught by Copilot in PR #211 round-2 review.
+```
+
+Steps:
+
+1. New parser in `lessons.ts` that handles the structured-
+   markdown shape (forward-compatible with existing flat lines).
+2. Extractor distillation prompt updates to produce the new
+   shape (LLM-mode only; heuristic stays one-sentence as
+   fallback).
+3. `role-prompts.ts` renders the structured form as markdown
+   blocks; old flat lines render unchanged.
+4. Migration script: convert existing flat lines to the new
+   shape over time (one-shot when this entry lands; new lessons
+   land in the new shape automatically).
+
+**Acceptance:**
+- [ ] New schema parses with both old (flat) + new (structured)
+      entries
+- [ ] LLM distillation produces the structured shape
+- [ ] Programmer prompt renders Bad/Good/Why blocks as markdown
+- [ ] Migration of existing `swarm-lessons.md` runs once + produces
+      sensible structured entries (or leaves them flat if
+      conversion isn't possible)
+- [ ] CI green
+
+### `lessons-curator-tiered-pipeline`
+
+```yaml
+id: lessons-curator-tiered-pipeline
+tier: T0
+status: ready
+estimated_loc: 500
+blocks: [per-role-lessons-files, copilot-review-lessons-extractor, code-pattern-lessons]
+file: apps/temporal-worker/src/lessons-curator/dispatch.ts, apps/temporal-worker/src/lessons-curator/prompt.ts (or skill folder), apps/temporal-worker/src/lessons-curator/cluster.ts (deterministic), infra/systemd/chitin-lessons-curator.{service,timer}, docs/runbooks/chitin-lessons-curator.md
+references_finding: 2026-05-03 operator framing — "this is all data for us to see how to improve the swarm" + "shift majority of work left, push towards T0 doing majority of work"
+role: lessons-curator
+```
+
+The first three entries above are PASSIVE infrastructure
+(per-role files, review-comment ingestion, structured schema).
+None of them learn cross-PR patterns or self-file improvement
+backlog entries when the swarm hits a recurring class of bug.
+This entry adds the ACTIVE half: an agent that runs after each
+merge cycle, reads the recent PR + Copilot-review history,
+distills lessons, and self-files improvement entries when
+patterns cluster.
+
+This is what the operator was doing manually in this PR cascade
+(reading Copilot reviews, distilling patterns into proposed
+backlog entries). The agent does the same loop on a schedule.
+
+**Tier-decomposed by design** — operator framing 2026-05-03 is
+"shift majority of work left, push towards T0 doing majority of
+work." Original draft of this entry was monolithic T4 (Opus
+across the whole pipeline), which would lock in expensive
+reasoning forever. Reframed: the pipeline is a T0 mechanical
+shell that escalates to T4 ONLY for the one step that needs
+real judgment (cross-PR pattern detection / categorization).
+This is the advisor-pattern from `#208` entry 5 made concrete.
+
+Role: `lessons-curator` (new — needs to be added to `RoleSchema`
+in `libs/contracts`).
+
+Pipeline (with explicit tier per step):
+
+| Step | Tier | What | Why this tier |
+|---|---|---|---|
+| 1. List merged PRs in window | **T0** | `gh pr list --search "is:merged merged:>YYYY-MM-DD"` parsed into a list | Pure shell + JSON parsing; no judgment |
+| 2. For each PR: pull commits + reviews + comments + diff | **T0** | `gh api` + `gh pr diff`; structured into a per-PR record | Pure data fetch + transformation |
+| 3. Cluster comments by similarity (root-cause category, file+line shape, proposed-fix shape) | **T4 advisor** | Calls T4 for the categorization judgment ONCE per cycle, with the full PR set as input. Returns clusters. | Cross-PR pattern detection is the genuine reasoning step |
+| 4. Per-cluster action: ≥2 occurrences → file backlog entry; 1 occurrence → distill lesson | **T0** | Deterministic dispatch on cluster size; calls Entry 1-3's existing infrastructure | Mechanical; the action is determined by the cluster shape T4 returned |
+| 5. Output structured `<<<LESSONS_CURATOR>>>` JSON to chain | **T0** | Standard kernel emit | Mechanical |
+
+Net cost shape: ONE T4 call per cycle (step 3), ALL OTHER WORK
+at T0. The naive "wrap everything in Opus" approach burns
+~50× the cost. The advisor pattern keeps T4 for the judgment
+call only.
+
+Bounds (overall workflow):
+- write_policy=branch (commits + PRs lessons-files + new backlog
+  entries; needs PR review like any other agent)
+- network=allowlist (gh CLI only)
+- max_tool_calls=200 (cross-PR analysis is expensive in I/O)
+- wall_timeout=3600s (1h ceiling — gives the T4 advisor room
+  but the rest of the pipeline runs in seconds)
+
+Schedule:
+- `chitin-lessons-curator.timer` fires daily at 04:00 local
+  (after the daily rollup, before the morning's first dispatches)
+- `Persistent=true` so missed runs catch up
+- Pause via `systemctl --user stop chitin-lessons-curator.timer`
+
+Connection to the analysis station: distillation outputs (per-
+pattern frequency counts, recurring categories, lessons-yielded
+ratios, **and the T4-advisor-cost-per-cycle**) become first-class
+telemetry for the rollup. The operator reads "lessons-curator
+distilled 7 lessons, filed 2 recurring-pattern improvement
+entries; spent $0.42 on T4 advisor; rest of pipeline ran on
+local-glm-flash" in the morning rollup.
+
+Connection to the shift-left thesis: this entry IS a shift-left
+example — work that the operator does manually today (reviewing
+the PR cascade for patterns) becomes mostly-T0 with one T4
+escalation. As clustering heuristics improve over time, even
+step 3 can collapse to T0 (deterministic similarity scoring) +
+T4 only when the heuristic flags ambiguity.
+
+**Acceptance:**
+- [ ] `lessons-curator` role added to RoleSchema + role-prompts
+- [ ] Dispatch helper builds an ExecutionRequest with the cycle
+      window + PR list as input
+- [ ] Pipeline implementation is tier-explicit: steps 1, 2, 4, 5
+      run at T0; step 3 is the only T4 escalation
+- [ ] Skill folder (or prompt) instructs the agent through the
+      5-step workflow with explicit tier annotations
+- [ ] systemd timer + service install cleanly; 04:00 local cadence
+- [ ] Smoke run produces ≥1 distilled lesson + records T4 cost
+      separately in chain telemetry
+- [ ] Pattern-cluster threshold (2+ recurrences) is exercised
+      with a synthetic-input test
+- [ ] Output rollup-style summary surfaces in chain telemetry,
+      including the T4-cost-per-cycle line item
+- [ ] Runbook: install / verify / suspend / manual override / how
+      to read the chain output / **how to evaluate when step 3
+      can collapse to T0** (the next shift-left target)
