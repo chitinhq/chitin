@@ -3181,3 +3181,139 @@ Steps:
 - [ ] Timer fires at the configured interval
 - [ ] systemd shows the unit alongside existing chitin-* services
 
+
+## Strategic evaluations — community signal vs current architecture
+
+Filed 2026-05-03 in response to community signal about
+ollama-vs-llama.cpp and hermes-vs-openclaw. Both are tier-T5
+strategic questions (operator decision, not auto-dispatchable);
+filed as backlog entries to keep the evaluation trail open without
+speculatively reversing existing architecture.
+
+### `evaluate-llamacpp-vs-ollama`
+
+```yaml
+id: evaluate-llamacpp-vs-ollama
+tier: T5
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_finding: 2026-05-03-community-signal-llamacpp-over-ollama
+role: analyst
+```
+
+Community signal: "everyone is saying use llama.cpp instead of ollama."
+Honest analysis: ollama IS llama.cpp + a daemon + a model registry
++ a friendlier CLI. Switching to llama.cpp direct keeps the engine,
+drops the wrapper.
+
+Tradeoff at the chitin scope:
+
+| | ollama (current) | llama.cpp direct |
+|---|---|---|
+| Cold-start ergonomics | `ollama run X` works | manage GGUF files + llama-server flags + ports |
+| Model registry | central store, one-line pulls | manual HuggingFace + GGUF conversion |
+| Tuning surface | limited (Modelfile params, env) | full quant / batch / GPU-layer / mlock |
+| Production fitness | fine for dev | better for high-throughput |
+| Daemon overhead | negligible | none (operator runs llama-server) |
+| OpenAI-compat HTTP | yes | yes (llama-server `--api-key`) |
+
+Chitin-side change is small: `~/.openclaw/openclaw.json` swaps
+`"ollama/glm-4.7-flash:latest"` for an OpenAI-compatible endpoint
+pointing at `llama-server`. Operator-side cost: discipline (manage
+GGUF files yourself).
+
+**Recommended posture (until we hit a real ceiling):** keep ollama.
+glm-4.7-flash:latest just landed via ollama and is hot. Switching
+speculatively trades a working setup for theoretical gains. Revisit
+when:
+- Tuning params unavailable in ollama become load-bearing
+- Cold-load latency on a model becomes a hot path
+- Production throughput per-rig matters (multiple concurrent
+  agents, 24/7 swarm at scale)
+
+Steps when this entry is picked up:
+1. Identify the specific ceiling that prompted the evaluation
+   (vague "everyone is saying" doesn't qualify; cite a concrete
+   chitin-side limit).
+2. Smoke-test llama-server alongside the current ollama setup;
+   measure the delta on the limit identified in (1).
+3. If material: file the swap as a programmer-tier backlog entry
+   with the new openclaw config + runbook updates.
+
+**Acceptance:**
+- [ ] A concrete ceiling identified (not anecdotal community signal)
+- [ ] Quantitative comparison on that ceiling
+- [ ] Decision: stay-with-ollama / swap-llama-cpp / hybrid
+- [ ] If swap: implementation entry filed with concrete steps
+
+### `evaluate-hermes-revival`
+
+```yaml
+id: evaluate-hermes-revival
+tier: T5
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_finding: 2026-05-03-community-signal-hermes-over-openclaw
+role: architect
+```
+
+Community signal: "everyone is saying use Hermes over openclaw."
+Hermes (the chitin-built orchestrator) was killed 2026-04-23 — see
+memory entry `project_hermes_killed_chitin_as_governance.md` and
+`docs/observations/2026-04-22-autonomy-v1-post-mortem.md`. The kill
+was based on:
+
+- Bias toward substrates, not full-stack rebuilds (after clawta
+  + hermes both proved heavy to maintain — see
+  `project_clawta_archived.md`)
+- openclaw exists, has a hook surface (`before_tool_call`)
+- Chitin's wedge is governance, not orchestration; killing the
+  orchestration layer let chitin focus on the audit + policy
+  primitives that are its actual differentiator
+
+That logic still holds in the GENERAL case. The community signal
+deserves examination: WHAT specifically does hermes do that
+openclaw can't?
+
+Two possibilities for what "use hermes" means:
+
+(a) **Hermes-the-orchestrator** (chitin's killed driver). Reasons
+    it might be coming back into vogue: openclaw's hook surface
+    might not give what people need; the model-split pattern
+    (coder=hands + reasoner=brain) was hermes-specific and not
+    directly portable to openclaw's single-agent model.
+
+(b) **Hermes-the-model** (NousResearch's Mistral fine-tunes).
+    Different question — that's a model choice, not an
+    orchestrator one. local-glm / local-deepseek already exist
+    as drivers; adding `local-hermes` would be a small enum
+    extension if the model proves better than alternatives.
+
+Steps when this entry is picked up:
+1. Identify which Hermes (the orchestrator or the model family)
+   the community is recommending.
+2. If (a) the orchestrator: name the specific gap openclaw has
+   that hermes filled. Compare against openclaw's current
+   capability — many gaps are addressable as openclaw extensions
+   without reverting.
+3. If gaps are real and not easily addressed, file
+   `revive-hermes-orchestrator-or-equivalent` as a real
+   architectural entry with cost estimates (revival vs. wrapper
+   vs. new orchestrator).
+4. If (b) the model: smoke-test the recommended hermes variant
+   on the 3090; benchmark vs. glm-4.7-flash and qwen3-coder; file
+   `add-local-hermes-driver` as a programmer-tier entry only if
+   the model materially beats the current set.
+
+**Acceptance:**
+- [ ] Disambiguate: orchestrator or model
+- [ ] If orchestrator: concrete gap identified, comparison done
+- [ ] If model: benchmark complete vs. current local-* drivers
+- [ ] Decision: status-quo / extend-openclaw / revive-hermes /
+      add-hermes-model
+- [ ] Implementation entry filed (or explicit "no action" with
+      reasoning recorded for the next time the signal returns)
