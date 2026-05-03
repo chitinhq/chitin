@@ -2278,3 +2278,280 @@ Operator note when picking up: confirm mvdan/sh#256 (heredoc-in-procsubst
 formatter bug) doesn't affect the parser path we use — only the
 formatter is buggy per the upstream issue, but verify with a fixture
 test before committing the upgrade.
+
+## Scheduler + MCP + Slack rollout (filed 2026-05-02)
+
+Eight entries covering the scheduler, MCP server, and Slack integrations. Locked architecture in `docs/superpowers/plans/2026-05-02-scheduler-design.md`. Designed to run overnight as a parallel cohort; operator merges in dependency order tomorrow.
+
+### `nx-angular-workspace-install`
+
+```yaml
+id: nx-angular-workspace-install
+tier: T1
+status: ready
+estimated_loc: 30
+blocks: []
+file: package.json, pnpm-lock.yaml
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md §"PR sequence" PR-Z
+role: programmer
+```
+
+Add `@nx/angular@^22.0.0` as a workspace devDependency to match the existing `@nx/js@22.6.5`. Single `pnpm add -D -w @nx/angular@22.6.5` followed by `pnpm install` to refresh `pnpm-lock.yaml`. No code changes — just the dependency. Verify with `pnpm exec nx list @nx/angular` after install (should show the schematic generators).
+
+**Acceptance:**
+- [ ] `package.json` devDependencies includes `@nx/angular@^22.6.5`
+- [ ] `pnpm-lock.yaml` regenerated
+- [ ] `pnpm exec nx list @nx/angular` lists generators
+- [ ] CI green
+
+This frees PR-D to scaffold the dashboard via `nx generate @nx/angular:application`.
+
+### `scheduler-lib-foundation`
+
+```yaml
+id: scheduler-lib-foundation
+tier: T2
+status: ready
+estimated_loc: 400
+blocks: []
+file: libs/scheduler/package.json, libs/scheduler/project.json, libs/scheduler/src/index.ts, libs/scheduler/src/schema.ts, libs/scheduler/src/store/sqlite.ts, libs/scheduler/tests/, apps/cli/src/commands/scheduler.ts, tsconfig.json
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md
+role: programmer
+```
+
+Bootstrap the `@chitin/scheduler` library with Item schema + sqlite store + CLI subcommands. NO heuristic, NO ingest, NO notify — those are PR-C. Just the substrate.
+
+Steps:
+1. Generate library: `nx generate @nx/js:library scheduler --directory=libs/scheduler --tags=layer:scheduler,scope:lib --no-interactive`
+2. Set `package.json` to mirror existing chitin libs: `name: @chitin/scheduler`, `type: module`, `main: ./src/index.ts`, `exports: {".": "./src/index.ts"}`, `private: true`.
+3. Implement `src/schema.ts`: Item tagged variant + zod discriminatedUnion per design §"Item — tagged variant".
+4. Implement `src/store/sqlite.ts`: ItemStore class with `add(item)`, `get(id)`, `list(filter)`, `update(id, patch)`, `delete(id)`. WAL mode (per #179 pattern). Uses `better-sqlite3`.
+5. `src/index.ts` re-exports public API: types from schema, ItemStore + openStore from store.
+6. Tests in `libs/scheduler/tests/`: schema parse/validate, store CRUD, WAL mode pragma set.
+7. CLI: extend `apps/cli/src/commands/` with `scheduler.ts` exposing `add`, `list`, `complete`, `delete` subcommands.
+8. Wire to `tsconfig.json` references.
+
+**Acceptance:**
+- [ ] `nx test scheduler` passes
+- [ ] `chitin scheduler add --title "test" --type task` writes to sqlite
+- [ ] `chitin scheduler list` reads back the item
+- [ ] tsconfig references include the new lib
+- [ ] CI green (no Angular touch — that's PR-D)
+
+### `mcp-server-chitin-cli`
+
+```yaml
+id: mcp-server-chitin-cli
+tier: T2
+status: ready
+estimated_loc: 400
+blocks: []
+file: libs/mcp-chitin/, apps/mcp-server/
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md (parallel track), Anthropic MCP spec
+role: programmer
+```
+
+Wrap `chitin-kernel` CLI as an MCP server so any MCP client (Claude Code, Cursor, mobile Claude) can query/manage chitin state. Uses `@modelcontextprotocol/sdk` for the protocol layer.
+
+Tools to expose (each shells out to `chitin-kernel`):
+- `chitin_envelope_list` — list envelopes
+- `chitin_envelope_grant` — grant additional budget
+- `chitin_envelope_close` — close envelope
+- `chitin_gate_status` — per-agent escalation level
+- `chitin_gate_reset` — lockdown reset
+- `chitin_chain_info` — chain state for a session
+- `chitin_chain_verify` — Phase-1.5 stub verification
+- `chitin_decisions_recent` — windowed decision log
+
+Steps:
+1. `nx generate @nx/js:library mcp-chitin --directory=libs/mcp-chitin --tags=layer:mcp,scope:lib`
+2. `nx generate @nx/js:application mcp-server --directory=apps/mcp-server --tags=layer:mcp,scope:app`
+3. Implement each tool in `libs/mcp-chitin/src/tools/<name>.ts` — pure TS functions that spawn `chitin-kernel` and return parsed JSON.
+4. `apps/mcp-server/src/main.ts` boots `@modelcontextprotocol/sdk`'s stdio server and registers all tools.
+5. Tests: each tool's argument validation + error path (kernel binary missing, parse failure).
+6. README in `apps/mcp-server/` documenting the install path: `claude mcp add chitin path/to/dist/main.js`.
+
+**Acceptance:**
+- [ ] `chitin-mcp-server` binary launches via stdio
+- [ ] Each tool returns valid MCP tool result envelope
+- [ ] Error path covered (kernel exit non-zero → MCP error response with kind)
+- [ ] CI green
+- [ ] README has copy-paste install command for Claude Code
+
+### `scheduler-gov-rule`
+
+```yaml
+id: scheduler-gov-rule
+tier: T1
+status: ready
+estimated_loc: 50
+blocks: []
+file: chitin.yaml, .eslintrc.json (or eslint.config.js — match existing)
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md §"Gov rule"
+role: programmer
+```
+
+Enforces the hard rule architecturally:
+
+1. `chitin.yaml` gains:
+   ```yaml
+   - id: scheduler-heuristic-only
+     action: file.write
+     effect: deny
+     target_regex: '^libs/scheduler/(?!src/(rank|ingest)\.ts$)'
+     reason: "Swarm may tune rank.ts and ingest.ts only. Schema, store, notify, and the dashboard are operator-authored."
+   ```
+2. eslint config gains `@nx/enforce-module-boundaries` tag rules:
+   ```jsonc
+   {
+     "depConstraints": [
+       { "sourceTag": "scope:app",   "onlyDependOnLibsWithTags": ["scope:lib"] },
+       { "sourceTag": "layer:scheduler", "onlyDependOnLibsWithTags": ["layer:scheduler", "layer:contracts"] },
+       { "sourceTag": "layer:mcp", "onlyDependOnLibsWithTags": ["layer:mcp", "layer:contracts"] }
+     ]
+   }
+   ```
+
+**Acceptance:**
+- [ ] `chitin.yaml` rule fires on a synthetic write to `libs/scheduler/src/store/sqlite.ts` (test via `chitin-kernel gate evaluate`)
+- [ ] `chitin.yaml` rule allows a write to `libs/scheduler/src/rank.ts`
+- [ ] Nx tag rule catches a synthetic import from `libs/scheduler/` into `libs/contracts/` (allowed) vs `apps/scheduler-dashboard/` (denied — apps can only depend on libs)
+- [ ] CI green
+
+### `scheduler-rank-ingest-notify`
+
+```yaml
+id: scheduler-rank-ingest-notify
+tier: T2
+status: ready
+estimated_loc: 400
+blocks: [scheduler-lib-foundation]
+file: libs/scheduler/src/rank.ts, libs/scheduler/src/ingest.ts, libs/scheduler/src/notify.ts, libs/scheduler/src/notify/ntfy.ts, libs/scheduler/src/notify/slack.ts, libs/scheduler/tests/, apps/cli/src/commands/scheduler.ts
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md §"rank.next" §"ingest.parse"
+role: programmer
+```
+
+Ship the swarm-tunable surface (rank + ingest) plus the notification adapter dispatch.
+
+Steps:
+1. `rank.ts` — greedy slot-picker v1: sort items by deadline urgency, slot into earliest open window matching `window_pref`. Emit `item_decision` chain events for telemetry. Pure function, no side effects.
+2. `ingest.ts` — text → Item[] via Opus structured-output prompt. Few-shot examples for task/event/backlog parsing in the prompt. Returns `[]` + telemetry on parse failure (don't throw).
+3. `notify.ts` — Notifier registry pattern. `register(name, fn)`, `dispatch(item, notifier_name)`.
+4. `notify/ntfy.ts` — POST to `<NTFY_URL>/<topic>` with item summary.
+5. `notify/slack.ts` — POST to incoming webhook URL.
+6. CLI extends to: `chitin scheduler ingest "<text>"` (parse + persist), `chitin scheduler today` (rank + format), `chitin scheduler tick` (notify-due).
+7. Tests: rank fixture-driven (assert slot ordering), ingest with mock Opus client, notify with mock fetch.
+
+**Acceptance:**
+- [ ] `chitin scheduler ingest "..."` produces structured items in store
+- [ ] `chitin scheduler today` returns ranked slots
+- [ ] `chitin scheduler tick --dry-run` lists what WOULD notify
+- [ ] item_decision chain events visible in `chitin-kernel chain-info`
+- [ ] CI green
+
+### `scheduler-dashboard-angular`
+
+```yaml
+id: scheduler-dashboard-angular
+tier: T3
+status: ready
+estimated_loc: 600
+blocks: [nx-angular-workspace-install, scheduler-rank-ingest-notify]
+file: apps/scheduler-dashboard/
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md §"Angular dashboard wiring"
+role: programmer
+```
+
+Local Angular app on `localhost:3737`. Three views, one tiny Express server.
+
+Steps:
+1. `nx generate @nx/angular:application scheduler-dashboard --directory=apps/scheduler-dashboard --standalone --tags=layer:scheduler,scope:app --style=css --no-interactive`
+2. Three routes: `/today` (timeline), `/inbox` (paste/dictate), `/edit/:id` (item detail).
+3. `app/shared/services/scheduler.service.ts` wraps `@chitin/scheduler` library calls.
+4. `apps/scheduler-dashboard/server.ts` — small Express:
+   - `GET /api/today` → `rank.next()` result
+   - `POST /api/items/ingest { text }` → `ingest()` result
+   - `GET/PUT/DELETE /api/items[/:id]`
+   - `POST /api/voice/transcribe` → multer multipart → whisper.cpp shell-out → text
+5. Browser MediaRecorder → upload to `/api/voice/transcribe`.
+6. systemd-timer notification dispatch (a lightweight bash wrapper around `chitin scheduler tick`).
+7. README: how to run dev (`nx serve scheduler-dashboard`), how to run prod (`nx build` + node server.ts).
+
+**Acceptance:**
+- [ ] `nx serve scheduler-dashboard` starts on localhost:3737
+- [ ] Today view renders today's slotted items
+- [ ] Inbox accepts pasted text + transcribed voice → creates items
+- [ ] Edit view supports complete + reschedule
+- [ ] `nx build scheduler-dashboard` produces a deployable artifact
+- [ ] CI green (lint + Angular component tests)
+
+### `slack-l1-notifier`
+
+```yaml
+id: slack-l1-notifier
+tier: T1
+status: ready
+estimated_loc: 150
+blocks: [scheduler-rank-ingest-notify]
+file: libs/scheduler/src/notify/slack.ts (extends), libs/scheduler/tests/, apps/cli/src/commands/scheduler.ts
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md §"Notifications"
+role: programmer
+```
+
+Read-only Slack notifier — sends events from chitin to a Slack channel via incoming webhook. NO interactivity, NO commands, just outbound. Builds on the notify.ts dispatch pattern from PR-C.
+
+Events to push:
+- Scheduled item starts (5–15 min lead)
+- Gov denial (when severity is high or escalation > 5)
+- Lockdown trigger
+- Swarm PR merged
+
+Steps:
+1. Extend `notify/slack.ts` to format Slack Block Kit messages for each event family.
+2. Config in `~/.chitin/secrets/slack-webhook.url` (gitignored).
+3. Hook into `chitin-kernel emit` via the F4 OnDecision callback for gov-decision events.
+4. CLI: `chitin scheduler notify slack --test` smoke-tests the webhook.
+
+**Acceptance:**
+- [ ] Slack receives a formatted message for each event family
+- [ ] `--test` flag succeeds without hitting the actual Slack channel
+- [ ] Missing webhook URL gracefully no-ops
+- [ ] CI green
+
+### `slack-l2-actions`
+
+```yaml
+id: slack-l2-actions
+tier: T3
+status: ready
+estimated_loc: 400
+blocks: [mcp-server-chitin-cli]
+file: apps/slack-app/, libs/mcp-chitin/ (uses)
+references_design: docs/superpowers/plans/2026-05-02-scheduler-design.md (Slack L2 brief)
+role: programmer
+```
+
+Two-way Slack app: receives slash commands and button clicks, calls into chitin via the MCP tools (already wrapped in PR-M).
+
+Commands:
+- `/chitin envelope-status` → list envelopes
+- `/chitin envelope-grant <id> <calls>` → grant budget
+- `/chitin gate-reset <agent>` → unlock
+- `/chitin chain-info <session_id>`
+- Buttons on L1 notification messages: "Reset lockdown" / "Grant +500 calls" / "Approve PR"
+
+Steps:
+1. `nx generate @nx/js:application slack-app --directory=apps/slack-app --tags=layer:slack,scope:app`
+2. Slack Bolt setup with signed-request verification.
+3. Each command handler calls into the corresponding `libs/mcp-chitin` tool function (don't re-implement; reuse).
+4. ngrok or similar for dev (Slack needs a public URL); document the prod hosting story (Cloudflare Tunnel? small VPS?).
+5. Tests: each command handler with mocked Slack request envelope.
+
+**Acceptance:**
+- [ ] `/chitin envelope-status` returns formatted envelope list
+- [ ] Reset lockdown button on a denial message works end-to-end (mock test, plus dev ngrok manual verify)
+- [ ] CI green
+
+---
+
+That's the cohort. PRs Z, B, M, E run in parallel tonight; tomorrow operator merges in order, the dispatcher picks up the next wave (C → D, S1, S2). All eight unblocked-or-soft-blocked.
