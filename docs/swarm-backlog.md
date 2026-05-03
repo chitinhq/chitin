@@ -4610,4 +4610,210 @@ Steps:
 - [ ] swarm-backlog.md header notes the interim status (optional)
 - [ ] Existing 3 open issues (#22, #13, #4) are NOT closed by
       this entry — they're real bug reports
+## Agent-router architecture (filed 2026-05-03 evening)
+
+### `agent-router-architecture`
+
+```yaml
+id: agent-router-architecture
+tier: T5
+status: in_design
+estimated_loc: TBD (multi-subsystem; this entry is the design doc and the rollup of MVP entries below)
+blocks: []
+file: docs/design/2026-05-03-agent-router.md (design), apps/temporal-worker/src/router/, go/execution-kernel/internal/gov/advisor.go, python/analysis/floundering.py
+references_finding: 2026-05-03 evening operator framing — multi-dimensional routing (model + agent + cost) with uncertainty + floundering + shared memory + flat-cost-only billing
+role: architect
+```
+
+Operator framing 2026-05-03 evening (one session):
+
+> "I want to escalate to a higher agent when needed based on
+> uncertainty, or some way of deterministically seeing that an
+> agent may be floundering and need help."
+
+> "almost like model routing but with agents routing to each
+> other when needed then routing back. So both model and agent
+> routing. And cost routing too and being able to see budget
+> constraints for things like codex Claude code, ollama cloud."
+
+> "Shared memory seems like it would be very helpful for this as
+> well. And I don't want to use api calls except for ollama cloud."
+
+> "I want to get it all done tonight then turn it on."
+
+Five primitives compose the router:
+
+1. **Uncertainty-triggered escalation** — agents emit a structured
+   `<<<UNCERTAIN>>>{"reason": "...", "blocker": "..."}` marker;
+   parser detects, calls advisor, returns advice in next turn.
+
+2. **Floundering detection** — Python analysis pass over chain
+   events for one session. Signals: looping tool calls (same
+   call N times with same args), wall-clock without commits,
+   repeated permission_denials, multi-turn without file writes,
+   token budget approaching cap. Returns `floundering: bool,
+   reason: enum` per session.
+
+3. **Mid-task handoff** — on uncertainty OR floundering, route to
+   advisor (T+1 tier). MVP shape: hard restart at higher tier
+   (reuses existing tier-escalation primitive, loses in-flight
+   progress). Future: Temporal-signal-driven mid-task continuation.
+
+4. **Shared memory** — agents in the same workflow read/write a
+   per-workflow scratchpad. MVP shape: JSON file at
+   `~/.chitin/shared-memory/<workflow-id>.json`. Future: cross-
+   workflow vector retrieval (Hindsight pattern).
+
+5. **Cost routing + budget visibility** — driver-cost data already
+   in swarm-rollup JSON; surface as `chitin budget` CLI. MVP shape:
+   visibility only (operator reads, decides). Future: dispatcher
+   auto-rejects entries that would exceed remaining budget.
+
+### Hard constraints
+
+- **No metered API calls.** Sub-billed CLIs only (claude-code via
+  Pro plan, codex via ChatGPT Plus, gemini via Google AI Pro
+  Developers SKU) plus ollama (local + cloud).
+- **Self-hostable / open-source.** No SaaS dependency for the
+  router itself.
+- **MCP-compatible** where applicable (chitin already speaks MCP
+  via openclaw).
+
+### MVPs shipping tonight (one PR for the whole router substrate)
+
+| primitive | MVP shape | what's deferred |
+|---|---|---|
+| Uncertainty marker | `<<<UNCERTAIN>>>` parser + dispatcher hook calling advisor; advice rendered into next-turn prompt | true mid-task continuation (Temporal signals) |
+| Guardian advisor | `chitin-kernel gate evaluate --with-advisor` flag; on deny, calls `claude -p` advisor, appends advisory note to chain event | auto-routing on advisor verdict; default-on |
+| Floundering detector | Python analysis pass over chain events for one session; detects looping/stalling/over-budget; logs `agent_floundering` event | auto-intervention; today is detect-only |
+| Shared memory | per-workflow JSON scratchpad at `~/.chitin/shared-memory/<wfid>.json`; agent reads/writes via simple CLI | cross-workflow vector retrieval (Hindsight pattern) |
+| Cost + budget | `chitin budget` CLI reads existing swarm-rollup JSON + `~/.chitin/budgets.json`; surfaces per-driver spend + remaining quota | auto-reject + dynamic tier routing |
+
+All five MVPs ship as code in the same PR for tonight's velocity.
+Per-primitive backlog entries can be filed retrospectively for
+the production-grade follow-up work.
+
+### Verification
+
+A single end-to-end smoke test gates "turn it on":
+
+- Synthetic backlog entry + dispatch
+- Agent emits `<<<UNCERTAIN>>>` marker mid-task
+- Parser intercepts, calls guardian advisor
+- Advisor returns advice via shared-memory write
+- Agent reads advice, continues
+- Floundering detector confirms no looping signals fire
+- PR created with the work
+- Chain has all events recorded (uncertainty fire, advisor call,
+  shared-memory write, completion)
+
+If smoke passes, dispatcher is re-enabled. If smoke fails, dispatcher
+stays paused and individual primitive entries get re-attempted.
+
+## Router follow-ups (filed 2026-05-03 evening)
+
+### `router-heuristics-go-sdk`
+
+```yaml
+id: router-heuristics-go-sdk
+tier: T3
+status: ready
+estimated_loc: 600
+blocks: []
+file: go/execution-kernel/internal/router/, go/execution-kernel/cmd/chitin-kernel/router.go
+references_finding: 2026-05-03 evening operator concern — TS pipeline adds ~500ms-1s startup per tool call; should expose Go SDK to keep hot path fast
+role: programmer
+```
+
+The router's heuristic+policy layer ships as TypeScript MVP in
+`apps/temporal-worker/src/router/`. Operator hot-path concern:
+every tool call that hits the slow path eats `pnpm tsx` startup
+(~500ms-1s). With many tool calls per session, that adds up.
+
+Move the deterministic-fast pieces into the Go kernel:
+
+1. **policy reader** — Go YAML parser for chitin.yaml `router:`
+   section; matches the TS `policy-loader.ts` shape
+2. **blast-radius scorer** — pure Go function; same axes as
+   TS version (reversibility / scope / visibility / counterparties)
+3. **floundering detector** — Go reads chain JSONL, applies same
+   signals (looping / stalled / denial-cascade)
+4. **session-state reads** — chain index lookups (already in Go)
+
+Only the ADVISOR call stays external (it's slow anyway —
+`claude -p` is a multi-second LLM call). The Go kernel exposes
+`--with-router` flag on `gate evaluate` that runs heuristics in-
+process and prints `{decision, advisor_needed, advisor_request}`.
+The TS layer (or a thin shim) handles the advisor call when
+flagged.
+
+End-state: hot path is pure-Go. Slow path (advisor) is TS or
+external. No `pnpm tsx` overhead per tool call.
+
+**Acceptance:**
+- [ ] Go modules at `go/execution-kernel/internal/router/{policy,blast_radius,floundering}.go`
+- [ ] `gate evaluate --with-router` flag wires them in-process
+- [ ] Same test fixtures pass against Go + TS implementations (port the TS tests)
+- [ ] Bin script `chitin-router-hook` updated to skip the TS pipeline when kernel handles it
+- [ ] Benchmark: average hot-path latency before / after (target: < 50ms)
+- [ ] CI green
+
+### `router-plugin-loader`
+
+```yaml
+id: router-plugin-loader
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: [router-heuristics-go-sdk]
+file: apps/temporal-worker/src/router/plugin-loader.ts, libs/router-plugin-api/
+references_finding: 2026-05-03 evening operator framing — heuristics should be exposed as plugin surface so others can configure custom plugins via chitin.yaml
+role: programmer
+```
+
+The router's heuristic modules currently use static imports. The
+operator-side schema in chitin.yaml only covers built-in plugins
+(blast_radius, floundering, drift). Operator wants a plugin
+surface so custom heuristics and advisor implementations can be
+declared in chitin.yaml + dynamically loaded.
+
+Steps:
+
+1. Define `RouterPlugin` interface in `libs/router-plugin-api/`:
+   ```ts
+   export interface RouterPlugin {
+     name: string;
+     type: 'heuristic' | 'advisor';
+     score?(input: HookInput, context: PluginContext): Promise<HeuristicScore>;
+     advise?(request: AdvisorRequest): Promise<AdvisorResponse>;
+   }
+   ```
+2. `chitin.yaml` schema extension:
+   ```yaml
+   router:
+     plugins:
+       - name: my-custom-heuristic
+         module: '@my-org/chitin-plugin-foo'   # npm package
+         config: { threshold: 0.4 }
+       - name: local-experimental
+         module: './local/my-plugin.ts'        # repo-local path
+         config: {}
+   ```
+3. Plugin loader (`plugin-loader.ts`) dynamically imports
+   modules + validates they implement the interface.
+4. Hook wrapper iterates plugins instead of hardcoded heuristic
+   imports.
+5. Built-in heuristics get rewritten as plugins (compatibility
+   shim to keep tonight's MVP working unchanged).
+
+Blocks on `router-heuristics-go-sdk` because the Go SDK migration
+should land first — otherwise the plugin shape gets defined
+twice (TS interface + Go interface).
+
+**Acceptance:**
+- [ ] `RouterPlugin` interface + types published as `@chitin/router-plugin-api`
+- [ ] Plugin loader handles npm-package + local-path modules
+- [ ] Validation: plugins missing required methods rejected with clear error
+- [ ] Built-in heuristics ported to plugin shape; tonight's tests still pass
+- [ ] Example custom plugin documented in `docs/runbooks/chitin-router.md`
 - [ ] CI green

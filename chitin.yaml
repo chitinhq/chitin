@@ -202,6 +202,19 @@ rules:
 #
 # Cold-start: ~26ms (Go binary). Most tool calls SKIP the advisor
 # (deterministic checks pass + no heuristic fires).
+# Router policy (added 2026-05-03).
+#
+# When the operator opts in (touch ~/.chitin/router-enabled), the
+# chitin-router-hook wrapper engages: kernel verdict → heuristics →
+# optional advisor consultation → composed response.
+#
+# To disable globally: rm ~/.chitin/router-enabled (instant; no
+# config edit needed). To disable selectively per-heuristic, set
+# .heuristics.<name>.enabled to false here.
+#
+# Cost shape: most tool calls SKIP the advisor (deterministic checks
+# pass + no heuristic fires). Advisor only fires when blast_radius
+# is above threshold OR floundering detected OR kernel denied.
 router:
   enabled: true
   heuristics:

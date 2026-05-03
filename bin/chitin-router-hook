@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# chitin-router-hook — Claude Code PreToolUse entrypoint.
+#
+# Tiny shim that runs the TS hook wrapper via tsx. The wrapper
+# does the work: kernel verdict → heuristics → advisor → response.
+#
+# Installed by Claude Code's `.claude/settings.json` PreToolUse
+# hook config (written by activity.ts writeWorktreeClaudeSettings
+# at worktree provision time).
+
+set -euo pipefail
+
+# HOT-PATH BYPASS: if the operator hasn't enabled the router, skip
+# the TS pipeline entirely and call the kernel directly. Saves the
+# ~500ms-1s pnpm-tsx startup overhead per tool call. Operator opts
+# in by touching the sentinel file:
+#
+#   touch ~/.chitin/router-enabled
+#
+# To disable:
+#
+#   rm ~/.chitin/router-enabled
+#
+# Long-term: heuristics + policy reading move into the Go kernel
+# (see backlog entry `router-heuristics-go-sdk`); the TS layer
+# stays the orchestration + advisor-call surface.
+
+ROUTER_SENTINEL="${CHITIN_ROUTER_SENTINEL:-$HOME/.chitin/router-enabled}"
+
+if [[ ! -e "$ROUTER_SENTINEL" ]]; then
+  # Fast path: forward stdin to chitin-kernel directly. Same shape
+  # as the pre-router hook config.
+  exec chitin-kernel gate evaluate --hook-stdin "$@"
+fi
+
+# Slow path: the router is enabled. Run the TS pipeline.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK_TS="$REPO_ROOT/apps/temporal-worker/src/router/hook-wrapper.ts"
+
+if [[ ! -f "$HOOK_TS" ]]; then
+  # Fail open — emit allow so an installation problem doesn't brick the agent
+  echo '{"decision":"allow","source":"kernel-allow"}'
+  echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"error\",\"component\":\"chitin-router-hook\",\"msg\":\"hook-ts-not-found\",\"path\":\"$HOOK_TS\"}" >&2
+  exit 0
+fi
+
+cd "$REPO_ROOT"
+exec pnpm exec tsx "$HOOK_TS" "$@"

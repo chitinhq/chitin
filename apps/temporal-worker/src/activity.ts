@@ -230,10 +230,22 @@ function writeWorktreeClaudeSettings(worktreePath: string): void {
   const claudeDir = join(worktreePath, '.claude');
   mkdirSync(claudeDir, { recursive: true });
   const settingsPath = join(claudeDir, 'settings.json');
-  // The hook command must produce a JSON decision the Claude Code hook
-  // protocol recognizes. chitin-kernel's `gate evaluate --hook-stdin`
-  // mode reads the hook payload from stdin, normalizes the tool call,
-  // calls gov.Gate.Evaluate, and prints {decision} on stdout.
+  // The hook command points at the chitin-router-hook wrapper, which
+  // (a) calls chitin-kernel for the deterministic verdict, then
+  // (b) runs heuristic plugins (blast-radius, floundering, drift),
+  // (c) optionally consults an advisor LLM via `claude -p`,
+  // (d) returns a composed allow/deny decision with optional nudge.
+  //
+  // The router is policy-controlled (chitin.yaml `router:` section)
+  // — when policy.enabled=false the wrapper is a transparent
+  // pass-through to the kernel, identical to direct kernel-hook
+  // behavior.
+  //
+  // Hardcoded absolute path so the hook works from worktrees
+  // without relying on PATH propagation. The bin script itself
+  // resolves the TS module relative to its location.
+  const routerHookBin =
+    process.env.CHITIN_ROUTER_HOOK_BIN ?? '/home/red/workspace/chitin/bin/chitin-router-hook';
   const settings = {
     hooks: {
       PreToolUse: [
@@ -242,7 +254,7 @@ function writeWorktreeClaudeSettings(worktreePath: string): void {
           hooks: [
             {
               type: 'command' as const,
-              command: 'chitin-kernel gate evaluate --hook-stdin --agent=claude-code',
+              command: `${routerHookBin} --agent=claude-code`,
             },
           ],
         },
