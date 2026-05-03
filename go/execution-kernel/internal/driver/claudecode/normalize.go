@@ -3,9 +3,41 @@ package claudecode
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
+
+// mcpToolPrefix is Claude Code's wire format for MCP tool names:
+// `mcp__<serverName>__<toolName>`. Detected here so MCP calls
+// route to gov.ActMCPCall (matching the Copilot SDK driver) rather
+// than falling to ActUnknown + default-deny — the latter locks out
+// every MCP-using session under enforce mode, which silently
+// regresses MCP support for any operator running with the strict
+// rule set.
+const mcpToolPrefix = "mcp__"
+
+// parseMCPToolName splits "mcp__serverName__toolName" on the FIRST
+// `__` separator after the prefix. Tool names commonly contain
+// underscores (e.g., `mcp__github__create_pull_request`); a naive
+// strings.Split("__") would mangle them.
+//
+// Returns:
+//   ("server", "tool", true)  for "mcp__server__tool"
+//   ("server", "",     true)  for "mcp__server" (server-only call;
+//                              policy can still match on server)
+//   ("",       "",     false) for inputs without the mcp__ prefix
+func parseMCPToolName(s string) (server, tool string, ok bool) {
+	if !strings.HasPrefix(s, mcpToolPrefix) {
+		return "", "", false
+	}
+	rest := s[len(mcpToolPrefix):]
+	idx := strings.Index(rest, "__")
+	if idx < 0 {
+		return rest, "", true
+	}
+	return rest[:idx], rest[idx+2:], true
+}
 
 // warnSink is the destination for non-fatal warnings emitted during
 // Normalize (e.g., wrong-type fields). nil → silent. Set by tests and
@@ -264,6 +296,23 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Type:   gov.ActFileWrite,
 			Target: "todo",
 			Path:   in.Cwd,
+		}, nil
+	}
+
+	// MCP tool calls — `mcp__<server>__<tool>`. Route to ActMCPCall
+	// with target="server/tool" matching the Copilot SDK driver's
+	// shape. Without this, every MCP call falls to ActUnknown and
+	// gets blocked by default-deny-unknown.
+	if server, tool, ok := parseMCPToolName(in.ToolName); ok {
+		target := server
+		if tool != "" {
+			target = server + "/" + tool
+		}
+		return gov.Action{
+			Type:   gov.ActMCPCall,
+			Target: target,
+			Path:   in.Cwd,
+			Params: in.ToolInput,
 		}, nil
 	}
 

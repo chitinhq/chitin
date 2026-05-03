@@ -286,3 +286,51 @@ func TestNormalize_MissingFieldYieldsEmptyTarget(t *testing.T) {
 		t.Fatalf("Target=%q want empty", a.Target)
 	}
 }
+
+// TestNormalize_MCPToolRoutesToMCPCall closes the gap surfaced by
+// the MCP coverage audit: without this case, every
+// `mcp__server__tool` invocation falls to ActUnknown and gets
+// blocked by `default-deny-unknown` under enforce mode, silently
+// regressing MCP support for any operator running with strict
+// rules. The Copilot SDK driver already does this normalization
+// (internal/driver/copilot/normalize.go); Claude Code now matches.
+func TestNormalize_MCPToolRoutesToMCPCall(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolName   string
+		wantTarget string
+	}{
+		{"server+tool", "mcp__github__create_pull_request", "github/create_pull_request"},
+		{"underscores_in_tool", "mcp__filesystem__list_directory_recursive", "filesystem/list_directory_recursive"},
+		{"server_only", "mcp__some-server", "some-server"},
+	}
+	for _, tc := range cases {
+		a, err := Normalize(HookInput{
+			ToolName:  tc.toolName,
+			ToolInput: map[string]any{"foo": "bar"},
+		})
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if a.Type != gov.ActMCPCall {
+			t.Errorf("%s: Type=%s want %s", tc.name, a.Type, gov.ActMCPCall)
+		}
+		if a.Target != tc.wantTarget {
+			t.Errorf("%s: Target=%q want %q", tc.name, a.Target, tc.wantTarget)
+		}
+		if a.Params == nil {
+			t.Errorf("%s: Params should preserve raw input for policy match", tc.name)
+		}
+	}
+}
+
+func TestNormalize_NonMCPNotMisclassified(t *testing.T) {
+	// A future tool starting with "mcp" but missing the "__" wire
+	// prefix must NOT route to MCP — guards against accidental
+	// matches like a hypothetical "mcpDebug" tool.
+	a, _ := Normalize(HookInput{ToolName: "mcpDebug", ToolInput: map[string]any{}})
+	if a.Type == gov.ActMCPCall {
+		t.Fatalf("Type=%s; bare 'mcp' prefix without '__' should NOT route to MCP", a.Type)
+	}
+}
