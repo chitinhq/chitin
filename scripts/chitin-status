@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# chitin-status — operator-facing health dashboard.
+#
+# Surfaces the state of the autonomous swarm + governance system
+# in a single CLI output. Designed for the operator to glance at
+# "is the system working?" without grep'ing journalctl.
+#
+# Sections:
+#   timers        which chitin systemd timers are active + last fire
+#   dispatcher    last N dispatcher decisions (skip / dispatch / escalate)
+#   router        sentinel state + recent router-hook decisions
+#   chain         recent session count + last decision
+#   alarms        any active alarm-feeder findings
+#   spend         per-driver budget summary (delegates to chitin-budget)
+#   prs           open PRs (operator review queue)
+
+set -euo pipefail
+
+mode="human"
+for arg in "$@"; do
+  case "$arg" in
+    --json) mode="json" ;;
+    --help|-h)
+      cat <<USAGE
+Usage: chitin-status [--json]
+
+Operator-facing health dashboard. Surfaces:
+  timers        which chitin systemd timers are active + last fire
+  dispatcher    last N dispatcher decisions
+  router        sentinel state + recent decisions
+  chain         recent session count + last decision
+  alarms        active alarm-feeder findings
+  spend         per-driver budget (delegates to chitin-budget)
+  prs           open PRs (operator review queue)
+
+Modes:
+  (default)     human-readable summary
+  --json        structured JSON for dashboard / monitoring
+USAGE
+      exit 0
+      ;;
+  esac
+done
+
+# ─── Helpers ──────────────────────────────────────────────────────
+
+timer_state() {
+  local unit="$1"
+  # is-active prints state to stdout AND exits non-zero on inactive;
+  # capture stdout regardless. The 2>/dev/null suppresses "Unit not
+  # loaded" stderr noise for units we haven't installed yet.
+  local out
+  out=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+  echo "${out:-inactive}"
+}
+
+timer_last_fire() {
+  local unit="$1"
+  systemctl --user show "$unit" --property=LastTriggerUSec --value 2>/dev/null \
+    | sed 's/ UTC$//' | head -1
+}
+
+count_recent_chains() {
+  local since_min="${1:-60}"
+  find ~/.chitin -maxdepth 1 -name "events-*.jsonl" -newermt "${since_min} minutes ago" 2>/dev/null | wc -l
+}
+
+last_chain_decision() {
+  # Find newest events file; emit its last decision event's path
+  local newest
+  newest=$(ls -1t ~/.chitin/events-*.jsonl 2>/dev/null | head -1)
+  [[ -z "$newest" ]] && return
+  tail -200 "$newest" | jq -rs '
+    [.[] | select(.event_type=="decision")] | last
+    | "\(.ts) \(.payload.tool_name) \(.payload.decision) \(.payload.action_target // "" | .[:60])"
+  ' 2>/dev/null || true
+}
+
+# ─── Collect ──────────────────────────────────────────────────────
+
+router_sentinel="off"
+[[ -e ~/.chitin/router-enabled ]] && router_sentinel="on"
+
+declare -A timers
+for unit in chitin-dispatcher.timer chitin-worker.service \
+            chitin-shipped-entry-flipper.timer \
+            chitin-kernel-redeploy.timer \
+            chitin-swarm-rollup.timer chitin-alarm-feeder.timer \
+            chitin-debt-curator.timer chitin-lessons.timer; do
+  timers[$unit]=$(timer_state "$unit")
+done
+
+recent_chains=$(count_recent_chains 60)
+last_decision=$(last_chain_decision)
+
+open_prs=$(gh pr list --state open --limit 30 --json number,title 2>/dev/null \
+  | jq 'length' 2>/dev/null || echo 0)
+
+# ─── Render ──────────────────────────────────────────────────────
+
+if [[ "$mode" == "json" ]]; then
+  jq -n \
+    --arg router_sentinel "$router_sentinel" \
+    --arg recent_chains "$recent_chains" \
+    --arg last_decision "$last_decision" \
+    --arg open_prs "$open_prs" \
+    --argjson timers "$(for u in "${!timers[@]}"; do echo "{\"$u\":\"${timers[$u]}\"}"; done | jq -s 'add')" \
+    '{
+      router_sentinel: $router_sentinel,
+      recent_chains_60min: ($recent_chains|tonumber),
+      last_chain_decision: ($last_decision // null),
+      open_prs: ($open_prs|tonumber),
+      timers: $timers
+    }'
+  exit 0
+fi
+
+echo "chitin status — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo ""
+echo "  router sentinel:  $router_sentinel  (~/.chitin/router-enabled)"
+echo "  recent chains:    $recent_chains sessions in last 60m"
+[[ -n "$last_decision" ]] && echo "  last decision:    $last_decision"
+echo "  open PRs:         $open_prs"
+echo ""
+echo "  systemd timers (user):"
+for unit in chitin-dispatcher.timer chitin-worker.service \
+            chitin-shipped-entry-flipper.timer chitin-kernel-redeploy.timer \
+            chitin-swarm-rollup.timer chitin-alarm-feeder.timer \
+            chitin-debt-curator.timer chitin-lessons.timer; do
+  state=${timers[$unit]:-?}
+  marker=" "
+  [[ "$state" == "active" ]] && marker="✓"
+  [[ "$state" == "inactive" ]] && marker="·"
+  [[ "$state" == "failed" ]] && marker="✗"
+  printf "    %s %-40s %s\n" "$marker" "$unit" "$state"
+done
+
+echo ""
+echo "  spend (per-driver):"
+if command -v chitin-budget >/dev/null; then
+  chitin-budget 2>/dev/null | tail -n +5 | head -10 | sed 's/^/    /'
+else
+  echo "    (chitin-budget not on PATH; skip)"
+fi
+
+echo ""
+echo "  hint: --json for structured output | check ~/.cache/chitin/install-kernel.jsonl for kernel-redeploy log"
