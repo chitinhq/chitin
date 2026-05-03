@@ -119,12 +119,9 @@ ${RESEARCHER_OUTPUT_INSTRUCTIONS}`;
 // markdown report rather than expecting a code commit. An empty
 // worktree on success is the EXPECTED outcome.
 function buildAnalystEntryPrompt(entry: BacklogEntry): string {
-  // Pull the alarm signal out of the entry description so the agent
-  // can hand it directly to the recipe. The alarm-feeder formats
-  // entries with `> <alarm text>` as a blockquote line; if a
-  // different upstream filed this entry, the agent reads the
-  // description for context.
-  const alarmHint = '<extract the alarm string from the ENTRY DETAIL — typically a blockquote line under "Auto-filed by chitin-alarm-feeder.timer">';
+  // The hint about extracting the alarm string is inlined in step (1)
+  // of the workflow below — the agent reads the entry description
+  // directly. No intermediate variable needed.
 
   return `You are playing the analyst role in chitin's autonomous swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3.
 

@@ -47,7 +47,7 @@ import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { ReviewGraphAction, ReviewGraphResult } from './review-graph-workflow.ts';
 import type { PrMeta } from './review-graph.ts';
-import type { DriverId, Tier } from '@chitin/contracts';
+import type { Tier } from '@chitin/contracts';
 
 export interface GatekeeperInput {
   result: ReviewGraphResult;
