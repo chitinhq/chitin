@@ -13,24 +13,28 @@ import (
 //
 // Narrowed 2026-04-20 under the invariant "every subscribed hook produces
 // exactly one chain entry on the correct chain." PreCompact and
-// SubagentStop are intentionally excluded because their chain routing is
-// unsafe against the empirical payload shape (see
-// docs/observations/2026-04-19-hook-payload-capture.md):
+// SubagentStop were excluded because their chain routing was unsafe
+// against the empirical payload shape (see
+// docs/observations/2026-04-19-hook-payload-capture.md).
 //
-//   - SubagentStop's session_end would close the *parent* session chain
-//     instead of the subagent's own chain keyed on agent_id. Tracked:
-//     chitinhq/chitin#21.
-//   - PreCompact fires n=2 per /compact (forced-trial observation);
-//     emitting two compaction events on the same chain corrupts it.
-//     Tracked: chitinhq/chitin#22.
+// SubagentStop re-added 2026-05-02: the dispatch side now routes
+// SubagentStop's session_end to the SUBAGENT's chain (chain_id=agent_id,
+// parent_chain_id=session_id) rather than the parent session's chain.
+// hook-runner.ts:deriveChainID branches on hook_event_name='SubagentStop'
+// and returns input.agent_id when present. The 2026-05-02 forced-trial
+// fixture (docs/observations/2026-05-02-subagentstop-forced-trial.jsonl)
+// is the regression baseline. Closes chitinhq/chitin#21.
 //
-// Both are re-subscribed once the dispatch side routes them correctly.
+// PreCompact remains excluded — the n=2 per /compact observation needs
+// re-confirmation in an attended interactive session (headless can't
+// reproduce; /compact is interactive-only). Tracked: chitinhq/chitin#22.
 var SubscribedHooks = []string{
 	"SessionStart",
 	"UserPromptSubmit",
 	"PreToolUse",
 	"PostToolUse",
 	"SessionEnd",
+	"SubagentStop",
 }
 
 // Install writes .chitin/sessions/<session>/settings.json registering adapterBinary for all subscribed hooks.

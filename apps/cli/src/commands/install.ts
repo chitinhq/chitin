@@ -133,6 +133,7 @@ function verifyClaudeCodeInstall(adapterCommand: string): void {
     'PreToolUse',
     'PostToolUse',
     'SessionEnd',
+    'SubagentStop',
   ];
   for (const h of expected) {
     const list = hooks[h] ?? [];
