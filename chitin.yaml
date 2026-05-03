@@ -192,3 +192,30 @@ rules:
     action: unknown
     effect: deny
     reason: "Unknown tools are denied — the action vocabulary is a closed enum. If Normalize returns ActUnknown, extend the normalizer rather than broadening this rule."
+
+# Router policy (added 2026-05-03; see also TS substrate in PR #230).
+#
+# When the operator opts in (touch ~/.chitin/router-enabled), the
+# kernel's `router evaluate --hook-stdin` engages: kernel verdict →
+# heuristics (in-process Go) → optional advisor consultation
+# (claude -p subprocess) → composed response.
+#
+# Cold-start: ~26ms (Go binary). Most tool calls SKIP the advisor
+# (deterministic checks pass + no heuristic fires).
+router:
+  enabled: true
+  heuristics:
+    blast_radius:
+      enabled: true
+      threshold: 0.6
+    floundering:
+      enabled: true
+      max_loop_count: 3
+      max_stall_seconds: 600
+  advisor:
+    enabled: true
+    when: [blast_radius_above_threshold, floundering_detected]
+    chain:
+      max_depth: 3
+      tier_steps: [T2, T3, T4]
+    model: claude-code-headless
