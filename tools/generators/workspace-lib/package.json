@@ -1,0 +1,29 @@
+{
+  "name": "@chitin/workspace-lib",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "generators": "./generators.json",
+  "nx": {
+    "tags": ["layer:tooling"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run --config tools/generators/workspace-lib/vitest.config.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "generate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx tools/generators/workspace-lib/index.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@nx/devkit": "*"
+  }
+}

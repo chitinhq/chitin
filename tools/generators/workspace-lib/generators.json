@@ -1,0 +1,10 @@
+{
+  "generators": {
+    "workspace-lib": {
+      "factory": "./index.js",
+      "schema": "./schema.json",
+      "description": "Scaffold a chitin-flavored workspace library with correct layer tags and eslint depConstraints",
+      "aliases": ["default"]
+    }
+  }
+}
