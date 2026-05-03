@@ -36,6 +36,8 @@ func main() {
 		cmdChainInfo(args)
 	case "chain-verify":
 		cmdChainVerify(args)
+	case "chain":
+		cmdChain(args)
 	case "ingest-transcript":
 		cmdIngestTranscript(args)
 	case "ingest-otel":
