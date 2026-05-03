@@ -45,7 +45,7 @@ All four share the same outcome shape (`exit=0`, `commits_added=0`) — the "no-
 | 3 | `no-governance-self-modification` | agent tried to write `chitin.yaml` |
 | 1 | `no-force-push` | agent tried `git push --force` |
 
-All 7 `default-deny-unknown` events for `claude-code` had `target=Agent`. Reading `kernel/internal/driver/claudecode/normalize.go`, the `Task` / `Agent` / `Skill` cases ARE mapped to `gov.ActDelegateTask`. So why are they showing as unknown?
+All 7 `default-deny-unknown` events for `claude-code` had `target=Agent`. Reading `go/execution-kernel/internal/driver/claudecode/normalize.go`, the `Task` / `Agent` / `Skill` cases ARE mapped to `gov.ActDelegateTask`. So why are they showing as unknown?
 
 ### The deploy-lag finding
 

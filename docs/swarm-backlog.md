@@ -3856,7 +3856,7 @@ tier: T2
 status: ready
 estimated_loc: 200
 blocks: []
-file: scripts/install-kernel.sh, ops/systemd/chitin-kernel-redeploy.service, ops/systemd/chitin-kernel-redeploy.timer
+file: scripts/install-kernel.sh, infra/systemd/chitin-kernel-redeploy.service, infra/systemd/chitin-kernel-redeploy.timer
 references_finding: docs/observations/2026-05-03-low-success-alarm-investigation.md
 role: programmer
 ```
@@ -3873,8 +3873,11 @@ because the binary needs to land on the operator's rig, not in CI):
    - `cd /home/red/workspace/chitin && git fetch origin && git
      pull --ff-only origin main`
    - if `git diff --quiet HEAD@{1} HEAD -- go/ chitin.yaml` returns
-     non-zero (i.e. changes), rebuild via `go build -o
-     ~/.local/bin/chitin-kernel ./go/execution-kernel/cmd/chitin-kernel`
+     non-zero (i.e. changes), rebuild via `( cd
+     go/execution-kernel && go build -o
+     ~/.local/bin/chitin-kernel ./cmd/chitin-kernel )` — the
+     subshell is required because chitin's go module is rooted at
+     `go/execution-kernel/go.mod` (no top-level `go.mod`)
    - log start + end + sha + duration to the chain (use
      `chitin-kernel emit` if the previous binary was healthy enough
      to call, otherwise stderr); the log line is the operator's
@@ -3883,11 +3886,11 @@ because the binary needs to land on the operator's rig, not in CI):
      git-pull-conflict OR build-failure (neither should auto-recover —
      surface to the operator)
 
-2. **`ops/systemd/chitin-kernel-redeploy.service`** — oneshot unit
+2. **`infra/systemd/chitin-kernel-redeploy.service`** — oneshot unit
    that runs the script under the operator's user (NOT root — the
    binary lives under `~/.local/bin`).
 
-3. **`ops/systemd/chitin-kernel-redeploy.timer`** — `OnUnitActiveSec=15min`,
+3. **`infra/systemd/chitin-kernel-redeploy.timer`** — `OnUnitActiveSec=15min`,
    `OnBootSec=2min`, `Persistent=true`. 15-minute redeploy cadence
    keeps the lag bounded; persistent + boot-delay handles
    reboots cleanly. Operator can suspend by `systemctl --user stop
