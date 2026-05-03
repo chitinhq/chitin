@@ -15,10 +15,11 @@
     ]
   },
   "devDependencies": {
+    "@nx/angular": "22.6.5",
+    "@nx/devkit": "22.6.5",
     "@nx/eslint": "^22.6.5",
     "@nx/eslint-plugin": "^22.6.5",
     "@nx/js": "22.6.5",
-    "@nx/angular": "22.6.5",
     "@swc-node/register": "1.11.1",
     "@swc/core": "1.15.8",
     "@swc/helpers": "0.5.18",
@@ -34,6 +35,7 @@
     "oxlint": "^1.60.0",
     "prettier": "^3.8.1",
     "rolldown": "1.0.0-rc.16",
+    "ts-morph": "^28.0.0",
     "tslib": "^2.3.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2",
