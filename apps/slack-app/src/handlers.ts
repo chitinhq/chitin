@@ -10,6 +10,29 @@ import {
   type SlackResponse,
 } from './format.ts';
 
+// Slash subcommands and block actions that change state. The server
+// gates these on the SLACK_ADMIN_USER_IDS allowlist; read-only
+// commands fall through.
+const DESTRUCTIVE_SLASH_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'envelope-grant',
+  'gate-reset',
+]);
+
+export function isDestructiveAction(slashSubcommand: string): boolean {
+  return DESTRUCTIVE_SLASH_SUBCOMMANDS.has(slashSubcommand);
+}
+
+// 30 s: enough for a slow gh round-trip (auth, network) but short
+// enough to surface a stuck call as an error rather than a hung
+// request thread. Slack's interactive endpoint should respond fast;
+// any operation that takes longer than this is suspect.
+const GH_TIMEOUT_MS = 30_000;
+
+// Optional repo override. When unset, gh defaults to inferring the
+// repo from the current working directory — fragile when the daemon
+// runs as a system service. SLACK_APP_REPO=owner/repo pins it.
+const GH_REPO = process.env.SLACK_APP_REPO?.trim() || undefined;
+
 // Slash command: /chitin <subcommand> [args...]
 // Slack sends: command=/chitin, text=<everything after /chitin>
 export function handleSlashCommand(text: string): SlackResponse {
@@ -83,11 +106,24 @@ export function handleBlockAction(actionId: string, value: string): SlackRespons
         if (Number.isNaN(prNum) || prNum <= 0) {
           return formatError(`approve_pr: invalid PR number "${value}"`);
         }
-        const r = spawnSync('gh', ['pr', 'merge', String(prNum), '--squash', '--delete-branch'], {
+        const ghArgs = ['pr', 'merge', String(prNum), '--squash', '--delete-branch'];
+        if (GH_REPO) ghArgs.push('--repo', GH_REPO);
+        const r = spawnSync('gh', ghArgs, {
           encoding: 'utf8',
+          timeout: GH_TIMEOUT_MS,
         });
+        // spawnSync surfaces missing-binary / timeout via result.error,
+        // not stderr. Both are failure modes; report both rather than
+        // swallowing the error case as a bare "failed".
+        if (r.error) {
+          return formatError(`approve_pr spawn failed: ${r.error.message}`);
+        }
+        if (r.signal === 'SIGTERM') {
+          return formatError(`approve_pr timed out after ${GH_TIMEOUT_MS}ms`);
+        }
         if (r.status !== 0) {
-          return formatError(`gh pr merge failed: ${(r.stderr ?? '').slice(0, 300)}`);
+          const detail = (r.stderr || r.stdout || '').slice(0, 300);
+          return formatError(`gh pr merge exited ${r.status}: ${detail}`);
         }
         return { response_type: 'ephemeral', text: `✅ PR #${prNum} merged` };
       }

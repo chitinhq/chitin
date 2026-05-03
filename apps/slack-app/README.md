@@ -18,9 +18,17 @@ Notification messages also carry action buttons (Reset lockdown, Grant +500 call
 
 | Variable | Purpose |
 |---|---|
-| `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
+| `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page (mandatory) |
+| `SLACK_ADMIN_USER_IDS` | Comma-separated allowlist of Slack user IDs permitted to invoke destructive actions (`envelope-grant`, `gate-reset`, `approve_pr`). Empty allowlist = nobody can invoke them. |
 | `PORT` | HTTP listen port (default: 3000) |
 | `CHITIN_KERNEL_BINARY` | Path to `chitin-kernel` binary (default: `chitin-kernel` on PATH) |
+| `SLACK_APP_REPO` | Optional `owner/repo` override passed to `gh pr merge --repo`. When unset, `gh` infers the repo from the daemon's working directory. |
+
+### Authorization model
+
+Slack's signing-secret check proves the request came from your workspace, but does **not** identify which user submitted it. The daemon executes destructive actions only when the requesting `user_id` (from the Slack payload) is on the `SLACK_ADMIN_USER_IDS` allowlist. Read-only commands (`envelope-status`, `gate-status`, `chain-info`) are available to any signed Slack user since they don't change state.
+
+Block actions (button clicks on notification messages — `gate_reset`, `grant_500_calls`, `approve_pr`) are always state-changing; every block action is gated on the admin allowlist.
 
 ## Dev Setup (ngrok)
 
@@ -49,7 +57,7 @@ cloudflared tunnel run --url http://localhost:3000 <tunnel-name>
 No open inbound ports; the tunnel keeps the connection alive. Run with systemd alongside `temporal-worker`.
 
 **Small VPS (e.g. Hetzner CAX11):**
-Deploy the binary behind nginx (TLS via Certbot), set `SLACK_SIGNING_SECRET` in environment. The binary has no external dependencies beyond `chitin-kernel` on PATH.
+This app ships as TypeScript run via `tsx` (no build/binary in this slice). Deploy by checking out the repo on the VPS and running `pnpm exec tsx apps/slack-app/src/main.ts` under systemd, behind nginx (TLS via Certbot). Required runtime: Node.js 22+, `chitin-kernel` on `PATH`, and `gh` CLI authenticated for the target repo (used by the `approve_pr` button). A pre-bundled binary distribution is a follow-up.
 
 ## Slack App Setup
 

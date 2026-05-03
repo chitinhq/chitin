@@ -8,14 +8,16 @@ vi.mock('../src/chitin.ts', () => ({
   gateStatus: vi.fn(),
 }));
 
-import { handleSlashCommand, handleBlockAction } from '../src/handlers.ts';
+import { handleSlashCommand, handleBlockAction, isDestructiveAction } from '../src/handlers.ts';
 import * as chitin from '../src/chitin.ts';
 
 const envelopeList = vi.mocked(chitin.envelopeList);
 const envelopeGrant = vi.mocked(chitin.envelopeGrant);
 const gateReset = vi.mocked(chitin.gateReset);
 const chainInfo = vi.mocked(chitin.chainInfo);
-const gateStatus = vi.mocked(chitin.gateStatus);
+// gateStatus is imported via the `chitin` namespace below so the mock
+// covers all named exports; not directly referenced here.
+void chitin.gateStatus;
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -133,5 +135,55 @@ describe('handleBlockAction', () => {
   it('unknown action returns error', () => {
     const r = handleBlockAction('unknown_action', 'val');
     expect(r.text).toContain('Unknown action');
+  });
+
+  it('approve_pr with invalid PR number returns error', () => {
+    const r = handleBlockAction('approve_pr', 'not-a-number');
+    expect(r.text).toContain('invalid PR number');
+  });
+
+  it('approve_pr with non-positive PR number returns error', () => {
+    const r = handleBlockAction('approve_pr', '0');
+    expect(r.text).toContain('invalid PR number');
+  });
+
+  it('approve_pr surfaces gh spawn failure (binary missing)', () => {
+    // Force gh to a path that can't exist; spawnSync should populate
+    // result.error and the handler should surface it via formatError.
+    const prev = process.env['PATH'];
+    process.env['PATH'] = '/no-such-dir';
+    try {
+      const r = handleBlockAction('approve_pr', '999');
+      expect(r.text).toMatch(/spawn failed|exited|gh pr merge/);
+    } finally {
+      if (prev === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = prev;
+    }
+  });
+});
+
+describe('isDestructiveAction', () => {
+  it('classifies envelope-grant as destructive', () => {
+    expect(isDestructiveAction('envelope-grant')).toBe(true);
+  });
+
+  it('classifies gate-reset as destructive', () => {
+    expect(isDestructiveAction('gate-reset')).toBe(true);
+  });
+
+  it('classifies envelope-status as read-only', () => {
+    expect(isDestructiveAction('envelope-status')).toBe(false);
+  });
+
+  it('classifies gate-status as read-only', () => {
+    expect(isDestructiveAction('gate-status')).toBe(false);
+  });
+
+  it('classifies chain-info as read-only', () => {
+    expect(isDestructiveAction('chain-info')).toBe(false);
+  });
+
+  it('classifies unknown subcommands as read-only (server falls through to handler error)', () => {
+    expect(isDestructiveAction('wat')).toBe(false);
   });
 });
