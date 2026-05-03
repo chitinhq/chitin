@@ -1,0 +1,92 @@
+// Enqueue helper for the `<%= name %>` role. Shape: <%= shape %>.
+//
+// Bounds snapshot (generated defaults — tune per entry in the dispatcher):
+//   network_policy : <%= networkPolicy %>
+//   write_policy   : <%= writePolicy %>
+//   max_tool_calls : <%= maxToolCalls %>
+//   max_cost_usd   : <%= maxCostUsd %>
+//   wall_timeout_s : <%= wallTimeoutS %>
+
+import type { Client } from '@temporalio/client';
+import type { BacklogEntry } from '../grooming/parse-backlog.ts';
+
+export interface Enqueue<%= className %>Input {
+  client: Client;
+  taskQueue: string;
+  entry: BacklogEntry;
+  repo: string;
+  parent_workflow_id?: string;
+  log?: (line: string) => void;
+}
+
+export interface Enqueue<%= className %>Result {
+  enqueued: boolean;
+  workflow_id?: string;
+  error?: string;
+}
+
+/**
+ * Submit a `<%= name %>` workflow turn to Temporal.
+ *
+ * The workflow_id follows the `swarm-<%= name %>-<ts>` pattern so the
+ * dispatcher's running-workflow scan (which matches `swarm-*`) parks it
+ * correctly during backlog polling.
+ */
+export async function enqueue<%= className %>(
+  input: Enqueue<%= className %>Input,
+): Promise<Enqueue<%= className %>Result> {
+  const log = input.log ?? ((l: string) => console.log(l));
+  const workflowId = `swarm-<%= name %>-${Date.now()}`;
+
+  try {
+    await input.client.workflow.start('swarmWorkflow', {
+      args: [
+        {
+          schema_version: '1' as const,
+          workflow_id: workflowId,
+          run_id: workflowId,
+          repo: input.repo,
+          task_class: 'scaffolding' as const,
+          risk_level: 'low' as const,
+          allowed_drivers: ['claude-code-headless' as const],
+          network_policy: '<%= networkPolicy %>' as const,
+          write_policy: '<%= writePolicy %>' as const,
+          bounds: {
+            max_tool_calls: <%= maxToolCalls %>,
+            max_cost_usd: <%= maxCostUsd %>,
+            wall_timeout_s: <%= wallTimeoutS %>,
+          },
+          prompt: input.entry.description,
+          role: '<%= name %>' as const,
+          ...(input.parent_workflow_id
+            ? { parent_workflow_id: input.parent_workflow_id }
+            : {}),
+        },
+      ],
+      taskQueue: input.taskQueue,
+      workflowId,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'warn',
+        component: '<%= name %>-dispatch',
+        workflow_id: workflowId,
+        error: msg,
+      }),
+    );
+    return { enqueued: false, error: msg };
+  }
+
+  log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'info',
+      component: '<%= name %>-dispatch',
+      workflow_id: workflowId,
+    }),
+  );
+  return { enqueued: true, workflow_id: workflowId };
+}

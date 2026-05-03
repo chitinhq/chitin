@@ -1,0 +1,20 @@
+{
+  "name": "@chitin/agent-role",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "generators": "./generators.json",
+  "nx": {
+    "tags": ["layer:tooling"],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "command": "pnpm exec vitest run --config tools/generators/agent-role/vitest.config.ts"
+      }
+    }
+  },
+  "devDependencies": {
+    "@nx/devkit": "22.6.5",
+    "ts-morph": "^24.0.0"
+  }
+}

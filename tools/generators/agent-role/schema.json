@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "cli": "nx",
+  "id": "agent-role",
+  "title": "Agent Role Generator",
+  "description": "Scaffold a new agent role across all cross-cutting concerns",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The role name (kebab-case, e.g. 'my-role')",
+      "$default": { "$source": "argv", "index": 0 },
+      "x-prompt": "What is the role name (kebab-case)?"
+    },
+    "shape": {
+      "type": "string",
+      "description": "Role shape determines default bounds and prompt template",
+      "enum": ["reviewer", "patcher", "analyst", "researcher"],
+      "x-prompt": {
+        "message": "Which shape best describes this role?",
+        "type": "list",
+        "items": [
+          { "value": "reviewer", "label": "reviewer - read-only, reviews PR diffs (network=allowlist, write=none)" },
+          { "value": "patcher", "label": "patcher - writes fix commits to PR branch (network=allowlist, write=branch)" },
+          { "value": "analyst", "label": "analyst - investigates telemetry, writes report (network=allowlist, write=worktree)" },
+          { "value": "researcher", "label": "researcher - fetches external signals (network=open, write=none)" }
+        ]
+      }
+    }
+  },
+  "required": ["name", "shape"]
+}
