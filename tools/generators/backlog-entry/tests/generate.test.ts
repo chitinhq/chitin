@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,9 +124,9 @@ describe('insertEntry', () => {
     expect(newIdx).toBeLessThan(completedIdx);
   });
 
-  it('appends correctly to empty text', () => {
+  it('appends correctly to text with no existing entries', () => {
     const section = buildSection(BASE_OPTS);
-    const result = insertEntry('', section);
+    const result = insertEntry('## Ready\n', section);
     expect(result).toContain('### `my-new-feature`');
   });
 });
@@ -136,42 +136,14 @@ describe('insertEntry', () => {
 describe('hasDuplicateId', () => {
   it('returns false when id is not present', () => {
     const entries = parseBacklog(
-      writeTempBacklog([
-        '## Ready',
-        '',
-        '### `existing-entry`',
-        '',
-        '```yaml',
-        'id: existing-entry',
-        'tier: T1',
-        'status: ready',
-        'blocks: []',
-        'role: programmer',
-        '```',
-        '',
-        'Some description.',
-      ].join('\n')),
+      writeTempBacklog(minimalBacklog('existing-entry')),
     );
     expect(hasDuplicateId(entries, 'brand-new-id')).toBe(false);
   });
 
   it('returns true when id already exists', () => {
     const entries = parseBacklog(
-      writeTempBacklog([
-        '## Ready',
-        '',
-        '### `existing-entry`',
-        '',
-        '```yaml',
-        'id: existing-entry',
-        'tier: T1',
-        'status: ready',
-        'blocks: []',
-        'role: programmer',
-        '```',
-        '',
-        'Some description.',
-      ].join('\n')),
+      writeTempBacklog(minimalBacklog('existing-entry')),
     );
     expect(hasDuplicateId(entries, 'existing-entry')).toBe(true);
   });
@@ -182,21 +154,7 @@ describe('hasDuplicateId', () => {
 describe('round-trip through parseBacklog', () => {
   it('generated entry is parseable and heading id matches frontmatter id', () => {
     const section = buildSection(BASE_OPTS);
-    const backlogText = [
-      '## Ready',
-      '',
-      '### `seed-entry`',
-      '',
-      '```yaml',
-      'id: seed-entry',
-      'tier: T0',
-      'status: ready',
-      'blocks: []',
-      'role: programmer',
-      '```',
-      '',
-      'Seed.',
-    ].join('\n');
+    const backlogText = minimalBacklog('seed-entry');
     const updated = insertEntry(backlogText, section);
     const path = writeTempBacklog(updated);
 
@@ -204,41 +162,34 @@ describe('round-trip through parseBacklog', () => {
     const entry = entries.find((e) => e.id === 'my-new-feature');
     expect(entry).toBeDefined();
 
-    // Heading id must match frontmatter id
     const fmIdMatch = entry!.rawFrontmatter.match(/^id:\s*(\S+)/m);
     expect(fmIdMatch?.[1]).toBe(entry!.id);
   });
 
-  it('refuses to insert a duplicate id (hasDuplicateId check)', () => {
-    const backlogText = [
-      '## Ready',
-      '',
-      '### `my-new-feature`',
-      '',
-      '```yaml',
-      'id: my-new-feature',
-      'tier: T1',
-      'status: ready',
-      'blocks: []',
-      'role: programmer',
-      '```',
-      '',
-      'Already exists.',
-    ].join('\n');
-    const path = writeTempBacklog(backlogText);
+  it('refuses to insert a duplicate id — hasDuplicateId returns true', () => {
+    const path = writeTempBacklog(minimalBacklog('my-new-feature'));
     const entries = parseBacklog(path);
     expect(hasDuplicateId(entries, 'my-new-feature')).toBe(true);
   });
 
   it('blocks field round-trips as an array', () => {
     const section = buildSection({ ...BASE_OPTS, blocks: ['dep-x', 'dep-y'] });
-    const backlogText = '## Ready\n';
-    const updated = insertEntry(backlogText, section);
+    const updated = insertEntry(minimalBacklog('seed-entry'), section);
     const path = writeTempBacklog(updated);
 
     const entries = parseBacklog(path);
     const entry = entries.find((e) => e.id === 'my-new-feature');
     expect(entry?.blocks).toEqual(['dep-x', 'dep-y']);
+  });
+
+  it('empty blocks field round-trips as empty array', () => {
+    const section = buildSection({ ...BASE_OPTS, blocks: [] });
+    const updated = insertEntry(minimalBacklog('seed-entry'), section);
+    const path = writeTempBacklog(updated);
+
+    const entries = parseBacklog(path);
+    const entry = entries.find((e) => e.id === 'my-new-feature');
+    expect(entry?.blocks).toEqual([]);
   });
 });
 
@@ -247,14 +198,33 @@ describe('round-trip through parseBacklog', () => {
 const tmpFiles: string[] = [];
 
 function writeTempBacklog(content: string): string {
-  const path = join(tmpdir(), `test-backlog-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);
+  const path = join(
+    tmpdir(),
+    `test-backlog-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
+  );
   writeFileSync(path, content, 'utf8');
   tmpFiles.push(path);
   return path;
 }
 
-// Cleanup after all tests
-import { afterAll } from 'vitest';
+function minimalBacklog(id: string): string {
+  return [
+    '## Ready',
+    '',
+    `### \`${id}\``,
+    '',
+    '```yaml',
+    `id: ${id}`,
+    'tier: T1',
+    'status: ready',
+    'blocks: []',
+    'role: programmer',
+    '```',
+    '',
+    'Description.',
+  ].join('\n');
+}
+
 afterAll(() => {
   for (const f of tmpFiles) {
     try { unlinkSync(f); } catch { /* ignore */ }
