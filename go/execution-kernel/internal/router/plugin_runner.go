@@ -11,9 +11,14 @@ import (
 
 // RunPlugins invokes each declared plugin with the hook input,
 // concurrently, bounded by individual plugin timeouts. Plugins
-// that fail (timeout, malformed output, missing binary) are
-// logged to stderr but don't block the pipeline — failed plugins
-// just don't contribute a heuristic outcome.
+// that fail (timeout, malformed output, missing binary, OR
+// trust-policy rejection) are logged to stderr but don't block
+// the pipeline — failed plugins just don't contribute a
+// heuristic outcome.
+//
+// Trust gate: each plugin is verified against `trust` BEFORE
+// spawn. Untrusted plugins are rejected with a structured warn
+// log. See plugins.TrustPolicy for verification modes.
 //
 // Returns a list of HeuristicScore (one per plugin that produced
 // a valid output) keyed by plugin name. Concurrent execution
@@ -21,10 +26,17 @@ import (
 //
 // Performance: each plugin spawn is ~50-500ms cold. With 5
 // plugins running in parallel, overhead is roughly the slowest
-// plugin's wall time, not 5x.
-func RunPlugins(ctx context.Context, pluginConfigs []PluginConfig, input HookInput, errOut io.Writer) []NamedHeuristicScore {
+// plugin's wall time, not 5x. Trust verification adds < 1ms per
+// plugin (path-mode: nil; hash-mode: SHA-256 of file).
+func RunPlugins(ctx context.Context, pluginConfigs []PluginConfig, trust PluginsTrustConfig, input HookInput, errOut io.Writer) []NamedHeuristicScore {
 	if len(pluginConfigs) == 0 {
 		return nil
+	}
+
+	tp := plugins.TrustPolicy{
+		Mode:          trust.Mode,
+		TrustedPaths:  trust.TrustedPaths,
+		TrustedHashes: trust.TrustedHashes,
 	}
 
 	hookMap := map[string]interface{}{
@@ -48,6 +60,14 @@ func RunPlugins(ctx context.Context, pluginConfigs []PluginConfig, input HookInp
 				Module:    p.Module,
 				Config:    p.Config,
 				TimeoutMs: p.TimeoutMs,
+			}
+			// Trust gate FIRST — catches tampered or untrusted plugins
+			// before they get a chance to spawn.
+			if err := tp.Verify(manifest); err != nil {
+				if errOut != nil {
+					writePluginError(errOut, p.Name, err)
+				}
+				return
 			}
 			out, err := plugins.Run(ctx, manifest, hookMap, errOut)
 			if err != nil {
