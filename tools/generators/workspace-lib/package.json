@@ -10,7 +10,7 @@
       "test": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "pnpm exec vitest run --config tools/generators/workspace-lib/vitest.config.ts",
+          "command": "pnpm exec tsx tools/generators/workspace-lib/tests/index.test.ts",
           "cwd": "{workspaceRoot}"
         }
       },

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+// Test runner: tsx tools/generators/workspace-lib/tests/index.test.ts
+// Uses node:assert — no vitest required (package not in pnpm-workspace yet).
+
+import assert from 'node:assert/strict';
 import {
   buildPackageJson,
   buildTsconfig,
@@ -7,99 +10,113 @@ import {
   parseAllowsDeps,
 } from '../index.ts';
 
+let passed = 0;
+let failed = 0;
+
+function test(name: string, fn: () => void): void {
+  try {
+    fn();
+    console.log(`  ✓ ${name}`);
+    passed++;
+  } catch (err) {
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${err instanceof Error ? err.message : String(err)}`);
+    failed++;
+  }
+}
+
 // ── parseAllowsDeps ───────────────────────────────────────────────────
 
-describe('parseAllowsDeps', () => {
-  it('defaults to contracts + telemetry', () => {
-    expect(parseAllowsDeps(undefined)).toEqual(['layer:contracts', 'layer:telemetry']);
-  });
+test('parseAllowsDeps: defaults to contracts + telemetry', () => {
+  assert.deepEqual(parseAllowsDeps(undefined), ['layer:contracts', 'layer:telemetry']);
+});
 
-  it('preserves layer: prefix', () => {
-    expect(parseAllowsDeps('layer:contracts,layer:telemetry')).toEqual([
-      'layer:contracts',
-      'layer:telemetry',
-    ]);
-  });
+test('parseAllowsDeps: preserves layer: prefix', () => {
+  assert.deepEqual(parseAllowsDeps('layer:contracts,layer:telemetry'), [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+});
 
-  it('adds layer: prefix when missing', () => {
-    expect(parseAllowsDeps('contracts,governance')).toEqual([
-      'layer:contracts',
-      'layer:governance',
-    ]);
-  });
+test('parseAllowsDeps: adds layer: prefix when missing', () => {
+  assert.deepEqual(parseAllowsDeps('contracts,governance'), [
+    'layer:contracts',
+    'layer:governance',
+  ]);
+});
 
-  it('sorts output', () => {
-    expect(parseAllowsDeps('telemetry,contracts')).toEqual([
-      'layer:contracts',
-      'layer:telemetry',
-    ]);
-  });
+test('parseAllowsDeps: sorts output', () => {
+  assert.deepEqual(parseAllowsDeps('telemetry,contracts'), [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+});
 
-  it('ignores empty segments', () => {
-    expect(parseAllowsDeps('contracts,,telemetry')).toEqual([
-      'layer:contracts',
-      'layer:telemetry',
-    ]);
-  });
+test('parseAllowsDeps: ignores empty segments', () => {
+  assert.deepEqual(parseAllowsDeps('contracts,,telemetry'), [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
 });
 
 // ── buildPackageJson ──────────────────────────────────────────────────
 
-describe('buildPackageJson', () => {
-  it('sets correct name and layer tag', () => {
-    const result = JSON.parse(buildPackageJson('my-lib', 'my-layer'));
-    expect(result.name).toBe('@chitin/my-lib');
-    expect(result.nx.tags).toContain('layer:my-layer');
-  });
+test('buildPackageJson: sets correct name and layer tag', () => {
+  const result = JSON.parse(buildPackageJson('my-lib', 'my-layer')) as {
+    name: string;
+    nx: { tags: string[] };
+  };
+  assert.equal(result.name, '@chitin/my-lib');
+  assert.ok(result.nx.tags.includes('layer:my-layer'));
+});
 
-  it('includes the test target pointing to libs/<name>/tests', () => {
-    const result = JSON.parse(buildPackageJson('scheduler', 'scheduler'));
-    expect(result.nx.targets.test.options.command).toContain('libs/scheduler/tests');
-  });
+test('buildPackageJson: test target points to libs/<name>/tests', () => {
+  const result = JSON.parse(buildPackageJson('scheduler', 'scheduler')) as {
+    nx: { targets: { test: { options: { command: string } } } };
+  };
+  assert.ok(result.nx.targets.test.options.command.includes('libs/scheduler/tests'));
+});
 
-  it('ends with a trailing newline', () => {
-    expect(buildPackageJson('x', 'y').endsWith('\n')).toBe(true);
-  });
+test('buildPackageJson: ends with trailing newline', () => {
+  assert.ok(buildPackageJson('x', 'y').endsWith('\n'));
 });
 
 // ── buildTsconfig ─────────────────────────────────────────────────────
 
-describe('buildTsconfig', () => {
-  it('extends with correct relative path for depth 2', () => {
-    const result = JSON.parse(buildTsconfig(2));
-    expect(result.extends).toBe('../../tsconfig.base.json');
-  });
+test('buildTsconfig: extends with correct path for depth 2', () => {
+  const result = JSON.parse(buildTsconfig(2)) as { extends: string };
+  assert.equal(result.extends, '../../tsconfig.base.json');
+});
 
-  it('references tsconfig.lib.json', () => {
-    const result = JSON.parse(buildTsconfig(2));
-    expect(result.references).toEqual([{ path: './tsconfig.lib.json' }]);
-  });
+test('buildTsconfig: references tsconfig.lib.json', () => {
+  const result = JSON.parse(buildTsconfig(2)) as {
+    references: Array<{ path: string }>;
+  };
+  assert.deepEqual(result.references, [{ path: './tsconfig.lib.json' }]);
 });
 
 // ── buildTsconfigLib ──────────────────────────────────────────────────
 
-describe('buildTsconfigLib', () => {
-  it('extends with correct relative path for depth 2', () => {
-    const result = JSON.parse(buildTsconfigLib(2));
-    expect(result.extends).toBe('../../tsconfig.base.json');
-  });
+test('buildTsconfigLib: extends with correct path for depth 2', () => {
+  const result = JSON.parse(buildTsconfigLib(2)) as { extends: string };
+  assert.equal(result.extends, '../../tsconfig.base.json');
+});
 
-  it('sets rootDir=src and outDir=dist', () => {
-    const result = JSON.parse(buildTsconfigLib(2));
-    expect(result.compilerOptions.rootDir).toBe('src');
-    expect(result.compilerOptions.outDir).toBe('dist');
-  });
+test('buildTsconfigLib: sets rootDir=src and outDir=dist', () => {
+  const result = JSON.parse(buildTsconfigLib(2)) as {
+    compilerOptions: { rootDir: string; outDir: string };
+  };
+  assert.equal(result.compilerOptions.rootDir, 'src');
+  assert.equal(result.compilerOptions.outDir, 'dist');
+});
 
-  it('includes only src/**/*.ts', () => {
-    const result = JSON.parse(buildTsconfigLib(2));
-    expect(result.include).toEqual(['src/**/*.ts']);
-  });
+test('buildTsconfigLib: includes only src/**/*.ts', () => {
+  const result = JSON.parse(buildTsconfigLib(2)) as { include: string[] };
+  assert.deepEqual(result.include, ['src/**/*.ts']);
 });
 
 // ── insertDepConstraint ───────────────────────────────────────────────
 
-// A minimal eslint.config.mjs fixture that mirrors the real file's
-// depConstraints shape.
 const ESLINT_FIXTURE = `import nx from '@nx/eslint-plugin';
 
 export default [
@@ -123,63 +140,61 @@ export default [
 ];
 `;
 
-describe('insertDepConstraint', () => {
-  it('inserts a new constraint before the closing ],', () => {
-    const result = insertDepConstraint(
-      ESLINT_FIXTURE,
-      'scheduler',
-      ['layer:contracts', 'layer:telemetry'],
-    );
-    expect(result).toContain("sourceTag: 'layer:scheduler'");
-    // New entry is before the closing ],
-    const insertIdx = result.indexOf("sourceTag: 'layer:scheduler'");
-    const closingIdx = result.indexOf('          ],');
-    expect(insertIdx).toBeLessThan(closingIdx);
-  });
-
-  it('is idempotent — second call returns the same string', () => {
-    const once = insertDepConstraint(
-      ESLINT_FIXTURE,
-      'scheduler',
-      ['layer:contracts', 'layer:telemetry'],
-    );
-    const twice = insertDepConstraint(
-      once,
-      'scheduler',
-      ['layer:contracts', 'layer:telemetry'],
-    );
-    expect(twice).toBe(once);
-  });
-
-  it('does not touch unrelated layers', () => {
-    const result = insertDepConstraint(
-      ESLINT_FIXTURE,
-      'governance',
-      ['layer:contracts', 'layer:telemetry'],
-    );
-    expect(result).toContain("sourceTag: 'layer:contracts'");
-    expect(result).toContain("sourceTag: 'layer:telemetry'");
-    expect(result).toContain("sourceTag: 'layer:governance'");
-  });
-
-  it('formats deps as quoted list', () => {
-    const result = insertDepConstraint(
-      ESLINT_FIXTURE,
-      'slack',
-      ['layer:contracts', 'layer:telemetry'],
-    );
-    expect(result).toContain("['layer:contracts', 'layer:telemetry']");
-  });
-
-  it('supports empty deps (e.g. contracts layer itself)', () => {
-    const result = insertDepConstraint(ESLINT_FIXTURE, 'kernel', []);
-    expect(result).toContain("sourceTag: 'layer:kernel'");
-    expect(result).toContain('onlyDependOnLibsWithTags: []');
-  });
-
-  it('throws when no depConstraints closing bracket is found', () => {
-    expect(() =>
-      insertDepConstraint('no closing bracket here', 'x', []),
-    ).toThrow('workspace-lib generator');
-  });
+test('insertDepConstraint: inserts before the closing ],', () => {
+  const result = insertDepConstraint(ESLINT_FIXTURE, 'scheduler', [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+  assert.ok(result.includes("sourceTag: 'layer:scheduler'"));
+  const insertIdx = result.indexOf("sourceTag: 'layer:scheduler'");
+  const closingIdx = result.indexOf('          ],');
+  assert.ok(insertIdx < closingIdx, 'new entry must appear before closing ],');
 });
+
+test('insertDepConstraint: is idempotent', () => {
+  const once = insertDepConstraint(ESLINT_FIXTURE, 'scheduler', [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+  const twice = insertDepConstraint(once, 'scheduler', [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+  assert.equal(twice, once);
+});
+
+test('insertDepConstraint: does not remove existing layers', () => {
+  const result = insertDepConstraint(ESLINT_FIXTURE, 'governance', [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+  assert.ok(result.includes("sourceTag: 'layer:contracts'"));
+  assert.ok(result.includes("sourceTag: 'layer:telemetry'"));
+  assert.ok(result.includes("sourceTag: 'layer:governance'"));
+});
+
+test('insertDepConstraint: formats deps as quoted list', () => {
+  const result = insertDepConstraint(ESLINT_FIXTURE, 'slack', [
+    'layer:contracts',
+    'layer:telemetry',
+  ]);
+  assert.ok(result.includes("['layer:contracts', 'layer:telemetry']"));
+});
+
+test('insertDepConstraint: supports empty deps array', () => {
+  const result = insertDepConstraint(ESLINT_FIXTURE, 'kernel', []);
+  assert.ok(result.includes("sourceTag: 'layer:kernel'"));
+  assert.ok(result.includes('onlyDependOnLibsWithTags: []'));
+});
+
+test('insertDepConstraint: throws when no closing bracket found', () => {
+  assert.throws(
+    () => insertDepConstraint('no closing bracket here', 'x', []),
+    /workspace-lib generator/,
+  );
+});
+
+// ── Summary ───────────────────────────────────────────────────────────
+
+console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

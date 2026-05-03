@@ -9,7 +9,7 @@
 // Nx usage (once pnpm-workspace.yaml includes tools/generators/*):
 //   nx g @chitin/workspace-lib <name> --layer <layer> [--allowsDeps <layers>]
 
-import { type Tree, formatFiles } from '@nx/devkit';
+import type { Tree } from '@nx/devkit';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,6 +181,7 @@ export default async function workspaceLibGenerator(
     console.log(`[workspace-lib] added layer:${layer} to eslint.config.mjs`);
   }
 
+  const { formatFiles } = await import('@nx/devkit');
   await formatFiles(tree);
   console.log(`[workspace-lib] scaffolded ${libPath}`);
 }
