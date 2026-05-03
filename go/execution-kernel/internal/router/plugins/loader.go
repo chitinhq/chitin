@@ -53,6 +53,37 @@ type PluginManifest struct {
 	// this are killed and treated as no-signal (fire=false). Default
 	// 5s — heuristics should be fast.
 	TimeoutMs int `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	// Sandbox — opt-in subprocess isolation via bubblewrap.
+	// When set, the plugin runs inside a bwrap namespace with
+	// network dropped + filesystem read-only by default. Linux-only;
+	// no-op (logs a warning) on missing bwrap binary.
+	Sandbox SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+}
+
+// SandboxConfig — opt-in plugin sandboxing. Off-by-default to
+// preserve the simple "spawn python3" model when operators don't
+// need isolation. Operators flip Mode=bwrap once they've audited
+// their plugin's filesystem + network needs.
+//
+// Why opt-in: a heuristic that just reads stdin + writes JSON is
+// already low-blast-radius. Sandboxing pays its cost (~5-10ms
+// extra spawn) only for plugins that touch arbitrary code paths.
+type SandboxConfig struct {
+	// Mode — "" (off, default), "bwrap" (Linux bubblewrap).
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// AllowNetwork — when false (default), bwrap shares no network
+	// namespace with the host. Plugins that don't need to call out
+	// (most heuristics) should leave this false.
+	AllowNetwork bool `yaml:"allow_network,omitempty" json:"allow_network,omitempty"`
+	// AllowWrite — when false (default), the entire filesystem is
+	// mounted read-only inside the sandbox. Tmpfs at /tmp is always
+	// writable so the plugin can scratch.
+	AllowWrite bool `yaml:"allow_write,omitempty" json:"allow_write,omitempty"`
+	// ExtraReadOnlyBinds — additional host paths to bind read-only
+	// into the sandbox (e.g., a venv site-packages dir, a config
+	// file). The plugin's module path is auto-bound; this list is
+	// for adjacent dependencies the runtime needs.
+	ExtraReadOnlyBinds []string `yaml:"extra_ro_binds,omitempty" json:"extra_ro_binds,omitempty"`
 }
 
 // PluginInput is what the plugin sees on stdin.
@@ -118,6 +149,10 @@ func Run(ctx context.Context, manifest PluginManifest, hookInput map[string]inte
 	if err != nil {
 		return nil, err
 	}
+
+	// Apply sandbox wrapper if operator opted in. Falls open on
+	// missing bwrap / non-Linux — see sandbox.go.
+	cmd, args = applySandbox(manifest.Sandbox, manifest.Name, manifest.Module, cmd, args, errOut)
 
 	cctx, cancel := context.WithTimeout(ctx, time.Duration(manifest.TimeoutMs)*time.Millisecond)
 	defer cancel()
