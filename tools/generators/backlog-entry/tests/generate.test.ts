@@ -114,14 +114,25 @@ describe('insertEntry', () => {
     expect(result).toContain('\n\n---\n\n');
   });
 
-  it('preserves trailing ## section when present', () => {
-    const withTrailing = `${existingBacklog}\n\n## Completed\n\n### \`old-entry\`\n\nDone.\n`;
+  it('inserts before a trailing ## section that has no ### entries', () => {
+    // When a ## heading has no ### entries inside it (prose-only section),
+    // the new entry lands before it rather than after.
+    const withProseTail = `${existingBacklog}\n\n## Audit notes\n\nSome trailing prose.\n`;
     const section = buildSection(BASE_OPTS);
-    const result = insertEntry(withTrailing, section);
-    // New entry should appear before ## Completed
+    const result = insertEntry(withProseTail, section);
     const newIdx = result.indexOf('### `my-new-feature`');
-    const completedIdx = result.indexOf('## Completed');
-    expect(newIdx).toBeLessThan(completedIdx);
+    const auditIdx = result.indexOf('## Audit notes');
+    expect(newIdx).toBeLessThan(auditIdx);
+  });
+
+  it('appends after the last ### entry even when a ## section with entries follows', () => {
+    // New entries always append after the last ### regardless of ## grouping.
+    const withSection = `${existingBacklog}\n\n## Completed\n\n### \`done-entry\`\n\n\`\`\`yaml\nid: done-entry\ntier: T0\nstatus: shipped\nblocks: []\nrole: programmer\n\`\`\`\n\nDone.\n`;
+    const section = buildSection(BASE_OPTS);
+    const result = insertEntry(withSection, section);
+    const newIdx = result.indexOf('### `my-new-feature`');
+    const doneIdx = result.indexOf('### `done-entry`');
+    expect(newIdx).toBeGreaterThan(doneIdx);
   });
 
   it('appends correctly to text with no existing entries', () => {
