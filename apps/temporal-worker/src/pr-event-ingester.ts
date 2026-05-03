@@ -34,6 +34,22 @@ import {
   enqueueReviewGraph,
   REVIEW_GRAPH_WORKFLOW_NAME,
 } from './review-graph-dispatch.ts';
+import {
+  enqueuePeerReviewer,
+  peerReviewerWorkflowIdForPr,
+} from './peer-reviewer/dispatch.ts';
+import {
+  enqueueCommentResponder,
+  commentResponderWorkflowIdForPr,
+} from './comment-responder/dispatch.ts';
+
+// Threshold above which the ingester dispatches a comment-responder.
+// Mirrors the §5 review-graph trigger ("Copilot bot leaves > 2 inline
+// comments → escalate to R1") so the comment-responder fires on
+// roughly the same PRs that get an R1 reviewer.
+const COMMENT_RESPONDER_THRESHOLD = 2;
+
+const EXECUTE_REQUEST_WORKFLOW_NAME = 'executeRequestWorkflow';
 
 const TASK_QUEUE = 'chitin-worker-q';
 
@@ -266,9 +282,6 @@ export function enrichPr(repo: string, pr: OpenPrSummary): OpenPrSummary {
  */
 export async function listRunningReviewGraphWorkflows(client: Client): Promise<Set<string>> {
   const ids = new Set<string>();
-  // Filter by ExecutionStatus = Running and WorkflowType =
-  // reviewGraphWorkflow. Returns workflow ids the ingester might
-  // collide with.
   const iter = client.workflow.list({
     query: `WorkflowType="${REVIEW_GRAPH_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
   });
@@ -278,12 +291,69 @@ export async function listRunningReviewGraphWorkflows(client: Client): Promise<S
   return ids;
 }
 
+/**
+ * Query Temporal for currently-running peer-reviewer + comment-
+ * responder workflow ids. Both share the executeRequestWorkflow type;
+ * we filter by workflow_id prefix in-process (NOT in the visibility
+ * query) because `STARTS_WITH` + boolean OR in visibility queries
+ * isn't uniformly supported across Temporal visibility backends —
+ * the default SQLite backend in particular rejects it. (Copilot
+ * review #211 #3.)
+ *
+ * Failure mode: if the visibility query throws (backend down, schema
+ * drift, etc.), this returns an empty set and logs a warn line
+ * rather than letting the entire ingester tick fail. Treating "no
+ * running agents" on query failure means the ingester might
+ * dispatch a duplicate peer-reviewer for one tick — which Temporal
+ * itself rejects via stable workflow id, since peer-review-pr-<n>
+ * is a unique-by-PR id. Fail-open here is bounded.
+ */
+export async function listRunningAgentWorkflows(
+  client: Client,
+  log?: (line: string) => void,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  try {
+    const iter = client.workflow.list({
+      query: `WorkflowType="${EXECUTE_REQUEST_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
+    });
+    for await (const wf of iter) {
+      const id = wf.workflowId;
+      // Filter to the agent ids in-process (peer-review-pr-* and
+      // comment-respond-pr-*) so the visibility query stays
+      // backend-portable.
+      if (id.startsWith('peer-review-pr-') || id.startsWith('comment-respond-pr-')) {
+        ids.add(id);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'warn',
+      component: 'pr-event-ingester',
+      msg: 'listRunningAgentWorkflows failed; treating as empty',
+      error: msg,
+    });
+    if (log) log(line);
+    else console.warn(line);
+    return new Set();
+  }
+  return ids;
+}
+
 // ── main entrypoint ────────────────────────────────────────────────
 
 export interface IngesterTickResult {
   evaluated: number;
+  /** review-graph workflows enqueued */
   ingested: number;
+  /** §5 said R0 (Copilot covers it) — recorded but not dispatched */
   ingested_r0: number;
+  /** peer-reviewer workflows enqueued (per-PR, parallel to review-graph) */
+  peer_reviewers_enqueued: number;
+  /** comment-responder workflows enqueued */
+  comment_responders_enqueued: number;
   skipped: number;
   errors: number;
 }
@@ -305,6 +375,8 @@ export async function runIngesterTick(opts: {
     evaluated: 0,
     ingested: 0,
     ingested_r0: 0,
+    peer_reviewers_enqueued: 0,
+    comment_responders_enqueued: 0,
     skipped: 0,
     errors: 0,
   };
@@ -325,6 +397,7 @@ export async function runIngesterTick(opts: {
   });
 
   const running = await listRunningReviewGraphWorkflows(opts.client);
+  const runningAgents = await listRunningAgentWorkflows(opts.client, log);
   const decisions = pickPrsToIngest(enriched, running);
 
   for (const decision of decisions) {
@@ -406,6 +479,80 @@ export async function runIngesterTick(opts: {
           }));
         }
         break;
+    }
+  }
+
+  // Per-PR agent dispatches — peer-reviewer + comment-responder.
+  // Iterate the same enriched set so the dispatch decision sees the
+  // up-to-date Copilot comment count and PR shape. Non-skip decisions
+  // already qualify (non-draft, non-swarm/, non-already-running review-
+  // graph); we add per-agent dedup against runningAgents.
+  for (const decision of decisions) {
+    if (decision.kind === 'skip') continue;
+    const pr = decision.pr;
+
+    // Peer-reviewer fires per-PR — independent second opinion. Skip
+    // if one is already running for this PR.
+    const peerWorkflowId = peerReviewerWorkflowIdForPr(pr.number);
+    if (!runningAgents.has(peerWorkflowId)) {
+      if (opts.dryRun) {
+        log(JSON.stringify({
+          component: 'pr-event-ingester',
+          msg: 'would-enqueue-peer-reviewer',
+          pr: pr.number,
+        }));
+        result.peer_reviewers_enqueued += 1;
+      } else {
+        const peerRes = await enqueuePeerReviewer({
+          client: opts.client,
+          taskQueue: opts.taskQueue,
+          pr_url: pr.url,
+          repo: opts.repo,
+          log,
+        });
+        if (peerRes.enqueued) result.peer_reviewers_enqueued += 1;
+        else result.errors += 1;
+      }
+    }
+
+    // Comment-responder fires when the PR has more than
+    // COMMENT_RESPONDER_THRESHOLD raw Copilot inline review
+    // comments. NOTE: the count is total inline comments returned
+    // by `/pulls/{n}/comments` — it does NOT distinguish resolved
+    // vs unresolved threads, so once a responder run completes the
+    // count remains above threshold and the next ingester tick
+    // will redispatch. That respawn is gated by the
+    // `runningAgents` check (one in flight blocks the next), but
+    // not by a "previously responded" check. Both gaps are
+    // tracked as backlog follow-ups
+    // (`pr-event-ingester-comment-count-is-unresolved` +
+    // `pr-event-ingester-dedup-against-completed-workflows`,
+    // PR #223).
+    // Same threshold as the §5 matrix's R1 escalation (>2
+    // comments) so the responder fires on roughly the same PRs
+    // that get an R1 reviewer.
+    const responderWorkflowId = commentResponderWorkflowIdForPr(pr.number);
+    const commentCount = pr.copilotCommentCount ?? 0;
+    if (commentCount > COMMENT_RESPONDER_THRESHOLD && !runningAgents.has(responderWorkflowId)) {
+      if (opts.dryRun) {
+        log(JSON.stringify({
+          component: 'pr-event-ingester',
+          msg: 'would-enqueue-comment-responder',
+          pr: pr.number,
+          comment_count: commentCount,
+        }));
+        result.comment_responders_enqueued += 1;
+      } else {
+        const respRes = await enqueueCommentResponder({
+          client: opts.client,
+          taskQueue: opts.taskQueue,
+          pr_url: pr.url,
+          repo: opts.repo,
+          log,
+        });
+        if (respRes.enqueued) result.comment_responders_enqueued += 1;
+        else result.errors += 1;
+      }
     }
   }
 

@@ -54,17 +54,26 @@ YOUR WORKFLOW:
    bogus no-op PR (you're supposed to be read-only). Bail before that
    happens.
 
-1. Read the PR diff:
+1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** Then
+   pass them through every \`gh\` command via the \`--repo\` flag.
+   You're running in a tempdir without a git repository, so plain
+   \`gh pr ...\` invocations would fail with "not in a git repo."
+   Format every gh call like:
    \`\`\`
-   gh pr diff <pr_number>
+   gh pr <subcmd> --repo <owner>/<repo> <pr_number> [args...]
    \`\`\`
 
-2. Read the PR description (for stated scope/intent):
+2. Read the PR diff:
    \`\`\`
-   gh pr view <pr_number> --json title,body
+   gh pr diff --repo <owner>/<repo> <pr_number>
    \`\`\`
 
-3. For each meaningful chunk of the diff, evaluate against this checklist:
+3. Read the PR description (for stated scope/intent):
+   \`\`\`
+   gh pr view --repo <owner>/<repo> <pr_number> --json title,body
+   \`\`\`
+
+4. For each meaningful chunk of the diff, evaluate against this checklist:
 
    **Correctness:** does the code do what its surrounding context (tests,
    docstrings, callers) implies it should? Does it handle the obvious
@@ -89,9 +98,9 @@ YOUR WORKFLOW:
    that behavior? Edge cases? Negative paths (the function rejects
    bad input)? If you find untested branches, name them.
 
-4. Compose your findings as a single review comment, posted via:
+5. Compose your findings as a single review comment, posted via:
    \`\`\`
-   gh pr review <pr_number> --comment --body "<your structured review>"
+   gh pr review --repo <owner>/<repo> <pr_number> --comment --body "<your structured review>"
    \`\`\`
 
    Format the body as follows:
@@ -116,7 +125,7 @@ YOUR WORKFLOW:
    - OBSERVE: complexity merits a second tier reviewer (R2/R3)
    \`\`\`
 
-5. Emit your final structured signal so the runner can record outcomes:
+6. Emit your final structured signal so the runner can record outcomes:
    \`\`\`
    <<<PEER_REVIEW>>>{"red": <n>, "yellow": <n>, "green": <n>, "verdict": "<APPROVE|REQUEST_CHANGES|OBSERVE>"}
    \`\`\`
