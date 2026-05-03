@@ -105,6 +105,12 @@ importers:
         specifier: '>=2026.4.25'
         version: 2026.4.29
 
+  apps/slack-app:
+    dependencies:
+      '@chitin/contracts':
+        specifier: workspace:*
+        version: link:../../libs/contracts
+
   apps/temporal-worker:
     dependencies:
       '@chitin/contracts':
