@@ -67,7 +67,14 @@ export const DriverIdSchema = z.enum([
   'copilot',
   'claude-code-headless',
   'local-qwen',
+  // `local-glm` historically routed to glm-5.1:cloud for reasoning
+  // delegation; kept for that role. `local-glm-flash` is the local
+  // mechanical-tier variant added 2026-05-03 — glm-4.7-flash:latest
+  // on the 3090, T0 default. Distinct driver because the cost/latency
+  // profile is fundamentally different (flash = local + fast,
+  // glm-5.1 = cloud + slower + smarter).
   'local-glm',
+  'local-glm-flash',
   'local-deepseek',
 ]);
 
