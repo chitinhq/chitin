@@ -6,6 +6,7 @@ import {
 } from './review-graph-workflow.helpers.ts';
 import {
   runReviewGraphLoop,
+  shouldChainCommentResponder,
   __test__,
   type ReviewGraphInput,
   type ReviewerDispatch,
@@ -434,6 +435,37 @@ describe('runReviewGraphLoop — output retention', () => {
     expect(result.action).toBe('parse-failure-at-r4');
     expect(result.output).toBeUndefined();
     expect(result.tier_log.every((e) => !e.parsed)).toBe(true);
+  });
+});
+
+describe('shouldChainCommentResponder', () => {
+  // Pure function — tests pin the chain-on-action decision without
+  // standing up a Temporal worker.
+
+  const PR_URL = 'https://github.com/chitinhq/chitin/pull/207';
+
+  it('chains on request-changes with a PR URL', () => {
+    expect(shouldChainCommentResponder('request-changes', PR_URL)).toBe(true);
+  });
+
+  it('skips on approve (nothing to act on)', () => {
+    expect(shouldChainCommentResponder('approve', PR_URL)).toBe(false);
+  });
+
+  it('skips on escalate-to-operator (operator pickup; agent should NOT preempt)', () => {
+    expect(shouldChainCommentResponder('escalate-to-operator', PR_URL)).toBe(false);
+  });
+
+  it('skips on parse-failure-at-r4 (no clean signal)', () => {
+    expect(shouldChainCommentResponder('parse-failure-at-r4', PR_URL)).toBe(false);
+  });
+
+  it('skips when pr_url is undefined (responder needs the PR to act on)', () => {
+    expect(shouldChainCommentResponder('request-changes', undefined)).toBe(false);
+  });
+
+  it('skips when pr_url is empty string', () => {
+    expect(shouldChainCommentResponder('request-changes', '')).toBe(false);
   });
 });
 
