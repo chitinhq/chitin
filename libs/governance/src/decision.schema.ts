@@ -25,7 +25,7 @@ export const DecisionSchema = z
     policy_name: z
       .string()
       .min(1)
-      .describe('Which policy rule produced this decision. "default" for the fall-through.'),
+      .describe('Which policy rule produced this decision. "default-allow" for the fall-through.'),
     policy_version: z
       .string()
       .min(1)

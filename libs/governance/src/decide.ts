@@ -4,11 +4,14 @@ import type { Decision } from './decision.schema.js';
 // decide() — synchronous policy evaluation.
 // Spec §1, §3 (decision space, policy engine).
 //
-// Slice 1 implements three rules + a default:
-//   1. shell_exec, command matches `curl|sh` pattern    → redirect
-//   2. shell_exec, command starts with `npm install`    → rewrite to pnpm
-//   3. action_class = unclassified                      → deny (fail-safe)
-//   default                                             → allow
+// Slice 1 implements four rules + a default:
+//   1. action_class = unclassified                       → deny (fail-safe)
+//   2. shell_exec without a recognizable command string  → deny (fail-safe;
+//                                                          ingress-shape drift
+//                                                          or bypass attempt)
+//   3. shell_exec, command matches `curl|sh` pattern     → redirect
+//   4. shell_exec, command starts with `npm install`     → rewrite to pnpm
+//   default                                              → allow
 //
 // Subsequent slices will replace this body with a rule-table lookup
 // driven by the SDK's `policies` array. Slice 1 keeps it inline so the
