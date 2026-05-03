@@ -219,12 +219,20 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	// Step 4: compose
 	if advice.Verdict == "takeover" {
-		// Force a deny with the advisor's nudge as the reason
-		composed := map[string]string{"decision": "block", "reason": advice.Nudge}
+		// Force a deny with the advisor's nudge as the reason. If
+		// the advisor also flipped Escalate, attach an
+		// `escalation_requested: true` marker so downstream
+		// consumers (the Temporal activity, the dispatcher's tier
+		// ladder) can spawn a higher-tier driver instead of
+		// surfacing the deny to a human.
+		composed := map[string]interface{}{"decision": "block", "reason": advice.Nudge}
+		if advice.Escalate {
+			composed["escalation_requested"] = true
+		}
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
-		writeRouterTelemetry(errOut, "advisor-takeover", outcome, kernelDeny)
+		writeRouterTelemetryWithEscalate(errOut, "advisor-takeover", outcome, kernelDeny, advice.Escalate)
 		return claudecode.ExitBlock
 	}
 
@@ -238,6 +246,9 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			} else {
 				kernelObj["reason"] = advice.Nudge
 			}
+			if advice.Escalate {
+				kernelObj["escalation_requested"] = true
+			}
 			body, _ := json.Marshal(kernelObj)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
@@ -247,13 +258,36 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	} else if kernelCode == claudecode.ExitAllow {
 		// Kernel was silent (allow). Emit the advisor's nudge as a hint.
-		composed := map[string]string{"hookSpecificOutput": advice.Nudge}
+		composed := map[string]interface{}{"hookSpecificOutput": advice.Nudge}
+		if advice.Escalate {
+			composed["escalation_requested"] = true
+		}
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
 	}
-	writeRouterTelemetry(errOut, "advisor-allow", outcome, kernelDeny)
+	writeRouterTelemetryWithEscalate(errOut, "advisor-allow", outcome, kernelDeny, advice.Escalate)
 	return kernelCode
+}
+
+// writeRouterTelemetryWithEscalate adds the escalate flag to the
+// existing telemetry emit. Operators tailing chain logs see
+// "escalate=true" entries and can correlate them with subsequent
+// dispatcher tier-bumps. Foundation for the mid-task continuation
+// loop documented at docs/design/2026-05-03-mid-task-continuation.md.
+func writeRouterTelemetryWithEscalate(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny, escalate bool) {
+	out := map[string]interface{}{
+		"ts":                time.Now().UTC().Format(time.RFC3339),
+		"level":             "info",
+		"component":         "router-hook",
+		"msg":               kind,
+		"kernel_denied":     kernelDeny,
+		"heuristic_outcome": outcome,
+		"escalate":          escalate,
+	}
+	body, _ := json.Marshal(out)
+	_, _ = errOut.Write(body)
+	_, _ = errOut.Write([]byte{'\n'})
 }
 
 func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny bool) {
