@@ -1,0 +1,9 @@
+{
+  "name": "@chitin/generators",
+  "version": "0.0.1",
+  "private": true,
+  "generators": "./generators.json",
+  "nx": {
+    "tags": ["layer:tooling"]
+  }
+}

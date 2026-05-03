@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "name": "chitin",
+  "version": "0.0.1",
+  "generators": {
+    "app": {
+      "factory": "./app/index",
+      "schema": "./app/schema.json",
+      "description": "Scaffold a new chitin app with run + test targets (--daemon adds systemd units)"
+    }
+  }
+}

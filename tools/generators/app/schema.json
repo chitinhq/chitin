@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "id": "chitin-app",
+  "title": "Generate a Chitin App",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "App name (kebab-case) — becomes apps/<name>/ and @chitin/<name>",
+      "$default": { "$source": "argv", "index": 0 }
+    },
+    "daemon": {
+      "type": "boolean",
+      "description": "Emit systemd .service + .timer templates under apps/<name>/systemd/",
+      "default": false
+    }
+  },
+  "required": ["name"]
+}
