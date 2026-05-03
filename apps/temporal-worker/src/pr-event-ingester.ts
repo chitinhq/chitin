@@ -1,0 +1,457 @@
+// PR event ingester. Closes the gap that left the 2026-05-03 cohort
+// of human/interactive-opened PRs (#196-#199) un-reviewed by the
+// swarm: enqueueReviewGraph was only called from the dispatcher's
+// programmer-success path, so PRs from any other source bypassed the
+// §5 trigger matrix entirely.
+//
+// What this module does:
+//   1. Polls open PRs on the configured repo (`gh pr list`).
+//   2. For each PR NOT authored by the dispatcher (i.e. no `swarm/`
+//      branch prefix), checks whether a review-graph workflow with
+//      a stable id (`pr-ingest-<pr_number>-review-graph`) is already
+//      running. Skip if so.
+//   3. Reads PR metadata (diff size, file list, Copilot comment
+//      count) and runs `computeStartingTier` from review-graph.ts.
+//   4. Synthesizes a BacklogEntry-shaped object and calls
+//      enqueueReviewGraph(...). The graph runs as it does today;
+//      the PR gets the same R1 → R2 → R3 escalation chain.
+//
+// Pure logic is exported so the test suite can pin every branch of
+// the dedup + trigger logic without standing up Temporal.
+//
+// Usage:
+//   pnpm exec tsx apps/temporal-worker/src/pr-event-ingester.ts [--repo <owner/repo>] [--dry-run]
+//
+//   --repo:    repo slug (default: read from `gh repo view --json nameWithOwner`)
+//   --dry-run: print the PRs that would be ingested, exit 0 without enqueueing.
+
+import { Connection, Client } from '@temporalio/client';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import type { BacklogEntry } from './grooming/parse-backlog.ts';
+import { computeStartingTier, type PrMeta } from './review-graph.ts';
+import {
+  enqueueReviewGraph,
+  REVIEW_GRAPH_WORKFLOW_NAME,
+} from './review-graph-dispatch.ts';
+
+const TASK_QUEUE = 'chitin-worker-q';
+
+// ── Pure logic ──────────────────────────────────────────────────────
+
+/**
+ * Stable parent_workflow_id for an ingester-spawned review-graph.
+ * The review-graph workflow id derives from this as
+ * `${parent_workflow_id}-review-graph` (matches review-graph-dispatch.ts).
+ */
+export function parentWorkflowIdForPr(prNumber: number): string {
+  return `pr-ingest-${prNumber}`;
+}
+
+export function reviewGraphWorkflowIdForPr(prNumber: number): string {
+  return `${parentWorkflowIdForPr(prNumber)}-review-graph`;
+}
+
+export interface OpenPrSummary {
+  number: number;
+  title: string;
+  headRefName: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  isDraft: boolean;
+  /** Repo-relative paths in the diff. Empty when caller hasn't fetched
+   *  them (the path-scope bumps in computeStartingTier are then skipped). */
+  files?: string[];
+  /** Inline review comment count on the PR. Used by §5 trigger matrix. */
+  copilotCommentCount?: number;
+  /** PR url (for the synthesized BacklogEntry's pr_meta). */
+  url: string;
+}
+
+/**
+ * Decision the ingester makes per PR:
+ *   - skip         — branch is dispatcher-owned, draft, already running, etc.
+ *   - ingest       — qualifies; spawn a review-graph
+ *   - ingest_R0    — §5 says "Copilot R0 is enough"; chitin doesn't dispatch
+ *                    (kept distinct from skip so the chain event records
+ *                    "we evaluated it and chose not to escalate")
+ */
+export type IngestDecision =
+  | { kind: 'skip'; pr: OpenPrSummary; reason: string }
+  | { kind: 'ingest_r0'; pr: OpenPrSummary; reasons: string[] }
+  | {
+      kind: 'ingest';
+      pr: OpenPrSummary;
+      pr_meta: PrMeta;
+      starting_tier: 'R1' | 'R2' | 'R3';
+      reasons: string[];
+      t5_shape: boolean;
+    };
+
+/**
+ * Pure: given (open PRs, running review-graph workflow ids), return a
+ * decision per PR.
+ *
+ * Invariant (Knuth-style): every input PR appears in the output exactly
+ * once. The decisions partition the input — no PR is silently dropped.
+ */
+export function pickPrsToIngest(
+  prs: readonly OpenPrSummary[],
+  runningReviewGraphIds: ReadonlySet<string>,
+): IngestDecision[] {
+  return prs.map((pr) => decideForPr(pr, runningReviewGraphIds));
+}
+
+function decideForPr(
+  pr: OpenPrSummary,
+  runningReviewGraphIds: ReadonlySet<string>,
+): IngestDecision {
+  // Skip 1: drafts. Reviewers shouldn't waste tokens on WIP work the
+  // author hasn't asked for review on. The author marks the PR ready
+  // when they want eyes on it.
+  if (pr.isDraft) {
+    return { kind: 'skip', pr, reason: 'draft PR' };
+  }
+
+  // Skip 2: dispatcher-owned PRs. The programmer-success path in
+  // dispatcher.ts already calls enqueueReviewGraph for these.
+  // Re-ingesting would create a duplicate review-graph workflow.
+  if (pr.headRefName.startsWith('swarm/')) {
+    return { kind: 'skip', pr, reason: 'dispatcher-owned (swarm/ branch)' };
+  }
+
+  // Skip 3: review-graph already running for this PR. Stable id-based
+  // dedup means re-running this tick a minute from now is idempotent.
+  const expectedWorkflowId = reviewGraphWorkflowIdForPr(pr.number);
+  if (runningReviewGraphIds.has(expectedWorkflowId)) {
+    return { kind: 'skip', pr, reason: 'review-graph already running' };
+  }
+
+  // Build the PrMeta shape that computeStartingTier expects.
+  const pr_meta: PrMeta = {
+    diff_loc: pr.additions + pr.deletions,
+    files_changed: pr.changedFiles,
+    files: pr.files ?? [],
+    pr_url: pr.url,
+    pr_number: pr.number,
+    copilot_comment_count: pr.copilotCommentCount,
+  };
+
+  const decision = computeStartingTier(pr_meta, synthesizeBacklogEntry(pr));
+
+  if (decision.tier === 'R0') {
+    // §5 says R0 (Copilot) covers it. Don't dispatch chitin reviewers
+    // — but record the decision so audit can confirm we evaluated it.
+    return { kind: 'ingest_r0', pr, reasons: decision.reasons };
+  }
+
+  if (decision.tier === 'R4') {
+    // R4 is "ping operator" — non-dispatchable. Treat as skip with
+    // a clear reason so the chain event captures it.
+    return { kind: 'skip', pr, reason: 'R4 (operator pickup) — not chitin-dispatchable' };
+  }
+
+  return {
+    kind: 'ingest',
+    pr,
+    pr_meta,
+    starting_tier: decision.tier,
+    reasons: decision.reasons,
+    t5_shape: decision.t5_shape,
+  };
+}
+
+/**
+ * Pure: turn a PR summary into a BacklogEntry-shaped object the
+ * existing enqueueReviewGraph API can consume. Synthesized entries
+ * carry an `id` of `pr-ingest-<pr_number>` so chain events tie back
+ * to the parent_workflow_id. Fields match BacklogEntry's actual shape
+ * (camelCase, with rawFrontmatter / rawSection placeholders since
+ * this entry was synthesized, not parsed from swarm-backlog.md).
+ */
+export function synthesizeBacklogEntry(pr: OpenPrSummary): BacklogEntry {
+  return {
+    id: `pr-ingest-${pr.number}`,
+    tier: 'T2',                          // reviewer driver tier; review tier is computed separately
+    status: 'ready',
+    estimatedLoc: String(pr.additions + pr.deletions),
+    blocks: [],
+    file: pr.files?.join(', ') ?? '',
+    role: 'reviewer',
+    rawFrontmatter: '',                  // synthesized; no source yaml
+    description: `Synthesized from PR #${pr.number}: ${pr.title}`,
+    rawSection: '',                      // synthesized; no source section
+  };
+}
+
+// ── I/O wrappers ────────────────────────────────────────────────────
+
+/**
+ * Read open PRs via `gh pr list`. Includes only the fields needed for
+ * the §5 trigger matrix; further fields (diff file list, comment
+ * count) are fetched per-PR by `enrichPr`.
+ */
+export function listOpenPrs(repo: string): OpenPrSummary[] {
+  const out = execFileSync(
+    'gh',
+    [
+      'pr',
+      'list',
+      '--repo',
+      repo,
+      '--state',
+      'open',
+      // Cap high enough that no realistic chitin-shaped repo blows
+      // past it. gh's hard cap on `pr list --limit` is 1000; setting
+      // exactly that maxes the page size. If the repo ever grows
+      // beyond 1000 open PRs, real pagination via `--paginate`
+      // becomes necessary — until then this is fine.
+      '--limit',
+      '1000',
+      '--json',
+      'number,title,headRefName,additions,deletions,changedFiles,isDraft,url',
+    ],
+    { encoding: 'utf8' },
+  );
+  return JSON.parse(out) as OpenPrSummary[];
+}
+
+/**
+ * Enrich a PR summary with the file list + Copilot comment count.
+ * These require additional gh calls so we only fetch them for PRs
+ * that look like they might cross a §5 threshold (always for the
+ * non-trivial ones).
+ */
+export function enrichPr(repo: string, pr: OpenPrSummary): OpenPrSummary {
+  let files: string[] = [];
+  try {
+    const filesOut = execFileSync('gh', ['pr', 'diff', String(pr.number), '--repo', repo, '--name-only'], {
+      encoding: 'utf8',
+    });
+    files = filesOut.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    // PR has no diff yet (rare) — leave empty; computeStartingTier
+    // tolerates this.
+  }
+  let copilotCommentCount: number | undefined;
+  try {
+    // /pulls/{n}/comments returns ALL inline review comments — humans,
+    // bots, and Copilot. The §5 trigger matrix only escalates on
+    // Copilot's R0 review (see review-graph.ts:computeStartingTier
+    // "copilot_comment_count" branch), so we filter by author.login.
+    // GitHub's Copilot review bot logs in as `copilot-pull-request-reviewer[bot]`;
+    // be tolerant of the historical `Copilot` capitalization too.
+    const commentsOut = execFileSync(
+      'gh',
+      [
+        'api',
+        `repos/${repo}/pulls/${pr.number}/comments`,
+        '--jq',
+        '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or .user.login == "Copilot")] | length',
+      ],
+      { encoding: 'utf8' },
+    );
+    copilotCommentCount = parseInt(commentsOut.trim(), 10);
+    if (Number.isNaN(copilotCommentCount)) copilotCommentCount = undefined;
+  } catch {
+    // Permission / API issue — skip this signal.
+  }
+  return { ...pr, files, copilotCommentCount };
+}
+
+/**
+ * Query Temporal for currently-running review-graph workflow ids.
+ * The dedup check uses this to avoid spawning a duplicate.
+ */
+export async function listRunningReviewGraphWorkflows(client: Client): Promise<Set<string>> {
+  const ids = new Set<string>();
+  // Filter by ExecutionStatus = Running and WorkflowType =
+  // reviewGraphWorkflow. Returns workflow ids the ingester might
+  // collide with.
+  const iter = client.workflow.list({
+    query: `WorkflowType="${REVIEW_GRAPH_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
+  });
+  for await (const wf of iter) {
+    ids.add(wf.workflowId);
+  }
+  return ids;
+}
+
+// ── main entrypoint ────────────────────────────────────────────────
+
+export interface IngesterTickResult {
+  evaluated: number;
+  ingested: number;
+  ingested_r0: number;
+  skipped: number;
+  errors: number;
+}
+
+export async function runIngesterTick(opts: {
+  client: Client;
+  taskQueue: string;
+  repo: string;
+  dryRun?: boolean;
+  log?: (line: string) => void;
+}): Promise<IngesterTickResult> {
+  // Default logger to console.log to match the convention of other
+  // timer-style runners in this repo (alarm-feeder.ts:164,
+  // groomer.ts:174, lessons.ts:382, stale-doc-detector.ts:285).
+  // Sending normal-tick output to stderr would have systemd treat
+  // every successful run as an error and create monitor noise.
+  const log = opts.log ?? ((line) => console.log(line));
+  const result: IngesterTickResult = {
+    evaluated: 0,
+    ingested: 0,
+    ingested_r0: 0,
+    skipped: 0,
+    errors: 0,
+  };
+
+  const summaries = listOpenPrs(opts.repo);
+  result.evaluated = summaries.length;
+
+  if (summaries.length === 0) {
+    log(JSON.stringify({ component: 'pr-event-ingester', msg: 'no open PRs' }));
+    return result;
+  }
+
+  // Enrich only the PRs we'd potentially ingest (skip drafts and
+  // dispatcher-owned branches). Saves gh calls.
+  const enriched = summaries.map((s) => {
+    if (s.isDraft || s.headRefName.startsWith('swarm/')) return s;
+    return enrichPr(opts.repo, s);
+  });
+
+  const running = await listRunningReviewGraphWorkflows(opts.client);
+  const decisions = pickPrsToIngest(enriched, running);
+
+  for (const decision of decisions) {
+    switch (decision.kind) {
+      case 'skip':
+        result.skipped += 1;
+        log(JSON.stringify({
+          component: 'pr-event-ingester',
+          msg: 'skip',
+          pr: decision.pr.number,
+          reason: decision.reason,
+        }));
+        break;
+      case 'ingest_r0':
+        result.ingested_r0 += 1;
+        log(JSON.stringify({
+          component: 'pr-event-ingester',
+          msg: 'ingest_r0',
+          pr: decision.pr.number,
+          reasons: decision.reasons,
+        }));
+        break;
+      case 'ingest':
+        if (opts.dryRun) {
+          log(JSON.stringify({
+            component: 'pr-event-ingester',
+            msg: 'would-ingest',
+            pr: decision.pr.number,
+            tier: decision.starting_tier,
+            reasons: decision.reasons,
+          }));
+          result.ingested += 1;
+          break;
+        }
+        try {
+          const enqResult = await enqueueReviewGraph({
+            client: opts.client,
+            taskQueue: opts.taskQueue,
+            parent_workflow_id: parentWorkflowIdForPr(decision.pr.number),
+            pr_url: decision.pr.url,
+            worktree: undefined,                  // ingester has no worktree
+            // Pass through the PrMeta we already classified — without
+            // this, enqueueReviewGraph rebuilds from the (empty)
+            // worktree and the §5 trigger matrix re-runs against
+            // diff_loc=0 / files_changed=0 / no Copilot count, so
+            // every ingested PR collapses back to R0→R1. Threading
+            // pr_meta keeps the R2/R3/T5 escalations the ingester
+            // computed in pickPrsToIngest().
+            pr_meta: decision.pr_meta,
+            entry: synthesizeBacklogEntry(decision.pr),
+            repo: opts.repo,
+            log,
+          });
+          if (enqResult.enqueued) {
+            result.ingested += 1;
+            log(JSON.stringify({
+              component: 'pr-event-ingester',
+              msg: 'ingested',
+              pr: decision.pr.number,
+              workflow_id: enqResult.workflow_id,
+              tier: decision.starting_tier,
+            }));
+          } else {
+            result.errors += 1;
+            log(JSON.stringify({
+              component: 'pr-event-ingester',
+              msg: 'enqueue-failed',
+              pr: decision.pr.number,
+              error: enqResult.error,
+            }));
+          }
+        } catch (err) {
+          result.errors += 1;
+          log(JSON.stringify({
+            component: 'pr-event-ingester',
+            msg: 'enqueue-threw',
+            pr: decision.pr.number,
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        }
+        break;
+    }
+  }
+
+  log(JSON.stringify({
+    component: 'pr-event-ingester',
+    msg: 'tick-complete',
+    ...result,
+  }));
+
+  return result;
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const dryRun = args.includes('--dry-run');
+  const repoIdx = args.indexOf('--repo');
+  const repoFromFlag = repoIdx >= 0 ? args[repoIdx + 1] : undefined;
+  const repo = repoFromFlag ?? defaultRepo();
+
+  const connection = await Connection.connect({ address: '127.0.0.1:7233' });
+  try {
+    const client = new Client({ connection, namespace: 'default' });
+    const result = await runIngesterTick({ client, taskQueue: TASK_QUEUE, repo, dryRun });
+    if (result.errors > 0) {
+      process.exit(1);
+    }
+  } finally {
+    await connection.close();
+  }
+}
+
+function defaultRepo(): string {
+  const out = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], {
+    encoding: 'utf8',
+  });
+  return out.trim();
+}
+
+const isCli = fileURLToPath(import.meta.url) === process.argv[1];
+if (isCli) {
+  main().catch((err: unknown) => {
+    console.error(JSON.stringify({
+      component: 'pr-event-ingester',
+      msg: 'fatal',
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    process.exit(1);
+  });
+}
