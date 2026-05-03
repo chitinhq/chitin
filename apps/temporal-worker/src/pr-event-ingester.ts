@@ -294,21 +294,50 @@ export async function listRunningReviewGraphWorkflows(client: Client): Promise<S
 /**
  * Query Temporal for currently-running peer-reviewer + comment-
  * responder workflow ids. Both share the executeRequestWorkflow type;
- * we filter by workflow_id prefix instead of WorkflowType. Same
- * dedup purpose as listRunningReviewGraphWorkflows.
+ * we filter by workflow_id prefix in-process (NOT in the visibility
+ * query) because `STARTS_WITH` + boolean OR in visibility queries
+ * isn't uniformly supported across Temporal visibility backends —
+ * the default SQLite backend in particular rejects it. (Copilot
+ * review #211 #3.)
+ *
+ * Failure mode: if the visibility query throws (backend down, schema
+ * drift, etc.), this returns an empty set and logs a warn line
+ * rather than letting the entire ingester tick fail. Treating "no
+ * running agents" on query failure means the ingester might
+ * dispatch a duplicate peer-reviewer for one tick — which Temporal
+ * itself rejects via stable workflow id, since peer-review-pr-<n>
+ * is a unique-by-PR id. Fail-open here is bounded.
  */
-export async function listRunningAgentWorkflows(client: Client): Promise<Set<string>> {
+export async function listRunningAgentWorkflows(
+  client: Client,
+  log?: (line: string) => void,
+): Promise<Set<string>> {
   const ids = new Set<string>();
-  // Match both `peer-review-pr-*` and `comment-respond-pr-*` workflow
-  // ids. These are spawned via executeRequestWorkflow by the
-  // peer-reviewer + comment-responder dispatch helpers.
-  const iter = client.workflow.list({
-    query:
-      `WorkflowType="${EXECUTE_REQUEST_WORKFLOW_NAME}" AND ExecutionStatus="Running" ` +
-      `AND (WorkflowId STARTS_WITH "peer-review-pr-" OR WorkflowId STARTS_WITH "comment-respond-pr-")`,
-  });
-  for await (const wf of iter) {
-    ids.add(wf.workflowId);
+  try {
+    const iter = client.workflow.list({
+      query: `WorkflowType="${EXECUTE_REQUEST_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
+    });
+    for await (const wf of iter) {
+      const id = wf.workflowId;
+      // Filter to the agent ids in-process (peer-review-pr-* and
+      // comment-respond-pr-*) so the visibility query stays
+      // backend-portable.
+      if (id.startsWith('peer-review-pr-') || id.startsWith('comment-respond-pr-')) {
+        ids.add(id);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'warn',
+      component: 'pr-event-ingester',
+      msg: 'listRunningAgentWorkflows failed; treating as empty',
+      error: msg,
+    });
+    if (log) log(line);
+    else console.warn(line);
+    return new Set();
   }
   return ids;
 }
@@ -368,7 +397,7 @@ export async function runIngesterTick(opts: {
   });
 
   const running = await listRunningReviewGraphWorkflows(opts.client);
-  const runningAgents = await listRunningAgentWorkflows(opts.client);
+  const runningAgents = await listRunningAgentWorkflows(opts.client, log);
   const decisions = pickPrsToIngest(enriched, running);
 
   for (const decision of decisions) {

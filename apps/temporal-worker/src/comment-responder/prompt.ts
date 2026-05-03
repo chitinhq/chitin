@@ -61,11 +61,17 @@ YOUR WORKFLOW (one tool call per step where possible):
    would otherwise pick up an empty worktree and produce a bogus no-op
    PR. Bail before that happens.
 
-1. Use the \`exec\` tool to checkout the PR's branch:
+1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** You're
+   running in an empty tempdir (no git repo, no working clone), so
+   \`gh pr checkout <pr_number>\` would fail with "not in a git repo."
+   Clone the repo first into the cwd, then check out the PR's branch:
    \`\`\`
+   gh repo clone <owner>/<repo> .
    gh pr checkout <pr_number>
    \`\`\`
-   (pr_number from ENTRY DETAIL above.)
+   The first command clones into \`.\` (cwd); the second switches the
+   worktree to the PR's branch so subsequent edits + commits land
+   on it.
 
 2. Pull all unresolved inline comments:
    \`\`\`
@@ -119,8 +125,8 @@ YOUR WORKFLOW (one tool call per step where possible):
    what GitHub uses to mark threads as resolved/replied so future
    dispatches don't reprocess them.
 
-7. Post a summary comment on the PR via \`gh pr comment <pr_number>\` with
-   the following structure (one bullet per inline comment evaluated):
+7. Post a summary comment on the PR via \`gh pr comment --repo <owner>/<repo> <pr_number>\`
+   with the following structure (one bullet per inline comment evaluated):
 
    \`\`\`
    ### comment-responder summary
