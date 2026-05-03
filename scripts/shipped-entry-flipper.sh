@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Auto-flipper: scan recent merged PRs, find backlog entries whose
+# id appears in the PR title, flip their status from `ready` to
+# `partial` so the dispatcher stops re-dispatching them.
+#
+# Closes the recurrence of today's incident (4 swarm PRs closed
+# 2026-05-03 evening for being regressive stubs against entries that
+# were already implemented by hand-merged PRs).
+#
+# Modes:
+#   default (no args)  → dry-run, log what WOULD flip
+#   --apply            → actually edit + commit + push as a PR
+#
+# Designed to run via chitin-shipped-entry-flipper.timer with --apply.
+# The dry-run default lets the operator inspect manually first.
+
+set -euo pipefail
+
+REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+DAYS="${CHITIN_FLIPPER_DAYS:-7}"
+LOG="${CHITIN_FLIPPER_LOG:-$HOME/.cache/chitin/shipped-entry-flipper.jsonl}"
+APPLY=0
+[[ "${1:-}" == "--apply" ]] && APPLY=1
+
+mkdir -p "$(dirname "$LOG")"
+
+emit() {
+  local kind="$1" msg="$2"
+  shift 2
+  local extras=""
+  while (($#)); do
+    local k="${1%%=*}" v="${1#*=}"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    extras+=",\"${k}\":\"${v}\""
+    shift
+  done
+  printf '{"ts":"%s","kind":"%s","msg":"%s"%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$kind" "$msg" "$extras" \
+    | tee -a "$LOG" >&2
+}
+
+cd "$REPO"
+
+# Pull main fresh (fail open if it doesn't fast-forward — operator
+# would have manual changes worth preserving)
+if ! git pull --ff-only --quiet origin main 2>/dev/null; then
+  emit warn "git pull --ff-only failed; using local main HEAD"
+fi
+
+# List merged PRs from the last DAYS days
+since=$(date -u -d "-${DAYS} days" +%Y-%m-%d)
+prs_json=$(gh pr list --state merged --search "merged:>${since}" --json number,title,mergedAt --limit 100 2>/dev/null || echo "[]")
+
+# Extract entry-ids from backlog (heading lines `### \`<id>\``)
+declare -A entries_by_id
+declare -A entry_status
+while IFS= read -r line; do
+  # Heading: `### \`<id>\``
+  if [[ "$line" =~ ^\#\#\#\ \`([^\`]+)\` ]]; then
+    cur_id="${BASH_REMATCH[1]}"
+    entries_by_id["$cur_id"]=1
+  fi
+  # Status line within the entry's frontmatter
+  if [[ "$line" =~ ^status:\ ([a-z_]+) ]] && [[ -n "${cur_id:-}" ]]; then
+    entry_status["$cur_id"]="${BASH_REMATCH[1]}"
+    cur_id=""
+  fi
+done < docs/swarm-backlog.md
+
+emit info "scanned" "entries=${#entries_by_id[@]}" "since=$since" "apply=$APPLY"
+
+# For each merged PR title, find any entry-id substring match.
+# FILTER: skip entry-FILING PR titles (backlog:, auto:, docs:) —
+# those add the entry without shipping the work. Only count
+# IMPLEMENTATION PRs: feat:, fix:, swarm:, refactor:, perf:, chore:.
+candidates=()
+echo "$prs_json" | jq -r '.[] | "\(.number)|\(.mergedAt)|\(.title)"' | while IFS='|' read -r num merged_at title; do
+  # Skip non-implementation prefixes
+  if [[ "$title" =~ ^(backlog|auto|docs?|test): ]]; then
+    continue
+  fi
+  for id in "${!entries_by_id[@]}"; do
+    # Match if the id appears in the PR title (substring)
+    if [[ "$title" == *"$id"* ]]; then
+      cur_status="${entry_status[$id]:-unknown}"
+      if [[ "$cur_status" == "ready" ]]; then
+        emit candidate "would-flip-ready-to-partial" "entry=$id" "pr=#$num" "merged_at=$merged_at" "title=$title"
+        echo "$id|#$num"
+      else
+        emit info "skip-not-ready" "entry=$id" "pr=#$num" "current_status=$cur_status"
+      fi
+    fi
+  done
+done > /tmp/flipper-candidates.txt
+
+candidate_count=$(wc -l < /tmp/flipper-candidates.txt | tr -d ' ')
+
+if (( candidate_count == 0 )); then
+  emit ok "no-candidates" "msg=no ready entries match recent merged PR titles"
+  rm -f /tmp/flipper-candidates.txt
+  exit 0
+fi
+
+if (( APPLY == 0 )); then
+  emit ok "dry-run-complete" "candidates=$candidate_count" "msg=re-run with --apply to commit"
+  echo "Candidates (dry-run, no edits made):"
+  cat /tmp/flipper-candidates.txt
+  rm -f /tmp/flipper-candidates.txt
+  exit 0
+fi
+
+# Apply mode: edit the backlog file in-place
+branch="auto/shipped-entry-flipper-$(date +%Y%m%d-%H%M%S)"
+git checkout -b "$branch"
+
+flipped_ids=()
+while IFS='|' read -r id pr; do
+  # Find the line `id: <id>` and the next line `tier: ...` then
+  # `status: ready` — flip to `status: partial`. Use awk for
+  # precise in-block replacement.
+  if awk -v target="$id" '
+    /^id: / { in_block = ($2 == target); next_status_to_flip = 0 }
+    in_block && /^status: ready$/ { print "status: partial"; flipped = 1; next }
+    { print }
+    END { exit (flipped ? 0 : 1) }
+  ' docs/swarm-backlog.md > /tmp/swarm-backlog.new && mv /tmp/swarm-backlog.new docs/swarm-backlog.md; then
+    flipped_ids+=("$id ($pr)")
+    emit ok "flipped" "entry=$id" "pr=$pr"
+  else
+    emit warn "flip-failed-no-status-ready" "entry=$id" "pr=$pr"
+  fi
+done < /tmp/flipper-candidates.txt
+rm -f /tmp/flipper-candidates.txt
+
+if (( ${#flipped_ids[@]} == 0 )); then
+  emit ok "no-flips-applied" "msg=all candidates were already non-ready"
+  git checkout main
+  git branch -D "$branch"
+  exit 0
+fi
+
+# Commit + push + PR
+git add docs/swarm-backlog.md
+body="Auto-generated by chitin-shipped-entry-flipper.
+
+The following backlog entries are flipped from \`status: ready\` to \`status: partial\` because their entry-id appears in a recently-merged PR's title (within the last $DAYS days). \`partial\` is the honest status — the dispatcher stops re-dispatching, but acceptance criteria may still have unshipped items the operator should review.
+
+Flipped:
+$(printf -- '- %s\n' "${flipped_ids[@]}")
+
+If any of these are wrong, revert + investigate why the title matched without the work shipping."
+
+git commit -m "auto: flip $(echo ${#flipped_ids[@]}) backlog entries ready→partial (recent merged PRs)" -m "$body"
+git push -u origin "$branch"
+gh pr create --title "auto: flip ${#flipped_ids[@]} entries ready→partial (shipped-entry-flipper)" --body "$body"
+emit ok "pr-opened" "branch=$branch" "flipped_count=${#flipped_ids[@]}"
