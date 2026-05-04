@@ -30,13 +30,16 @@ When ``--role`` is omitted, the report covers all roles. Output is
 markdown grouped by (role, task_class).
 
 Match-outcome rules (per-row in the fingerprint_outcomes table):
-- "Success" = ``allow_count > 0`` (chain side) OR ``pr_opened_count > 0`` (swarm-runs side)
-- "Failure" = ``deny_count`` + ``lockdown_count`` + ``bucket_b_count``
-- "Draw" / unmapped = neither (rare; doesn't update ELO)
+- ``wins = allow_count + pr_opened_count`` (chain successes + swarm-runs successes)
+- ``losses = deny_count + lockdown_count + bucket_b_count``
 
-The matches are derived by treating each dispatch as a match. A
-fingerprint with 10 successes and 3 failures plays 13 matches. Win/loss
-order within a fingerprint is deterministic (wins first, then losses).
+Each integer in those counts contributes one match to the
+fingerprint's tournament. A row with allow_count=10 + pr_opened_count=3
++ deny_count=2 yields 13 wins and 2 losses → 15 total matches.
+
+Win/loss order within a fingerprint is deterministic — Bresenham-style
+interleaving so a 50/50 record stays near baseline rather than
+swinging through wins-first-then-losses. See ``compute_elo`` docstring.
 """
 from __future__ import annotations
 
@@ -98,16 +101,21 @@ class FingerprintRow:
 def derive_match_record(row: FingerprintRow) -> tuple[int, int]:
     """Return (wins, losses) for the fingerprint's pseudo-tournament.
 
-    Wins: any successful dispatch — allow_count + pr_opened_count.
-    Losses: deny + lockdown + bucket_b.
+    Wins: ``allow_count + pr_opened_count`` — chain successes plus
+    swarm-runs successes. Each side is its own count of distinct
+    matches; we deliberately do not de-duplicate, because a chain
+    decision and a swarm-runs PR-open are different events even when
+    they belong to the same workflow_id.
 
-    The chain side and swarm-runs side don't always overlap on the same
-    dispatches; when both fire for the same fingerprint we count each
-    success/failure once. ``min(allow, dispatch)`` clamps in case of
-    pre-P2 rows where allow_count was filled in but dispatch_count
-    underflowed (rare; defensive).
+    Losses: ``deny_count + lockdown_count + bucket_b_count``.
+
+    Pre-P2 rows where dispatch_count is zero but pr_opened_count is
+    non-zero (swarm-only bucket) are honored: the swarm-runs successes
+    still count as wins. The previous cap that mistakenly used
+    dispatch_count would have under-counted these — fixed per Copilot
+    review on #296.
     """
-    successes = min(row.allow_count + row.pr_opened_count, max(row.dispatch_count, 1) * 2)
+    successes = row.allow_count + row.pr_opened_count
     failures = row.deny_count + row.lockdown_count + row.bucket_b_count
     return (successes, failures)
 
@@ -144,10 +152,24 @@ def compute_elo(wins: int, losses: int) -> float:
     "loss." This is the same pattern as Bresenham's line algorithm
     for proportional event placement. Equivalent to sorted-by-fraction
     interleave but cheaper and integer-only.
+
+    Edge cases (per Copilot review on #296): when one side is zero,
+    the proportional-emit condition can mis-classify because both sides
+    of the inequality go to zero. Explicit handling: if losses==0,
+    emit only wins; if wins==0, emit only losses. Verified by test
+    cases at (N, 0), (0, N), (1, 0), (0, 1).
     """
     rating = BASELINE_RATING
     total = wins + losses
     if total == 0:
+        return rating
+    if losses == 0:
+        for _ in range(wins):
+            rating = apply_match(rating, 1.0, OPPONENT_RATING)
+        return rating
+    if wins == 0:
+        for _ in range(losses):
+            rating = apply_match(rating, 0.0, OPPONENT_RATING)
         return rating
     wins_emitted = 0
     losses_emitted = 0
@@ -183,6 +205,12 @@ def load_rows(db_path: Path, role_filter: Optional[str] = None) -> list[Fingerpr
         )
         if cur.fetchone() is None:
             return []
+        # Explicit ORDER BY so re-runs over the same DB yield identical
+        # markdown output. Without this, sqlite returns rows in
+        # insertion-order which is fine but not contractual; tests + the
+        # determinism guarantee in the module docstring rely on a stable
+        # order. Sort by (role, task_class, fingerprint, model) — a
+        # composite key guaranteed unique by the table's PRIMARY KEY.
         sql = (
             "SELECT fingerprint, model, role, task_class, "
             "dispatch_count, allow_count, deny_count, lockdown_count, "
@@ -191,8 +219,10 @@ def load_rows(db_path: Path, role_filter: Optional[str] = None) -> list[Fingerpr
         )
         if role_filter is not None:
             sql += " WHERE role = ?"
+            sql += " ORDER BY role, task_class, fingerprint, model"
             cur.execute(sql, (role_filter,))
         else:
+            sql += " ORDER BY role, task_class, fingerprint, model"
             cur.execute(sql)
         for r in cur.fetchall():
             rows.append(FingerprintRow(*r))
@@ -302,7 +332,12 @@ def render_leaderboard(
 
     for (role, task_class) in bucket_keys:
         bucket = by_bucket[(role, task_class)]
-        bucket.sort(key=lambda e: -e.elo)
+        # Stable sort: primary by ELO desc, then fingerprint + model + dispatch
+        # count to break ties at baseline (where many entries cluster). Without
+        # the tiebreaker, ties produced report churn between runs.
+        bucket.sort(
+            key=lambda e: (-e.elo, e.fingerprint, e.model, -e.dispatch_count)
+        )
 
         lines.append(f"## `{role}` × `{task_class}`")
         lines.append("")
@@ -314,7 +349,12 @@ def render_leaderboard(
         for e in bucket:
             fp = e.fingerprint or "(none)"
             model = e.model or "(none)"
-            cost_per = f"${e.cost_per_success:.4f}" if e.cost_per_success else "—"
+            # `is not None` (not truthiness) so a real $0.00 cost renders as
+            # "$0.0000" rather than the missing-data dash — matters for free-
+            # tier copilot runs where cost is genuinely zero.
+            cost_per = (
+                f"${e.cost_per_success:.4f}" if e.cost_per_success is not None else "—"
+            )
             lines.append(
                 f"| **{e.elo:.0f}** | `{fp}` | `{model}` | "
                 f"{e.dispatch_count} | {e.wins}-{e.losses} | "

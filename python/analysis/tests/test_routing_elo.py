@@ -90,6 +90,34 @@ def test_compute_elo_equal_wins_losses_returns_close_to_baseline() -> None:
     assert abs(rating - BASELINE_RATING) < 100  # within ~6% of baseline
 
 
+def test_compute_elo_only_wins_strictly_above_baseline() -> None:
+    """No-loss edge case (Copilot review #296): the Bresenham
+    interleaving condition can mis-classify when one side is zero.
+    Explicit handling: N wins + 0 losses applies N win-updates,
+    rating is strictly higher than baseline."""
+    rating = compute_elo(10, 0)
+    assert rating > BASELINE_RATING
+
+
+def test_compute_elo_only_losses_strictly_below_baseline() -> None:
+    """Symmetric no-win edge case."""
+    rating = compute_elo(0, 10)
+    assert rating < BASELINE_RATING
+
+
+def test_compute_elo_one_win_zero_loss_increases_rating() -> None:
+    """Smallest win-only case (1, 0): one apply_match win update."""
+    rating = compute_elo(1, 0)
+    # K=32, expected=0.5 against equal opponent → +16
+    assert rating == pytest.approx(BASELINE_RATING + 16)
+
+
+def test_compute_elo_zero_win_one_loss_decreases_rating() -> None:
+    """Smallest loss-only case (0, 1)."""
+    rating = compute_elo(0, 1)
+    assert rating == pytest.approx(BASELINE_RATING - 16)
+
+
 # ─── Match derivation ─────────────────────────────────────────────────────
 
 
@@ -135,6 +163,31 @@ def test_derive_match_record_counts_lockdown_and_bucket_b_as_losses() -> None:
     wins, losses = derive_match_record(row)
     assert wins == 3
     assert losses == 4  # 1 deny + 1 lockdown + 2 bucket_b
+
+
+def test_derive_match_record_swarm_only_bucket_with_zero_dispatch_count() -> None:
+    """Pre-P2 / swarm-only rows have dispatch_count=0 but pr_opened_count
+    or bucket_b_count from the swarm-runs side. The previous capped
+    derivation under-counted these — fixed per Copilot #296."""
+    row = FingerprintRow(
+        fingerprint="",
+        model="haiku",
+        role="programmer",
+        task_class="",
+        dispatch_count=0,  # zero chain decisions
+        allow_count=0,
+        deny_count=0,
+        lockdown_count=0,
+        pr_opened_count=8,  # but 8 successful PRs from swarm-runs
+        bucket_b_count=2,
+        total_cost_usd=0.0,
+        mean_duration_ms=0.0,
+        first_seen_ts=None,
+        last_seen_ts=None,
+    )
+    wins, losses = derive_match_record(row)
+    assert wins == 8  # not capped to 0 * 2 = 0
+    assert losses == 2
 
 
 # ─── Sqlite read ──────────────────────────────────────────────────────────
