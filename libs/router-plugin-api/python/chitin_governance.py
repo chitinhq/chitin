@@ -73,8 +73,16 @@ def gate_action(
     raise_on_deny: bool = True,
     kernel_binary: str = 'chitin-kernel',
     timeout_s: float = 5.0,
+    require_policy: bool = False,
 ) -> GateDecision:
     """Run a hypothetical action through the chitin kernel gate.
+
+    Args:
+        require_policy: when True, pass --require-policy to the
+            kernel so that running outside any chitin.yaml-resolved
+            scope is treated as deny (strict mode). Default False
+            preserves the kernel's documented fail-open-on-no-policy
+            behavior, matching the rest of the chitin hook surface.
 
     Returns a GateDecision; raises GateBlocked when raise_on_deny=True
     and the kernel denies. Falls open (allow) if the kernel binary is
@@ -90,9 +98,12 @@ def gate_action(
         payload['session_id'] = session_id
     if cwd:
         payload['cwd'] = cwd
+    cmd = [kernel_binary, 'gate', 'evaluate', '--hook-stdin', f'--agent={agent}']
+    if require_policy:
+        cmd.append('--require-policy')
     try:
         result = subprocess.run(
-            [kernel_binary, 'gate', 'evaluate', '--hook-stdin', f'--agent={agent}'],
+            cmd,
             input=json.dumps(payload),
             capture_output=True,
             text=True,

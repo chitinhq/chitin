@@ -67,6 +67,14 @@ export interface GateActionInput {
   raiseOnDeny?: boolean;
   kernelBinary?: string;
   timeoutMs?: number;
+  /**
+   * When true, pass --require-policy to the kernel so that running
+   * outside any chitin.yaml-resolved scope is treated as deny
+   * (strict mode). Default false preserves the kernel's documented
+   * fail-open-on-no-policy behavior, matching the rest of the
+   * chitin hook surface.
+   */
+  requirePolicy?: boolean;
 }
 
 /**
@@ -85,6 +93,7 @@ export async function gateAction(input: GateActionInput): Promise<GateDecision> 
     raiseOnDeny = true,
     kernelBinary = 'chitin-kernel',
     timeoutMs = 5000,
+    requirePolicy = false,
   } = input;
 
   const payload: Record<string, unknown> = {
@@ -107,11 +116,9 @@ export async function gateAction(input: GateActionInput): Promise<GateDecision> 
       }
     };
 
-    const child = spawn(
-      kernelBinary,
-      ['gate', 'evaluate', '--hook-stdin', `--agent=${agent}`],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const args = ['gate', 'evaluate', '--hook-stdin', `--agent=${agent}`];
+    if (requirePolicy) args.push('--require-policy');
+    const child = spawn(kernelBinary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString('utf8')));

@@ -1,6 +1,7 @@
 packages:
   - 'libs/*'
   - 'libs/adapters/*'
+  - 'libs/router-plugin-api/typescript'
   - 'apps/*'
   - 'go/*'
   - 'tools/*'

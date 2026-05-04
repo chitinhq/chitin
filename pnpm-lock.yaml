@@ -173,6 +173,8 @@ importers:
 
   libs/mcp-chitin: {}
 
+  libs/router-plugin-api/typescript: {}
+
   libs/scheduler:
     dependencies:
       better-sqlite3:
