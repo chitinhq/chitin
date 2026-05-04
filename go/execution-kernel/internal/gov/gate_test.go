@@ -264,3 +264,63 @@ func TestGate_CallerOriginStampedOnLockdown(t *testing.T) {
 		t.Errorf("CallerOrigin must be stamped on lockdown path")
 	}
 }
+
+func TestGate_FingerprintStampedOnAllow(t *testing.T) {
+	// P2 routing-as-learning-system: Decision rows must carry the
+	// fingerprint dims when the Gate is constructed with them. Allow
+	// path goes through the main Evaluate flow.
+	g, _ := newTestGate(t)
+	g.Fingerprint = FingerprintContext{
+		Model:       "claude-haiku-4-5",
+		Role:        "reviewer",
+		WorkflowID:  "swarm-test-1",
+		Fingerprint: "abc123def456",
+	}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Model != "claude-haiku-4-5" {
+		t.Errorf("Model: got %q, want claude-haiku-4-5", d.Model)
+	}
+	if d.Role != "reviewer" {
+		t.Errorf("Role: got %q, want reviewer", d.Role)
+	}
+	if d.WorkflowID != "swarm-test-1" {
+		t.Errorf("WorkflowID: got %q, want swarm-test-1", d.WorkflowID)
+	}
+	if d.Fingerprint != "abc123def456" {
+		t.Errorf("Fingerprint: got %q, want abc123def456", d.Fingerprint)
+	}
+}
+
+func TestGate_FingerprintStampedOnLockdown(t *testing.T) {
+	// Lockdown short-circuit must also stamp fingerprint dims so the
+	// audit row stays consistent regardless of which branch produced
+	// the Decision (#76 invariant — single OnDecision callsite — extends
+	// to fingerprint stamping).
+	g, _ := newTestGate(t)
+	g.Fingerprint = FingerprintContext{
+		Model:      "claude-opus-4-7",
+		Role:       "programmer",
+		WorkflowID: "swarm-locked-1",
+	}
+	for i := 0; i < 11; i++ {
+		g.Counter.RecordDenial("agent1", "fp", 1)
+	}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.RuleID != "lockdown" {
+		t.Fatalf("expected lockdown, got %s", d.RuleID)
+	}
+	if d.Model != "claude-opus-4-7" || d.Role != "programmer" || d.WorkflowID != "swarm-locked-1" {
+		t.Errorf("lockdown row missing fingerprint dims: %+v", d)
+	}
+}
+
+func TestGate_FingerprintEmptyByDefault(t *testing.T) {
+	// When Gate.Fingerprint is zero-value (no env vars set, or older
+	// callers that don't populate it), Decision rows have empty
+	// fingerprint fields and the JSON layer drops them via omitempty.
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Model != "" || d.Role != "" || d.WorkflowID != "" || d.Fingerprint != "" {
+		t.Errorf("expected empty fingerprint dims by default, got %+v", d)
+	}
+}
