@@ -310,6 +310,41 @@ function recordDispatchOutcome(
  * REAL, the reviewer chain catches the rest. Don't re-dispatch on
  * top of an already-pushed branch.
  */
+/**
+ * Check whether a backlog entry's id appears literally in the
+ * recent-merged-PR-subjects scan. Pure string match — backlog ids
+ * can contain regex metacharacters (e.g., `pr-event-ingester-1.0`
+ * has `.`), so we deliberately skip --grep and do an in-memory
+ * `includes` to avoid false matches AND `fatal: invalid regexp`
+ * errors that would silently disable the suppression.
+ *
+ * Exported for unit tests; not part of the public dispatcher API.
+ */
+export function entryIdInRecentSubjects(entryId: string, recentSubjects: string): boolean {
+  if (!entryId || !recentSubjects) return false;
+  // Per-line check rather than whole-blob includes — defends
+  // against an entry id that happens to appear as a substring of
+  // a longer entry id in a different subject (e.g., entry `foo`
+  // matching subject "swarm: foo-bar"). We require the id to
+  // appear as a discrete word: surrounded by start-of-line, end-
+  // of-line, or non-id characters ([^a-zA-Z0-9_-]).
+  const lines = recentSubjects.split('\n');
+  for (const line of lines) {
+    if (!line) continue;
+    let idx = 0;
+    while ((idx = line.indexOf(entryId, idx)) !== -1) {
+      const before = idx === 0 ? '' : line[idx - 1];
+      const afterIdx = idx + entryId.length;
+      const after = afterIdx >= line.length ? '' : line[afterIdx];
+      const beforeOk = before === '' || !/[a-zA-Z0-9_-]/.test(before);
+      const afterOk = after === '' || !/[a-zA-Z0-9_-]/.test(after);
+      if (beforeOk && afterOk) return true;
+      idx += 1;
+    }
+  }
+  return false;
+}
+
 export function classifyDispatchEscalation(marker: DispatchMarker | null): {
   kind: 'no-marker' | 'in-flight' | 'shipped' | 'exhausted' | 'escalate';
   nextTier?: Tier;
@@ -346,8 +381,52 @@ function pickEntryToDispatch(entries: BacklogEntry[]): PickedEntry | null {
   // network round trips per tick.
   gitFetchOriginRefs();
 
+  // Hoist the recent-PR-subjects scan to once-per-tick. Without this,
+  // every ready entry would spawn its own `git log` subprocess (N
+  // spawns per tick); on backlogs with dozens of ready entries that's
+  // expensive. Read once into memory, then in-memory `includes` per
+  // entry.
+  //
+  // Critical correctness notes (per Copilot review on #265):
+  //   - DROP `--merges`. Chitin uses squash-merge as the default; a
+  //     squash-merge produces a regular commit on main (no merge
+  //     parent), so `--merges` would miss every shipped entry whose
+  //     merge style is squash. Plain `git log` catches both.
+  //   - Use `origin/main` not local HEAD. `git fetch origin` updates
+  //     remote refs but doesn't touch HEAD; scanning HEAD would miss
+  //     any merged PRs since the last local pull.
+  //   - DROP the per-entry `--grep`. `--grep` treats the id as a
+  //     regex; backlog ids can contain regex metacharacters (dots,
+  //     parens) which silently mis-match. Read all subjects once,
+  //     then in-memory substring match per entry.
+  let recentSubjects = '';
+  try {
+    recentSubjects = git([
+      'log',
+      'origin/main',
+      '--since=14.days',
+      '--pretty=%s',
+    ]);
+  } catch (err) {
+    log('warn', 'failed recent-PR-subjects scan; shipped-entry dispatch suppression disabled this tick', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   for (const entry of entries) {
     if (entry.status !== 'ready') continue;
+
+    // Skip if a recent merged PR title literally contains the entry
+    // id (hand-merged/shipped). Defense-in-depth — the
+    // chitin-shipped-entry-flipper.timer is the primary mechanism
+    // for flipping `ready → partial` after a hand-merge, but it
+    // runs on a cadence; this dispatcher-side guard catches the
+    // window between hand-merge and the next flipper tick.
+    if (entryIdInRecentSubjects(entry.id, recentSubjects)) {
+      log('info', 'skip entry: recent merged PR title contains entry id (already shipped)', { entry_id: entry.id });
+      continue;
+    }
+
     // T5 is human-only — skip even if the schema permits it (it doesn't,
     // but the tier field on the file might).
     if (entry.tier === 'T5') {
