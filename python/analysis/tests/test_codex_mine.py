@@ -10,6 +10,7 @@ from analysis.codex_mine import (
     iter_session_events,
     sessions_in,
     _safe_chain_id_basename,
+    usage_to_feed,
     _to_action_type,
     _extract_target,
 )
@@ -257,3 +258,45 @@ def test_cli_ingest_sanitizes_malicious_chain_id(tmp_path: Path) -> None:
     assert len(files) == 1
     assert "escape" in files[0].name
     assert "/" not in files[0].name
+
+
+def test_usage_to_feed_codex_shape() -> None:
+    """The usage-feed schema chitin-budget reads must be stable.
+    Pin the field set + axis label so a future refactor doesn't
+    silently break the budget script."""
+    u = Usage(
+        driver="codex",
+        plan_type="plus",
+        primary_used_percent=12.5,
+        primary_window_minutes=300,
+        primary_resets_at=1777872999,
+        secondary_used_percent=1.2,
+        secondary_window_minutes=10080,
+        secondary_resets_at=1778459438,
+        rate_limit_reached_type=None,
+        last_observed_ts="2026-05-04T01:00:01Z",
+        sessions_observed=2,
+        function_calls_total=3,
+    )
+    feed = usage_to_feed(u)
+    assert feed["driver"] == "codex"
+    assert feed["axis"] == "quota_percent"
+    assert feed["plan_type"] == "plus"
+    assert feed["last_observed"] == "2026-05-04T01:00:01Z"
+    assert feed["calls_total"] == 3
+    assert feed["warnings"] == []  # not hit
+    assert len(feed["windows"]) == 2
+    primary = feed["windows"][0]
+    assert primary["label"] == "primary"
+    assert primary["used_percent"] == 12.5
+    assert primary["window_minutes"] == 300
+    assert primary["resets_at"] == 1777872999
+
+
+def test_usage_to_feed_emits_warning_on_rate_limit_hit() -> None:
+    """When rate_limit_reached_type is set, the feed must include
+    a warning so chitin-budget --check exits 1."""
+    u = Usage(driver="codex", rate_limit_reached_type="primary")
+    feed = usage_to_feed(u)
+    assert len(feed["warnings"]) == 1
+    assert "rate_limit_reached:primary" in feed["warnings"][0]

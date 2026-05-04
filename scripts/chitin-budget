@@ -24,6 +24,14 @@ set -euo pipefail
 
 ROLLUP_DIR="${CHITIN_SWARM_ROLLUP_DIR:-$HOME/.cache/chitin/swarm-rollups}"
 BUDGETS_FILE="${CHITIN_BUDGETS_FILE:-$HOME/.chitin/budgets.json}"
+# Usage feeds: per-driver JSON files in this directory. Schema
+# documented at scripts/chitin-budget-usage-schema.md. Each file
+# carries one of: axis=quota_percent (codex), axis=calls_count
+# (gemini), axis=rpm_tpm (ollama-cloud). chitin-budget reads
+# them into a "Quota / usage" section after the $-spend table
+# so subscription and rate-limited drivers have first-class
+# visibility alongside per-token-billed APIs.
+USAGE_FEED_DIR="${CHITIN_USAGE_FEED_DIR:-$HOME/.cache/chitin/usage}"
 
 mode="human"
 for arg in "$@"; do
@@ -127,13 +135,39 @@ build_data=$(jq -n \
 
 case "$mode" in
   json)
-    echo "$build_data"
+    # Merge $-spend rows + usage feeds into one envelope so
+    # programmatic consumers see both axes at once.
+    feeds_array='[]'
+    if [[ -d "$USAGE_FEED_DIR" ]] && compgen -G "$USAGE_FEED_DIR/*.json" >/dev/null 2>&1; then
+      feeds_array=$(jq -s '.' "$USAGE_FEED_DIR"/*.json 2>/dev/null || echo '[]')
+    fi
+    jq -n \
+      --argjson spend "$build_data" \
+      --argjson feeds "$feeds_array" \
+      '{spend: $spend, usage_feeds: $feeds}'
     ;;
   check)
     over_count=$(echo "$build_data" | jq '[.[] | select(.over_cap)] | length')
     if [[ "$over_count" -gt 0 ]]; then
       echo "$build_data" | jq -r '.[] | select(.over_cap) | "[OVER CAP] \(.driver): today=$\(.today_usd) (cap $\(.cap_daily // "—")), week=$\(.week_usd) (cap $\(.cap_weekly // "—"))"' >&2
       exit 1
+    fi
+    # Also fail if any usage feed reports a rate-limit-reached
+    # warning. Subscription drivers can be over their soft ceiling
+    # without an explicit $ cap; this catches that case.
+    if [[ -d "$USAGE_FEED_DIR" ]]; then
+      rl_hits=0
+      for feed in "$USAGE_FEED_DIR"/*.json; do
+        [[ -f "$feed" ]] || continue
+        warns=$(jq -r '(.warnings // []) | length' "$feed" 2>/dev/null || echo 0)
+        if [[ "$warns" -gt 0 ]]; then
+          driver=$(jq -r '.driver // "?"' "$feed")
+          warn_text=$(jq -r '.warnings | join(",")' "$feed")
+          echo "[RATE LIMIT] $driver: $warn_text" >&2
+          rl_hits=$((rl_hits + 1))
+        fi
+      done
+      [[ "$rl_hits" -gt 0 ]] && exit 1
     fi
     exit 0
     ;;
@@ -159,6 +193,51 @@ case "$mode" in
       printf "  %-25s %10s %10s %12s %12s %s\n" "$driver" "$today" "$week" "$capd" "$capw" "$status"
     done
     echo
+
+    # Quota / usage section — subscription drivers (codex, gemini),
+    # rate-limited drivers (ollama-cloud). Each driver's usage-feed
+    # JSON lives at $USAGE_FEED_DIR/<driver>.json and carries a
+    # normalized {axis, windows, warnings, ...} envelope.
+    if [[ -d "$USAGE_FEED_DIR" ]] && compgen -G "$USAGE_FEED_DIR/*.json" >/dev/null 2>&1; then
+      echo "  quota / usage (subscription + rate-limited drivers):"
+      for feed in "$USAGE_FEED_DIR"/*.json; do
+        [[ -f "$feed" ]] || continue
+        driver=$(jq -r '.driver // "?"' "$feed" 2>/dev/null)
+        axis=$(jq -r '.axis // "?"' "$feed" 2>/dev/null)
+        plan=$(jq -r '.plan_type // ""' "$feed" 2>/dev/null)
+        warns=$(jq -r '(.warnings // []) | join(",")' "$feed" 2>/dev/null)
+        case "$axis" in
+          quota_percent)
+            jq -r '.windows // [] | map("\(.label) " + (.used_percent | tostring) + "%") | join(", ")' "$feed" 2>/dev/null \
+              | while IFS= read -r summary; do
+                  marker=" "
+                  [[ -n "$warns" ]] && marker="⚠"
+                  printf "    %s %-22s %-7s %s\n" "$marker" "$driver" "$plan" "$summary"
+                done
+            ;;
+          calls_count)
+            count=$(jq -r '.calls_total // 0' "$feed" 2>/dev/null)
+            cap=$(jq -r '(.windows // [] | map(select(.cap)) | first | .cap // "—")' "$feed" 2>/dev/null)
+            marker=" "
+            [[ -n "$warns" ]] && marker="⚠"
+            printf "    %s %-22s %-7s calls=%s cap=%s\n" "$marker" "$driver" "$plan" "$count" "$cap"
+            ;;
+          rpm_tpm)
+            rpm=$(jq -r '.windows // [] | map(select(.label=="rpm")) | first.used_percent // 0' "$feed" 2>/dev/null)
+            tpm=$(jq -r '.windows // [] | map(select(.label=="tpm")) | first.used_percent // 0' "$feed" 2>/dev/null)
+            marker=" "
+            [[ -n "$warns" ]] && marker="⚠"
+            printf "    %s %-22s %-7s rpm=%s%% tpm=%s%%\n" "$marker" "$driver" "$plan" "$rpm" "$tpm"
+            ;;
+          *)
+            printf "    ? %-22s %-7s (unknown axis: %s)\n" "$driver" "$plan" "$axis"
+            ;;
+        esac
+        [[ -n "$warns" ]] && echo "      ⚠ $warns"
+      done
+      echo
+    fi
+
     if [[ ! -f "$BUDGETS_FILE" ]]; then
       echo "  (no caps configured; create $BUDGETS_FILE to set per-driver limits)"
     fi
