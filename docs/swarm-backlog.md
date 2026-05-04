@@ -5219,6 +5219,172 @@ only rm paths the worker unambiguously owns (`tmpdir()` prefix or
       rm'd, `SWARM_WORKTREES_ROOT/<id>` cleanup paths still work,
       `/etc` (or other arbitrary) paths log + skip
 
+## Routing-as-learning-system (filed 2026-05-04)
+
+The 2026-05-04 routing reshuffle (PR #285) shipped the static-config
+phase: deterministic tier→driver map, premium-multiplier-aware Copilot
+defaults, every account in rotation. The end goal is empirical: every
+dispatch fingerprinted, every outcome joined back, ELO-ranked
+configurations per role. These four entries are the path from
+"static heuristic" to "ELO board for agent configurations."
+
+See project memory `project_routing_as_learning_system.md` for the
+fingerprint vocabulary (driver, model, role, station_prompt, skills,
+soul_lens) + outcome dimensions (cost, efficacy per role).
+
+### `routing-fingerprint-helper`
+
+```yaml
+id: routing-fingerprint-helper
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: libs/contracts/src/fingerprint.ts (new), libs/contracts/src/execution-request.schema.ts, apps/temporal-worker/src/activity.ts
+references_finding: project_routing_as_learning_system.md (P2 phase)
+role: programmer
+```
+
+Phase 2 of the routing system. Add a canonical agent-fingerprint
+helper that produces a deterministic hash + the unhashed payload
+from the dimensions that define what an agent IS at run time:
+driver, model, role, station-prompt-hash, skills+tools-hash, soul-lens.
+
+Why canonical: the same configuration must always hash to the same
+fingerprint so the future ELO database joins. Sort lists before
+hashing. Use SHA-256 truncated to 12 hex chars.
+
+ExecutionRequest gains an optional `fingerprint` field. When the
+dispatcher builds an ExecutionRequest, it computes the fingerprint
+and embeds it. The activity layer surfaces the fingerprint in
+ActivityResult so the kernel can write it into chain dispatches.
+
+Soul lens: read from `CHITIN_ACTIVE_SOUL` env at dispatch time
+(souls in `~/.claude/CLAUDE.md` are operator-context; the dispatcher
+needs an explicit signal). When unset, fingerprint records `none`.
+
+**Acceptance:**
+- [ ] `computeFingerprint(...)` is canonical: same input → same hash
+- [ ] Fingerprint payload includes all 6 dimensions; missing dims
+      get an explicit `null` (not omitted) so the hash space is stable
+- [ ] ExecutionRequest's optional `fingerprint` field round-trips
+      through dispatcher → activity → ActivityResult
+- [ ] Unit tests pin canonical behavior + the include-null-dims rule
+- [ ] No breakage: 692+ existing tests pass
+
+### `chain-fingerprint-tagging`
+
+```yaml
+id: chain-fingerprint-tagging
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: ['routing-fingerprint-helper']
+file: go/execution-kernel/internal/gov/decision.go, go/execution-kernel/cmd/chitin-kernel/hook.go, apps/temporal-worker/src/activity.ts (writeback)
+references_finding: project_routing_as_learning_system.md (P2 phase)
+role: programmer
+```
+
+Plumb the fingerprint into chain writes so the learning system has
+data to join against. Today's gov-decisions JSONL captures `agent`,
+`tier`, `cost_usd` but NOT model, role, or workflow_id (verified
+2026-05-04: 0/5540 swarm-driven attribution because workflow_id was
+empty on every gate decision).
+
+After this entry: every gov-decisions row carries (driver, model,
+role, workflow_id, fingerprint). The kernel reads from PreToolUse
+hook payload (already includes agent + transcript_path + cwd; just
+need the dispatcher to add fingerprint to the spawn env, and the
+hook adapter to forward it).
+
+**Acceptance:**
+- [ ] gov-decisions JSONL rows after this lands include `model`,
+      `role`, `workflow_id`, `fingerprint` fields when the dispatch
+      sourced them
+- [ ] Backwards compatible: rows from existing dispatches (no
+      fingerprint env) still write without those fields, no error
+- [ ] Test fixture in go/execution-kernel/internal/gov/decision_test.go
+      asserts the new fields land in the JSONL row
+- [ ] After dogfooding 24h: gov-decisions for swarm dispatches show
+      non-empty workflow_id (was 0% pre-fix per audit)
+
+### `fingerprint-outcomes-recipe`
+
+```yaml
+id: fingerprint-outcomes-recipe
+tier: T3
+status: ready
+estimated_loc: 400
+blocks: ['chain-fingerprint-tagging']
+file: python/analysis/fingerprint_outcomes.py (new), python/analysis/__main__.py
+references_finding: project_routing_as_learning_system.md (P3 phase)
+role: programmer
+```
+
+Phase 3 of the routing system. New Python analysis recipe that joins
+chain dispatches (via fingerprint) to PR/review/merge outcomes (from
+swarm-runs stream + gh pr API). Materializes a sqlite table:
+`fingerprint × role × task_class → outcome metrics`.
+
+Outcome metrics per role:
+- programmer: first-review-pass rate, time-to-merge, escalation
+  count, bucket-B rate, scope-drift rate
+- reviewer: consensus-with-final-merge rate, parse rate, false-
+  positive rate (approve→reverted), false-negative rate
+  (request-changes when merged-as-is would have been fine)
+- researcher: entry-acceptance rate (filed → groomed → ready)
+
+Output: a sqlite materialized view + a markdown report at
+`python/analysis/out/fingerprint-outcomes-<YYYY-MM-DD>.md`. Tied
+into the existing `python -m analysis` CLI as a new subcommand.
+
+**Acceptance:**
+- [ ] Recipe runs against current chain + swarm-runs without errors,
+      produces a sqlite output and markdown report
+- [ ] Each row in the output has a fingerprint hash + the dimensions
+      it represents (so operator can read "haiku-4-5 + reviewer +
+      docs PRs = 92% consensus" not just an opaque hash)
+- [ ] Report sections per role (no global average — per-role only)
+- [ ] Idempotent: re-running picks up new dispatches without
+      duplicating prior data
+
+### `routing-elo-board`
+
+```yaml
+id: routing-elo-board
+tier: T3
+status: ready
+estimated_loc: 500
+blocks: ['fingerprint-outcomes-recipe']
+file: python/analysis/routing_elo.py (new), apps/cli/src/commands/elo.ts (new)
+references_finding: project_routing_as_learning_system.md (P4 phase)
+role: programmer
+```
+
+Phase 4 of the routing system. Pairwise ELO calculation per
+(role, task_class). Each outcome event is a "match" between the
+dispatched fingerprint and a baseline (the static-default fingerprint
+for the same role/tier at match-time). Wins/losses/draws update ELO
+scores. New `chitin elo --role <r>` CLI report shows the leaderboard.
+
+Why ELO and not flat success-rate: different fingerprints work
+different task-shapes. A flat table averages out strengths. ELO
+via pairwise outcome comparison reveals "haiku-4-5 with reviewer-
+lite skill set BEATS opus on small docs PRs" while the flat table
+just shows opus higher.
+
+**Acceptance:**
+- [ ] `chitin elo` CLI prints a leaderboard per (role, task_class)
+- [ ] ELO updates are deterministic and re-running on the same
+      input produces the same scores (no random init)
+- [ ] Test against synthetic outcome data: known-better fingerprint
+      converges higher; ties stay near baseline
+- [ ] Report shows the fingerprint dimensions, not just the hash,
+      so operator can understand WHY a config wins
+- [ ] Drift behavior documented: when the static-default baseline
+      changes (e.g., after a routing reshuffle), absolute ELO
+      numbers reset but the *relative* ranking carries forward
+
 ## Ecosystem opportunity — chain as the substrate (filed 2026-05-03 evening)
 
 ### `chitin-ecosystem-opportunity-rollup`
