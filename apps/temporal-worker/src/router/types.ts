@@ -91,7 +91,10 @@ export interface RouterPolicy {
       | 'kernel_denied'
     >;
     chain: { max_depth: number; tier_steps: string[] };
-    /** Model id (e.g., 'claude-code-headless', 'gemini-cli', 'openclaw-glm-flash'). */
+    /** Driver id from DriverIdSchema (e.g., 'claude-code-headless', 'copilot',
+     *  'codex', 'gemini', 'openclaw-glm-flash'). Despite the field name,
+     *  this is a driver id, not a model name — the actual model is resolved
+     *  per-driver from CHITIN_MODEL_<DRIVER>_<TIER> env or driver defaults. */
     model: string;
   };
 }
