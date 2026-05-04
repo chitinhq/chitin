@@ -133,6 +133,29 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
         args,
       };
     }
+    case 'codex': {
+      // OpenAI Codex CLI in non-interactive mode. The agent runs
+      // its own session loop internally and returns when complete.
+      // No PreToolUse hook (codex doesn't expose one), so chitin
+      // gates post-hoc via codex_mine ingest. For reviewer-tier
+      // use this is fine — reviewers don't push code (write_policy
+      // is 'none' on review requests).
+      //
+      // --json emits structured event lines so downstream can
+      // parse tool calls + completions. --cd points codex at the
+      // worktree (or req.repo when no worktree). -m sets model;
+      // CHATGPT Plus default is gpt-5.4.
+      const args = ['exec', '--json'];
+      const cwd = (req.base_ref ? '' : req.repo) || req.repo;
+      if (cwd) args.push('--cd', cwd);
+      const model = process.env.CHITIN_MODEL_CODEX ?? '';
+      if (model) args.push('-m', model);
+      args.push(req.prompt);
+      return {
+        command: 'codex',
+        args,
+      };
+    }
     case 'local-qwen':
     case 'local-glm':
     case 'local-glm-flash':

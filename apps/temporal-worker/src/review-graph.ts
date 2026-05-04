@@ -50,13 +50,25 @@ function maxTier(a: ReviewTier, b: ReviewTier): ReviewTier {
  * Format mirrors `TIER_DRIVER` in dispatcher.ts so a future caller
  * can pick the spawn args by reading this map alone.
  */
-export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; model: string | null }> = {
-  R0: { driver: null, model: null },                                          // GH bot, not dispatched
-  R1: { driver: 'copilot', model: 'gpt-4.1' },
-  R2: { driver: 'copilot', model: 'claude-sonnet-4.6' },
-  R3: { driver: 'claude-code-headless', model: 'claude-opus-4-7' },
-  R4: { driver: null, model: null },                                          // operator, not dispatched
-};
+export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; model: string | null }> = (() => {
+  // Operator can override per-tier driver via env. Useful for
+  // running codex (gpt-5.4 on Plus) at R2 instead of copilot/sonnet,
+  // either as a permanent swap or as an A/B comparison. The env
+  // shape is CHITIN_REVIEWER_R<N>_DRIVER (= driver id) +
+  // CHITIN_REVIEWER_R<N>_MODEL (= model name override). When unset,
+  // defaults match the historical config below.
+  const pick = (tier: string, defaultDriver: string | null, defaultModel: string | null) => ({
+    driver: process.env[`CHITIN_REVIEWER_${tier}_DRIVER`] ?? defaultDriver,
+    model: process.env[`CHITIN_REVIEWER_${tier}_MODEL`] ?? defaultModel,
+  });
+  return {
+    R0: { driver: null, model: null },                                          // GH bot, not dispatched
+    R1: pick('R1', 'copilot', 'gpt-4.1'),
+    R2: pick('R2', 'copilot', 'claude-sonnet-4.6'),
+    R3: pick('R3', 'claude-code-headless', 'claude-opus-4-7'),
+    R4: { driver: null, model: null },                                          // operator, not dispatched
+  };
+})();
 
 /**
  * Per-tier resource bounds. R1 is fast + cheap (small diffs go through

@@ -54,6 +54,37 @@ describe('planInvocation', () => {
     expect(plan.args).not.toContain('main');
   });
 
+  it('dispatches codex via `codex exec --json`', () => {
+    const plan = planInvocation({
+      ...baseReq,
+      allowed_drivers: ['codex'],
+      repo: '/home/red/workspace/chitin',
+    });
+    expect(plan.command).toBe('codex');
+    expect(plan.args.slice(0, 2)).toEqual(['exec', '--json']);
+    expect(plan.args).toContain('--cd');
+    // Prompt should be the last arg
+    expect(plan.args[plan.args.length - 1]).toBe(baseReq.prompt);
+  });
+
+  it('codex respects CHITIN_MODEL_CODEX env override', () => {
+    const orig = process.env.CHITIN_MODEL_CODEX;
+    try {
+      process.env.CHITIN_MODEL_CODEX = 'gpt-5.5';
+      const plan = planInvocation({
+        ...baseReq,
+        allowed_drivers: ['codex'],
+        repo: '/home/red/workspace/chitin',
+      });
+      const idx = plan.args.indexOf('-m');
+      expect(idx).toBeGreaterThan(-1);
+      expect(plan.args[idx + 1]).toBe('gpt-5.5');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_MODEL_CODEX;
+      else process.env.CHITIN_MODEL_CODEX = orig;
+    }
+  });
+
   it('throws on an unknown driver (zod-bypassed input)', () => {
     const bad = { ...baseReq, allowed_drivers: ['gpt-5'] } as unknown as ExecutionRequest;
     expect(() => planInvocation(bad)).toThrow(/unknown driver/);
