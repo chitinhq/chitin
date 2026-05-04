@@ -229,4 +229,34 @@ describe('writeWorktreeIndex', () => {
     git(repoDir, ['worktree', 'remove', '--force', wt.path]);
     git(repoDir, ['branch', '-D', wt.branch]);
   });
+
+  it('hides only `.git` (not `.github` / `.gitignore`) from the top-level listing', () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    mkdirSync(join(wt.path, '.github'), { recursive: true });
+    writeFileSync(join(wt.path, '.gitignore'), 'node_modules\n');
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const idx = (require('node:fs') as typeof import('node:fs')).readFileSync(
+      join(wt.path, 'WORKTREE_INDEX.md'),
+      'utf8',
+    );
+    expect(idx).toContain('`.github`');
+    expect(idx).toContain('`.gitignore`');
+    // The .git metadata dir itself stays hidden.
+    expect(idx).not.toMatch(/`\.git`\s*$/m);
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
+
+  it('does not leak WORKTREE_INDEX.md into git status (per-worktree exclude is wired)', () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const status = git(wt.path, ['status', '--porcelain']);
+    // The index file MUST NOT show up — would otherwise be staged by
+    // the apply-step's `git add -A` and leak into PRs.
+    expect(status).not.toContain('WORKTREE_INDEX.md');
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
 });

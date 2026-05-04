@@ -301,8 +301,10 @@ function writeWorktreeIndex(
   lines.push('## Top-level entries');
   lines.push('');
   try {
+    // Hide only the .git metadata dir — NOT .github / .gitignore / .gitattributes,
+    // which are real top-level entries the agent needs to know exist.
     const entries = readdirSync(worktreePath, { withFileTypes: true })
-      .filter((e) => !e.name.startsWith('.git'))
+      .filter((e) => e.name !== '.git')
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       lines.push(`- ${e.isDirectory() ? '📁' : '📄'} \`${e.name}\``);
@@ -378,6 +380,38 @@ function writeWorktreeIndex(
   lines.push('Auto-generated. Re-running provisionWorktree regenerates this file.');
 
   writeFileSync(join(worktreePath, 'WORKTREE_INDEX.md'), lines.join('\n') + '\n');
+
+  // Mark the index as ignored so the apply-step's `git add -A`
+  // doesn't stage it into PRs. Git only consults `info/exclude` in
+  // the COMMON git dir (worktrees share it via --git-common-dir),
+  // so writing there once covers every worktree of the parent repo.
+  // Side-effect: WORKTREE_INDEX.md in the operator's main checkout
+  // would also be hidden from status — acceptable since there's no
+  // reason to have one there.
+  //
+  // Idempotent: append the line only if not already present.
+  try {
+    const commonDir = execFileSync(
+      'git',
+      ['rev-parse', '--git-common-dir'],
+      { cwd: worktreePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    // git rev-parse may return a relative path — resolve relative
+    // to the worktree to get an absolute one.
+    const commonDirAbs = commonDir.startsWith('/') ? commonDir : join(worktreePath, commonDir);
+    const excludePath = join(commonDirAbs, 'info', 'exclude');
+    mkdirSync(join(commonDirAbs, 'info'), { recursive: true });
+    let prior = '';
+    if (existsSync(excludePath)) prior = readFileSync(excludePath, 'utf8');
+    if (!prior.split('\n').some((l) => l.trim() === 'WORKTREE_INDEX.md')) {
+      const next = (prior.endsWith('\n') || prior === '' ? prior : prior + '\n') + 'WORKTREE_INDEX.md\n';
+      writeFileSync(excludePath, next);
+    }
+  } catch {
+    // Best-effort: the index file is still useful even if exclude
+    // wiring fails. The apply step has its own checks for what to
+    // commit — this is defense-in-depth, not the only line.
+  }
 }
 
 // Slice 6b: write a per-workflow openclaw config dir that points the
