@@ -32,6 +32,7 @@ Agents reach for `&&`/`||` chains constantly — cheap state probing.
 
 ## Method
 
+- Group events from ALL `events-*.jsonl` by `chain_id` (the canonical session id) before mining. On this box, each `events-<run_id>.jsonl` file happens to map 1:1 to one chain_id, so the per-file analysis I shipped initially produced the same result. The grouping by chain_id is for robustness on environments where one session spans multiple run files (e.g., subagent dispatch, repeated hook invocations within one Claude session). Verified post-fix: 89 chain_ids across 89 files, none spanning.
 - Per session, extract ordered sequence of canonical "verbs" (action_type + abstracted target).
 - shell.exec target → first command + first non-flag arg (`gh pr view` → `gh-pr-view`); chains collapse to `shell-chain`.
 - file.read/write → `read-<ext>` / `edit-<ext>`.

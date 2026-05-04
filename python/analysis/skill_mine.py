@@ -1,5 +1,12 @@
 """Mine ~/.chitin/events-*.jsonl for repeated workflow patterns.
 
+Important: events files are keyed by `run_id`, NOT by session.
+Each hook invocation gets a fresh run_id, so a single Claude Code
+session spans many events-<run_id>.jsonl files. Mining n-grams
+per FILE fragments one real workflow into dozens of tiny sequences.
+This module groups events by `payload.chain_id` (the canonical
+session id) across all files before mining.
+
 Two-pass strategy:
   Pass 1 (coarse): action_type sequences. Useful only as a sanity
   check — confirms most coding sessions are file.read+shell.exec
@@ -87,13 +94,13 @@ def to_verb(action_type: str, target: str) -> str:
     return action_type or "unknown"
 
 
-def load_session(path: Path) -> tuple[list[str], list[tuple[str, str]]]:
-    seq: list[str] = []
-    pairs: list[tuple[str, str]] = []
+def iter_decision_events(path: Path):
+    """Yield (chain_id, ts, action_type, action_target) per decision.
+    Tolerant of malformed lines (skips them)."""
     try:
         data = path.read_text(errors="replace")
     except OSError:
-        return seq, pairs
+        return
     for line in data.splitlines():
         line = line.strip()
         if not line:
@@ -105,12 +112,32 @@ def load_session(path: Path) -> tuple[list[str], list[tuple[str, str]]]:
         if ev.get("event_type") != "decision":
             continue
         payload = ev.get("payload") or {}
+        # chain_id lives at the TOP level of the event (not in payload),
+        # see go/execution-kernel/internal/event/event.go.
+        chain_id = ev.get("chain_id") or ev.get("session_id") or ""
+        ts = ev.get("ts") or ""
         at = payload.get("action_type") or "unknown"
         tgt = payload.get("action_target") or ""
-        verb = to_verb(at, tgt)
-        seq.append(verb)
-        pairs.append((verb, tgt))
-    return seq, pairs
+        yield chain_id, ts, at, tgt
+
+
+def collect_sessions(events_files):
+    """Group decision events from ALL files by chain_id, ordered by ts.
+
+    Returns dict[chain_id -> list[(verb, target)]]. Sessions with no
+    chain_id (older log lines without it) are bucketed under "<unknown>"
+    so they aren't silently dropped — but ranked separately later.
+    """
+    by_chain: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for path in events_files:
+        for chain_id, ts, at, tgt in iter_decision_events(path):
+            cid = chain_id or "<unknown>"
+            by_chain[cid].append((ts, at, tgt))
+    sessions: dict[str, list[tuple[str, str]]] = {}
+    for cid, rows in by_chain.items():
+        rows.sort(key=lambda r: r[0])  # chronological
+        sessions[cid] = [(to_verb(at, tgt), tgt) for _, at, tgt in rows]
+    return sessions
 
 
 def ngrams(seq: list, n: int):
@@ -142,13 +169,14 @@ def main() -> int:
     total_decisions = 0
     verb_freq: Counter[str] = Counter()
 
-    for path in events_files:
-        seq, pairs = load_session(path)
+    chain_sessions = collect_sessions(events_files)
+    for chain_id, pairs in chain_sessions.items():
+        seq = [v for v, _ in pairs]
         if not seq:
             continue
         sessions_with_data += 1
         total_decisions += len(seq)
-        sid = path.stem.replace("events-", "")[:8]
+        sid = chain_id[:8] if chain_id != "<unknown>" else "<unknown>"
 
         for v in seq:
             verb_freq[v] += 1
