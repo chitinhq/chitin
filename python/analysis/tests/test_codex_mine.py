@@ -9,6 +9,7 @@ from analysis.codex_mine import (
     extract_usage,
     iter_session_events,
     sessions_in,
+    _safe_chain_id_basename,
     _to_action_type,
     _extract_target,
 )
@@ -162,3 +163,97 @@ def test_iter_session_events_handles_corrupt_lines(tmp_path: Path) -> None:
     # corrupt line skipped, others survive
     assert len(events) == 2  # task_start + 1 decision
     assert events[0].chain_id == "chain-A"
+
+
+def test_safe_chain_id_basename_strips_path_separators() -> None:
+    """Hostile or malformed session JSONL could have a payload.id
+    containing path separators or .. — basename must not let
+    that escape the configured out_dir."""
+    # 6 chars in "../../" → 6 underscores, plus 1 each for / between segments
+    assert _safe_chain_id_basename("../../etc/passwd", "fallback") == "______etc_passwd"
+    assert _safe_chain_id_basename("a/b/c", "fallback") == "a_b_c"
+    assert _safe_chain_id_basename("normal-uuid-123", "fallback") == "normal-uuid-123"
+    # All-bad → fallback
+    assert _safe_chain_id_basename("///", "fallback") == "fallback"
+    assert _safe_chain_id_basename("", "fallback") == "fallback"
+
+
+def test_sessions_in_rejects_non_directory(tmp_path: Path) -> None:
+    """If --sessions-dir points at a file (or other non-dir),
+    rglob would raise. sessions_in must defensively return []."""
+    f = tmp_path / "not-a-dir"
+    f.write_text("hi")
+    assert sessions_in(f) == []
+
+
+def test_cli_ingest_writes_codex_events(tmp_path: Path) -> None:
+    """End-to-end smoke for _cli_ingest: synthetic session in
+    sessions_dir → output file appears in out_dir with the
+    expected naming convention. Pins the CLI contract Copilot
+    flagged as untested."""
+    import subprocess
+    import sys
+
+    sessions_dir = tmp_path / "sessions" / "2026" / "05"
+    sessions_dir.mkdir(parents=True)
+    chain_id = "abc-123"
+    fixture = sessions_dir / f"rollout-test-{chain_id}.jsonl"
+    fixture.write_text(
+        json.dumps({"timestamp": "2026-05-04T00:30:37Z", "type": "session_meta",
+                    "payload": {"id": chain_id, "cwd": "/", "cli_version": "0.128.0"}}) + "\n"
+        + json.dumps({"timestamp": "2026-05-04T00:30:38Z", "type": "response_item",
+                      "payload": {"type": "function_call", "name": "exec_command",
+                                  "arguments": json.dumps({"command": "ls /tmp"})}}) + "\n"
+    )
+
+    out_dir = tmp_path / "out"
+    proc = subprocess.run(
+        [sys.executable, "-m", "analysis.codex_mine", "ingest",
+         f"--sessions-dir={tmp_path / 'sessions'}",
+         f"--out-dir={out_dir}"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"ingest failed: {proc.stderr}"
+
+    out_file = out_dir / f"codex-events-{chain_id}.jsonl"
+    assert out_file.exists(), f"expected {out_file}; saw {list(out_dir.glob('*'))}"
+    lines = [l for l in out_file.read_text().splitlines() if l.strip()]
+    assert len(lines) == 2  # task_start + 1 decision
+    decoded = [json.loads(l) for l in lines]
+    assert decoded[0]["chain_id"] == chain_id
+    assert decoded[1]["payload"]["action_type"] == "shell.exec"
+
+
+def test_cli_ingest_sanitizes_malicious_chain_id(tmp_path: Path) -> None:
+    """A session whose payload.id contains path separators must
+    NOT cause _cli_ingest to write outside out_dir."""
+    import subprocess
+    import sys
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    fixture = sessions_dir / "rollout-malicious.jsonl"
+    fixture.write_text(
+        json.dumps({"timestamp": "2026-05-04T00:30:37Z", "type": "session_meta",
+                    "payload": {"id": "../../escape", "cwd": "/"}}) + "\n"
+        + json.dumps({"timestamp": "2026-05-04T00:30:38Z", "type": "response_item",
+                      "payload": {"type": "function_call", "name": "exec_command",
+                                  "arguments": "{}"}}) + "\n"
+    )
+
+    out_dir = tmp_path / "out"
+    proc = subprocess.run(
+        [sys.executable, "-m", "analysis.codex_mine", "ingest",
+         f"--sessions-dir={sessions_dir}",
+         f"--out-dir={out_dir}"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"ingest failed: {proc.stderr}"
+    # The escape attempt must not have created files outside out_dir
+    parent = tmp_path
+    assert not (parent / "escape").exists()
+    # The file should land in out_dir with sanitized name
+    files = list(out_dir.iterdir())
+    assert len(files) == 1
+    assert "escape" in files[0].name
+    assert "/" not in files[0].name

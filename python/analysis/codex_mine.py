@@ -19,8 +19,8 @@ decision event (action_type/action_target shape) and rolls up
 the rate_limits into a per-driver usage record.
 
 Public API:
-    iter_session_events(path) -> list[ChainEvent]
-    extract_usage(path) -> Usage
+    iter_session_events(path) -> Iterable[ChainEvent]
+    extract_usage(paths: Iterable[Path]) -> Usage
     sessions_in(dir) -> list[Path]
 
 CLI:
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,8 +81,12 @@ class Usage:
 # ──────────────────────────────────────────────────────────────────
 
 def sessions_in(root: Path) -> list[Path]:
-    """Return all rollout-*.jsonl session files under root."""
-    if not root.exists():
+    """Return all rollout-*.jsonl session files under root.
+
+    Returns empty list when root is missing OR is a non-directory
+    path (file, broken symlink, etc.). rglob() on a non-directory
+    raises; defensive check keeps the function call-safe."""
+    if not root.exists() or not root.is_dir():
         return []
     return sorted(root.rglob("rollout-*.jsonl"))
 
@@ -316,10 +320,38 @@ def _cli_usage(args: argparse.Namespace) -> int:
     return 0
 
 
+_SAFE_CHAIN_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _safe_chain_id_basename(chain_id: str, fallback: str) -> str:
+    """Sanitize chain_id for use as a filename component.
+
+    Codex's session payload.id is normally a UUID, but a malformed
+    or hostile session JSONL could contain path separators / `..`
+    which would let _cli_ingest write outside out_dir. Replace
+    anything outside [a-zA-Z0-9_-] with `_`; fall back to the
+    file stem if the input is empty OR contains no allowlist chars
+    (e.g., "///" → all-underscore, no real id signal — use the
+    file stem instead so nothing gets written under an opaque name).
+    """
+    if not chain_id or not any(c.isalnum() or c in "_-" for c in chain_id):
+        return fallback
+    return _SAFE_CHAIN_ID_RE.sub("_", chain_id)
+
+
 def _cli_ingest(args: argparse.Namespace) -> int:
     """Project codex function_calls into chitin events JSONL.
-    Default output: ~/.chitin/codex-events-<chain_id>.jsonl per
-    session (matches the kernel's per-chain file convention)."""
+
+    Note: output files are named codex-events-<chain_id>.jsonl
+    in a SUBDIR (default: ~/.chitin/codex-ingest/) — NOT the
+    kernel's main events-*.jsonl convention. The kernel writes
+    full v2 envelopes; this projection is post-hoc and lighter
+    weight. Existing chitin telemetry tools (events list/tree/
+    replay) only scan the canonical events-*.jsonl pattern, so
+    keeping codex-events in a subdir avoids confusion + accidental
+    indexing of incomplete records. Future: emit through the
+    kernel's event API directly.
+    """
     root = Path(args.sessions_dir).expanduser()
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -330,7 +362,7 @@ def _cli_ingest(args: argparse.Namespace) -> int:
         events = list(iter_session_events(path))
         if not events:
             continue
-        chain_id = events[0].chain_id or path.stem
+        chain_id = _safe_chain_id_basename(events[0].chain_id, path.stem)
         out_path = out_dir / f"codex-events-{chain_id}.jsonl"
         with out_path.open("w") as fh:
             for ev in events:
@@ -356,7 +388,9 @@ def main(argv: list[str] | None = None) -> int:
 
     pi = sub.add_parser("ingest", help="project codex function_calls into chitin events JSONL")
     pi.add_argument("--sessions-dir", default=str(CODEX_SESSIONS_ROOT))
-    pi.add_argument("--out-dir", default="~/.chitin")
+    # Subdir keeps codex-events-*.jsonl out of the canonical
+    # events-*.jsonl namespace that chitin telemetry walks.
+    pi.add_argument("--out-dir", default="~/.chitin/codex-ingest")
     pi.set_defaults(func=_cli_ingest)
 
     args = p.parse_args(argv)
