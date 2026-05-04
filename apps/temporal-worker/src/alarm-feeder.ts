@@ -106,7 +106,7 @@ export function parseJournalForUnitFailures(output: string): SystemdUnitFailureE
       kind: 'systemd-unit-failure',
       unit: unitMatch[1],
       status_code: statusMatch[1],
-      failure_ts: tsMatch ? tsMatch[1] : new Date().toISOString(),
+      failure_ts: tsMatch ? tsMatch[1] : 'unknown',
     });
   }
   return events;
@@ -115,12 +115,29 @@ export function parseJournalForUnitFailures(output: string): SystemdUnitFailureE
 /**
  * Run journalctl and return its stdout. Returns empty string if the
  * command is unavailable (e.g., macOS dev machines) or fails.
+ *
+ * Default window is 25h: alarm-feeder.timer fires daily, so a 2h
+ * window (the pre-2026-05-04 default) silently dropped failures
+ * from earlier in the day. 25h gives a 1h overlap to catch
+ * boundary failures from the previous tick. Fixed per Copilot
+ * review on #283.
+ *
+ * execSync bounds raised: 30s timeout (was unbounded — could hang
+ * the alarm-feeder tick) and 10MB maxBuffer (was 1MB default — a
+ * noisy 24h+ journal exceeds this and throws, which the blanket
+ * catch swallows as "no alarms" — exactly the silent-failure
+ * mode this feature exists to detect).
  */
-export function collectJournalOutput(sinceHours = 2): string {
+export function collectJournalOutput(sinceHours = 25): string {
   try {
     return execSync(
       `journalctl --user -u "chitin-*" --since "${sinceHours} hours ago" -o short --no-pager`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 30_000,
+        maxBuffer: 10 * 1024 * 1024,
+      },
     );
   } catch {
     return '';

@@ -328,6 +328,16 @@ describe('parseJournalForUnitFailures', () => {
     const out = [HEALTHY_JOURNAL_LINE, CHDIR_JOURNAL_LINE, HEALTHY_JOURNAL_LINE].join('\n');
     expect(parseJournalForUnitFailures(out)).toHaveLength(1);
   });
+
+  it("returns deterministic 'unknown' failure_ts when journal line has no timestamp", () => {
+    // Pre-2026-05-04 fallback was new Date().toISOString() — non-deterministic
+    // and broke the function's "pure" claim. Stable sentinel makes this
+    // test-able and safe to compare across runs.
+    const lineWithoutTs = 'host systemd[1234]: chitin-swarm-worker.service: Main process exited, code=exited, status=200/CHDIR';
+    const events = parseJournalForUnitFailures(lineWithoutTs);
+    expect(events).toHaveLength(1);
+    expect(events[0].failure_ts).toBe('unknown');
+  });
 });
 
 // ─── systemdFailureToAlarm ───────────────────────────────────────────────
