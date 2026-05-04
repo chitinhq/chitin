@@ -20,12 +20,19 @@
 // groomer.ts: cron-fired script, idempotent, telemetry log line,
 // no Temporal involvement. The rollup is a flat-file boundary; this
 // module reads it.
+//
+// §systemd-unit-failure: In addition to rollup alarms, the feeder also
+// scans recent journalctl output for chitin-* units that exited with
+// status=200/CHDIR or status=203/EXEC. Each detected failure emits a
+// chain alarm event with kind=systemd-unit-failure and is fed into the
+// same dedup+backlog pipeline as rollup alarms.
 
 import { fileURLToPath } from 'node:url';
 import { readFile, writeFile } from 'node:fs/promises';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -36,6 +43,14 @@ export interface AlarmFeederOptions {
   /** ISO-8601 timestamp injected by runner. */
   now: string;
   log?: (line: string) => void;
+  /**
+   * Journal text to scan for chitin-* unit failures. Pass a non-empty
+   * string (from `collectJournalOutput()`) to enable detection. When
+   * absent or undefined the journal scan is skipped — this keeps
+   * existing call sites and tests that don't pass this field unchanged.
+   * The production `main()` always populates this field.
+   */
+  journalOutput?: string;
 }
 
 export interface AlarmFeederResult {
@@ -43,6 +58,100 @@ export interface AlarmFeederResult {
   new_entries: number;
   duplicates_skipped: number;
   rollup_present: boolean;
+  /** How many chitin-* systemd unit failures were detected in the journal. */
+  systemd_failures: number;
+}
+
+// ─── Systemd unit failure detection ─────────────────────────────────────
+
+/**
+ * Structured chain alarm event emitted when a chitin-* systemd unit
+ * exits with a non-zero status that indicates a setup failure rather
+ * than a transient workload exit (200/CHDIR = missing working directory,
+ * 203/EXEC = binary not found/not executable).
+ */
+export interface SystemdUnitFailureEvent {
+  kind: 'systemd-unit-failure';
+  unit: string;
+  status_code: string;
+  failure_ts: string;
+}
+
+// Invariant: a line matches iff it references a chitin-* unit AND
+// contains one of the two failure status codes. status=0/SUCCESS never
+// matches because neither "200/CHDIR" nor "203/EXEC" appear in that string.
+const FAILURE_STATUS_RE = /status=(200\/CHDIR|203\/EXEC)/;
+const UNIT_FROM_LINE_RE = /(chitin-[^\s:]+):/;
+
+// Short-format journal timestamp: "May  4 10:23:45" (month padded by a space
+// for single-digit days). We capture it verbatim; callers receive it as-is.
+const JOURNAL_TS_RE = /^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})/;
+
+/**
+ * Parse raw journalctl short-format output and return one
+ * `SystemdUnitFailureEvent` per line that matches both a chitin-* unit
+ * reference and a 200/CHDIR or 203/EXEC exit status.
+ *
+ * Pure function — safe for unit tests with synthetic input.
+ */
+export function parseJournalForUnitFailures(output: string): SystemdUnitFailureEvent[] {
+  const events: SystemdUnitFailureEvent[] = [];
+  for (const line of output.split('\n')) {
+    const statusMatch = FAILURE_STATUS_RE.exec(line);
+    if (!statusMatch) continue;
+    const unitMatch = UNIT_FROM_LINE_RE.exec(line);
+    if (!unitMatch) continue;
+    const tsMatch = JOURNAL_TS_RE.exec(line);
+    events.push({
+      kind: 'systemd-unit-failure',
+      unit: unitMatch[1],
+      status_code: statusMatch[1],
+      failure_ts: tsMatch ? tsMatch[1] : 'unknown',
+    });
+  }
+  return events;
+}
+
+/**
+ * Run journalctl and return its stdout. Returns empty string if the
+ * command is unavailable (e.g., macOS dev machines) or fails.
+ *
+ * Default window is 25h: alarm-feeder.timer fires daily, so a 2h
+ * window (the pre-2026-05-04 default) silently dropped failures
+ * from earlier in the day. 25h gives a 1h overlap to catch
+ * boundary failures from the previous tick. Fixed per Copilot
+ * review on #283.
+ *
+ * execSync bounds raised: 30s timeout (was unbounded — could hang
+ * the alarm-feeder tick) and 10MB maxBuffer (was 1MB default — a
+ * noisy 24h+ journal exceeds this and throws, which the blanket
+ * catch swallows as "no alarms" — exactly the silent-failure
+ * mode this feature exists to detect).
+ */
+export function collectJournalOutput(sinceHours = 25): string {
+  try {
+    return execSync(
+      `journalctl --user -u "chitin-*" --since "${sinceHours} hours ago" -o short --no-pager`,
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 30_000,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Convert a `SystemdUnitFailureEvent` to a human-readable alarm string
+ * compatible with the rollup-alarm pipeline (dedup + backlog filing).
+ * Invariant: two failures of the SAME unit with ANY status code collapse
+ * to the same `alarmSignature` — one backlog entry per unit, not per event.
+ */
+export function systemdFailureToAlarm(ev: SystemdUnitFailureEvent): string {
+  return `SYSTEMD UNIT FAILURE ${ev.unit}: exited with status=${ev.status_code} at ${ev.failure_ts}`;
 }
 
 interface RollupShape {
@@ -163,9 +272,29 @@ export async function runAlarmFeeder(
 ): Promise<AlarmFeederResult> {
   const log = opts.log ?? ((l: string) => console.log(l));
 
+  // ── Rollup alarms ───────────────────────────────────────────────────
   const rollup = readLatestRollup(opts.rollupsDir);
-  const alarms = rollup?.alarms ?? [];
+  const rollupAlarms = rollup?.alarms ?? [];
 
+  // ── Systemd journal scan ────────────────────────────────────────────
+  // Only scan when the caller supplies journal text. Absent = skip (safe
+  // for existing tests and call sites that don't opt in to journal scanning).
+  const unitFailures =
+    opts.journalOutput !== undefined
+      ? parseJournalForUnitFailures(opts.journalOutput)
+      : [];
+
+  // Emit a structured chain alarm event for each detected unit failure so
+  // downstream consumers (slack-feeder, log processors) can route on it.
+  for (const ev of unitFailures) {
+    log(JSON.stringify({ ts: new Date().toISOString(), component: 'alarm-feeder', ...ev }));
+  }
+
+  // Convert unit failures to alarm strings and merge with rollup alarms.
+  const systemdAlarms = unitFailures.map(systemdFailureToAlarm);
+  const alarms = [...rollupAlarms, ...systemdAlarms];
+
+  // ── Backlog dedup + filing ──────────────────────────────────────────
   const backlog = await readFile(opts.backlogPath, 'utf8').catch(() => '');
   const knownIds = parseBacklogIds(backlog);
 
@@ -196,6 +325,7 @@ export async function runAlarmFeeder(
     new_entries: newEntries,
     duplicates_skipped,
     rollup_present: rollup !== undefined,
+    systemd_failures: unitFailures.length,
   };
 
   log(
@@ -222,6 +352,8 @@ async function main(): Promise<void> {
     backlogPath: DEFAULT_BACKLOG_PATH,
     cap,
     now: new Date().toISOString(),
+    // Production: scan the last 2h of journal for chitin-* unit failures.
+    journalOutput: collectJournalOutput(),
   });
 }
 
@@ -244,4 +376,6 @@ if (isMain) {
 export const __test__ = {
   BACKLOG_ID_RE,
   DEFAULT_CAP,
+  FAILURE_STATUS_RE,
+  UNIT_FROM_LINE_RE,
 };
