@@ -44,9 +44,11 @@ export interface AlarmFeederOptions {
   now: string;
   log?: (line: string) => void;
   /**
-   * Synthetic journal text for testing. When set, journalctl is NOT
-   * executed; this text is parsed instead. In production the feeder
-   * runs journalctl automatically when this field is absent.
+   * Journal text to scan for chitin-* unit failures. Pass a non-empty
+   * string (from `collectJournalOutput()`) to enable detection. When
+   * absent or undefined the journal scan is skipped — this keeps
+   * existing call sites and tests that don't pass this field unchanged.
+   * The production `main()` always populates this field.
    */
   journalOutput?: string;
 }
@@ -258,9 +260,12 @@ export async function runAlarmFeeder(
   const rollupAlarms = rollup?.alarms ?? [];
 
   // ── Systemd journal scan ────────────────────────────────────────────
-  const journalText =
-    opts.journalOutput !== undefined ? opts.journalOutput : collectJournalOutput();
-  const unitFailures = parseJournalForUnitFailures(journalText);
+  // Only scan when the caller supplies journal text. Absent = skip (safe
+  // for existing tests and call sites that don't opt in to journal scanning).
+  const unitFailures =
+    opts.journalOutput !== undefined
+      ? parseJournalForUnitFailures(opts.journalOutput)
+      : [];
 
   // Emit a structured chain alarm event for each detected unit failure so
   // downstream consumers (slack-feeder, log processors) can route on it.
@@ -330,6 +335,8 @@ async function main(): Promise<void> {
     backlogPath: DEFAULT_BACKLOG_PATH,
     cap,
     now: new Date().toISOString(),
+    // Production: scan the last 2h of journal for chitin-* unit failures.
+    journalOutput: collectJournalOutput(),
   });
 }
 
