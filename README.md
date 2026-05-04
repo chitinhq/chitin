@@ -4,12 +4,21 @@
 
 > Principle: real execution before policy. Policy before automation. Automation gated by the same kernel.
 
-## Where chitin is today
+## What chitin is today
+
+The kernel and the contract it enforces:
 
 - **Kernel + governance** — Go binary fires on every PreToolUse hook, evaluates `chitin.yaml`, writes a hash-linked JSONL chain. Gate decisions are auditable; chain integrity is SHA-256-verified.
 - **OTEL emit (F4, 2026-05-02)** — kernel projects every chain event onto an OTLP/HTTP JSON span after the canonical write succeeds. One-way bridge: chain authoritative, OTEL non-authoritative. Opt-in via `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
-- **Autonomous swarm runtime** — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. The factory's design lives in [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
-- **Self-feeding telemetry loop** — periodic scripts (researcher, lessons, debt-curator, groomer, alarm-feeder, stale-doc detector) keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions automatically.
+
+Chitin is *not* a tick-loop, not an agent runner, not an OTEL ingest target, not a cloud product — see [`docs/thesis.md`](./docs/thesis.md) for the full set of refusals.
+
+## Reference consumers (hosted in the monorepo for dogfooding)
+
+These are downstream consumers of the kernel — they run *on* chitin, they aren't chitin. Hosted in the same repo so they share `libs/contracts/` schemas and the Nx project graph; gated from the outside via the openclaw plugin like any other agent surface.
+
+- **Autonomous swarm runtime** (`apps/temporal-worker/`) — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. Design: [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
+- **Self-feeding telemetry loop** (cron scripts under `apps/temporal-worker/`) — periodic researcher / lessons / debt-curator / groomer / alarm-feeder / stale-doc detector keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions.
 
 ## Quick start
 
