@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, copyFileSync, existsSync, readdirSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
 import type { ActivityResult, HookEventSummary, WorktreeResult } from './activity-types.ts';
 
@@ -35,6 +35,38 @@ const TAIL_BYTES = (() => {
 // Slice 5: where worktrees live when base_ref is set on the request. XDG
 // cache (transient, safe to delete). One sub-dir per workflow_id.
 const SWARM_WORKTREES_ROOT = resolve(homedir(), '.cache/chitin/swarm-worktrees');
+
+/**
+ * Returns true if the given path is unambiguously owned by the worker
+ * and therefore safe to `rmSync`-cleanup:
+ * - Strictly under `os.tmpdir()` (tempdir-mode worker dirs), OR
+ * - Strictly under `SWARM_WORKTREES_ROOT` (per-workflow worktrees).
+ *
+ * Strict containment matters: `startsWith(tmpdir())` raw would also
+ * match a sibling like `${tmpdir()}-backup`. We use `relative()` to
+ * verify the path is genuinely under the base, not just a prefix
+ * match.
+ *
+ * Edge case: when repoRoot itself sits under tmpdir() (test rigs,
+ * CI), the allowlist would match it. Reviewer mode runs in repoRoot
+ * directly (#280); the explicit `abs === repoRoot` short-circuit
+ * preserves the invariant that we never rm the repo checkout.
+ *
+ * Exported so tests can pin the contract without standing up a full
+ * activity context. See review-graph-dispatch.ts pattern.
+ */
+export function isWorkerOwnedPath(p: string, repoRoot: string): boolean {
+  const abs = resolve(p);
+  if (abs === resolve(repoRoot)) return false;
+  return isStrictlyUnder(abs, resolve(tmpdir())) || isStrictlyUnder(abs, SWARM_WORKTREES_ROOT);
+}
+
+function isStrictlyUnder(abs: string, base: string): boolean {
+  const rel = relative(base, abs);
+  // '' = same path; '..' / starts with '..' = outside base.
+  // Anything else = strictly under base.
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
 
 interface DriverInvocation {
   command: string;
@@ -696,8 +728,10 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     // Tempdir-only cleanup. Reviewer mode runs in repoRoot directly
     // (write_policy:'none' guarantees read-only); rm-ing it nukes the
     // monorepo checkout. Worktree mode is owned by the apply-step.
-    if (!useWorktree && workDir !== repoRoot) {
+    if (!useWorktree && isWorkerOwnedPath(workDir, repoRoot)) {
       rmSync(workDir, { recursive: true, force: true });
+    } else if (!useWorktree && workDir !== repoRoot) {
+      console.warn(`[cleanup] Skipped rmSync on non-owned path: ${workDir}`);
     }
     // Slice 6b: per-workflow openclaw state dir is transient — clean it
     // up unconditionally regardless of activity success/failure. The user's
