@@ -5062,7 +5062,7 @@ Note: PR #272 ships REAL-TIME codex governance via the codex-cli PreToolUse hook
 ```yaml
 id: chitin-codex-chain-ingest-timer
 tier: T1
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: infra/systemd/chitin-codex-chain-ingest.{service,timer}, scripts/chitin-codex-chain-ingest.sh
@@ -5083,7 +5083,7 @@ Why two separate timers: usage feed needs to be fresh (operator dashboard), chai
 ```yaml
 id: nx-target-consistency-and-validate
 tier: T2
-status: ready
+status: partial
 estimated_loc: 300
 blocks: []
 file: nx.json, project.json (across apps/*), apps/cli/tsconfig.json, package.json, .github/workflows/ci.yml
@@ -5115,7 +5115,7 @@ Fixes:
 ```yaml
 id: agent-lockdown-auto-recovery
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: scripts/chitin-agent-unlock.sh, infra/systemd/chitin-agent-unlock.service, infra/systemd/chitin-agent-unlock.timer, go/execution-kernel/internal/gov/escalation.go (read-side)
@@ -5162,7 +5162,7 @@ lands.
 ```yaml
 id: alarm-on-systemd-chdir-failures
 tier: T2
-status: ready
+status: partial
 estimated_loc: 150
 blocks: []
 file: apps/temporal-worker/src/alarm-feeder.ts (or co-located new file), infra/systemd/chitin-alarm-feeder.service (env addition only)
@@ -5194,7 +5194,7 @@ or any downstream consumer can route it).
 ```yaml
 id: cleanup-ownership-allowlist
 tier: T1
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: apps/temporal-worker/src/activity.ts
