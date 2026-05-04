@@ -5448,7 +5448,7 @@ id: nx-generator-driver-helper
 tier: T2
 status: in_design
 estimated_loc: 200
-blocks: ['nx-generator-with-sync-driver-poc']
+blocks: [nx-generator-with-sync-driver-poc]
 file: libs/nx-driver-runner/ (new lib)
 references_finding: project_nx_generators_spawn_drivers.md
 role: programmer
