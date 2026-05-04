@@ -3100,7 +3100,7 @@ Steps:
 ```yaml
 id: nx-generator-app
 tier: T2
-status: ready
+status: partial
 estimated_loc: 300
 blocks: []
 file: tools/generators/app/*
@@ -3156,7 +3156,7 @@ nx g @chitin/doc observation <id>  → docs/observations/<date>-<id>.md
 ```yaml
 id: systemd-unit-generator
 tier: T1
-status: ready
+status: partial
 estimated_loc: 150
 blocks: []
 file: tools/generators/systemd-unit/*, scripts/install-systemd-units.sh (refresh)
@@ -4112,7 +4112,7 @@ individually.
 ```yaml
 id: pr-event-ingester-extract-decision-helper
 tier: T2
-status: ready
+status: partial
 estimated_loc: 100
 blocks: []
 file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/test/pr-event-ingester.test.ts
@@ -4440,7 +4440,7 @@ T4 only when the heuristic flags ambiguity.
 ```yaml
 id: dispatcher-skip-already-implemented-entries
 tier: T2
-status: ready
+status: partial
 estimated_loc: 250
 blocks: []
 file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-skip-shipped.test.ts, apps/temporal-worker/src/grooming/parse-backlog.ts
