@@ -19,7 +19,7 @@ Every event is `{envelope, payload}`. The envelope is surface-neutral; the paylo
     "seq": 12,
     "prev_hash": "sha256:…",
     "this_hash": "sha256:…",
-    "surface": "claude-code | copilot-cli | openclaw | ollama-local | …",
+    "surface": "claude-code | codex | gemini | copilot | openclaw | local-* | …",
     "driver": "string",
     "agent_id": "string",
     "soul_id": "davinci | knuth | curie | … | null",
@@ -56,8 +56,8 @@ Adapters emit whichever subset their surface can observe. Today's payloads:
 | `event_type` | Emitter | Payload (shape) |
 |---|---|---|
 | `session_start` | every adapter | `agent_id, soul_id, soul_hash, machine_fingerprint, env` |
-| `user_prompt` | claude-code, copilot-cli | `prompt_text, prompt_id` |
-| `pre_tool_use` | claude-code, copilot-cli, openclaw | `tool_name, raw_input, canonical_form, action_type` |
+| `user_prompt` | claude-code, codex, copilot | `prompt_text, prompt_id` |
+| `pre_tool_use` | claude-code, codex, gemini, copilot, openclaw | `tool_name, raw_input, canonical_form, action_type` |
 | `decision` | gov.Gate | `decision (allow/deny/guide), reason, suggestion, corrected_command` |
 | `post_tool_use` | every adapter | `tool_name, result (success/error/denied), duration_ms, output_summary` |
 | `pre_compact` | claude-code | `tokens_in, tokens_out` |

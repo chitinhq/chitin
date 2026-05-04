@@ -1,35 +1,35 @@
 # Chitin Governance Setup
 
-The `gov.Gate.Evaluate(action, agent) → Decision` API is the single enforcement point. Every tool call across every driver evaluates against `chitin.yaml`. Three install paths — one per supported driver — wire this API into the driver's tool-call lifecycle.
+The `gov.Gate.Evaluate(action, agent) → Decision` API is the single enforcement point. Every tool call across every driver evaluates against `chitin.yaml`. Five install paths — one per supported vendor surface — wire this API into the driver's tool-call lifecycle.
 
 ## Install paths by driver
 
 ```
-   chitin.yaml (single policy)
-          │
-          ▼
-   gov.Gate.Evaluate ◄─────────┐
-     ▲       ▲       ▲          │
-     │       │       │          │
-     │       │       │          │
- Claude    Copilot  openclaw    │
-  Code      CLI      acpx       │
- PR #66    PR #51    config     │
- hook     SDK driver override   │
-     │       │       │          │
-     ▼       ▼       ▼          │
-        tool calls  ────────────┘
+                 chitin.yaml (single policy)
+                          │
+                          ▼
+                  gov.Gate.Evaluate ◄──────────────┐
+       ▲       ▲      ▲       ▲       ▲             │
+       │       │      │       │       │             │
+   Claude   Codex  Gemini   Copilot  openclaw       │
+    Code     CLI    CLI      CLI      plugin        │
+   PreToo  PreToo  BeforeT   SDK      before_       │
+   Use     Use     ool       wrap     tool_call     │
+   hook    hook    hook                             │
+       │       │      │       │       │             │
+       ▼       ▼      ▼       ▼       ▼             │
+                   tool calls  ───────────────────  │
 ```
 
-### 1. Claude Code (PreToolUse hook — PR #66)
+### 1. Claude Code (PreToolUse hook)
 
 ```bash
 chitin-kernel install --surface claude-code --global
 ```
 
 Writes a `PreToolUse` entry to `~/.claude/settings.json` matching the nested
-`{matcher, hooks:[{type, command}]}` schema. The hook execs the kernel binary
-with the hook payload on stdin.
+`{matcher, hooks:[{type, command}]}` schema. The hook execs the router-hook
+shim with the hook payload on stdin.
 
 To uninstall:
 
@@ -37,28 +37,42 @@ To uninstall:
 chitin-kernel uninstall --surface claude-code --global
 ```
 
-### 2. Copilot CLI (in-kernel driver — PR #51)
+### 2. Codex CLI (PreToolUse hook — codex 0.128.0+)
+
+```bash
+bash scripts/install-codex-hook.sh
+```
+
+Writes a `[features] codex_hooks=true` block + `[[hooks.PreToolUse]]` entry into `~/.codex/config.toml`. Wire shape is byte-compatible with Claude Code's PreToolUse — only the per-tool name set differs (codex emits `Bash`, `apply_patch`, MCP tool names). The router-hook shim handles the protocol; per-tool normalization in `internal/driver/codex/normalize.go`.
+
+### 3. Gemini CLI (BeforeTool hook — same wire shape, different event name)
+
+```bash
+bash scripts/install-gemini-hook.sh
+```
+
+Writes a `BeforeTool` block to `~/.gemini/settings.json`. Stdin payload is byte-identical to Claude Code's PreToolUse (gemini even sets `CLAUDE_PROJECT_DIR`/`CLAUDE_CODE_ENTRYPOINT` envvars for compatibility); only the per-tool name set differs (`run_shell_command`, `read_file`, `edit`, `replace`, `write_file`, `web_fetch`, `google_web_search`, etc.). Per-tool normalization in `internal/driver/gemini/normalize.go`.
+
+Both `install-codex-hook.sh` and `install-gemini-hook.sh` are idempotent and refused-on-malformed-config; they run after each `install-kernel.sh` invocation so kernel rebuilds refresh the hook wiring automatically.
+
+### 4. Copilot CLI (in-kernel driver — wrapping orchestrator)
 
 ```bash
 chitin-kernel drive copilot "<prompt>"
 ```
 
-The kernel spawns Copilot CLI as a child of a chitin-driven harness (closed-vendor pattern: see [architecture.md](./architecture.md#two-driver-pattern-open-vs-closed-vendor)). Tool calls are gated via the SDK; chitin enforces the same `gov.Gate` policy.
+The kernel spawns Copilot CLI as a child of a chitin-driven harness (closed-vendor pattern: see [architecture.md](./architecture.md#vendor-integration-patterns-open-vs-closed-vendor)). Tool calls are gated via the SDK; chitin enforces the same `gov.Gate` policy.
 
-This is the v1 path used in the 2026-05-07 talk demo. v2 (in-process extension via Copilot SDK `joinSession({tools, hooks})`) starts post-talk.
-
-### 3. openclaw (acpx config-override)
-
-One-line install — no chitin-side wrapper code:
+### 5. openclaw (`local-*` drivers via `before_tool_call` plugin)
 
 ```yaml
-# ~/.config/openclaw/acpx.yaml
-preToolUse:
-  command: chitin-kernel
-  args: ["gate", "evaluate", "--hook-stdin", "--agent=openclaw"]
+# ~/.config/openclaw/openclaw.json
+plugins:
+  allow:
+    - chitin-governance     # ships with chitin; loaded at openclaw startup
 ```
 
-openclaw forwards each tool call to chitin-kernel via the configured pre-tool-use hook. Same `gov.Gate` API, same policy file.
+The plugin is loaded by openclaw at startup; every tool call dispatched by openclaw-managed agents (qwen / glm / glm-flash / deepseek) passes through `before_tool_call` → `chitin-kernel gate evaluate`. Same policy file.
 
 ## Build the kernel
 

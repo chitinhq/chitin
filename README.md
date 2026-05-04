@@ -1,6 +1,6 @@
 # Chitin
 
-**Execution kernel for AI coding agents.** Every tool call across Claude Code, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack. Nx monorepo (Go + TypeScript + Python). MIT licensed.
+**Execution kernel for AI coding agents.** Every tool call across Claude Code, Codex CLI, Gemini CLI, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack. Nx monorepo (Go + TypeScript + Python). MIT licensed.
 
 > Principle: real execution before policy. Policy before automation. Automation gated by the same kernel.
 

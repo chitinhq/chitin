@@ -5,22 +5,25 @@ Chitin is a small Go kernel with thin TypeScript adapters per surface. The kerne
 ## System diagram
 
 ```
-              Agent Surfaces (drivers)
-   ┌────────────┐ ┌──────────────┐ ┌─────────────┐
-   │ Claude Code│ │ Copilot CLI  │ │ openclaw    │
-   │ PR #66 hook│ │ PR #51 SDK   │ │ acpx config │
-   └─────┬──────┘ └──────┬───────┘ └──────┬──────┘
-         │ tool call     │                │
-         └───────────────┴────────┬───────┘
-                                  ▼
-                       ┌──────────────────────┐
-                       │  gov.Gate.Evaluate   │  ←── chitin.yaml
-                       │  (Go kernel; only    │      (closed-enum
-                       │   side-effect layer) │       action vocab)
-                       └──────────┬───────────┘
-                                  │ Decision: allow / deny / guide
-                  ┌───────────────┼───────────────┐
-                  ▼               ▼               ▼
+                          Agent Surfaces (drivers)
+   ┌──────────┐ ┌────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐ ┌─────────┐
+   │ Claude   │ │ Codex  │ │ Gemini   │ │Copilot │ │ openclaw │ │ MCP     │
+   │ Code     │ │ CLI    │ │ CLI      │ │ CLI    │ │ (local-*)│ │ servers │
+   │ PreToolU │ │ PreToo │ │ BeforeT  │ │ SDK    │ │ before_  │ │ via     │
+   │ hook     │ │ hook   │ │ hook     │ │ wrap   │ │tool_call │ │ above   │
+   └────┬─────┘ └───┬────┘ └────┬─────┘ └───┬────┘ └────┬─────┘ └────┬────┘
+        │           │           │           │           │            │
+        └───────────┴───────────┴────┬──────┴───────────┴────────────┘
+                                     │ tool call
+                                     ▼
+                        ┌──────────────────────────┐
+                        │  gov.Gate.Evaluate       │ ←── chitin.yaml
+                        │  (Go kernel; only        │     (closed-enum
+                        │   side-effect layer)     │      action vocab)
+                        └──────────┬───────────────┘
+                                   │ Decision: allow / deny / guide
+                  ┌────────────────┼────────────────┐
+                  ▼                ▼                ▼
         ┌──────────────────┐ ┌──────────┐ ┌─────────────────┐
         │   event chain    │ │ gov.db   │ │ OTEL emit       │
         │  hash-linked,    │ │ envelope │ │ projection only │
@@ -28,9 +31,24 @@ Chitin is a small Go kernel with thin TypeScript adapters per surface. The kerne
         └────────┬─────────┘ └──────────┘ └─────────────────┘
                  │
                  ▼ on disk (kernel single-writer)
-   .chitin/events-<run_id>.jsonl + flow_events.jsonl
-   ~/.chitin/gov-decisions-YYYY-MM-DD.jsonl, gov.db
+   ~/.chitin/events-<run_id>.jsonl
+   ~/.chitin/gov-decisions-YYYY-MM-DD.jsonl
+   ~/.chitin/gov.db (envelope counters + budgets)
+   ~/.chitin/usage/<driver>.json (universal usage feed; PR #269)
 ```
+
+**Per-vendor integration matrix.** Same kernel, different integration points:
+
+| Driver | Integration | Wire shape | Real-time gating? |
+|---|---|---|---|
+| `claude-code-headless` | PreToolUse hook (settings.json) | claudecode.HookInput | yes |
+| `codex` | PreToolUse hook (~/.codex/config.toml) | codex.HookInput (byte-compatible w/ Claude Code; hooks/list RPC) | yes |
+| `gemini` | BeforeTool hook (~/.gemini/settings.json) | gemini.HookInput (byte-compatible w/ Claude Code) | yes |
+| `copilot` | wrapping orchestrator (`chitin-kernel drive copilot`) | Copilot SDK PermissionRequest | yes |
+| `local-qwen`/`-glm`/`-deepseek` | openclaw `before_tool_call` plugin | openclaw plugin context | yes |
+| MCP tools | flow through whichever agent dispatched | parent driver's hook | yes (via parent) |
+
+Codex + gemini both speak the Claude Code PreToolUse wire format byte-for-byte; only the per-tool name set differs (`Bash`/`apply_patch` for codex, `run_shell_command`/`edit`/`replace` for gemini). The `chitin-router-hook` shim is shared across all three; `internal/driver/<vendor>/normalize.go` does the per-vendor translation.
 
 ## Layers
 
@@ -49,6 +67,12 @@ The Go kernel exposes these subcommands:
 chitin-kernel init                  # initialize a .chitin/ state dir
 chitin-kernel emit                  # append a canonical event to the chain
 chitin-kernel chain-info            # inspect chain state
+chitin-kernel chain replay          # re-evaluate a session against current policy (kernel + heuristic layers)
+chitin-kernel chain summarize       # compact markdown summary suitable for next-agent prompt injection
+chitin-kernel chain related         # find sessions touching the same entry/files
+chitin-kernel chain stats           # aggregate decisions by tool/action/rule/decision/agent
+chitin-kernel chain recommend-tier  # data-driven starting-tier per action_type
+chitin-kernel chain snapshot        # immutable hash-linked session export (sigstore-shape)
 chitin-kernel ingest-transcript     # post-hoc audit of a Claude Code transcript
 chitin-kernel ingest-otel           # post-hoc audit of OTEL spans (legacy ingest path)
 chitin-kernel sweep-transcripts     # batch transcript ingest
@@ -57,8 +81,21 @@ chitin-kernel uninstall-hook
 chitin-kernel install / uninstall   # surface-aware install (`--surface claude-code --global`)
 chitin-kernel health                # report on resolved .chitin/ state
 chitin-kernel gate <evaluate|status|lockdown|reset>
+chitin-kernel router evaluate       # router pipeline (kernel verdict → heuristics → optional advisor → composed verdict)
+chitin-kernel simulate              # what-if a single hook input without executing
 chitin-kernel envelope <…>          # cost-gov v3 envelope (cross-process, sqlite WAL)
 chitin-kernel drive copilot         # in-kernel Copilot CLI driver
+```
+
+Operator-side scripts (under `scripts/`):
+
+```
+chitin-status                 # dashboard: timers + chain + router + spend + tier-recs
+chitin-budget                 # per-driver $-spend + universal usage feeds (codex 5h/weekly, etc)
+chitin-router-hook            # bash shim that all PreToolUse hooks point at
+install-kernel.sh             # idempotent rebuild/install + per-vendor hook refresh
+install-gemini-hook.sh        # writes hooks block into ~/.gemini/settings.json
+install-codex-hook.sh         # writes [features] codex_hooks=true + [[hooks.PreToolUse]] into ~/.codex/config.toml
 ```
 
 ## Layer Contracts v1
@@ -76,12 +113,15 @@ These are non-negotiable. New code, specs, and plans must respect them. See [`ar
 
 **Why:** Forensic fidelity of captured events depends on a single write path. Multiple writers = non-deterministic replay + contract drift. Canonicalization and emission are co-located in Go so the shell-parse and JSONL-append cannot disagree.
 
-## Two-driver pattern (open vs closed vendor)
+## Vendor integration patterns (open vs closed vendor)
 
 Per-vendor integration shape varies by vendor posture; the `gov.Gate` API is shared.
 
-- **Open vendors → in-process extension.** Vendor ships a documented extensibility API; chitin runs as a forked child via that API and gates tool calls via the vendor's own hook. Example: openclaw `acpx` config-override; Copilot CLI v2 (post-talk).
-- **Closed vendors → wrapping orchestrator.** Vendor ships a closed binary; chitin spawns the agent as a child of a chitin-driven harness. Example: Copilot CLI v1 (`chitin-kernel drive copilot`); Claude Code likely fits here.
+- **Open vendors with native hook surface → in-process extension.** Vendor ships a PreToolUse-style hook config; chitin's router-hook shim is wired in via the vendor's config, kernel does normalization. Examples: Claude Code (`~/.claude/settings.json` PreToolUse), Codex (`~/.codex/config.toml` [features] codex_hooks=true + [[hooks.PreToolUse]]), Gemini (`~/.gemini/settings.json` BeforeTool — same wire shape, different event name).
+- **Open vendors with plugin runtime → openclaw plugin.** openclaw's `before_tool_call` plugin path. Examples: local-qwen / local-glm / local-glm-flash / local-deepseek.
+- **Closed vendors → wrapping orchestrator.** Vendor ships a closed binary; chitin spawns the agent as a child of a chitin-driven harness. Example: Copilot CLI (`chitin-kernel drive copilot`).
+
+Codex + gemini both ship native PreToolUse hook systems that are byte-compatible with Claude Code's wire shape — gemini's `gemini hooks migrate --from-claude` is explicit about the equivalence. That's why all three slot into the same `chitin-router-hook` pipeline; the only per-vendor work is the tool-name normalizer in `internal/driver/<vendor>/normalize.go`.
 
 Classify the vendor first; let the classification pick the integration shape, not the other way around.
 
