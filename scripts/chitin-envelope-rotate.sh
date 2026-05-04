@@ -138,10 +138,19 @@ if [[ "$create_rc" -ne 0 ]] || [[ -z "$new_id" ]] || ! [[ "$new_id" =~ ^[A-Z0-9]
   exit 3
 fi
 
-# Atomic-ish write: tmpfile + mv. Avoids a partial write under
-# concurrent readers (every gate-evaluate hits this file).
-tmp="$CURRENT_ENVELOPE_FILE.tmp.$$"
-echo "$new_id" > "$tmp"
-mv "$tmp" "$CURRENT_ENVELOPE_FILE"
+# Update the pointer via the kernel's `envelope use` so the write
+# matches kernel semantics: write to a tmp file in the same dir,
+# fsync, rename. Pre-2026-05-04 this was bash `echo > tmp && mv` —
+# atomic for the rename but no fsync, so a crash between the
+# rename and the page cache flush could surface either an empty
+# `current-envelope` or torn content to a concurrent reader. The
+# kernel's writeCurrentEnvelope (cmd/chitin-kernel/envelope.go)
+# is the authoritative implementation; defer to it.
+use_out=$(chitin-kernel envelope use "$new_id" 2>&1)
+use_rc=$?
+if [[ "$use_rc" -ne 0 ]]; then
+  emit fail envelope-use-failed "rc=$use_rc raw_output=$(echo "$use_out" | tail -c 300 | tr '\n' ' ')"
+  exit 4
+fi
 
 emit ok rotated "old_id=${current_id:-<none>}" "new_id=$new_id" "calls=$ENV_CALLS" "bytes=$ENV_BYTES" "usd=$ENV_USD"
