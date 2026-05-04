@@ -1,12 +1,44 @@
 import { type Tree } from '@nx/devkit';
 import type { AppGeneratorSchema } from './schema.js';
 
+// Lockdown for app names: kebab-case alphanumerics only. Without
+// this, a name like `../foo` would write outside `apps/`, and
+// names with quotes/newlines would generate invalid TS sources.
+const APP_NAME_RE = /^[a-z][a-z0-9-]*[a-z0-9]$/;
+
+function validateName(name: string): void {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('appGenerator: name is required');
+  }
+  if (name.length > 64) {
+    throw new Error(`appGenerator: name too long (${name.length} > 64): ${JSON.stringify(name)}`);
+  }
+  if (!APP_NAME_RE.test(name)) {
+    throw new Error(
+      `appGenerator: name must match /^[a-z][a-z0-9-]*[a-z0-9]$/ ` +
+        `(kebab-case, no path separators, no quotes/newlines). got: ${JSON.stringify(name)}`,
+    );
+  }
+}
+
 export default async function appGenerator(
   tree: Tree,
   options: AppGeneratorSchema,
 ): Promise<void> {
   const { name, daemon = false } = options;
+  validateName(name);
+
   const appRoot = `apps/${name}`;
+
+  // Refuse to silently overwrite an existing app. The Nx Tree's
+  // exists() returns true for any path the tree knows about
+  // (already-on-disk OR pending-write); both are reasons to bail.
+  if (tree.exists(appRoot)) {
+    throw new Error(
+      `appGenerator: refusing to overwrite existing path ${appRoot}. ` +
+        `Pick a different name, or remove the existing directory first.`,
+    );
+  }
 
   tree.write(`${appRoot}/package.json`, packageJson(name));
   tree.write(`${appRoot}/tsconfig.json`, tsconfig(name));
@@ -158,7 +190,11 @@ function systemdService(name: string): string {
     `Environment=CHITIN_REPO_ROOT=%h/workspace/chitin`,
     `Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin`,
     `EnvironmentFile=-%h/.config/systemd/user/chitin.env`,
-    `ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/${name}/src/main.ts`,
+    // ExecStart relies on the unit's PATH (set above to include
+    // %h/.vite-plus/bin) rather than hardcoding /home/<operator>/...
+    // — the latter breaks the moment another operator or CI runs
+    // the unit.
+    `ExecStart=pnpm exec tsx apps/${name}/src/main.ts`,
     `StandardOutput=journal`,
     `StandardError=journal`,
     `TimeoutStartSec=1200`,
