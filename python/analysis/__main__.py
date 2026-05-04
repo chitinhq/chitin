@@ -9,6 +9,7 @@ print(
     "  python -m analysis.souls       # soul-routing decisions\n"
     "  python -m analysis.skill_mine  # workflow n-gram surface from chain telemetry\n"
     "  python -m analysis.codex_mine  # codex session ingest + quota usage\n"
+    "  python -m analysis.fingerprint_outcomes  # fingerprint × PR/review outcomes (P3)\n"
     "  python -m analysis.routing_elo  # ELO leaderboard per (role, task_class) — P4",
     file=sys.stderr,
 )

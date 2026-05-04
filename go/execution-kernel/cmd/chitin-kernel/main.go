@@ -869,6 +869,11 @@ func cmdGateEvaluate(args []string) {
 	gate := &gov.Gate{
 		Policy: policy, Counter: counter,
 		LogDir: chitinDir, Cwd: absCwd,
+		// P2 routing-as-learning-system: fingerprint dims via the shared
+		// helper so the operator-CLI gate-evaluate path stays in sync
+		// with gate_hook.go and the copilot driver. Pre-fix only the hook
+		// populated this; operator CLI calls wrote fingerprint-less rows.
+		Fingerprint: gov.FingerprintContextFromEnv(),
 	}
 	// F4 addendum: wire gov.Gate's OnDecision to emit a `decision` chain
 	// event via the canonical path (which fires OTEL projection if

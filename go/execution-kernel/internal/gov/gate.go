@@ -2,6 +2,7 @@ package gov
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -45,6 +46,45 @@ type Gate struct {
 	EstimateCost func(a Action, agent string) CostDelta
 	ClassifyTier func(a Action) Tier
 	OnDecision   func(d *Decision)
+	// Fingerprint dimensions for the routing-as-learning-system (P2).
+	// Stamped onto every Decision this Gate writes when populated. The
+	// CLI hook layer reads these from CHITIN_MODEL / CHITIN_ROLE /
+	// CHITIN_WORKFLOW_ID / CHITIN_FINGERPRINT and sets them on the Gate
+	// at construction. Empty values omit the JSON field (omitempty on
+	// Decision); pre-fingerprint dispatches (manual operator runs, older
+	// swarm builds) keep writing the smaller schema with no breakage.
+	Fingerprint FingerprintContext
+}
+
+// FingerprintContext carries the four routing dimensions the kernel
+// stamps on every Decision it writes. All optional — when missing the
+// Decision row omits the corresponding JSON field. See
+// libs/contracts/src/fingerprint.ts for the canonical-hash side.
+type FingerprintContext struct {
+	Model       string
+	Role        string
+	WorkflowID  string
+	Fingerprint string
+}
+
+// FingerprintContextFromEnv reads the CHITIN_* env vars that the
+// dispatching agent sets on its spawn (see
+// apps/temporal-worker/src/activity.ts). Single helper so every Gate
+// constructor in the kernel + drivers populates the same way; before
+// this helper, gate_hook.go was the only caller, leaving copilot
+// driver runs and the operator-CLI gate-evaluate path writing
+// fingerprint-less rows even when the env was set (Copilot finding
+// on PR #294).
+//
+// Reads are best-effort — missing env vars produce empty strings,
+// which the JSON layer drops via omitempty.
+func FingerprintContextFromEnv() FingerprintContext {
+	return FingerprintContext{
+		Model:       os.Getenv("CHITIN_MODEL"),
+		Role:        os.Getenv("CHITIN_ROLE"),
+		WorkflowID:  os.Getenv("CHITIN_WORKFLOW_ID"),
+		Fingerprint: os.Getenv("CHITIN_FINGERPRINT"),
+	}
 }
 
 // Evaluate is the single entry point: normalize-already-done Action →
@@ -109,6 +149,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			CallerOrigin: callerOrigin,
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
+		stampFingerprint(&d, g.Fingerprint)
 		_ = WriteLog(d, g.LogDir)
 		final = d
 		return
@@ -203,6 +244,10 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// for both allow and deny so audit-log analytics can join cost-
 	// classified decisions regardless of outcome.
 	stampEnvelopeWith(&d, envelope, tier, delta)
+	// 7a. Stamp fingerprint dims (P2 routing-as-learning-system) so the
+	// row carries (model, role, workflow_id, fingerprint) for joining
+	// against PR/review outcomes downstream.
+	stampFingerprint(&d, g.Fingerprint)
 
 	// 8. Log.
 	_ = WriteLog(d, g.LogDir)
@@ -253,4 +298,16 @@ func stampEnvelopeWith(d *Decision, envelope *BudgetEnvelope, tier Tier, delta C
 	d.InputBytes = delta.InputBytes
 	d.OutputBytes = delta.OutputBytes
 	d.ToolCalls = delta.ToolCalls
+}
+
+// stampFingerprint writes the routing-as-learning-system dims onto d.
+// Empty-string values are pass-through — Decision's omitempty JSON tags
+// drop them on serialization, so pre-fingerprint dispatches still emit
+// the smaller schema with no breakage. Single call site (lockdown path
+// + main flow) prevents drift if the field set grows.
+func stampFingerprint(d *Decision, ctx FingerprintContext) {
+	d.Model = ctx.Model
+	d.Role = ctx.Role
+	d.WorkflowID = ctx.WorkflowID
+	d.Fingerprint = ctx.Fingerprint
 }

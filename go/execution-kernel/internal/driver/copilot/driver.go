@@ -67,11 +67,15 @@ func Run(ctx context.Context, prompt string, opts RunOpts) error {
 	defer counter.Close()
 
 	// 3. Assemble Gate (struct literal — no constructor in gov package).
+	// Fingerprint dims (P2 routing-as-learning-system) read via the
+	// shared helper so chain rows from copilot driver runs carry the
+	// same attribution as gate_hook.go + the operator-CLI path.
 	gate := &gov.Gate{
-		Policy:  policy,
-		Counter: counter,
-		LogDir:  chitinDir,
-		Cwd:     opts.Cwd,
+		Policy:      policy,
+		Counter:     counter,
+		LogDir:      chitinDir,
+		Cwd:         opts.Cwd,
+		Fingerprint: gov.FingerprintContextFromEnv(),
 	}
 
 	// 4. Construct and start client.
