@@ -42,6 +42,25 @@ emit() {
 
 cd "$REPO"
 
+# Single-flight: in apply mode, exit early if a previous flipper PR is
+# still open. The script reads `status: ready` from main, so until the
+# previous flip merges, the same entries still look ready and we'd open
+# a byte-identical duplicate (cf. #299 + #301 on 2026-05-04).
+# Fail-closed on gh errors: a missed cycle costs less than a duplicate.
+if (( APPLY == 1 )); then
+  open_flippers=$(gh pr list --state open --json headRefName \
+    --jq '[.[] | select(.headRefName | startswith("auto/shipped-entry-flipper-"))] | length' \
+    2>/dev/null || echo "")
+  if [[ -z "$open_flippers" ]]; then
+    emit warn "open-pr-check-failed" "msg=could not query open flipper PRs; skipping cycle"
+    exit 0
+  fi
+  if (( open_flippers > 0 )); then
+    emit ok "skip-open-flip-pr-exists" "open_count=$open_flippers" "msg=previous flipper PR not yet merged; retry next cycle"
+    exit 0
+  fi
+fi
+
 # Pull main fresh (fail open if it doesn't fast-forward — operator
 # would have manual changes worth preserving)
 if ! git pull --ff-only --quiet origin main 2>/dev/null; then
