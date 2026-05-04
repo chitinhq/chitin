@@ -58,6 +58,31 @@ const TASK_QUEUE = 'chitin-worker-q';
 /**
  * Pure: decide which agents to dispatch for a PR, given running agents and options.
  * Mirrors the per-PR agent dispatch logic in runIngesterTick.
+ *
+ * Two agents may be dispatched per PR:
+ *
+ *   - peer-reviewer: a higher-tier reviewer that re-evaluates the PR
+ *     beyond what GitHub's Copilot bot already produced. Always
+ *     dispatched on each tick UNLESS its workflow id is already in
+ *     runningAgents (Temporal-side dedup; the workflow id is stable
+ *     per PR number, so a re-tick won't double-dispatch).
+ *
+ *   - comment-responder: redrafts patches in response to inline
+ *     review comments. Dispatched only when copilotCommentCount
+ *     EXCEEDS the threshold (`>` not `>=`). Important caveat: today's
+ *     `copilotCommentCount` is the TOTAL comment count, NOT the
+ *     unresolved-only count. That means a PR that's already been
+ *     iterated on (with resolved threads) can still trip the
+ *     threshold and re-dispatch the responder, which then noops or
+ *     applies a redundant patch. Filed as backlog entry
+ *     `pr-event-ingester-comment-count-is-unresolved`. Until that
+ *     lands, the dedup via runningAgents is the only thing keeping
+ *     the responder from spinning on an already-handled PR — which
+ *     is why the runningAgents check fires BEFORE the threshold check.
+ *
+ * Decisions are returned as bools + a reasons map so callers can
+ * distinguish "skipped because of dedup" from "skipped because below
+ * threshold" in telemetry.
  */
 export function decideAgentDispatches(
   pr: OpenPrSummary,
