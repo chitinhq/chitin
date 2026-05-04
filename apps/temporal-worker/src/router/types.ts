@@ -95,11 +95,12 @@ export interface RouterPolicy {
      *  'claude-code-headless', 'copilot', 'codex', 'gemini',
      *  'openclaw-glm-flash'). Despite the field name it carries a
      *  driver id, not a model name. NOTE 2026-05-04: this field is
-     *  parsed from chitin.yaml but `hook-wrapper.ts` currently calls
-     *  `callAdvisor()` with the hard-coded Claude binary; operators
-     *  changing this value won't see per-driver dispatch until
-     *  `callAdvisor` is taught to honor it (tracked as a router-
-     *  driver-dispatch follow-up). */
+     *  parsed from chitin.yaml but `hook-wrapper.ts` doesn't pass a
+     *  binary/driver to `callAdvisor()`, so it falls back to its
+     *  default 'claude' binary and the parsed policy value is unused.
+     *  Operators changing this value won't see per-driver dispatch
+     *  until callAdvisor is taught to honor it (tracked as a
+     *  router-driver-dispatch follow-up). */
     model: string;
   };
 }
