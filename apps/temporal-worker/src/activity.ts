@@ -696,8 +696,21 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     // Tempdir-only cleanup. Reviewer mode runs in repoRoot directly
     // (write_policy:'none' guarantees read-only); rm-ing it nukes the
     // monorepo checkout. Worktree mode is owned by the apply-step.
-    if (!useWorktree && workDir !== repoRoot) {
+    if (!useWorktree && isWorkerOwnedPath(workDir)) {
       rmSync(workDir, { recursive: true, force: true });
+    } else if (!useWorktree && workDir !== repoRoot) {
+      console.warn(`[cleanup] Skipped rmSync on non-owned path: ${workDir}`);
+    }
+
+    /**
+     * Returns true if the given path is unambiguously owned by the worker:
+     * - Starts with os.tmpdir() (tempdir mode)
+     * - Starts with SWARM_WORKTREES_ROOT (per-workflow worktree)
+     * Any other path is considered not owned and will not be removed.
+     */
+    function isWorkerOwnedPath(p: string): boolean {
+      const abs = resolve(p);
+      return abs.startsWith(resolve(tmpdir())) || abs.startsWith(SWARM_WORKTREES_ROOT);
     }
     // Slice 6b: per-workflow openclaw state dir is transient — clean it
     // up unconditionally regardless of activity success/failure. The user's
