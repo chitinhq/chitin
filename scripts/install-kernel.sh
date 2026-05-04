@@ -151,5 +151,22 @@ for installer in \
   rm -f "$hook_log"
 done
 
+# Rotate the budget envelope if the active one closed. Without
+# this, a sticky-closed envelope deny-cascades every tool call
+# until manual rotation. Idempotent; no-op when the active
+# envelope is open. See scripts/chitin-envelope-rotate.sh and
+# the chitin-envelope-rotate.timer for the periodic mechanism.
+ROTATOR="$REPO/scripts/chitin-envelope-rotate.sh"
+if [[ -x "$ROTATOR" ]]; then
+  rotator_log=$(mktemp)
+  if "$ROTATOR" >"$rotator_log" 2>&1; then
+    emit ok envelope-rotate-checked
+  else
+    tail=$(tail -c 500 "$rotator_log" | tr '\n' ' ' | tr -d '"' || true)
+    emit warn envelope-rotate-failed "tail=$tail"
+  fi
+  rm -f "$rotator_log"
+fi
+
 emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"
 exit 0

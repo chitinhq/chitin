@@ -1,0 +1,23 @@
+# Rotate ~/.chitin/current-envelope when the active envelope
+# closes. Without this, a single sticky-closed envelope causes
+# every agent (swarm, operator, anything) to deny-cascade on
+# `envelope-closed` until manually rotated.
+#
+# Background: 2026-05-04 — the most recent envelope hit its 1500-
+# call cap and sticky-closed at 23:48 UTC. The swarm dispatched
+# 61 workflows over the next 4 hours with zero commits because
+# every tool call was denied at the kernel. Manual rotation
+# unblocked everything; this timer makes the recovery automatic.
+
+[Unit]
+Description=Chitin envelope rotation (close → open via fresh budget)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/chitin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/systemd/user/chitin.env
+ExecStart=%h/workspace/chitin/scripts/chitin-envelope-rotate.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=30
