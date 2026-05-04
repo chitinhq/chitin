@@ -103,7 +103,7 @@ A1 (agent framework builders) → A2 (platform/infra) → A4 (security/complianc
 
 ## Phase 0 — archive predecessors (complete)
 
-Renamed `chitinhq/chitin → chitinhq/chitin-archive` at `v1.0.0`; archived every other v1 repo in the org; created the new public MIT `chitinhq/chitin` monorepo. Hermes (the predecessor driver) was killed as a chitin component on 2026-04-23 — chitin is governance around openclaw + Claude Code, not a tick loop. See [`archive-map.md`](./archive-map.md) for what was extracted vs left behind.
+Renamed `chitinhq/chitin → chitinhq/chitin-archive` at `v1.0.0`; archived every other v1 repo in the org; created the new public Apache 2.0 `chitinhq/chitin` monorepo. Hermes (the predecessor driver) was killed as a chitin component on 2026-04-23 — chitin is governance around openclaw + Claude Code, not a tick loop. See [`archive-map.md`](./archive-map.md) for what was extracted vs left behind.
 
 ## Candidates from external signal
 
