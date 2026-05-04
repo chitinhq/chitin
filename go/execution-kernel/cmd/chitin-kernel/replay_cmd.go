@@ -215,7 +215,9 @@ Use case:
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(rec)
+		if err := enc.Encode(rec); err != nil {
+			exitErr("recommend_tier_json", err.Error())
+		}
 		return
 	}
 	fmt.Printf("chitin recommend-tier — action_type=%s\n", rec.ActionType)
