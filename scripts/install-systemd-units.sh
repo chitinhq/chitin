@@ -31,7 +31,14 @@ if [[ ! -d "$UNIT_SRC_DIR" ]]; then
   exit 1
 fi
 
-units=("$UNIT_SRC_DIR"/chitin-*.{service,timer})
+# Brace-expand THEN walk; bash's `[[ -e ... ]]` discards literal
+# unmatched glob patterns. Without nullglob the array would still
+# contain the literal pattern strings on no-match, so the
+# length-zero check would never fire. Use shopt + a real existence
+# check instead.
+shopt -s nullglob
+units=("$UNIT_SRC_DIR"/chitin-*.service "$UNIT_SRC_DIR"/chitin-*.timer)
+shopt -u nullglob
 if [[ ${#units[@]} -eq 0 ]]; then
   echo "no chitin-* units found in $UNIT_SRC_DIR" >&2
   exit 1

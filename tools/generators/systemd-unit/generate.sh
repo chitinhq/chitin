@@ -49,7 +49,10 @@ while [[ $# -gt 0 ]]; do
     --name)        NAME="$2";                                                                  shift 2 ;;
     --description) DESCRIPTION="$2";                                                          shift 2 ;;
     --exec)        EXEC_START="$2";                                                            shift 2 ;;
-    --ts-script)   EXEC_START="/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/$2.ts"; shift 2 ;;
+    # Use bare `pnpm` and rely on the unit's PATH (set in service.tmpl
+    # to include %h/.vite-plus/bin). Avoids hardcoding /home/red/...
+    # which breaks on every other operator's machine.
+    --ts-script)   EXEC_START="pnpm exec tsx apps/temporal-worker/src/$2.ts"; shift 2 ;;
     --interval)    INTERVAL="$2";                                                              shift 2 ;;
     --calendar)    CALENDAR="$2";                                                              shift 2 ;;
     --boot-delay)  BOOT_DELAY="$2";                                                            shift 2 ;;
@@ -71,8 +74,17 @@ done
 
 if [[ -n "$INTERVAL" ]]; then
   SCHEDULE_LINE="OnUnitActiveSec=$INTERVAL"
+  # Boot trigger is sensible for interval timers — ensures a tick
+  # fires shortly after boot rather than waiting a full interval.
+  BOOT_LINE="OnBootSec=$BOOT_DELAY"
 else
   SCHEDULE_LINE="OnCalendar=$CALENDAR"
+  # For calendar timers, an OnBootSec line would ALSO fire on every
+  # boot in addition to the calendar schedule — that's almost never
+  # what an operator wants when they specifically asked for a
+  # calendar-based unit. Omit by default; operator can add manually
+  # if they need both.
+  BOOT_LINE="# (no OnBootSec — calendar timer fires per OnCalendar only)"
 fi
 
 AFTER_SECTION=""
@@ -89,7 +101,7 @@ substitute() {
   GEN_TIMEOUT="$TIMEOUT" \
   GEN_AFTER_SECTION="$AFTER_SECTION" \
   GEN_SCHEDULE_LINE="$SCHEDULE_LINE" \
-  GEN_BOOT_DELAY="$BOOT_DELAY" \
+  GEN_BOOT_LINE="$BOOT_LINE" \
   GEN_PERSISTENT="$PERSISTENT" \
   python3 - "$tmpl" <<'PYEOF'
 import sys, os
@@ -102,7 +114,7 @@ replacements = {
     '@@EXEC_START@@':    os.environ['GEN_EXEC_START'],
     '@@TIMEOUT@@':       os.environ['GEN_TIMEOUT'],
     '@@SCHEDULE_LINE@@': os.environ['GEN_SCHEDULE_LINE'],
-    '@@BOOT_DELAY@@':    os.environ['GEN_BOOT_DELAY'],
+    '@@BOOT_LINE@@':     os.environ['GEN_BOOT_LINE'],
     '@@PERSISTENT@@':    os.environ['GEN_PERSISTENT'],
 }
 for k, v in replacements.items():

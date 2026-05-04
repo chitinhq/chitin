@@ -13,20 +13,36 @@ Generates a chitin service/timer pair from `service.tmpl` and `timer.tmpl`.
 ## Usage
 
 ```sh
+# Synopsis (POSIX-shell quirk: the line-continuation `\` MUST be the
+# last character on its line — anything after it, including a comment,
+# breaks the continuation. Inline comments removed; per-flag notes
+# follow the synopsis.)
 bash tools/generators/systemd-unit/generate.sh \
-  --name <unit-name>        \  # e.g. pr-event-ingester
-  --description "<text>"    \  # human label (appears in systemctl status)
-  (--ts-script <script>     \  # shorthand: pnpm exec tsx apps/temporal-worker/src/<script>.ts
-   | --exec <full-cmd>)     \  # or full ExecStart path
-  (--interval <duration>    \  # e.g. 5min, 1h, 24h  (OnUnitActiveSec)
-   | --calendar "<spec>")   \  # e.g. '*-*-* 06:00:00' (OnCalendar)
-  [--boot-delay <dur>]      \  # OnBootSec (default: 5min)
-  [--timeout <sec>]         \  # TimeoutStartSec (default: 60)
-  [--persistent]            \  # Persistent=true — fire missed ticks on boot
-  [--after <unit>]          \  # After=chitin-<unit>.service in [Unit]
-  [--output-dir <dir>]      \  # default: infra/systemd
-  [--dry-run]                  # print to stdout, don't write files
+  --name <unit-name> \
+  --description "<text>" \
+  ( --ts-script <script> | --exec <full-cmd> ) \
+  ( --interval <duration> | --calendar "<spec>" ) \
+  [--boot-delay <dur>] \
+  [--timeout <sec>] \
+  [--persistent] \
+  [--after <unit>] \
+  [--output-dir <dir>] \
+  [--dry-run]
 ```
+
+Per-flag:
+- `--name` — e.g. `pr-event-ingester` (becomes `chitin-pr-event-ingester.{service,timer}`)
+- `--description` — human label (appears in `systemctl status`)
+- `--ts-script` — shorthand: `pnpm exec tsx apps/temporal-worker/src/<script>.ts`
+- `--exec` — full ExecStart path (alternative to `--ts-script`)
+- `--interval` — e.g. `5min`, `1h`, `24h` (`OnUnitActiveSec`)
+- `--calendar` — e.g. `'*-*-* 06:00:00'` (`OnCalendar`)
+- `--boot-delay` — `OnBootSec` for interval timers (default: `5min`); ignored on calendar timers (which fire only per `OnCalendar`)
+- `--timeout` — `TimeoutStartSec` in seconds (default: `60`)
+- `--persistent` — `Persistent=true` (a missed tick fires on next boot)
+- `--after` — `After=chitin-<unit>.service` in `[Unit]`
+- `--output-dir` — default: `infra/systemd`
+- `--dry-run` — print to stdout, don't write files
 
 ## Examples
 

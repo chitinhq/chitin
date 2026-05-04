@@ -6,7 +6,7 @@ Description=Chitin @@DESCRIPTION@@ timer
 
 [Timer]
 @@SCHEDULE_LINE@@
-OnBootSec=@@BOOT_DELAY@@
+@@BOOT_LINE@@
 # If Persistent=true, a missed tick fires on next boot.
 Persistent=@@PERSISTENT@@
 Unit=chitin-@@NAME@@.service
