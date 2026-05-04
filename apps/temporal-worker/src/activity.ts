@@ -159,6 +159,42 @@ function resolveCopilotModel(tier: Tier | undefined): string | null {
   return envOverride('COPILOT', tier) ?? COPILOT_TIER_MODEL[tier];
 }
 
+/**
+ * Resolve the model the dispatching agent will use, regardless of which
+ * driver was picked. Returned value is what gets stamped onto chain
+ * Decisions via CHITIN_MODEL env (P2 routing-as-learning-system).
+ *
+ * Returns the same model that planInvocation passes via --model/-m flags
+ * to the CLI, so chain attribution and CLI invocation can never disagree.
+ *
+ * Drivers without per-tier defaults (codex, gemini, openclaw-*) return
+ * the env-override when set, else null. Activity layer threads null
+ * through to env as empty string, which the kernel's omitempty drops
+ * from the JSON row.
+ */
+function resolveDispatchModel(driver: DriverId, tier: Tier | undefined): string | null {
+  switch (driver) {
+    case 'copilot':
+      return resolveCopilotModel(tier);
+    case 'claude-code-headless':
+      return resolveClaudeModel(tier);
+    case 'codex':
+      return (process.env.CHITIN_MODEL_CODEX ?? '').trim() || null;
+    case 'gemini':
+      return (process.env.CHITIN_MODEL_GEMINI ?? '').trim() || null;
+    case 'openclaw-glm-flash':
+    case 'openclaw-glm-cloud':
+    case 'openclaw-deepseek':
+      // openclaw-* models live in ~/.openclaw/openclaw.json per-agent;
+      // we don't know the model from this side without reading that file.
+      // Future P2.5 follow-up: parse openclaw.json at activity-start and
+      // surface the agent's model into the env. For now, leave empty so
+      // chain rows from openclaw dispatches get role/workflow_id but no
+      // model — better than guessing wrong.
+      return null;
+  }
+}
+
 function planInvocation(req: ExecutionRequest): DriverInvocation {
   const driver: DriverId = req.allowed_drivers[0];
   switch (driver) {
@@ -688,6 +724,15 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       // fires, and the activity hangs to Temporal's startToCloseTimeout
       // (15 min). With this fix, the timer-fired kill propagates and the
       // close event arrives within ~1s.
+      // P2 routing-as-learning-system: surface the dispatch's identity
+      // via env so the spawned agent's PreToolUse hook (chitin-kernel)
+      // can stamp these onto every gov-decisions row. Empty strings are
+      // dropped on the kernel side via omitempty.
+      const dispatchModel = resolveDispatchModel(plan.command === 'chitin-kernel' ? 'copilot' :
+        plan.command === 'claude' ? 'claude-code-headless' :
+        plan.command === 'codex' ? 'codex' :
+        plan.command === 'gemini' ? 'gemini' :
+        (req.allowed_drivers[0] as DriverId), req.tier) ?? '';
       const child = spawn(plan.command, plan.args, {
         cwd: workDir,
         env: {
@@ -696,6 +741,14 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
           ...(openclawState?.envOverride ?? {}),
           CHITIN_WORKFLOW_ID: req.workflow_id,
           CHITIN_RUN_ID: req.run_id,
+          CHITIN_MODEL: dispatchModel,
+          CHITIN_ROLE: req.role ?? '',
+          // CHITIN_FINGERPRINT will be populated once libs/contracts/
+          // src/fingerprint.ts (PR #287) merges and the dispatcher
+          // computes it from the resolved (driver, model, role, ...)
+          // tuple. Until then, the kernel sees an empty fingerprint
+          // and chain rows omit the field via omitempty.
+          CHITIN_FINGERPRINT: process.env.CHITIN_FINGERPRINT ?? '',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,

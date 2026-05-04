@@ -35,6 +35,70 @@ func TestWriteLog_PersistsCallerOrigin(t *testing.T) {
 	}
 }
 
+func TestWriteLog_PersistsFingerprintDims(t *testing.T) {
+	// P2 routing-as-learning-system: chain rows must carry the four
+	// fingerprint dimensions (model, role, workflow_id, fingerprint) so
+	// downstream analysis can join Decisions to PR/review outcomes.
+	// This test pins the JSON-tag layout so a future field rename
+	// won't silently break the analysis joins.
+	dir := t.TempDir()
+	d := Decision{
+		Allowed: true, Mode: "enforce", RuleID: "default-allow-shell",
+		Ts: "2026-05-04T17:30:00Z",
+		Agent: "claude-code", Action: Action{Type: ActShellExec, Target: "ls"},
+		Model:       "claude-haiku-4-5",
+		Role:        "reviewer",
+		WorkflowID:  "swarm-foo-1234567890",
+		Fingerprint: "abc123def456",
+	}
+	if err := WriteLog(d, dir); err != nil {
+		t.Fatalf("WriteLog: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log file, got %d", len(entries))
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	for _, want := range []string{
+		`"model":"claude-haiku-4-5"`,
+		`"role":"reviewer"`,
+		`"workflow_id":"swarm-foo-1234567890"`,
+		`"fingerprint":"abc123def456"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing %q in JSONL; got: %s", want, string(data))
+		}
+	}
+}
+
+func TestWriteLog_OmitsEmptyFingerprintDims(t *testing.T) {
+	// Backwards compatibility: pre-fingerprint dispatches (operator
+	// manual runs, older swarm builds, ad-hoc CLI invocations) write
+	// rows without the new fields. Existing readers must keep working
+	// — the omitempty JSON tags drop empty values from the row.
+	dir := t.TempDir()
+	d := Decision{
+		Allowed: true, Mode: "enforce", RuleID: "default-allow-shell",
+		Ts: "2026-05-04T17:30:00Z",
+		// Fingerprint dims deliberately empty.
+	}
+	if err := WriteLog(d, dir); err != nil {
+		t.Fatalf("WriteLog: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	for _, unwant := range []string{
+		`"model":`,
+		`"role":`,
+		`"workflow_id":`,
+		`"fingerprint":`,
+	} {
+		if strings.Contains(string(data), unwant) {
+			t.Errorf("unexpected %q in JSONL when fingerprint dim is empty; got: %s", unwant, string(data))
+		}
+	}
+}
+
 func TestWriteLog_AppendsOneJSONLine(t *testing.T) {
 	dir := t.TempDir()
 	d := Decision{

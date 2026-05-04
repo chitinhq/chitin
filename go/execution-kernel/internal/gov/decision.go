@@ -51,6 +51,13 @@ func WriteLog(d Decision, dir string) error {
 		OutputBytes      int64   `json:"output_bytes,omitempty"`
 		ToolCalls        int64   `json:"tool_calls,omitempty"`
 		CallerOrigin     string  `json:"caller_origin,omitempty"`
+		// P2 routing-as-learning-system fingerprint dimensions.
+		// All four are optional with omitempty so older readers and
+		// non-fingerprint dispatches keep working.
+		Model       string `json:"model,omitempty"`
+		Role        string `json:"role,omitempty"`
+		WorkflowID  string `json:"workflow_id,omitempty"`
+		Fingerprint string `json:"fingerprint,omitempty"`
 	}{
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
@@ -60,6 +67,10 @@ func WriteLog(d Decision, dir string) error {
 		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
 		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
 		CallerOrigin: d.CallerOrigin,
+		Model:       d.Model,
+		Role:        d.Role,
+		WorkflowID:  d.WorkflowID,
+		Fingerprint: d.Fingerprint,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal decision: %w", err)
