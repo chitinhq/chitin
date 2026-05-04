@@ -132,26 +132,24 @@ if ! echo "$smoke_payload" | timeout 2 "$BIN" gate evaluate --hook-stdin --agent
   fi
 fi
 
-# Refresh per-agent hook wiring. The kernel binary is now current;
-# wire it (or re-wire it) into agent CLIs that support hooks. Each
-# hook installer is idempotent and falls open on missing
-# dependencies, so failures here are non-fatal — log + continue.
-GEMINI_HOOK_INSTALLER="$REPO/scripts/install-gemini-hook.sh"
-if [[ -x "$GEMINI_HOOK_INSTALLER" ]]; then
-  # Capture output so a failure surface is actually inspectable.
-  # On success, output is discarded (just the structured emit
-  # below). On failure, both stdout + stderr are tail-truncated
-  # and threaded into the structured log so operators can diagnose
-  # without spelunking through journal entries.
-  gemini_log=$(mktemp)
-  if "$GEMINI_HOOK_INSTALLER" >"$gemini_log" 2>&1; then
-    emit ok gemini-hook-installed
+# Refresh per-agent hook wiring after a successful kernel install.
+# Each installer is idempotent and falls open on missing deps;
+# failures are logged but don't abort the redeploy. Stdout/stderr
+# captured so failure mode is actually inspectable in the
+# structured log.
+for installer in \
+  "$REPO/scripts/install-gemini-hook.sh" \
+  "$REPO/scripts/install-codex-hook.sh"; do
+  [[ -x "$installer" ]] || continue
+  hook_log=$(mktemp)
+  if "$installer" >"$hook_log" 2>&1; then
+    emit ok hook-installed "installer=$(basename "$installer")"
   else
-    tail=$(tail -c 500 "$gemini_log" | tr '\n' ' ' | tr -d '"' || true)
-    emit warn gemini-hook-install-failed "tail=$tail"
+    tail=$(tail -c 500 "$hook_log" | tr '\n' ' ' | tr -d '"' || true)
+    emit warn hook-install-failed "installer=$(basename "$installer") tail=$tail"
   fi
-  rm -f "$gemini_log"
-fi
+  rm -f "$hook_log"
+done
 
 emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"
 exit 0

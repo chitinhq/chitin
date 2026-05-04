@@ -12,6 +12,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/cost"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/codex"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/gemini"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/tier"
@@ -107,16 +108,30 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	// stderr stream so operators see malformed payloads explicitly
 	// rather than via a silent default-deny.
 	claudecode.SetWarnSink(errOut)
+	codex.SetWarnSink(errOut)
 	gemini.SetWarnSink(errOut)
 	defer claudecode.SetWarnSink(nil)
+	defer codex.SetWarnSink(nil)
 	defer gemini.SetWarnSink(nil)
 
-	// Dispatch by agent: gemini uses different tool names than
-	// Claude Code (run_shell_command vs Bash, etc.), so the
-	// normalizer differs. Wire shape on stdin is identical between
-	// the two — the same payload struct works for both.
+	// Dispatch by agent: codex + gemini use different tool names
+	// than Claude Code (apply_patch vs Edit/Write, run_shell_command
+	// vs Bash, etc.). Wire shape on stdin is byte-identical across
+	// the three; we copy the relevant fields into the vendor-specific
+	// HookInput when --agent matches.
 	var action gov.Action
-	if agent == "gemini" {
+	switch agent {
+	case "codex":
+		cPayload := codex.HookInput{
+			SessionID:      payload.SessionID,
+			TranscriptPath: payload.TranscriptPath,
+			Cwd:            payload.Cwd,
+			HookEventName:  payload.HookEventName,
+			ToolName:       payload.ToolName,
+			ToolInput:      payload.ToolInput,
+		}
+		action, err = codex.Normalize(cPayload)
+	case "gemini":
 		gPayload := gemini.HookInput{
 			SessionID:      payload.SessionID,
 			TranscriptPath: payload.TranscriptPath,
@@ -126,7 +141,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 			ToolInput:      payload.ToolInput,
 		}
 		action, err = gemini.Normalize(gPayload)
-	} else {
+	default:
 		action, err = claudecode.Normalize(payload)
 	}
 	if err != nil {
@@ -200,9 +215,9 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	}
 	if hookChainID != "" {
 		// Surface label tracks the dispatched driver so chain
-		// telemetry doesn't mislabel gemini events as claude-code.
-		// The agent flag drives this — claude-code is the default
-		// when the flag is empty (single-driver legacy behavior).
+		// telemetry doesn't mislabel codex/gemini events as
+		// claude-code. The agent flag drives this — claude-code
+		// is the default when the flag is empty.
 		surface := agent
 		if surface == "" {
 			surface = "claude-code"
