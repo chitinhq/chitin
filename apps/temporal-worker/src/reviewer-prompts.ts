@@ -57,7 +57,14 @@ export const ReviewerFindingSchema: z.ZodType<ReviewerFinding> = z.object({
   severity: z.enum(['🔴', '🟡', '🟢']),
   file: z.string().min(1),
   line: z.number().int().positive().optional(),
-  category: z.enum(['bug', 'test_gap', 'design', 'doc']),
+  // Canonical set: bug/test_gap/design/doc/infra/security/perf.
+  // Accept any non-empty string — agents reasonably invent
+  // categories ("infra", "ops") and rejecting them at the schema
+  // level loses the actual finding payload (the gatekeeper digest
+  // shows tier-log "parse-fail" but the marker WAS emitted; only
+  // the category was off-enum). Downstream consumers should
+  // normalize.
+  category: z.string().min(1),
   summary: z.string().min(1),
   suggested_fix: z.string().optional(),
 });

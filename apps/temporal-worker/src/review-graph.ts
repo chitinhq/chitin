@@ -366,7 +366,14 @@ export interface ReviewerFinding {
   severity: '🔴' | '🟡' | '🟢';
   file: string;
   line?: number;
-  category: 'bug' | 'test_gap' | 'design' | 'doc';
+  /** Free-form category. Canonical set is bug/test_gap/design/doc/
+   *  infra/security/perf, but agents in practice invent reasonable
+   *  ones (`infra`, `ops`, `perf`, etc) and rejecting those at the
+   *  schema level cascades the entire review to parse-fail —
+   *  losing the substantive findings. Downstream tooling (debt-
+   *  ledger, etc) should normalize, not require pre-normalization.
+   */
+  category: string;
   summary: string;
   suggested_fix?: string;
 }

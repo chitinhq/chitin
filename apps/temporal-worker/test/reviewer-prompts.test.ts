@@ -47,8 +47,20 @@ describe('ReviewerFindingSchema', () => {
     expect(() => ReviewerFindingSchema.parse(bad)).toThrow();
   });
 
-  it('rejects an unknown category', () => {
-    const bad = { severity: '🔴', file: 'x.ts', category: 'security', summary: 's' };
+  it('accepts off-canonical category strings (was: rejects "security")', () => {
+    // Updated 2026-05-04: schema was z.enum but agents in practice
+    // invent reasonable categories like "infra"/"security"/"perf"
+    // and rejecting them cascaded the entire review to parse-fail
+    // (PR #277 R3 produced a real findings payload with
+    // category:"infra" and the gatekeeper showed parse-fail because
+    // schema validation threw). Accept any non-empty string;
+    // downstream tooling normalizes.
+    const ok = { severity: '🔴', file: 'x.ts', category: 'security', summary: 's' };
+    expect(() => ReviewerFindingSchema.parse(ok)).not.toThrow();
+  });
+
+  it('rejects empty category string', () => {
+    const bad = { severity: '🔴', file: 'x.ts', category: '', summary: 's' };
     expect(() => ReviewerFindingSchema.parse(bad)).toThrow();
   });
 

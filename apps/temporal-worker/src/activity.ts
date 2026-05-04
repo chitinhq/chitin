@@ -594,6 +594,17 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
       const agentId = resolveAgent(localDriver as DriverId);
       openclawState = provisionOpenclawState(req, worktreeInfo.path, agentId);
     }
+  } else if (req.role === 'reviewer') {
+    // Reviewers don't write code (write_policy:'none') but DO need
+    // to read the actual repo: `gh pr diff <n>` requires a git
+    // checkout, the prompt instructs them to read the changed files,
+    // etc. Empty-tempdir mode (the slice-1..4 default below)
+    // produced reviewer runs that found `not a git repository` on
+    // the first tool call, escalated with low confidence, and the
+    // gatekeeper cascaded to operator. Run the reviewer in repoRoot
+    // directly — read-only access is governed by the kernel's
+    // policy at the per-tool-call layer, not by isolating the cwd.
+    workDir = repoRoot;
   } else {
     workDir = mkdtempSync(join(tmpdir(), `chitin-worker-${req.workflow_id}-`));
     const policySrc = resolvePolicySrc();
