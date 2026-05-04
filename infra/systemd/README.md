@@ -24,6 +24,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-alarm-feeder.timer` | timer | Fires the alarm-feeder once per day. |
 | `chitin-stale-doc-detector.service` | oneshot | Daily stale-doc detector: scans `docs/**/*.md` for project-relative path refs that no longer exist in the working tree, files debt-ledger entries at severity:'low'. Tech-writer's debt-detection half. |
 | `chitin-stale-doc-detector.timer` | timer | Fires the stale-doc detector once per day. |
+| `chitin-agent-unlock.service` | oneshot | Auto-recovery for agents lockdown'd by infrastructure-only denials (envelope-closed cascades, etc). Skips agents with any policy-violation history — those stay operator-only. |
+| `chitin-agent-unlock.timer` | timer | Fires the agent-unlock check every 15 min. |
 
 ## Install
 
@@ -40,6 +42,7 @@ systemctl --user enable --now chitin-debt-curator.timer
 systemctl --user enable --now chitin-alarm-feeder.timer
 systemctl --user enable --now chitin-stale-doc-detector.timer
 systemctl --user enable --now chitin-groomer.timer
+systemctl --user enable --now chitin-agent-unlock.timer
 ```
 
 To survive logout (start at boot):

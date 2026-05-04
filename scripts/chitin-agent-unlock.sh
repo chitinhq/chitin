@@ -88,11 +88,14 @@ gen_uuid() {
 }
 
 # minutes_since_ts <iso8601> — minutes elapsed since the given timestamp.
-# Returns 999999 on parse failure so the caller skips the agent conservatively.
+# Returns -1 on parse failure so the caller can detect and skip the agent
+# conservatively. Pre-2026-05-04 the sentinel was 999999, which the caller
+# treats as "old enough to reset" — meaning a malformed locked_ts triggered
+# unlock instead of being skipped. Fixed per Copilot review on #282.
 minutes_since_ts() {
   local ts="$1"
   local then_s now_s
-  then_s=$(date -u -d "$ts" +%s 2>/dev/null) || { echo 999999; return; }
+  then_s=$(date -u -d "$ts" +%s 2>/dev/null) || { echo -1; return; }
   now_s=$(date -u +%s)
   echo $(( (now_s - then_s) / 60 ))
 }
@@ -267,6 +270,12 @@ for row in "${locked_rows[@]}"; do
 
   # Condition B: lock must be old enough to be meaningful.
   locked_ago_min=$(minutes_since_ts "$locked_ts")
+  if (( locked_ago_min < 0 )); then
+    # minutes_since_ts returns -1 on parse failure. Skip conservatively
+    # — a malformed locked_ts is operator state we shouldn't auto-mutate.
+    emit_log skip "locked-ts-parse-failed" "agent=$agent" "locked_ts=$locked_ts"
+    continue
+  fi
   if (( locked_ago_min < LOCK_AGE_MIN )); then
     emit_log skip "lock-too-fresh" \
       "agent=$agent" "locked_ago_min=$locked_ago_min" "threshold=$LOCK_AGE_MIN"
@@ -285,8 +294,21 @@ for row in "${locked_rows[@]}"; do
     continue
   fi
 
-  # All conditions met. Collect total denial count for the chain event payload.
+  # Condition D: the lifetime denials table must be empty for this agent.
+  # The denials table only contains non-envelope (policy-class) denials —
+  # see gate.go RecordDenial which exempts envelope-class rule_ids. So if
+  # there's any row here, the lockdown was driven (at least partly) by
+  # policy violations, not pure infrastructure cascades. Per the design's
+  # acceptance criteria: "Locked agents whose denials include any policy-
+  # violation signal do NOT auto-reset". We compute total_policy early
+  # and use it as a hard guard, not just a chain-event payload field.
   total_policy=$(total_policy_denial_count "$agent")
+  if (( total_policy > 0 )); then
+    emit_log skip "policy-denials-in-lifetime" \
+      "agent=$agent" "locked_ago_min=$locked_ago_min" \
+      "total_policy=$total_policy"
+    continue
+  fi
 
   # Reset the agent's escalation state.
   if ! "$KERNEL" gate reset --agent="$agent" >/dev/null 2>&1; then
