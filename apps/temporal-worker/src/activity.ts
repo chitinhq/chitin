@@ -8,7 +8,29 @@ import type { ActivityResult, HookEventSummary, WorktreeResult } from './activit
 // Bytes of stdout/stderr returned to Temporal in ActivityResult. Buffers
 // during the run are bounded at 2x this value (see runAgentTurn), so
 // chatty drivers can't OOM the 24/7 worker.
-const TAIL_BYTES = 2000;
+//
+// Sized so that the reviewer agent's `<<<REVIEW>>>{...json...}` marker
+// (emitted at the end of the final text message) fits in the captured
+// tail. parseReviewerOutput in reviewer-prompts.ts looks for the
+// marker in the tail; if it's pushed out by trailing stream-json
+// events (Claude Code's result event with usage stats is ~500 bytes
+// of JSON, plus message_stop + a final newline) the parser returns
+// "no <<<REVIEW>>> marker in stdout" and the review-graph escalates
+// one tier — eventually falling through R3 → operator with the
+// "review chain parse-failure cascade" digest.
+//
+// Pre-2026-05-04 default: 2000. That blew past the marker on every
+// reviewer run for PR #274 (260 LOC docs sweep) — the review chain
+// fired R2 → R3 → operator-escalation, both tiers parse-failed.
+// Bumped to 16384 (16 KB) — comfortably absorbs the trailing events.
+//
+// Override via CHITIN_STDOUT_TAIL_BYTES for future tuning.
+const TAIL_BYTES = (() => {
+  const raw = process.env.CHITIN_STDOUT_TAIL_BYTES;
+  if (!raw) return 16384;
+  const n = parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : 16384;
+})();
 
 // Slice 5: where worktrees live when base_ref is set on the request. XDG
 // cache (transient, safe to delete). One sub-dir per workflow_id.

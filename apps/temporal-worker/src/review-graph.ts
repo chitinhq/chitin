@@ -55,36 +55,57 @@ function maxTier(a: ReviewTier, b: ReviewTier): ReviewTier {
 // Without this, an accidentally-blank
 // `CHITIN_REVIEWER_R2_DRIVER=` line in chitin.env would override the
 // default to an invalid empty string.
+//
+// CRITICAL: this file is imported by review-graph-workflow.ts which
+// runs in Temporal's V8 workflow isolate where `process` is NOT
+// defined. Reading process.env at module-load (i.e., inside an IIFE
+// like the previous shape) crashes the workflow with
+// `ReferenceError: process is not defined`. Read env lazily (inside
+// the function the activity layer calls), not at module evaluation.
 function envOrDefault(name: string, fallback: string | null): string | null {
+  // typeof guard — workflow isolate has no `process` global at all.
+  if (typeof process === 'undefined' || !process.env) return fallback;
   const raw = process.env[name];
   if (raw === undefined) return fallback;
   const trimmed = raw.trim();
   return trimmed === '' ? fallback : trimmed;
 }
 
-export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; model: string | null }> = (() => {
-  // Operator can override per-tier driver via env. Useful for
-  // running codex (gpt-5.4 on Plus) at R2 instead of copilot/sonnet,
-  // either as a permanent swap or as an A/B comparison. The env
-  // shape is CHITIN_REVIEWER_R<N>_DRIVER (= driver id) +
-  // CHITIN_REVIEWER_R<N>_MODEL (= model name override). When unset
-  // (or whitespace-only), defaults match the historical config below.
-  //
-  // NOTE: this map is module-load evaluated. Tests that need to
-  // exercise default vs override should set the env BEFORE importing
-  // the module, or use the helper directly (envOrDefault).
-  const pick = (tier: string, defaultDriver: string | null, defaultModel: string | null) => ({
-    driver: envOrDefault(`CHITIN_REVIEWER_${tier}_DRIVER`, defaultDriver),
-    model: envOrDefault(`CHITIN_REVIEWER_${tier}_MODEL`, defaultModel),
-  });
+// Default tier→driver mapping (constant; no env reads, safe to
+// evaluate at module load in the workflow isolate).
+const REVIEW_TIER_DRIVER_DEFAULTS: Record<ReviewTier, { driver: string | null; model: string | null }> = {
+  R0: { driver: null, model: null },                                          // GH bot, not dispatched
+  R1: { driver: 'copilot', model: 'gpt-4.1' },
+  R2: { driver: 'copilot', model: 'claude-sonnet-4.6' },
+  R3: { driver: 'claude-code-headless', model: 'claude-opus-4-7' },
+  R4: { driver: null, model: null },                                          // operator, not dispatched
+};
+
+/**
+ * Resolve the driver+model for a review tier, applying the
+ * CHITIN_REVIEWER_R<N>_{DRIVER,MODEL} env override if set.
+ *
+ * Called LAZILY by the activity layer (not the workflow). The
+ * workflow isolate has no `process` so it can't run this; the
+ * activity wraps it instead. The dispatcher / pr-event-ingester
+ * call this directly.
+ */
+export function resolveReviewTierDriver(tier: ReviewTier): { driver: string | null; model: string | null } {
+  const def = REVIEW_TIER_DRIVER_DEFAULTS[tier];
   return {
-    R0: { driver: null, model: null },                                          // GH bot, not dispatched
-    R1: pick('R1', 'copilot', 'gpt-4.1'),
-    R2: pick('R2', 'copilot', 'claude-sonnet-4.6'),
-    R3: pick('R3', 'claude-code-headless', 'claude-opus-4-7'),
-    R4: { driver: null, model: null },                                          // operator, not dispatched
+    driver: envOrDefault(`CHITIN_REVIEWER_${tier}_DRIVER`, def.driver),
+    model: envOrDefault(`CHITIN_REVIEWER_${tier}_MODEL`, def.model),
   };
-})();
+}
+
+/**
+ * Eagerly-resolved table preserved for callers that historically
+ * read REVIEW_TIER_DRIVER as a constant (test fixtures, log lines).
+ * Defaults only — env overrides are NOT applied here because the
+ * workflow isolate import would crash. Callers that need the
+ * override should call `resolveReviewTierDriver(tier)` directly.
+ */
+export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; model: string | null }> = REVIEW_TIER_DRIVER_DEFAULTS;
 
 /**
  * Per-tier resource bounds. R1 is fast + cheap (small diffs go through
