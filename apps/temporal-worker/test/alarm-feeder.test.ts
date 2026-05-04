@@ -7,9 +7,11 @@ import {
   alarmSignature,
   appendBacklogEntry,
   parseBacklogIds,
+  parseJournalForUnitFailures,
   readLatestRollup,
   renderAlarmEntry,
   runAlarmFeeder,
+  systemdFailureToAlarm,
 } from '../src/alarm-feeder.ts';
 
 // ─── alarmSignature ──────────────────────────────────────────────────────
@@ -263,5 +265,206 @@ describe('appendBacklogEntry', () => {
     expect(out).toContain('existing');
     expect(out).toContain('new');
     expect(out.indexOf('new')).toBeGreaterThan(out.indexOf('existing'));
+  });
+});
+
+// ─── parseJournalForUnitFailures ─────────────────────────────────────────
+
+// Synthetic journal fixture: one CHDIR failure on a chitin-* unit.
+const CHDIR_JOURNAL_LINE =
+  'May  4 10:23:45 host systemd[1234]: chitin-swarm-worker.service: Main process exited, code=exited, status=200/CHDIR';
+
+// Synthetic journal fixture: one EXEC failure on a chitin-* unit.
+const EXEC_JOURNAL_LINE =
+  'May  4 10:24:01 host systemd[1234]: chitin-dispatcher.service: Failed to execute command: status=203/EXEC';
+
+// Synthetic healthy exit — must never match.
+const HEALTHY_JOURNAL_LINE =
+  'May  4 10:22:00 host systemd[1234]: chitin-swarm-rollup.service: Succeeded.';
+
+// Non-chitin failure — must never match.
+const OTHER_UNIT_LINE =
+  'May  4 10:22:10 host systemd[1234]: postgresql.service: Main process exited, code=exited, status=200/CHDIR';
+
+describe('parseJournalForUnitFailures', () => {
+  it("returns exactly one event for a single CHDIR failure line", () => {
+    const events = parseJournalForUnitFailures(CHDIR_JOURNAL_LINE);
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('systemd-unit-failure');
+    expect(events[0].unit).toBe('chitin-swarm-worker.service');
+    expect(events[0].status_code).toBe('200/CHDIR');
+    expect(events[0].failure_ts).toBe('May  4 10:23:45');
+  });
+
+  it("returns exactly one event for a single EXEC failure line", () => {
+    const events = parseJournalForUnitFailures(EXEC_JOURNAL_LINE);
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('systemd-unit-failure');
+    expect(events[0].unit).toBe('chitin-dispatcher.service');
+    expect(events[0].status_code).toBe('203/EXEC');
+  });
+
+  it("returns zero events for a healthy status=0/SUCCESS exit (no false positives)", () => {
+    expect(parseJournalForUnitFailures(HEALTHY_JOURNAL_LINE)).toHaveLength(0);
+  });
+
+  it("returns zero events for a non-chitin unit with CHDIR status", () => {
+    expect(parseJournalForUnitFailures(OTHER_UNIT_LINE)).toHaveLength(0);
+  });
+
+  it("returns zero events for empty input", () => {
+    expect(parseJournalForUnitFailures('')).toHaveLength(0);
+  });
+
+  it("returns two events for two distinct failure lines", () => {
+    const out = [CHDIR_JOURNAL_LINE, EXEC_JOURNAL_LINE].join('\n');
+    const events = parseJournalForUnitFailures(out);
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.unit)).toContain('chitin-swarm-worker.service');
+    expect(events.map((e) => e.unit)).toContain('chitin-dispatcher.service');
+  });
+
+  it("ignores healthy lines interspersed between failure lines", () => {
+    const out = [HEALTHY_JOURNAL_LINE, CHDIR_JOURNAL_LINE, HEALTHY_JOURNAL_LINE].join('\n');
+    expect(parseJournalForUnitFailures(out)).toHaveLength(1);
+  });
+});
+
+// ─── systemdFailureToAlarm ───────────────────────────────────────────────
+
+describe('systemdFailureToAlarm', () => {
+  it("encodes unit name and status code in the alarm string", () => {
+    const ev = parseJournalForUnitFailures(CHDIR_JOURNAL_LINE)[0];
+    const alarm = systemdFailureToAlarm(ev);
+    expect(alarm).toContain('chitin-swarm-worker.service');
+    expect(alarm).toContain('200/CHDIR');
+  });
+
+  it("produces a stable alarmSignature keyed on unit name (not the timestamp)", () => {
+    const ev1 = parseJournalForUnitFailures(CHDIR_JOURNAL_LINE)[0];
+    const ev2 = { ...ev1, failure_ts: 'May  5 09:00:00' };
+    expect(alarmSignature(systemdFailureToAlarm(ev1))).toBe(
+      alarmSignature(systemdFailureToAlarm(ev2)),
+    );
+  });
+});
+
+// ─── runAlarmFeeder systemd integration ─────────────────────────────────
+
+describe('runAlarmFeeder — systemd journal scanning', () => {
+  let scratch: string;
+  let backlogPath: string;
+  let rollupsDir: string;
+  let logs: string[];
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'alarm-feeder-systemd-test-'));
+    rollupsDir = join(scratch, 'rollups');
+    backlogPath = join(scratch, 'swarm-backlog.md');
+    logs = [];
+    writeFileSync(backlogPath, '# Swarm Backlog\n\n## Entries\n\n', 'utf8');
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("emits one chain alarm event and one backlog entry for a single CHDIR failure", async () => {
+    const r = await runAlarmFeeder({
+      rollupsDir,
+      backlogPath,
+      cap: 5,
+      now: '2026-05-04T10:23:45Z',
+      log: (l) => logs.push(l),
+      journalOutput: CHDIR_JOURNAL_LINE,
+    });
+
+    // Exactly one systemd failure detected.
+    expect(r.systemd_failures).toBe(1);
+
+    // A chain alarm event was emitted (kind=systemd-unit-failure).
+    const alarmEvent = logs
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((o) => o['kind'] === 'systemd-unit-failure');
+    expect(alarmEvent).toBeDefined();
+    expect(alarmEvent!['unit']).toBe('chitin-swarm-worker.service');
+    expect(alarmEvent!['status_code']).toBe('200/CHDIR');
+
+    // One backlog entry was filed.
+    expect(r.new_entries).toBe(1);
+    const md = readFileSync(backlogPath, 'utf8');
+    expect(md).toContain('investigate-systemd-unit-failure');
+    expect(md).toContain('role: analyst');
+  });
+
+  it("does not create backlog entries for healthy journal output (no false positives)", async () => {
+    const healthyJournal = [
+      'May  4 10:22:00 host systemd[1234]: chitin-swarm-rollup.service: Succeeded.',
+      'May  4 10:22:01 host systemd[1234]: chitin-swarm-rollup.timer: Succeeded.',
+    ].join('\n');
+
+    const r = await runAlarmFeeder({
+      rollupsDir,
+      backlogPath,
+      cap: 5,
+      now: '2026-05-04T10:23:45Z',
+      log: (l) => logs.push(l),
+      journalOutput: healthyJournal,
+    });
+
+    expect(r.systemd_failures).toBe(0);
+    expect(r.new_entries).toBe(0);
+  });
+
+  it("dedups systemd failures against existing backlog entries", async () => {
+    // Pre-file an entry that matches the CHDIR alarm signature.
+    const existingId = alarmEntryId(
+      alarmSignature(
+        systemdFailureToAlarm({
+          kind: 'systemd-unit-failure',
+          unit: 'chitin-swarm-worker.service',
+          status_code: '200/CHDIR',
+          failure_ts: 'May  4 10:23:45',
+        }),
+      ),
+    );
+    writeFileSync(backlogPath, `# Backlog\n\n### \`${existingId}\`\n\nalready filed\n`, 'utf8');
+
+    const r = await runAlarmFeeder({
+      rollupsDir,
+      backlogPath,
+      cap: 5,
+      now: '2026-05-04T10:23:45Z',
+      log: (l) => logs.push(l),
+      journalOutput: CHDIR_JOURNAL_LINE,
+    });
+
+    expect(r.systemd_failures).toBe(1);
+    expect(r.new_entries).toBe(0);
+    expect(r.duplicates_skipped).toBe(1);
+  });
+
+  it("combines rollup alarms and systemd failures; cap applies across both", async () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(rollupsDir, { recursive: true });
+    writeFileSync(
+      join(rollupsDir, '2026-05-04.json'),
+      JSON.stringify({ alarms: ['BUCKET-B REGRESSION: 1/19 contaminated'] }),
+      'utf8',
+    );
+
+    const r = await runAlarmFeeder({
+      rollupsDir,
+      backlogPath,
+      cap: 1,
+      now: '2026-05-04T10:23:45Z',
+      log: (l) => logs.push(l),
+      journalOutput: CHDIR_JOURNAL_LINE,
+    });
+
+    // Cap=1: only the first alarm (rollup) gets a backlog entry.
+    expect(r.new_entries).toBe(1);
+    expect(r.total_alarms).toBe(2);
+    expect(r.systemd_failures).toBe(1);
   });
 });
