@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -133,7 +134,7 @@ func cmdChainRelated(args []string) {
 // `replay`, `summarize`, and `related` are wired here.
 func cmdChain(args []string) {
 	if len(args) < 1 {
-		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|summarize|related> [flags]")
+		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|summarize|related|snapshot|stats> [flags]")
 	}
 	switch args[0] {
 	case "replay":
@@ -144,7 +145,60 @@ func cmdChain(args []string) {
 		cmdChainRelated(args[1:])
 	case "snapshot":
 		cmdChainSnapshot(args[1:])
+	case "stats":
+		cmdChainStats(args[1:])
 	default:
 		exitErr("chain_unknown_subcommand", args[0])
+	}
+}
+
+// cmdChainStats — chitin-kernel chain stats [--by=<axis>] [--json]
+// Aggregates decisions across all chain JSONLs; outputs per-bucket
+// counts + success rates. Foundation for tier-router-by-data.
+func cmdChainStats(args []string) {
+	axis := "tool_name"
+	jsonOut := false
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--by="):
+			axis = a[len("--by="):]
+		case a == "--json":
+			jsonOut = true
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain stats [--by=<axis>] [--json]
+
+Aggregate decision events across all sessions; output per-bucket
+counts + success rates.
+
+Axes: tool_name | action_type | rule_id | decision | agent
+Default: tool_name.`)
+			os.Exit(0)
+		}
+	}
+	stats, err := replay.ComputeStats(axis)
+	if err != nil {
+		exitErr("chain_stats_failed", err.Error())
+	}
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(stats); err != nil {
+			exitErr("chain_stats_json", err.Error())
+		}
+		return
+	}
+	fmt.Printf("chitin chain stats — by %s\n", axis)
+	fmt.Printf("  total decisions: %d\n\n", stats.Total)
+	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "bucket", "decisions", "allows", "denies", "success%")
+	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "------", "---------", "------", "------", "--------")
+	for _, k := range stats.SortedBucketKeys() {
+		b := stats.Buckets[k]
+		key := k
+		if len(key) > 30 {
+			key = key[:27] + "..."
+		}
+		fmt.Printf("  %-30s %10d %10d %10d %9.1f%%\n",
+			key, b.Decisions, b.Allows, b.Denies, b.SuccessRate*100,
+		)
 	}
 }
