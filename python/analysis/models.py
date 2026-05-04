@@ -27,6 +27,13 @@ class Decision:
     cost_usd: float = 0.0
     input_bytes: int = 0
     tool_calls: int = 0
+    # Routing-as-learning-system fingerprint dims (P2). Optional —
+    # pre-fingerprint dispatches omit these, so all four default to None.
+    # See go/execution-kernel/internal/gov/policy.go Decision struct.
+    model: Optional[str] = None
+    role: Optional[str] = None
+    workflow_id: Optional[str] = None
+    fingerprint: Optional[str] = None
 
 
 def _coerce_float(v, default: float = 0.0) -> float:
@@ -97,6 +104,11 @@ def parse_decision_line(line: str) -> Optional[Decision]:
         cost_usd=_coerce_float(raw.get("cost_usd")),
         input_bytes=_coerce_int(raw.get("input_bytes")),
         tool_calls=_coerce_int(raw.get("tool_calls")),
+        # P2 fingerprint dims; pre-fingerprint dispatches omit these.
+        model=raw.get("model") or None,
+        role=raw.get("role") or None,
+        workflow_id=raw.get("workflow_id") or None,
+        fingerprint=raw.get("fingerprint") or None,
     )
 
 
