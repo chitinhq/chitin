@@ -1,21 +1,24 @@
 # Thesis
 
-> Chitin is an execution kernel for AI coding agents. Every tool call across Claude Code, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack.
+> Chitin is an execution kernel for AI coding agents. Every tool call across Claude Code, Codex CLI, Gemini CLI, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack.
 
 ## What chitin is
 
-A small Go kernel that sits between AI coding agents and the operating system. Three patterns are gated through it today:
+A small Go kernel that sits between AI coding agents and the operating system. Five vendor surfaces are gated through it today:
 
-- **Claude Code** — via a `PreToolUse` hook installed into `~/.claude/settings.json`.
-- **Copilot CLI** — via the in-kernel SDK driver (`chitin-kernel drive copilot`).
-- **openclaw** — via an `acpx` config-override (one-line install, no chitin-side wrapper code).
+- **Claude Code** — `PreToolUse` hook in `~/.claude/settings.json`.
+- **Codex CLI** — `PreToolUse` hook in `~/.codex/config.toml` (`[features] codex_hooks=true` + `[[hooks.PreToolUse]]`); same wire shape as Claude Code.
+- **Gemini CLI** — `BeforeTool` hook in `~/.gemini/settings.json`; same wire shape as Claude Code (renamed event).
+- **Copilot CLI** — in-kernel SDK driver (`chitin-kernel drive copilot`); wrapping orchestrator pattern (closed vendor).
+- **openclaw** (`local-*` drivers: qwen / glm / glm-flash / deepseek) — `before_tool_call` plugin path.
 
-Same `gov.Gate` API across all three. Same canonical event chain on disk. Same OTEL projection out the back.
+Same `gov.Gate` API across all five. Same canonical event chain on disk. Same OTEL projection out the back. Vendor-specific normalization lives in `internal/driver/<vendor>/normalize.go`.
 
 ## What chitin is not
 
 - Not a tick-loop / agent-runner. Hermes is dead (2026-04-23). Drivers run on their own surfaces; chitin gates their tool calls.
 - Not an OTEL ingest target. Chitin **emits** spans as a projection of its canonical chain. The chain is the source of truth; OTEL is one-way out.
+- Not an LLM provider abstraction. Chitin doesn't proxy or re-call models. Each vendor's CLI talks to its own backend (codex → OpenAI under your ChatGPT Plus auth; gemini → Google under Pro auth; etc.); chitin governs the actions those CLIs take.
 - Not a cloud product (yet). Phase 1 is local-only. Cloud is the monetization step on the strategic arc — it follows ecosystem distribution, not the other way around.
 
 ## The closed loop

@@ -9,6 +9,24 @@
 > **Off by default** — operator opts in via a sentinel file. Hot
 > path stays fast (kernel only) until then.
 
+## Supported agents
+
+The router-hook shim works for any agent whose hook surface speaks
+the Claude Code PreToolUse wire shape (or one byte-compatible with
+it). As of 2026-05-04 that's all of:
+
+| Driver | Hook event | Config file | Installer |
+|---|---|---|---|
+| `claude-code-headless` | `PreToolUse` | `~/.claude/settings.json` | `chitin-kernel install --surface claude-code` |
+| `codex` | `PreToolUse` (codex 0.128.0+) | `~/.codex/config.toml` (`[features] codex_hooks=true`) | `scripts/install-codex-hook.sh` |
+| `gemini` | `BeforeTool` (same wire shape; renamed event) | `~/.gemini/settings.json` | `scripts/install-gemini-hook.sh` |
+| `copilot` | n/a — wrapping driver | (in-kernel) | `chitin-kernel drive copilot` |
+| `local-*` (qwen/glm/glm-flash/deepseek) | `before_tool_call` plugin | openclaw plugin config | openclaw-side |
+
+The `chitin-router-hook` shim is the same binary across all hook-
+surface drivers; per-vendor tool-name normalization lives in
+`internal/driver/<vendor>/normalize.go` (claudecode, codex, gemini).
+
 ## What it does
 
 For each `PreToolUse` hook call from any chitin-governed agent:
@@ -143,12 +161,14 @@ Two reasons:
 1. **Instant disable** — `rm ~/.chitin/router-enabled` doesn't
    require restarting a worker or reloading config. The next hook
    call sees no sentinel → fast path.
-2. **Hot-path performance** — if disabled, the bash shim never
-   spawns `pnpm tsx`, saving ~500ms-1s per tool call.
+2. **Hot-path performance** — if disabled, the bash shim short-
+   circuits to the kernel directly (microsecond cost).
 
-A future Go SDK (see backlog: `router-heuristics-go-sdk`) will move
-the heuristics into the kernel binary itself; at that point the
-sentinel becomes redundant and the policy flag is enough.
+The Go SDK port shipped (PR #231) — heuristics now run in-process
+in the kernel binary at ~26ms cold start instead of ~500ms via
+`pnpm tsx`. The sentinel still exists because it's the operator-
+side instant-disable; the slow-path performance just isn't a
+reason to keep it anymore.
 
 ## Related
 

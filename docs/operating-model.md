@@ -7,36 +7,49 @@ How chitin actually runs today, and what each subsystem owns.
 Single-box. One Linux workstation with an RTX 3090 hosts the entire dev + dogfood loop.
 
 ```
-                  ┌─────────────────────────────────────────────┐
-                  │  Local workstation (RTX 3090, this machine) │
-                  │                                             │
-   Anthropic ─────┤── Claude Code ──┐                           │
-   (cloud)        │                  │                          │
-                  │                  ├──► chitin-kernel ──► .chitin/
-   GitHub ────────┤── Copilot CLI ──┤    (gov.Gate gates       │
-   (cloud)        │                  │     every tool call)    │
-                  │                  │                          │
-   local Ollama ──┤── openclaw ─────┘                           │
-   (3090 GPU)     │                                             │
-                  └─────────────────────────────────────────────┘
+                  ┌──────────────────────────────────────────────────────┐
+                  │  Local workstation (RTX 3090, this machine)          │
+                  │                                                      │
+   Anthropic ─────┤── Claude Code ──┐                                    │
+   OpenAI    ─────┤── Codex CLI  ───┤                                    │
+   Google    ─────┤── Gemini CLI ───┼──► chitin-kernel ──► ~/.chitin/    │
+   GitHub    ─────┤── Copilot CLI ──┤    (gov.Gate gates                 │
+                  │                  │     every tool call,               │
+                  │                  │     PreToolUse hooks               │
+   local Ollama ──┤── openclaw ─────┘     for the CLIs;                  │
+   (3090 GPU)     │                       drive copilot for              │
+                  │                       the closed CLI;                │
+                  │                       openclaw plugin                │
+                  │                       for local-*)                   │
+                  └──────────────────────────────────────────────────────┘
 ```
 
 - **No Hetzner box.** Multi-machine observability was a Phase 3 framing in older docs; the box is dead. Collapse any "cross-machine" reading into single-box.
 - **Murphy's Mac** is separate — chitin is not installed there. Out of scope for current dogfooding.
-- **Ollama Cloud Pro + Anthropic + GitHub Copilot** are cloud reasoning surfaces; they are not chitin's scope. Chitin only sees what the local CLI/driver does on this box.
+- **Cloud reasoning surfaces** (Anthropic, OpenAI, Google, GitHub) are accessed via their CLIs; chitin governs the tool calls those CLIs make on this box. The cloud reasoning itself is out of scope; the local effects are not.
 
 ## Subsystem ownership
 
 | Subsystem | Owner | Live? |
 |-----------|-------|-------|
 | Capture (event chain) | Go kernel `emit` | ✅ shipped Phase 1.5, 2026-04-19 |
-| Replay | TS `libs/telemetry` + `apps/cli` | ✅ shipped Phase 1 |
+| Replay (kernel + heuristic layers) | Go kernel `internal/replay` + `chain replay` | ✅ shipped 2026-05-03 (#240, #253) |
+| Chain analytics (stats / recommend-tier / snapshot / simulate / summarize / related) | Go kernel `internal/replay` | ✅ shipped 2026-05-03/04 (#240, #245, #246, #247, #249) |
+| Skill mining (n-gram surface from chain) | Python `analysis/skill_mine.py` | ✅ shipped 2026-05-03 (#259) |
+| Predictive model (chain-predict-outcome) | Python `analysis/predict.py` | ✅ shipped 2026-05-03 (#256) |
 | Governance (`gov.Gate`) | Go kernel `internal/gov` | ✅ shipped 2026-04-28 (PR #45 + #51) |
-| Cost envelope (cross-process) | Go kernel `internal/envelope` | 🔄 cost-gov v3 in flight (committed 2026-04-29, c1ecbf9) |
-| Drivers — Claude Code hook | `libs/adapters/claude-code` + kernel install path | ✅ shipped (PR #66) |
-| Drivers — Copilot CLI (v1, wrapping) | Kernel `drive copilot` | ✅ shipped (PR #51) |
-| Drivers — openclaw (acpx config) | One-line config; no chitin code | ✅ shipped |
-| OTEL emit (projection) | Go kernel `internal/emit` (TBD) | 🔄 F4 — ships before 2026-05-07 talk |
+| Cost envelope (cross-process) | Go kernel `internal/envelope` | ✅ cost-gov v3 |
+| Universal usage feed (codex 5h/weekly, gemini calls, ollama-cloud rpm/tpm) | `chitin-budget` + `~/.cache/chitin/usage/` | ✅ schema + codex producer shipped 2026-05-04 (#269); gemini/ollama producers in backlog |
+| Drivers — Claude Code hook | `internal/driver/claudecode/normalize.go` + kernel install path | ✅ shipped (PR #66) |
+| Drivers — Codex CLI (PreToolUse) | `internal/driver/codex/normalize.go` + `scripts/install-codex-hook.sh` | ✅ shipped 2026-05-04 (#272) |
+| Drivers — Gemini CLI (BeforeTool) | `internal/driver/gemini/normalize.go` + `scripts/install-gemini-hook.sh` | ✅ shipped 2026-05-04 (#267) |
+| Drivers — Codex as activity-spawned reviewer (env-overridable per tier) | `apps/temporal-worker` `planInvocation` + `REVIEW_TIER_DRIVER` | ✅ shipped 2026-05-04 (#270) |
+| Drivers — Copilot CLI (wrapping) | Kernel `drive copilot` | ✅ shipped (PR #51) |
+| Drivers — openclaw (`local-*`) | openclaw `before_tool_call` plugin | ✅ shipped |
+| Plugin runtime (Python + TS heuristic plugins) | `internal/router/plugins` + opt-in side-effect gate libs | ✅ shipped (#235, #237, #241, #250) |
+| Plugin sandbox (bubblewrap, opt-in) | `internal/router/plugins/sandbox.go` | ✅ shipped 2026-05-03 (#255) |
+| OTEL emit (projection) | Go kernel `internal/emit` | ✅ F4 shipped before 2026-05-07 talk |
+| Worktree index (dispatcher writes `WORKTREE_INDEX.md`) | `apps/temporal-worker/src/activity.ts` | ✅ shipped 2026-05-03 (#261) |
 | Souls library | `souls/canonical/` + `souls/experimental/` | ✅ shipped Phase 1.5 |
 
 ## Order of operations (current, not aspirational)
