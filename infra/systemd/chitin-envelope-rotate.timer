@@ -1,0 +1,25 @@
+# Timer for chitin-envelope-rotate.service.
+#
+# 5-minute cadence. The cost: a single sqlite read + (when the
+# envelope is still open) a one-line shell exit. The benefit: the
+# swarm never silently stops because of a closed envelope. 5 min
+# is the longest acceptable window — at 1500-call caps and the
+# observed agent dispatch rate, an exhausted envelope can still
+# block the next ~5 dispatches before the rotator catches up.
+# Tightening to 1 min would cut that to ~1 dispatch but the
+# steady-state load isn't worth the journal noise.
+#
+# Persistent so a missed tick from a powered-off rig fires on
+# next boot.
+
+[Unit]
+Description=Chitin envelope rotation timer (every 5 min)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Persistent=true
+Unit=chitin-envelope-rotate.service
+
+[Install]
+WantedBy=timers.target
