@@ -193,6 +193,8 @@ importers:
         specifier: '*'
         version: 12.9.0
 
+  tools/generators: {}
+
   tools/lint:
     dependencies:
       '@chitin/contracts':
