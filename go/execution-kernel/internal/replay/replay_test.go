@@ -134,6 +134,42 @@ rules:
 	}
 }
 
+// TestRun_MalformedPolicySurfaces ensures a chitin.yaml that
+// EXISTS but fails to parse/validate is reported as an error
+// rather than silently falling back to heuristic-only replay.
+// Silent fall-open here would hide a broken policy — exactly the
+// trap operators run replay to catch.
+func TestRun_MalformedPolicySurfaces(t *testing.T) {
+	tmp := t.TempDir()
+	chitinDir := filepath.Join(tmp, ".chitin")
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmp)
+
+	sessionID := "malformed-policy-test"
+	chainPath := filepath.Join(chitinDir, "events-"+sessionID+".jsonl")
+	chain := `{"ts":"2026-05-03T10:00:00Z","event_type":"decision","payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"x","decision":"allow","rule_id":"x"}}` + "\n"
+	if err := os.WriteFile(chainPath, []byte(chain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policyDir := t.TempDir()
+	// Invalid YAML: indentation error → parse failure.
+	bad := []byte("version: 1\nrules:\n  - id: oops\n  effect: deny\n")
+	if err := os.WriteFile(filepath.Join(policyDir, "chitin.yaml"), bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Run(context.Background(), sessionID, policyDir)
+	if err == nil {
+		t.Fatal("expected error for malformed chitin.yaml; got nil — silent fall-open hides the broken policy")
+	}
+	if !strings.Contains(err.Error(), "failed to load policy") {
+		t.Errorf("err=%q want to mention 'failed to load policy'", err.Error())
+	}
+}
+
 // TestRun_NoPolicyFallsOpen ensures a missing chitin.yaml at
 // policyCwd is non-fatal — we still run heuristic-only replay, and
 // the report flags GovRuleCount=0 so the operator notices.

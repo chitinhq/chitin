@@ -25,6 +25,55 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
 )
 
+// isPolicyAbsentError reports whether the gov.LoadWithInheritance
+// error means "no chitin.yaml in the walk-up chain" (benign — fall
+// open to heuristic-only replay). Any other error means the policy
+// existed but failed to parse / failed strict-mode validation, and
+// must surface to the operator.
+//
+// gov.LoadWithInheritance returns a wrapped error of the form
+// "no_policy_found: ..." for the absent case (see internal/gov/
+// inherit.go). String-match isn't ideal, but the gov package
+// doesn't yet export a sentinel error for this; switching to a
+// sentinel is a separate refactor.
+func isPolicyAbsentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no_policy_found")
+}
+
+// reverseToolName maps an action_type back to a representative raw
+// tool name, since the chain payload's tool_name is the normalized
+// action_type. ScoreBlastRadius branches on raw names ("Bash",
+// "Edit", "Read") so without this reverse-map heuristic replay
+// would treat every action as unknown-tool.
+//
+// Lossy by design — `file.read` could have been `Read`, `Glob`, or
+// `Grep`; we pick the representative most likely to match policy
+// rules. For replay this is good enough; the alternative (storing
+// the full HookInput on every chain event) would 5x the audit log
+// size for a marginal accuracy gain.
+func reverseToolName(actionType, fallback string) string {
+	switch actionType {
+	case "shell.exec":
+		return "Bash"
+	case "file.write":
+		return "Edit"
+	case "file.read":
+		return "Read"
+	case "http.request":
+		return "WebFetch"
+	case "delegate.task":
+		return "Task"
+	case "git.worktree.add":
+		return "EnterWorktree"
+	case "git.worktree.remove":
+		return "ExitWorktree"
+	}
+	return fallback
+}
+
 // Result is the per-event diff produced by replay.
 type Result struct {
 	SessionID    string         `json:"session_id"`
@@ -90,7 +139,17 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 
 	routerPolicy := router.LoadPolicy(policyCwd)
 	govPolicy, _, govErr := gov.LoadWithInheritance(policyCwd)
+	// Distinguish "no chitin.yaml found" (fall open, heuristic-only
+	// replay) from "chitin.yaml is malformed" (surface to operator).
+	// Silent fall-open on ANY error would hide a broken policy as
+	// gov_rule_count=0, which is exactly the trap operators run
+	// this command to catch.
 	govLoaded := govErr == nil
+	if govErr != nil && !isPolicyAbsentError(govErr) {
+		// Malformed yaml / strict-mode violation / parse error.
+		// Surface to operator instead of silently degrading.
+		return nil, fmt.Errorf("replay: failed to load policy at %s: %w", policyCwd, govErr)
+	}
 
 	result := &Result{
 		SessionID:   sessionID,
@@ -141,9 +200,21 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 
 		// Layer 2: heuristics. Only runs if kernel allowed (matches
 		// live hook semantics — kernel deny short-circuits).
+		//
+		// Important caveat: the chain emitter writes
+		// `tool_name = string(action_type)` (see
+		// cmd/chitin-kernel/gate_emit.go) — i.e., chain.tool_name
+		// is the NORMALIZED action_type ("shell.exec"), NOT the
+		// raw Claude Code tool ("Bash"). ScoreBlastRadius matches
+		// on raw tool names. We reverse-map the closed action_type
+		// set to a representative raw tool to keep heuristic replay
+		// approximately faithful to the live router's verdict.
+		// This is lossy by design — the chain doesn't preserve the
+		// full HookInput, so heuristic replay is best-effort.
 		if replayedAllow {
+			rawTool := reverseToolName(actionType, toolName)
 			hookInput := router.HookInput{
-				ToolName: toolName,
+				ToolName: rawTool,
 				ToolInput: map[string]interface{}{
 					"file_path": actionTarget,
 					"command":   actionTarget,
@@ -160,6 +231,15 @@ func Run(ctx context.Context, sessionID, policyCwd string) (*Result, error) {
 					layer = "heuristic"
 				}
 			}
+		}
+
+		// Now-allowed flips: original was deny, replay is allow.
+		// The live deny necessarily came from a kernel rule (today's
+		// router heuristics flag actions but don't issue stand-alone
+		// denies), so attribute the flip to the kernel layer for
+		// operator interpretability.
+		if originalAllow != replayedAllow && replayedAllow && layer == "" {
+			layer = "kernel"
 		}
 
 		if originalAllow != replayedAllow {
