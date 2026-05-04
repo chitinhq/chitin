@@ -75,6 +75,129 @@ func TestWriteHumanReport_NoDiffs(t *testing.T) {
 	}
 }
 
+// TestRun_KernelDenyReplay verifies that gov.Policy deny rules are
+// re-evaluated against the recorded action_type+action_target. We
+// craft a session whose recorded event was originally allowed, then
+// run replay against a chitin.yaml that contains a deny rule
+// matching that action — the diff must surface as a kernel-layer
+// "now denied".
+func TestRun_KernelDenyReplay(t *testing.T) {
+	tmp := t.TempDir()
+	chitinDir := filepath.Join(tmp, ".chitin")
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmp)
+
+	sessionID := "kernel-deny-test"
+	chainPath := filepath.Join(chitinDir, "events-"+sessionID+".jsonl")
+	chain := `{"ts":"2026-05-03T10:00:00Z","event_type":"decision","payload":{"tool_name":"Bash","action_type":"shell.exec","action_target":"echo hello","decision":"allow","rule_id":"default-allow-shell"}}` + "\n"
+	if err := os.WriteFile(chainPath, []byte(chain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policyDir := t.TempDir()
+	policyYAML := `version: 1
+mode: enforce
+rules:
+  - id: deny-all-shell-now
+    effect: deny
+    action: shell.exec
+    reason: post-incident shell lockdown
+`
+	if err := os.WriteFile(filepath.Join(policyDir, "chitin.yaml"), []byte(policyYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Run(context.Background(), sessionID, policyDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.GovRuleCount == 0 {
+		t.Fatalf("expected gov policy to load (rules>0); got 0 — chitin.yaml not found at %q?", policyDir)
+	}
+	if r.Summary.NowDenied != 1 {
+		t.Fatalf("expected 1 NowDenied, got %d (diffs=%+v)", r.Summary.NowDenied, r.Diffs)
+	}
+	if len(r.Diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(r.Diffs))
+	}
+	d := r.Diffs[0]
+	if d.Layer != "kernel" {
+		t.Errorf("expected Layer=kernel, got %q", d.Layer)
+	}
+	if d.ReplayedRule != "deny-all-shell-now" {
+		t.Errorf("expected ReplayedRule=deny-all-shell-now, got %q", d.ReplayedRule)
+	}
+	if d.OriginalAllow == d.ReplayedAllow {
+		t.Errorf("expected allow→deny flip, got orig=%v replayed=%v", d.OriginalAllow, d.ReplayedAllow)
+	}
+}
+
+// TestRun_MalformedPolicySurfaces ensures a chitin.yaml that
+// EXISTS but fails to parse/validate is reported as an error
+// rather than silently falling back to heuristic-only replay.
+// Silent fall-open here would hide a broken policy — exactly the
+// trap operators run replay to catch.
+func TestRun_MalformedPolicySurfaces(t *testing.T) {
+	tmp := t.TempDir()
+	chitinDir := filepath.Join(tmp, ".chitin")
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmp)
+
+	sessionID := "malformed-policy-test"
+	chainPath := filepath.Join(chitinDir, "events-"+sessionID+".jsonl")
+	chain := `{"ts":"2026-05-03T10:00:00Z","event_type":"decision","payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"x","decision":"allow","rule_id":"x"}}` + "\n"
+	if err := os.WriteFile(chainPath, []byte(chain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policyDir := t.TempDir()
+	// Invalid YAML: indentation error → parse failure.
+	bad := []byte("version: 1\nrules:\n  - id: oops\n  effect: deny\n")
+	if err := os.WriteFile(filepath.Join(policyDir, "chitin.yaml"), bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Run(context.Background(), sessionID, policyDir)
+	if err == nil {
+		t.Fatal("expected error for malformed chitin.yaml; got nil — silent fall-open hides the broken policy")
+	}
+	if !strings.Contains(err.Error(), "failed to load policy") {
+		t.Errorf("err=%q want to mention 'failed to load policy'", err.Error())
+	}
+}
+
+// TestRun_NoPolicyFallsOpen ensures a missing chitin.yaml at
+// policyCwd is non-fatal — we still run heuristic-only replay, and
+// the report flags GovRuleCount=0 so the operator notices.
+func TestRun_NoPolicyFallsOpen(t *testing.T) {
+	tmp := t.TempDir()
+	chitinDir := filepath.Join(tmp, ".chitin")
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmp)
+
+	sessionID := "no-policy-test"
+	chainPath := filepath.Join(chitinDir, "events-"+sessionID+".jsonl")
+	chain := `{"ts":"2026-05-03T10:00:00Z","event_type":"decision","payload":{"tool_name":"Read","action_type":"file.read","action_target":"/tmp/x","decision":"allow","rule_id":"default-allow"}}` + "\n"
+	if err := os.WriteFile(chainPath, []byte(chain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyDir := t.TempDir()
+	r, err := Run(context.Background(), sessionID, emptyDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.GovRuleCount != 0 {
+		t.Errorf("expected GovRuleCount=0 with no chitin.yaml, got %d", r.GovRuleCount)
+	}
+}
+
 func TestWriteHumanReport_WithDiffs(t *testing.T) {
 	r := &Result{
 		SessionID:   "diff-session",
