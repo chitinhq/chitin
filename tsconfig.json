@@ -32,6 +32,15 @@
     },
     {
       "path": "./libs/governance"
+    },
+    {
+      "path": "./apps/mcp-server"
+    },
+    {
+      "path": "./apps/slack-app"
+    },
+    {
+      "path": "./tools/lint"
     }
   ]
 }

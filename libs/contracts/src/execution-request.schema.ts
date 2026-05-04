@@ -52,36 +52,51 @@ export const RoleSchema = z.enum([
   'debt-curator',       // Maintain debt-ledger; surface debt that blocks other work
 ]);
 
-// Driver tiers for the swarm. The 2026-04-30 framing that excluded
-// `claude-code` was based on a misread of Anthropic's terms — verified
-// 2026-05-02 against code.claude.com/docs/en/headless that headless mode
-// (`claude -p ... --dangerously-skip-permissions`) is officially supported
-// for unattended/CI/cron use. The interactive CLI surface is a separate
-// thing and not represented in this enum (you don't programmatically
-// dispatch interactive sessions; they're always Jared-driven).
+// Driver tiers for the swarm.
 //
-// claude-code-headless joins as the strongest programmatic tier (T4 in
-// swarm-backlog.md), distinct from `copilot` (T1-T3 depending on Copilot
-// model) and the local-* drivers (T0/T2).
+// 2026-05-04 rename: the `local-*` driver IDs were misleading (the
+// "local" prefix grouped both 3090-resident models AND ollama-cloud
+// subscription models under one bucket; `local-glm` actually pointed
+// at `glm-5.1:cloud`, fully cloud-resident). The `openclaw-*` prefix
+// is accurate: every entry in this group dispatches through openclaw,
+// and the model-residency dimension lives in the model name suffix
+// (`-flash` = 3090, `-cloud` = Ollama Cloud sub).
+//
+// Drivers grouped by dispatch path:
+//
+// 1. Direct CLI: `copilot`, `claude-code-headless`, `codex`, `gemini`.
+//    Each spawns the vendor CLI (chitin-kernel drive copilot, claude,
+//    codex, gemini) and gates per-tool-call via PreToolUse hooks. Model
+//    selection is per-call via `--model` flag.
+//
+// 2. Via openclaw plugin: `openclaw-glm-flash` (3090 local, glm-4.7-flash),
+//    `openclaw-glm-cloud` (Ollama Cloud, glm-5.1:cloud), `openclaw-deepseek`
+//    (3090). Each routes to a distinct openclaw agent so the per-agent
+//    model config in ~/.openclaw/openclaw.json is the source of truth.
+//    Governance via the chitin-governance plugin's before_tool_call hook.
+//
+// `local-qwen` was dropped 2026-05-04 — the swarm's qwen-agent path
+// produced low-quality output relative to glm-flash and consumed 3090
+// capacity that's better used by openclaw-glm-flash. The qwen3-coder
+// model files are still on disk; nothing dispatches to them by default.
 export const DriverIdSchema = z.enum([
   'copilot',
   'claude-code-headless',
   // `codex` = OpenAI Codex CLI (codex exec --json). Used as an
   // alternative reviewer in REVIEW_TIER_DRIVER — gives the
-  // review-graph a non-Anthropic reasoning lens. No PreToolUse
-  // hook; governance is post-hoc via codex_mine ingest + the
-  // chitin-budget usage feed (5h/1w rate-limit visibility).
+  // review-graph a non-Anthropic reasoning lens. PreToolUse hook
+  // is wired (codex 0.128.0+, byte-compatible with Claude Code's
+  // hook protocol — verified 2026-05-04).
   'codex',
-  'local-qwen',
-  // `local-glm` historically routed to glm-5.1:cloud for reasoning
-  // delegation; kept for that role. `local-glm-flash` is the local
-  // mechanical-tier variant added 2026-05-03 — glm-4.7-flash:latest
-  // on the 3090, T0 default. Distinct driver because the cost/latency
-  // profile is fundamentally different (flash = local + fast,
-  // glm-5.1 = cloud + slower + smarter).
-  'local-glm',
-  'local-glm-flash',
-  'local-deepseek',
+  // `gemini` = Gemini CLI on Google AI Pro plan. PreToolUse hook
+  // is wired via ~/.gemini/settings.json BeforeTool (same wire shape
+  // as Claude Code, just a renamed event).
+  'gemini',
+  // openclaw-* dispatch through openclaw + chitin-governance plugin.
+  // The plugin gates each tool call before execution.
+  'openclaw-glm-flash',  // 3090: glm-4.7-flash:latest (~30B)
+  'openclaw-glm-cloud',  // Ollama Cloud sub: glm-5.1:cloud (opus-light)
+  'openclaw-deepseek',   // 3090: deepseek (kept for future use, not in defaults)
 ]);
 
 export const NetworkPolicySchema = z.enum(['none', 'allowlist', 'open']);

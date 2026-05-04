@@ -28,8 +28,8 @@ describe('planInvocation', () => {
     expect(plan.args).toEqual(['drive', 'copilot', baseReq.prompt]);
   });
 
-  it('dispatches local-qwen through openclaw with the prompt and timeout', () => {
-    const plan = planInvocation({ ...baseReq, allowed_drivers: ['local-qwen'] });
+  it('dispatches openclaw-glm-flash through openclaw with the prompt and timeout', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['openclaw-glm-flash'] });
     expect(plan.command).toBe('openclaw');
     expect(plan.args).toContain('--message');
     expect(plan.args).toContain(baseReq.prompt);
@@ -37,21 +37,42 @@ describe('planInvocation', () => {
     expect(plan.args).toContain(String(baseReq.bounds.wall_timeout_s));
   });
 
-  it('dispatches local-glm and local-deepseek through openclaw (each to their own agent)', () => {
-    const glm = planInvocation({ ...baseReq, allowed_drivers: ['local-glm'] });
-    const ds = planInvocation({ ...baseReq, allowed_drivers: ['local-deepseek'] });
+  it('dispatches openclaw-glm-cloud and openclaw-deepseek through openclaw (each to its own agent)', () => {
+    const glm = planInvocation({ ...baseReq, allowed_drivers: ['openclaw-glm-cloud'] });
+    const ds = planInvocation({ ...baseReq, allowed_drivers: ['openclaw-deepseek'] });
     expect(glm.command).toBe('openclaw');
     expect(ds.command).toBe('openclaw');
-    // Slice 3: each driver goes to its own agent so models can differ.
+    // Each driver goes to its own openclaw agent so models can differ.
     expect(glm.args).toContain('glm-agent');
     expect(ds.args).toContain('deepseek-agent');
     expect(glm.args).not.toEqual(ds.args);
   });
 
-  it('routes local-qwen to qwen-agent (not main) post-slice-3', () => {
-    const plan = planInvocation({ ...baseReq, allowed_drivers: ['local-qwen'] });
-    expect(plan.args).toContain('qwen-agent');
+  it('routes openclaw-glm-flash to glm-flash-agent (not main)', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['openclaw-glm-flash'] });
+    expect(plan.args).toContain('glm-flash-agent');
     expect(plan.args).not.toContain('main');
+  });
+
+  it('dispatches gemini via the `gemini` CLI with -p prompt', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['gemini'] });
+    expect(plan.command).toBe('gemini');
+    expect(plan.args).toContain('-p');
+    expect(plan.args).toContain(baseReq.prompt);
+  });
+
+  it('gemini respects CHITIN_MODEL_GEMINI env override', () => {
+    const orig = process.env.CHITIN_MODEL_GEMINI;
+    try {
+      process.env.CHITIN_MODEL_GEMINI = 'gemini-3.0-pro';
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['gemini'] });
+      const idx = plan.args.indexOf('-m');
+      expect(idx).toBeGreaterThan(-1);
+      expect(plan.args[idx + 1]).toBe('gemini-3.0-pro');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_MODEL_GEMINI;
+      else process.env.CHITIN_MODEL_GEMINI = orig;
+    }
   });
 
   it('dispatches codex via `codex exec --json` without --cd (req.repo is a slug, spawn cwd handles dir)', () => {
@@ -143,8 +164,8 @@ describe('planInvocation', () => {
     expect(plan.args).toContain('--include-hook-events');
   });
 
-  it('local-* (openclaw) drivers include --include-hook-events for chain visibility', () => {
-    for (const driver of ['local-qwen', 'local-glm', 'local-deepseek'] as const) {
+  it('openclaw-* drivers include --include-hook-events for chain visibility', () => {
+    for (const driver of ['openclaw-glm-flash', 'openclaw-glm-cloud', 'openclaw-deepseek'] as const) {
       const plan = planInvocation({ ...baseReq, allowed_drivers: [driver] });
       expect(plan.command).toBe('openclaw');
       expect(plan.args).toContain('--include-hook-events');
@@ -246,9 +267,9 @@ describe('resolvePolicySrc', () => {
 
 describe('resolveAgent', () => {
   const envKeys = [
-    'CHITIN_AGENT_LOCAL_QWEN',
-    'CHITIN_AGENT_LOCAL_GLM',
-    'CHITIN_AGENT_LOCAL_DEEPSEEK',
+    'CHITIN_AGENT_OPENCLAW_GLM_FLASH',
+    'CHITIN_AGENT_OPENCLAW_GLM_CLOUD',
+    'CHITIN_AGENT_OPENCLAW_DEEPSEEK',
     'CHITIN_AGENT_COPILOT',
   ];
   const saved: Record<string, string | undefined> = {};
@@ -267,10 +288,10 @@ describe('resolveAgent', () => {
     }
   });
 
-  it('routes each local-* driver to its dedicated agent by default', () => {
-    expect(resolveAgent('local-qwen')).toBe('qwen-agent');
-    expect(resolveAgent('local-glm')).toBe('glm-agent');
-    expect(resolveAgent('local-deepseek')).toBe('deepseek-agent');
+  it('routes each openclaw-* driver to its dedicated agent by default', () => {
+    expect(resolveAgent('openclaw-glm-flash')).toBe('glm-flash-agent');
+    expect(resolveAgent('openclaw-glm-cloud')).toBe('glm-agent');
+    expect(resolveAgent('openclaw-deepseek')).toBe('deepseek-agent');
   });
 
   it('falls back to main for any driver not in the map', () => {
@@ -281,34 +302,34 @@ describe('resolveAgent', () => {
     expect(resolveAgent('copilot')).toBe('main');
   });
 
-  it('honors CHITIN_AGENT_LOCAL_QWEN env override', () => {
-    process.env.CHITIN_AGENT_LOCAL_QWEN = 'custom-qwen-agent';
-    expect(resolveAgent('local-qwen')).toBe('custom-qwen-agent');
+  it('honors CHITIN_AGENT_OPENCLAW_GLM_FLASH env override', () => {
+    process.env.CHITIN_AGENT_OPENCLAW_GLM_FLASH = 'custom-flash-agent';
+    expect(resolveAgent('openclaw-glm-flash')).toBe('custom-flash-agent');
   });
 
   it('treats whitespace-only env override as unset', () => {
-    process.env.CHITIN_AGENT_LOCAL_QWEN = '   ';
-    expect(resolveAgent('local-qwen')).toBe('qwen-agent');
+    process.env.CHITIN_AGENT_OPENCLAW_GLM_FLASH = '   ';
+    expect(resolveAgent('openclaw-glm-flash')).toBe('glm-flash-agent');
   });
 
   it('trims env override value', () => {
-    process.env.CHITIN_AGENT_LOCAL_QWEN = '  trimmed-agent  ';
-    expect(resolveAgent('local-qwen')).toBe('trimmed-agent');
+    process.env.CHITIN_AGENT_OPENCLAW_GLM_FLASH = '  trimmed-agent  ';
+    expect(resolveAgent('openclaw-glm-flash')).toBe('trimmed-agent');
   });
 
-  it('does not return the same agent for different local-* drivers (no model collision)', () => {
+  it('does not return the same agent for different openclaw-* drivers (no model collision)', () => {
     const agents = new Set([
-      resolveAgent('local-qwen'),
-      resolveAgent('local-glm'),
-      resolveAgent('local-deepseek'),
+      resolveAgent('openclaw-glm-flash'),
+      resolveAgent('openclaw-glm-cloud'),
+      resolveAgent('openclaw-deepseek'),
     ]);
     expect(agents.size).toBe(3);
   });
 
   it('exports DRIVER_AGENT_MAP with the expected default routes', () => {
-    expect(DRIVER_AGENT_MAP['local-qwen']).toBe('qwen-agent');
-    expect(DRIVER_AGENT_MAP['local-glm']).toBe('glm-agent');
-    expect(DRIVER_AGENT_MAP['local-deepseek']).toBe('deepseek-agent');
+    expect(DRIVER_AGENT_MAP['openclaw-glm-flash']).toBe('glm-flash-agent');
+    expect(DRIVER_AGENT_MAP['openclaw-glm-cloud']).toBe('glm-agent');
+    expect(DRIVER_AGENT_MAP['openclaw-deepseek']).toBe('deepseek-agent');
   });
 });
 

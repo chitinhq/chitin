@@ -23,7 +23,7 @@ async function main() {
     repo: 'chitinhq/chitin',
     task_class: 'exploration',
     risk_level: 'low',
-    allowed_drivers: [(process.env.DRIVER ?? 'copilot') as 'copilot' | 'local-qwen' | 'local-glm' | 'local-deepseek'],
+    allowed_drivers: [(process.env.DRIVER ?? 'copilot') as 'copilot' | 'openclaw-glm-flash' | 'openclaw-glm-cloud' | 'openclaw-deepseek'],
     network_policy: 'allowlist',
     write_policy: 'none',
     bounds: {

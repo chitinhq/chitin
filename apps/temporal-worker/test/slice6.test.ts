@@ -76,10 +76,16 @@ describe('slice 6c — tier → model resolution', () => {
     expect(resolveClaudeModel('T4' as Tier)).toBe('claude-opus-4-7'); // unaffected
   });
 
-  it('resolveCopilotModel maps T0/T1 to free GPT-4.1 and T4 to opus', () => {
-    expect(resolveCopilotModel('T0' as Tier)).toBe('gpt-4.1');
-    expect(resolveCopilotModel('T1' as Tier)).toBe('gpt-4.1');
-    expect(resolveCopilotModel('T4' as Tier)).toBe('claude-opus-4.7');
+  it('resolveCopilotModel maps T0/T1 to free gpt-5-mini and T2-T4 to haiku-4-5 (cheap multipliers)', () => {
+    // 2026-05-04 reshuffle: Copilot bulk tier defaults bound by premium-
+    // request multipliers measured by the operator. gpt-5-mini = 0× free
+    // unlimited; haiku-4-5 = 0.33× cheap. Sonnet (1×) and Opus (3×) are
+    // never default — operator opts in via env override only.
+    expect(resolveCopilotModel('T0' as Tier)).toBe('gpt-5-mini');
+    expect(resolveCopilotModel('T1' as Tier)).toBe('gpt-5-mini');
+    expect(resolveCopilotModel('T2' as Tier)).toBe('claude-haiku-4-5');
+    expect(resolveCopilotModel('T3' as Tier)).toBe('claude-haiku-4-5');
+    expect(resolveCopilotModel('T4' as Tier)).toBe('claude-haiku-4-5');
   });
 
   it('resolveCopilotModel honors per-tier env override', () => {
@@ -112,7 +118,7 @@ describe('slice 6c — planInvocation tier wiring', () => {
     expect(planT4.args[planT4.args.indexOf('--model') + 1]).toBe('claude-opus-4-7');
   });
 
-  it('copilot without tier omits --model (driver default = gpt-4.1)', () => {
+  it('copilot without tier omits --model (Copilot CLI picks its own default)', () => {
     const plan = planInvocation({ ...baseReq, allowed_drivers: ['copilot'] });
     expect(plan.args).not.toContain('--model');
   });
@@ -120,10 +126,11 @@ describe('slice 6c — planInvocation tier wiring', () => {
   it('copilot with tier appends --model into the chitin-kernel shim args', () => {
     const planT2 = planInvocation({ ...baseReq, allowed_drivers: ['copilot'], tier: 'T2' as Tier });
     expect(planT2.args).toContain('--model');
-    // 2026-05-02: T2 copilot model bumped to claude-sonnet-4.6 to preserve
-    // T2 reasoning quality after the dispatcher reroute (TIER_DRIVER[T2]
-    // changed from claude-code-headless → copilot in PR #123).
-    expect(planT2.args[planT2.args.indexOf('--model') + 1]).toBe('claude-sonnet-4.6');
+    // 2026-05-04 reshuffle: T2 Copilot model defaults to claude-haiku-4-5
+    // (0.33× premium multiplier — the cheap-bulk reviewer/programmer tier).
+    // Pre-2026-05-04 this was claude-sonnet-4.6 (1×) which burned the Pro
+    // premium-request budget too aggressively for the bulk tier.
+    expect(planT2.args[planT2.args.indexOf('--model') + 1]).toBe('claude-haiku-4-5');
   });
 });
 
@@ -220,13 +227,13 @@ describe('slice 6b — provisionOpenclawState', () => {
 
   it('returns null when no openclaw.json exists in $HOME/.openclaw', () => {
     rmSync(join(fakeOpenclaw, 'openclaw.json'));
-    const req = { ...baseReq, allowed_drivers: ['local-qwen'] as const };
+    const req = { ...baseReq, allowed_drivers: ['openclaw-glm-flash'] as const };
     const result = provisionOpenclawState(req, scratch, 'qwen-agent');
     expect(result).toBeNull();
   });
 
   it('writes a state dir with openclaw.json that remaps the named agent workspace', () => {
-    const req = { ...baseReq, allowed_drivers: ['local-qwen'] as const };
+    const req = { ...baseReq, allowed_drivers: ['openclaw-glm-flash'] as const };
     const result = provisionOpenclawState(req, scratch, 'qwen-agent');
     expect(result).not.toBeNull();
     expect(result!.envOverride.OPENCLAW_STATE_DIR).toBe(result!.stateDir);
@@ -240,7 +247,7 @@ describe('slice 6b — provisionOpenclawState', () => {
   });
 
   it('symlinks state-dir contents (excluding openclaw.json) so plugins/agents are reachable', () => {
-    const req = { ...baseReq, allowed_drivers: ['local-qwen'] as const };
+    const req = { ...baseReq, allowed_drivers: ['openclaw-glm-flash'] as const };
     const result = provisionOpenclawState(req, scratch, 'qwen-agent');
     expect(result).not.toBeNull();
     expect(existsSync(join(result!.stateDir, 'agents'))).toBe(true);
@@ -250,7 +257,7 @@ describe('slice 6b — provisionOpenclawState', () => {
   });
 
   it("does not mutate the user's source openclaw.json", () => {
-    const req = { ...baseReq, allowed_drivers: ['local-qwen'] as const };
+    const req = { ...baseReq, allowed_drivers: ['openclaw-glm-flash'] as const };
     const before = readFileSync(join(fakeOpenclaw, 'openclaw.json'), 'utf8');
     const result = provisionOpenclawState(req, scratch, 'qwen-agent');
     const after = readFileSync(join(fakeOpenclaw, 'openclaw.json'), 'utf8');

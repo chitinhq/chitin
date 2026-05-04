@@ -104,15 +104,27 @@ The dispatcher's invariants:
 - **T5 entries are never dispatched** — those are human-only
   (governance changes, irreversible decisions, ambiguous strategy).
 
-## Tier → driver routing (slice 7c)
+## Tier → driver routing (2026-05-04 reshuffle)
 
-| Tier | Driver | Wall timeout | Cost |
-|------|--------|--------------|------|
-| T0 | `local-qwen` (qwen3-coder:30b) | 180s | $0 (local) |
-| T1 | `copilot` (GPT-4.1 free) | 240s | $0 |
-| T2 | `claude-code-headless` (haiku) | 360s | low |
-| T3 | `claude-code-headless` (sonnet) | 600s | medium |
-| T4 | `claude-code-headless` (opus) | 600s | high |
+| Tier | Driver | Model | Wall timeout | Account / cost |
+|------|--------|-------|--------------|----------------|
+| T0 | `openclaw-glm-flash` | glm-4.7-flash:latest (~30B on 3090) | 180s | free, unlimited |
+| T1 | `openclaw-glm-flash` | same | 240s | free, unlimited |
+| T2 | `copilot` | claude-haiku-4-5 (0.33× premium-multiplier) | 360s | Copilot Pro flat |
+| T3 | `openclaw-glm-cloud` | glm-5.1:cloud (opus-light) | 600s | Ollama Cloud sub flat |
+| T4 | `claude-code-headless` | claude-opus-4-7 | 600s | Anthropic Max metered (rare escalation) |
+
+| Reviewer | Driver | Model | Account |
+|----------|--------|-------|---------|
+| R1 | `copilot` | gpt-5-mini | Copilot Pro 0× free |
+| R2 | `copilot` | claude-haiku-4-5 | Copilot Pro 0.33× |
+| R3 | `claude-code-headless` | claude-opus-4-7 | Anthropic Max |
+
+Operator overrides:
+- `CHITIN_TIER_DRIVER_T<N>=<driver>` flips a tier at runtime, no code change.
+- `CHITIN_REVIEWER_R<N>_DRIVER=<driver>` and `CHITIN_REVIEWER_R<N>_MODEL=<model>` for reviewer overrides.
+- `CHITIN_MODEL_<DRIVER>_<TIER>=<model>` for per-(driver,tier) model picks.
+- `CHITIN_AGENT_OPENCLAW_GLM_FLASH=<agent-id>` etc. for openclaw agent remapping.
 
 ## Failure modes
 

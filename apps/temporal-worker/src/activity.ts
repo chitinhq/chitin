@@ -42,20 +42,23 @@ interface DriverInvocation {
   env?: Record<string, string>;
 }
 
-// Per-driver openclaw agent mapping (slice 3). Each local-* driver routes to
-// a distinct openclaw agent so reasoning and mechanical models can be
-// configured independently — the spec calls for qwen3-coder for mechanical
-// (local-qwen), glm-5.1:cloud for reasoning (local-glm), glm-4.7-flash for
-// local mechanical (local-glm-flash, added 2026-05-03 to replace copilot at
-// T0 once the model is hot on the 3090), deepseek for code (local-deepseek).
-// Override per driver via env var, e.g. CHITIN_AGENT_LOCAL_QWEN=my-agent.
-// Falls back to `main` if neither env var nor the default mapping resolves
-// the driver — `main` always exists.
+// Per-driver openclaw agent mapping. Each openclaw-* driver routes to a
+// distinct openclaw agent in ~/.openclaw/openclaw.json so each tier can
+// run its own model.
+//
+// 2026-05-04 rename: local-* → openclaw-*. The `local` prefix was
+// misleading — `local-glm` actually pointed at glm-5.1:cloud (Ollama
+// Cloud sub, not on-box). The new prefix is accurate: every entry here
+// dispatches through openclaw, model-residency is in the suffix
+// (-flash = 3090 on-box, -cloud = Ollama Cloud sub).
+//
+// Override per driver via env var, e.g. CHITIN_AGENT_OPENCLAW_GLM_FLASH=my-agent.
+// Falls back to `main` if neither env var nor the default mapping
+// resolves the driver — `main` always exists.
 const DRIVER_AGENT_MAP: Record<string, string> = {
-  'local-qwen': 'qwen-agent',
-  'local-glm': 'glm-agent',
-  'local-glm-flash': 'glm-flash-agent',
-  'local-deepseek': 'deepseek-agent',
+  'openclaw-glm-flash': 'glm-flash-agent',  // 3090: glm-4.7-flash:latest (~30B)
+  'openclaw-glm-cloud': 'glm-agent',        // Ollama Cloud sub: glm-5.1:cloud (opus-light)
+  'openclaw-deepseek': 'deepseek-agent',    // 3090: deepseek (kept; not in defaults)
 };
 
 function resolveAgent(driver: DriverId): string {
@@ -72,11 +75,27 @@ function resolveAgent(driver: DriverId): string {
 // a tighter scope (e.g., 'Read,Edit' only).
 const DEFAULT_CLAUDE_ALLOWED_TOOLS = 'Read,Edit,Write,Bash,Glob,Grep';
 
-// Slice 6c: tier → model maps per driver. T0/T1 use the cheap fast
-// models; T4 uses the strongest. Drivers that route via a per-agent
-// configured model (the local-* tier through openclaw) ignore the tier
-// — its model is set at agent-creation time, not per call. Override by
+// Tier → model maps per driver. Drivers that route via a per-agent
+// configured model (openclaw-* through openclaw) ignore the tier — its
+// model is set at agent-creation time, not per call. Override by
 // setting CHITIN_MODEL_<DRIVER>_<TIER> for tactical experimentation.
+//
+// 2026-05-04 rebalance, driven by Copilot Pro premium-request multipliers
+// the operator measured directly:
+//
+//   gpt-5-mini       0×    free, unlimited
+//   gpt-5.4-mini     0.33×
+//   claude-haiku-4-5 0.33×
+//   claude-sonnet-4-6 1×
+//   gpt-5.4          1×
+//   claude-opus-4-6  3×
+//   gpt-5.5          7.5×
+//
+// Rule on Copilot: never premium-tier-and-up by default (no sonnet, no
+// opus, no gpt-5.5). They burn the Pro premium-request budget too fast.
+// Default to gpt-5-mini for free/unlimited tiers; haiku-4-5 (0.33×) for
+// any tier that needs more reasoning. Anthropic models go via
+// claude-code-headless (Max plan) — never through Copilot.
 const CLAUDE_TIER_MODEL: Record<Tier, string> = {
   T0: 'claude-haiku-4-5',
   T1: 'claude-haiku-4-5',
@@ -85,18 +104,12 @@ const CLAUDE_TIER_MODEL: Record<Tier, string> = {
   T4: 'claude-opus-4-7',
 };
 
-// 2026-05-02: T2 bumped from haiku → sonnet on copilot. Pairs with the
-// dispatcher.ts T2 reroute (claude-code-headless → copilot) so the model
-// class is preserved (was claude-sonnet-4-6 via CCH, now claude-sonnet-4.6
-// via copilot — same family). Without this bump the reroute would silently
-// downgrade T2 reasoning to haiku. Cost is still $0 under the Copilot Pro
-// plan.
 const COPILOT_TIER_MODEL: Record<Tier, string> = {
-  T0: 'gpt-4.1',
-  T1: 'gpt-4.1',
-  T2: 'claude-sonnet-4.6',           // (was claude-haiku-4.5; bumped to preserve T2 reasoning quality)
-  T3: 'claude-sonnet-4.6',
-  T4: 'claude-opus-4.7',
+  T0: 'gpt-5-mini',                  // 0× free unlimited
+  T1: 'gpt-5-mini',                  // 0× free unlimited
+  T2: 'claude-haiku-4-5',            // 0.33× — bulk programmer (Copilot routes to haiku via Anthropic provider)
+  T3: 'claude-haiku-4-5',            // 0.33× — escalation cascade still cheap if T3 falls back to copilot
+  T4: 'claude-haiku-4-5',            // 0.33× — never opus (3×) or gpt-5.5 (7.5×) on Copilot
 };
 
 function envOverride(driverEnvKey: string, tier: Tier): string | undefined {
@@ -182,16 +195,31 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
         args,
       };
     }
-    case 'local-qwen':
-    case 'local-glm':
-    case 'local-glm-flash':
-    case 'local-deepseek':
+    case 'gemini': {
+      // Gemini CLI on Google AI Pro plan. PreToolUse hook is wired via
+      // ~/.gemini/settings.json BeforeTool — same wire shape as Claude
+      // Code's PreToolUse, just a renamed event. Model selection via -m;
+      // CHITIN_MODEL_GEMINI env override picks the per-call model
+      // (defaults to whatever ~/.gemini/settings.json picks if unset).
+      const args = ['-p', req.prompt];
+      const model = (process.env.CHITIN_MODEL_GEMINI ?? '').trim();
+      if (model) {
+        args.push('-m', model);
+      }
+      return {
+        command: 'gemini',
+        args,
+      };
+    }
+    case 'openclaw-glm-flash':
+    case 'openclaw-glm-cloud':
+    case 'openclaw-deepseek':
       // Dispatch through openclaw + chitin-governance plugin. The plugin
       // is loaded at openclaw startup (~/.openclaw/openclaw.json plugins.allow
       // includes "chitin-governance"); every tool call the local agent
       // dispatches passes through before_tool_call → chitin gate. The per-
-      // driver agent mapping (slice 3) routes to distinct openclaw agents so
-      // each local tier runs its own model.
+      // driver agent mapping routes to distinct openclaw agents so each
+      // tier runs its own model.
       return {
         command: 'openclaw',
         args: [
@@ -583,15 +611,15 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     if (req.allowed_drivers.includes('claude-code-headless')) {
       writeWorktreeClaudeSettings(worktreeInfo.path);
     }
-    // Slice 6b: openclaw-driven local-* drivers need the agent's workspace
-    // pointed at the worktree so the agent's read/edit tools see the right
-    // files. We provision a per-workflow OPENCLAW_STATE_DIR with a remapped
+    // openclaw-driven drivers need the agent's workspace pointed at
+    // the worktree so the agent's read/edit tools see the right files.
+    // We provision a per-workflow OPENCLAW_STATE_DIR with a remapped
     // openclaw.json instead of mutating the user's global config.
-    const localDriver = req.allowed_drivers.find((d) =>
-      d === 'local-qwen' || d === 'local-glm' || d === 'local-glm-flash' || d === 'local-deepseek',
+    const openclawDriver = req.allowed_drivers.find((d) =>
+      d === 'openclaw-glm-flash' || d === 'openclaw-glm-cloud' || d === 'openclaw-deepseek',
     );
-    if (localDriver) {
-      const agentId = resolveAgent(localDriver as DriverId);
+    if (openclawDriver) {
+      const agentId = resolveAgent(openclawDriver as DriverId);
       openclawState = provisionOpenclawState(req, worktreeInfo.path, agentId);
     }
   } else if (req.role === 'reviewer') {

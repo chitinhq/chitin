@@ -13,11 +13,11 @@ decide whether it's now ready for a tier to claim, and if not, propose what
 needs to change.
 
 ## Tier definitions
-- **T0** local-qwen (qwen3-coder:30b on 3090): mechanical, single-file, <100 LOC. Free, fast.
-- **T1** copilot (GPT-4.1 free or Haiku): moderate, multi-file, clear pattern.
-- **T2** local-glm (rate-limited) or copilot-mid: specialized reasoning. Use sparingly.
-- **T3** copilot (GPT-5.4): heavy, cross-cutting, architectural.
-- **T4** Claude Code interactive (with Jared): strategy, ambiguous scope, irreversible.
+- **T0** openclaw-glm-flash (glm-4.7-flash on 3090, ~30B): mechanical, single-file, <100 LOC. Free, fast.
+- **T1** openclaw-glm-flash (same 3090 model): moderate, multi-file, clear pattern. Free.
+- **T2** copilot (claude-haiku-4-5, 0.33× premium): bulk programmer tier. Cheap.
+- **T3** openclaw-glm-cloud (glm-5.1:cloud via Ollama Cloud sub): heavy reasoning, cross-cutting. Flat-rate.
+- **T4** claude-code-headless (claude-opus-4-7, Anthropic Max): escalation only — irreversible / strategic.
 
 ## Status meanings
 - **ready** — sized correctly, scope clear, claimable as-is.
