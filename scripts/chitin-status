@@ -10,6 +10,7 @@
 #   dispatcher    last N dispatcher decisions (skip / dispatch / escalate)
 #   router        sentinel state + recent router-hook decisions
 #   chain         recent session count + last decision
+#   tier-recs     data-driven recommended-starting-tier per top action_type
 #   alarms        any active alarm-feeder findings
 #   spend         per-driver budget summary (delegates to chitin-budget)
 #   prs           open PRs (operator review queue)
@@ -29,6 +30,7 @@ Operator-facing health dashboard. Surfaces:
   dispatcher    last N dispatcher decisions
   router        sentinel state + recent decisions
   chain         recent session count + last decision
+  tier-recs     data-driven recommended-starting-tier per top action_type
   alarms        active alarm-feeder findings
   spend         per-driver budget (delegates to chitin-budget)
   prs           open PRs (operator review queue)
@@ -76,6 +78,61 @@ last_chain_decision() {
   ' 2>/dev/null || true
 }
 
+# tier_recommendations emits up to N lines, one per top-volume
+# action_type, in the form: "  <action_type>  →  <tier>  (n=<sample>, <reason>)"
+#
+# Top action_types come from `chain stats --by=action_type --json`;
+# tier from `chain recommend-tier --action-type=<t> --json`. We
+# bound to the top max_lines so the dashboard stays glanceable on
+# a busy operator's terminal.
+#
+# Falls open: if the kernel binary or `chain stats` is missing
+# (older kernel; dev box without the tier branch yet) the section
+# emits a single "(unavailable)" hint instead of erroring out.
+tier_recommendations() {
+  local max_lines="${1:-5}"
+  if ! command -v chitin-kernel >/dev/null; then
+    echo "    (chitin-kernel not on PATH; skip)"
+    return
+  fi
+  local stats_json
+  stats_json=$(chitin-kernel chain stats --by=action_type --json 2>/dev/null) || {
+    echo "    (chain stats unavailable — old kernel?)"
+    return
+  }
+  local top_types
+  top_types=$(echo "$stats_json" \
+    | jq -r --argjson n "$max_lines" '
+        .buckets // {}
+        | to_entries
+        | sort_by(-.value.decisions)
+        | .[0:$n]
+        | .[].key
+      ' 2>/dev/null) || {
+    echo "    (jq parse of chain stats failed)"
+    return
+  }
+  if [[ -z "$top_types" ]]; then
+    echo "    (no chain history yet — recommendations need data)"
+    return
+  fi
+  while IFS= read -r at; do
+    [[ -z "$at" ]] && continue
+    local rec_json
+    rec_json=$(chitin-kernel chain recommend-tier \
+      --action-type="$at" --json 2>/dev/null) || continue
+    local tier sample insufficient reason
+    tier=$(echo "$rec_json" | jq -r '.recommended_tier // "?"')
+    sample=$(echo "$rec_json" | jq -r '.sample_size // 0')
+    insufficient=$(echo "$rec_json" | jq -r '.insufficient_signal // false')
+    reason=$(echo "$rec_json" | jq -r '.reason // ""' | head -c 60)
+    local marker="✓"
+    [[ "$insufficient" == "true" ]] && marker="?"
+    printf "    %s %-22s → %-3s  n=%-4s  %s\n" \
+      "$marker" "$at" "$tier" "$sample" "$reason"
+  done <<< "$top_types"
+}
+
 # ─── Collect ──────────────────────────────────────────────────────
 
 router_sentinel="off"
@@ -98,6 +155,40 @@ open_prs=$(gh pr list --state open --limit 30 --json number,title 2>/dev/null \
 
 # ─── Render ──────────────────────────────────────────────────────
 
+# tier_recommendations_json — structured form of the top-N
+# recommendations for --json mode. Empty array on missing kernel
+# or empty chain history.
+tier_recommendations_json() {
+  local max_lines="${1:-5}"
+  if ! command -v chitin-kernel >/dev/null; then
+    echo "[]"
+    return
+  fi
+  local stats_json
+  stats_json=$(chitin-kernel chain stats --by=action_type --json 2>/dev/null) || {
+    echo "[]"
+    return
+  }
+  local top_types
+  top_types=$(echo "$stats_json" \
+    | jq -r --argjson n "$max_lines" '
+        .buckets // {}
+        | to_entries
+        | sort_by(-.value.decisions)
+        | .[0:$n]
+        | .[].key
+      ' 2>/dev/null) || { echo "[]"; return; }
+  local out="[]"
+  while IFS= read -r at; do
+    [[ -z "$at" ]] && continue
+    local rec_json
+    rec_json=$(chitin-kernel chain recommend-tier \
+      --action-type="$at" --json 2>/dev/null) || continue
+    out=$(echo "$out" | jq --argjson r "$rec_json" '. + [$r]')
+  done <<< "$top_types"
+  echo "$out"
+}
+
 if [[ "$mode" == "json" ]]; then
   jq -n \
     --arg router_sentinel "$router_sentinel" \
@@ -105,12 +196,14 @@ if [[ "$mode" == "json" ]]; then
     --arg last_decision "$last_decision" \
     --arg open_prs "$open_prs" \
     --argjson timers "$(for u in "${!timers[@]}"; do echo "{\"$u\":\"${timers[$u]}\"}"; done | jq -s 'add')" \
+    --argjson tier_recs "$(tier_recommendations_json 5)" \
     '{
       router_sentinel: $router_sentinel,
       recent_chains_60min: ($recent_chains|tonumber),
       last_chain_decision: ($last_decision // null),
       open_prs: ($open_prs|tonumber),
-      timers: $timers
+      timers: $timers,
+      tier_recommendations: $tier_recs
     }'
   exit 0
 fi
@@ -134,6 +227,10 @@ for unit in chitin-dispatcher.timer chitin-worker.service \
   [[ "$state" == "failed" ]] && marker="✗"
   printf "    %s %-40s %s\n" "$marker" "$unit" "$state"
 done
+
+echo ""
+echo "  tier recommendations (top action_types, ✓=confident, ?=insufficient):"
+tier_recommendations 5
 
 echo ""
 echo "  spend (per-driver):"
