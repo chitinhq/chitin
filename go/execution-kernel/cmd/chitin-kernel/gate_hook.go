@@ -12,6 +12,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/cost"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/gemini"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/tier"
 )
@@ -106,9 +107,28 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	// stderr stream so operators see malformed payloads explicitly
 	// rather than via a silent default-deny.
 	claudecode.SetWarnSink(errOut)
+	gemini.SetWarnSink(errOut)
 	defer claudecode.SetWarnSink(nil)
+	defer gemini.SetWarnSink(nil)
 
-	action, err := claudecode.Normalize(payload)
+	// Dispatch by agent: gemini uses different tool names than
+	// Claude Code (run_shell_command vs Bash, etc.), so the
+	// normalizer differs. Wire shape on stdin is identical between
+	// the two — the same payload struct works for both.
+	var action gov.Action
+	if agent == "gemini" {
+		gPayload := gemini.HookInput{
+			SessionID:      payload.SessionID,
+			TranscriptPath: payload.TranscriptPath,
+			Cwd:            payload.Cwd,
+			HookEventName:  payload.HookEventName,
+			ToolName:       payload.ToolName,
+			ToolInput:      payload.ToolInput,
+		}
+		action, err = gemini.Normalize(gPayload)
+	} else {
+		action, err = claudecode.Normalize(payload)
+	}
 	if err != nil {
 		writeJSONLine(errOut, map[string]string{"error": "hook_normalize", "message": err.Error()})
 		return claudecode.ExitNonBlockError
