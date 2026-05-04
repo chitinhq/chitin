@@ -111,11 +111,11 @@ The dispatcher's invariants:
 
 | Tier | Driver | Model | Wall timeout | Account / cost |
 |------|--------|-------|--------------|----------------|
-| T0 | `openclaw-glm-flash` | glm-4.7-flash:latest (~30B on 3090) | 180s | free, unlimited |
-| T1 | `openclaw-glm-flash` | same | 240s | free, unlimited |
-| T2 | `copilot` | claude-haiku-4-5 (0.33× premium-multiplier) | 360s | Copilot Pro flat |
-| T3 | `openclaw-glm-cloud` | glm-5.1:cloud (opus-light) | 600s | Ollama Cloud sub flat |
-| T4 | `claude-code-headless` | claude-opus-4-7 | 600s | Anthropic Max metered (rare escalation) |
+| T0 | `openclaw-glm-flash` | glm-4.7-flash:latest (~30B on 3090) | 1200s (20m) | free, unlimited |
+| T1 | `openclaw-glm-flash` | same | 1200s | free, unlimited |
+| T2 | `copilot` | claude-haiku-4-5 (0.33× premium-multiplier) | 1800s (30m) | Copilot Pro flat |
+| T3 | `openclaw-glm-cloud` | glm-5.1:cloud (opus-light) | 1800s | Ollama Cloud sub flat |
+| T4 | `claude-code-headless` | claude-opus-4-7 | 1800s | Anthropic Max metered (escalation) |
 
 | Reviewer | Driver | Model | Account |
 |----------|--------|-------|---------|
@@ -126,7 +126,12 @@ The dispatcher's invariants:
 Operator overrides:
 - `CHITIN_TIER_DRIVER_T<N>=<driver>` flips a tier at runtime, no code change.
 - `CHITIN_REVIEWER_R<N>_DRIVER=<driver>` and `CHITIN_REVIEWER_R<N>_MODEL=<model>` for reviewer overrides.
-- `CHITIN_MODEL_<DRIVER>_<TIER>=<model>` for per-(driver,tier) model picks.
+- `CHITIN_MODEL_<DRIVER>_<TIER>=<model>` — per-(driver,tier) picks for
+  tier-aware drivers (`copilot`, `claude-code-headless`). Examples:
+  `CHITIN_MODEL_COPILOT_T2=claude-haiku-4-5`,
+  `CHITIN_MODEL_CLAUDE_CODE_HEADLESS_T4=claude-opus-4-7`.
+- `CHITIN_MODEL_CODEX=<model>` — codex driver uses a single env var (not tiered).
+- `CHITIN_MODEL_GEMINI=<model>` — gemini driver uses a single env var (not tiered).
 - `CHITIN_AGENT_OPENCLAW_GLM_FLASH=<agent-id>` etc. for openclaw agent remapping.
 
 ## Failure modes
