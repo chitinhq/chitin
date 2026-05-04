@@ -134,7 +134,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			body, _ := json.Marshal(composed)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
-			writeRouterTelemetry(errOut, "pre-action-block", outcome, false)
+			writeRouterTelemetry(errOut, "pre-action-block", outcome, false, false)
 			return claudecode.ExitBlock
 		}
 	}
@@ -178,7 +178,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 		// Log heuristic outcome to stderr for telemetry even if advisor skipped
 		if outcome.AnyFired {
-			writeRouterTelemetry(errOut, "heuristic-fired-no-advisor", outcome, kernelDeny)
+			writeRouterTelemetry(errOut, "heuristic-fired-no-advisor", outcome, kernelDeny, false)
 		}
 		return kernelCode
 	}
@@ -232,7 +232,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
-		writeRouterTelemetryWithEscalate(errOut, "advisor-takeover", outcome, kernelDeny, advice.Escalate)
+		writeRouterTelemetry(errOut, "advisor-takeover", outcome, kernelDeny, advice.Escalate)
 		return claudecode.ExitBlock
 	}
 
@@ -257,25 +257,28 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			_, _ = out.Write(kernelOut.Bytes())
 		}
 	} else if kernelCode == claudecode.ExitAllow {
-		// Kernel was silent (allow). Emit the advisor's nudge as a hint.
+		// Kernel was silent (allow). Emit the advisor's nudge as a hint
+		// via the documented hookSpecificOutput channel. Note: the
+		// escalation_requested marker is intentionally NOT emitted
+		// here — the only consumer (Temporal activity) reads it from
+		// the deny-path chain envelope, and adding it to the allow
+		// stdout risks polluting Claude Code's tool response with a
+		// field it doesn't expect. Telemetry still records the flag
+		// in stderr below.
 		composed := map[string]interface{}{"hookSpecificOutput": advice.Nudge}
-		if advice.Escalate {
-			composed["escalation_requested"] = true
-		}
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
 	}
-	writeRouterTelemetryWithEscalate(errOut, "advisor-allow", outcome, kernelDeny, advice.Escalate)
+	writeRouterTelemetry(errOut, "advisor-allow", outcome, kernelDeny, advice.Escalate)
 	return kernelCode
 }
 
-// writeRouterTelemetryWithEscalate adds the escalate flag to the
-// existing telemetry emit. Operators tailing chain logs see
-// "escalate=true" entries and can correlate them with subsequent
-// dispatcher tier-bumps. Foundation for the mid-task continuation
-// loop documented at docs/design/2026-05-03-mid-task-continuation.md.
-func writeRouterTelemetryWithEscalate(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny, escalate bool) {
+// writeRouterTelemetry emits one structured JSONL line per
+// router-hook invocation. The escalate field is always present
+// (false on paths that don't involve the advisor) so downstream
+// consumers see a stable schema across emit kinds.
+func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny, escalate bool) {
 	out := map[string]interface{}{
 		"ts":                time.Now().UTC().Format(time.RFC3339),
 		"level":             "info",
@@ -284,20 +287,6 @@ func writeRouterTelemetryWithEscalate(errOut io.Writer, kind string, outcome rou
 		"kernel_denied":     kernelDeny,
 		"heuristic_outcome": outcome,
 		"escalate":          escalate,
-	}
-	body, _ := json.Marshal(out)
-	_, _ = errOut.Write(body)
-	_, _ = errOut.Write([]byte{'\n'})
-}
-
-func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny bool) {
-	out := map[string]interface{}{
-		"ts":                time.Now().UTC().Format(time.RFC3339),
-		"level":             "info",
-		"component":         "router-hook",
-		"msg":               kind,
-		"kernel_denied":     kernelDeny,
-		"heuristic_outcome": outcome,
 	}
 	body, _ := json.Marshal(out)
 	_, _ = errOut.Write(body)
