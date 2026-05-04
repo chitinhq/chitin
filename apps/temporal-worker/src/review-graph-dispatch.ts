@@ -22,7 +22,7 @@ import type { Client } from '@temporalio/client';
 import type { reviewGraphWorkflow } from './review-graph-workflow.ts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import type { WorktreeResult } from './activity-types.ts';
-import type { PrMeta } from './review-graph.ts';
+import { resolveReviewTierDriver, type PrMeta, type ReviewTier } from './review-graph.ts';
 
 export const REVIEW_GRAPH_WORKFLOW_NAME = 'reviewGraphWorkflow';
 
@@ -151,7 +151,7 @@ export async function enqueueReviewGraph(
   // If a pre-built PrMeta was provided (pr-event-ingester path),
   // thread it through unchanged. Otherwise fall back to the
   // worktree-derived rebuild (programmer-success path).
-  const reviewGraphInput = input.pr_meta
+  const baseInput = input.pr_meta
     ? {
         parent_workflow_id: input.parent_workflow_id,
         pr_meta: input.pr_meta,
@@ -165,6 +165,21 @@ export async function enqueueReviewGraph(
         input.entry,
         input.repo,
       );
+
+  // Resolve per-tier driver+model in regular Node (process.env is
+  // available here) and embed in the workflow input. The workflow
+  // isolate has no `process` global, so it can't run
+  // resolveReviewTierDriver itself — it reads input.tier_config
+  // when present, otherwise the static REVIEW_TIER_DRIVER defaults.
+  // Only R1/R2/R3 are dispatchable; R0/R4 stay null.
+  const tier_config: Record<ReviewTier, { driver: string | null; model: string | null }> = {
+    R0: { driver: null, model: null },
+    R1: resolveReviewTierDriver('R1'),
+    R2: resolveReviewTierDriver('R2'),
+    R3: resolveReviewTierDriver('R3'),
+    R4: { driver: null, model: null },
+  };
+  const reviewGraphInput = { ...baseInput, tier_config };
 
   // Reviewer chain workflow_id derives from the parent. Keep it
   // greppable so the operator can correlate `swarm-<entry>-<ts>` to

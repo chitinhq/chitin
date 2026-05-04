@@ -276,4 +276,46 @@ describe('enqueueReviewGraph', () => {
     expect(arg.entry.id).toBe('arg-shape-test');
     expect(arg.repo).toBe('chitinhq/chitin');
   });
+
+  it('embeds tier_config from CHITIN_REVIEWER_R<N>_{DRIVER,MODEL} env into workflow args', async () => {
+    // The workflow runs in a V8 isolate without `process` — env
+    // override resolution has to happen here in the dispatcher and
+    // be threaded through input. Regression test for Copilot's
+    // catch on PR #280: env overrides were a dead code path.
+    const orig = {
+      r1d: process.env.CHITIN_REVIEWER_R1_DRIVER,
+      r1m: process.env.CHITIN_REVIEWER_R1_MODEL,
+      r3d: process.env.CHITIN_REVIEWER_R3_DRIVER,
+    };
+    process.env.CHITIN_REVIEWER_R1_DRIVER = 'codex-cli';
+    process.env.CHITIN_REVIEWER_R1_MODEL = 'gpt-5.4';
+    process.env.CHITIN_REVIEWER_R3_DRIVER = 'gemini-cli';
+    try {
+      const client = makeMockClient();
+      await enqueueReviewGraph({
+        client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
+        taskQueue: 'chitin-worker-q',
+        parent_workflow_id: 'parent-tier-config-1',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/600',
+        worktree: makeWorktree(),
+        entry: makeEntry(),
+        repo: 'chitinhq/chitin',
+      });
+      const [arg] = client.__startCalls[0].args as [
+        { tier_config?: Record<string, { driver: string | null; model: string | null }> },
+      ];
+      expect(arg.tier_config).toBeDefined();
+      expect(arg.tier_config?.R1).toEqual({ driver: 'codex-cli', model: 'gpt-5.4' });
+      expect(arg.tier_config?.R3?.driver).toBe('gemini-cli');
+      // R2 unset → falls back to the static default.
+      expect(arg.tier_config?.R2?.driver).toBe('copilot');
+    } finally {
+      if (orig.r1d === undefined) delete process.env.CHITIN_REVIEWER_R1_DRIVER;
+      else process.env.CHITIN_REVIEWER_R1_DRIVER = orig.r1d;
+      if (orig.r1m === undefined) delete process.env.CHITIN_REVIEWER_R1_MODEL;
+      else process.env.CHITIN_REVIEWER_R1_MODEL = orig.r1m;
+      if (orig.r3d === undefined) delete process.env.CHITIN_REVIEWER_R3_DRIVER;
+      else process.env.CHITIN_REVIEWER_R3_DRIVER = orig.r3d;
+    }
+  });
 });

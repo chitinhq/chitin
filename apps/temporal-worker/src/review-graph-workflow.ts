@@ -70,6 +70,15 @@ export interface ReviewGraphInput {
   copilot_comments?: string;
   /** Repo slug — needed when we construct reviewer ExecutionRequests. */
   repo: string;
+  /** Per-tier driver+model resolution. Built in regular Node by the
+   *  dispatcher (where `process.env` is readable) so the
+   *  CHITIN_REVIEWER_R<N>_{DRIVER,MODEL} overrides take effect.
+   *  Workflow runs in V8 isolate without `process`, so it can't
+   *  resolve env itself — see review-graph.ts comment on
+   *  resolveReviewTierDriver. When undefined (older callers,
+   *  in-flight workflows from before this rolled out), the workflow
+   *  falls back to the static REVIEW_TIER_DRIVER defaults. */
+  tier_config?: Partial<Record<ReviewTier, { driver: string | null; model: string | null }>>;
 }
 
 /**
@@ -264,7 +273,10 @@ function buildReviewerRequest(
   tier: ReviewTier,
   priorFindings: string | undefined,
 ): ExecutionRequest {
-  const tierConfig = REVIEW_TIER_DRIVER[tier];
+  // Prefer the per-tier config the dispatcher resolved (with env
+  // overrides applied). Fall back to the static defaults for
+  // older callers or in-flight workflows that pre-date the field.
+  const tierConfig = input.tier_config?.[tier] ?? REVIEW_TIER_DRIVER[tier];
   if (!tierConfig.driver) {
     throw new Error(`tier ${tier} is not a dispatchable reviewer tier (R0/R4 are non-dispatchable)`);
   }
