@@ -146,6 +146,15 @@ export const ExecutionRequestSchema = z
     // loop.maxIterations equivalent — chitin caps at 3 per the
     // design doc to prevent runaway chains). Absent = 0.
     step_index: z.number().int().nonnegative().max(3).optional(),
+    // Phase 2 (routing-as-learning-system, P2): canonical agent
+    // fingerprint computed by computeFingerprint() in fingerprint.ts.
+    // Captures the dimensions that define what an agent IS at run
+    // time (driver, model, role, station-prompt-hash, skills+tools-
+    // hash, soul-lens) so chain dispatches join to outcomes for ELO
+    // analysis. Hash is SHA-256 truncated to 12 hex chars (96 bits —
+    // collision-resistant for the dispatch volumes we'd ever hit).
+    // Absent = older callers / pre-fingerprint dispatches.
+    fingerprint: z.string().regex(/^[a-f0-9]{12}$/).optional(),
   })
   .superRefine((req, ctx) => {
     if (req.network_policy === 'open' && (req.risk_level === 'high' || req.risk_level === 'irreversible')) {
