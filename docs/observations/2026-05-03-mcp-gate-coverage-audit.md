@@ -25,7 +25,7 @@ Surveyed every code path that receives an MCP tool call and traced whether it no
    - Entry: `chitin-kernel gate evaluate --hook-stdin --agent=claude-code`
    - Routes through `internal/driver/claudecode/normalize.go::Normalize`
    - **Pre-fix gap:** MCP tool names (`mcp__server__tool`) fell through to `ActUnknown` → `default-deny-unknown`
-   - **Fix:** added `parseMCPToolName` + a case ahead of the `ActUnknown` fallback that routes to `gov.ActMCPCall` with `target="server/tool"`. PR <to-be-filled>.
+   - **Fix:** added `parseMCPToolName` + a case ahead of the `ActUnknown` fallback that routes to `gov.ActMCPCall` with `target="server/tool"`. See [PR #257](https://github.com/chitinhq/chitin/pull/257).
 
 4. **OpenClaw plugin** (`apps/openclaw-plugin-governance/src/chitin-bridge.mjs:31-83`)
    - Spawns `chitin-kernel gate evaluate --tool <name> --args-json <params>`

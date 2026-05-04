@@ -18,9 +18,12 @@ import (
 const mcpToolPrefix = "mcp__"
 
 // parseMCPToolName splits "mcp__serverName__toolName" on the FIRST
-// `__` separator after the prefix. Tool names commonly contain
-// underscores (e.g., `mcp__github__create_pull_request`); a naive
-// strings.Split("__") would mangle them.
+// `__` separator after the prefix. Equivalent to SplitN(rest, "__", 2);
+// the explicit Index makes the "first separator" intent obvious in
+// code review. Tool names commonly contain `__` because some MCP
+// servers compose names like `mcp__filesystem__read_file__binary`,
+// and we want server="filesystem" / tool="read_file__binary" — not
+// a 4-way split.
 //
 // Returns:
 //   ("server", "tool", true)  for "mcp__server__tool"
