@@ -30,12 +30,36 @@ func TestApplySandbox_UnsupportedMode_PassThroughWithWarn(t *testing.T) {
 	}
 }
 
+// TestApplySandbox_MissingBwrap_FallsOpen forces exec.LookPath
+// to fail by clearing PATH and asserts the wrapper passes
+// (cmd, args) through unchanged with a warning. This is the
+// fall-open path that earlier comments referenced — now actually
+// covered.
+func TestApplySandbox_MissingBwrap_FallsOpen(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only path")
+	}
+	t.Setenv("PATH", "")
+	var buf bytes.Buffer
+	cfg := SandboxConfig{Mode: "bwrap"}
+	cmd, args := applySandbox(cfg, "test-plugin", "/tmp/x.py", "python3", []string{"-u", "/tmp/x.py"}, &buf)
+	if cmd != "python3" {
+		t.Errorf("missing-bwrap should pass cmd through; got %q", cmd)
+	}
+	if len(args) != 2 {
+		t.Errorf("missing-bwrap should pass args through; got %v", args)
+	}
+	if !strings.Contains(buf.String(), "bwrap binary not found") {
+		t.Errorf("expected bwrap-missing warning; got %q", buf.String())
+	}
+}
+
 func TestApplySandbox_BwrapMode_WrapsCommand(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap is Linux-only")
 	}
 	// If bwrap isn't installed on this CI host, skip — the
-	// fall-open path is asserted by the next test.
+	// fall-open path is covered by TestApplySandbox_MissingBwrap_FallsOpen.
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bwrap not installed; skipping wrap test")
 	}

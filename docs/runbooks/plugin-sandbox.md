@@ -10,7 +10,8 @@ Wraps a router plugin's subprocess in a `bwrap` namespace:
 - read-only filesystem (entire `/usr`, `/etc`, `/lib*`, `/bin`, `/sbin`)
 - writable `tmpfs` at `/tmp`
 - network dropped (override with `allow_network: true`)
-- writable `$HOME` (override with `allow_write: true`)
+- `$HOME` not visible by default; opt in with `allow_write: true` to bind it read-write
+- requires bubblewrap **0.4 or newer** (uses `--ro-bind-try` / `--bind-try`)
 
 ## When to enable
 

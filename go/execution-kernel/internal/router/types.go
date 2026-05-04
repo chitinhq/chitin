@@ -97,6 +97,21 @@ type PluginConfig struct {
 	Module    string                 `yaml:"module" json:"module"`       // path to script
 	Config    map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
 	TimeoutMs int                    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	// Sandbox — opt-in subprocess isolation via bubblewrap. See
+	// plugins.SandboxConfig for the field set + docs/runbooks/
+	// plugin-sandbox.md for operator setup.
+	Sandbox SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+}
+
+// SandboxConfig — duplicates plugins.SandboxConfig at the router
+// boundary so chitin.yaml only depends on `internal/router` types.
+// plugin_runner.go translates this into plugins.SandboxConfig
+// before passing to plugins.Run.
+type SandboxConfig struct {
+	Mode               string   `yaml:"mode,omitempty" json:"mode,omitempty"`
+	AllowNetwork       bool     `yaml:"allow_network,omitempty" json:"allow_network,omitempty"`
+	AllowWrite         bool     `yaml:"allow_write,omitempty" json:"allow_write,omitempty"`
+	ExtraReadOnlyBinds []string `yaml:"extra_ro_binds,omitempty" json:"extra_ro_binds,omitempty"`
 }
 
 // PluginsTrustConfig — operator allowlist for declared plugins.

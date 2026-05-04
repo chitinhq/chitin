@@ -60,6 +60,12 @@ func RunPlugins(ctx context.Context, pluginConfigs []PluginConfig, trust Plugins
 				Module:    p.Module,
 				Config:    p.Config,
 				TimeoutMs: p.TimeoutMs,
+				Sandbox: plugins.SandboxConfig{
+					Mode:               p.Sandbox.Mode,
+					AllowNetwork:       p.Sandbox.AllowNetwork,
+					AllowWrite:         p.Sandbox.AllowWrite,
+					ExtraReadOnlyBinds: p.Sandbox.ExtraReadOnlyBinds,
+				},
 			}
 			// Trust gate FIRST — catches tampered or untrusted plugins
 			// before they get a chance to spawn.

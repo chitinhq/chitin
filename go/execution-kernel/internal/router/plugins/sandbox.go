@@ -28,7 +28,7 @@ import (
 //     blocking userns clone). Those surface through the normal
 //     exec error path in loader.go's Run() — caller treats the
 //     plugin as no-signal and logs the error. Operator response
-//     is documented in docs/router/plugin-sandbox.md (configure
+//     is documented in docs/runbooks/plugin-sandbox.md (configure
 //     apparmor profile or set kernel.apparmor_restrict_
 //     unprivileged_userns=0).
 //
@@ -123,12 +123,21 @@ func applySandbox(cfg SandboxConfig, manifestName, modulePath, cmd string, args 
 	}
 
 	if cfg.AllowWrite {
-		// Operator opted into write — bind home rw. Coarse but
+		// Operator opted into write — bind $HOME rw. Coarse but
 		// honest: if you say AllowWrite, expect plugin can mutate
 		// your home dir. Operators wanting finer control should
 		// use ExtraReadOnlyBinds + a tmpfs for the writable spot.
-		// For MVP, this is enough.
-		bwrapArgs = append(bwrapArgs, "--bind-try", homeDir(), homeDir())
+		//
+		// Critical: skip the bind when $HOME can't be resolved.
+		// Without this guard, a homeDir() fallback to "/" would
+		// effectively make the entire host filesystem writable
+		// inside the sandbox — defeating the isolation goal. The
+		// plugin runs unsandboxed-write rather than over-broad-write.
+		if home, err := resolveHome(); err == nil && home != "" && home != "/" {
+			bwrapArgs = append(bwrapArgs, "--bind-try", home, home)
+		} else {
+			warn(errOut, manifestName, "AllowWrite=true but $HOME could not be resolved safely; skipping bind to avoid mounting / rw")
+		}
 	}
 
 	// Terminator: "--" separates bwrap args from the wrapped command.
@@ -147,9 +156,12 @@ func warn(w io.Writer, plugin, msg string) {
 	)
 }
 
-func homeDir() string {
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		return h
+// resolveHome returns ($HOME, nil) when an unambiguous home dir is
+// available. Returns "" + error otherwise. Callers MUST refuse to
+// bind to "/" — see applySandbox AllowWrite handling.
+func resolveHome() (string, error) {
+	if h, err := os.UserHomeDir(); err == nil && h != "" && h != "/" {
+		return h, nil
 	}
-	return "/"
+	return "", fmt.Errorf("home directory not resolvable")
 }
