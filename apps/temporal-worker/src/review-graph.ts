@@ -50,16 +50,32 @@ function maxTier(a: ReviewTier, b: ReviewTier): ReviewTier {
  * Format mirrors `TIER_DRIVER` in dispatcher.ts so a future caller
  * can pick the spawn args by reading this map alone.
  */
+// envOrDefault treats whitespace-only env values as unset, matching
+// the elsewhere-in-this-package convention (envOverride / resolveAgent).
+// Without this, an accidentally-blank
+// `CHITIN_REVIEWER_R2_DRIVER=` line in chitin.env would override the
+// default to an invalid empty string.
+function envOrDefault(name: string, fallback: string | null): string | null {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  return trimmed === '' ? fallback : trimmed;
+}
+
 export const REVIEW_TIER_DRIVER: Record<ReviewTier, { driver: string | null; model: string | null }> = (() => {
   // Operator can override per-tier driver via env. Useful for
   // running codex (gpt-5.4 on Plus) at R2 instead of copilot/sonnet,
   // either as a permanent swap or as an A/B comparison. The env
   // shape is CHITIN_REVIEWER_R<N>_DRIVER (= driver id) +
-  // CHITIN_REVIEWER_R<N>_MODEL (= model name override). When unset,
-  // defaults match the historical config below.
+  // CHITIN_REVIEWER_R<N>_MODEL (= model name override). When unset
+  // (or whitespace-only), defaults match the historical config below.
+  //
+  // NOTE: this map is module-load evaluated. Tests that need to
+  // exercise default vs override should set the env BEFORE importing
+  // the module, or use the helper directly (envOrDefault).
   const pick = (tier: string, defaultDriver: string | null, defaultModel: string | null) => ({
-    driver: process.env[`CHITIN_REVIEWER_${tier}_DRIVER`] ?? defaultDriver,
-    model: process.env[`CHITIN_REVIEWER_${tier}_MODEL`] ?? defaultModel,
+    driver: envOrDefault(`CHITIN_REVIEWER_${tier}_DRIVER`, defaultDriver),
+    model: envOrDefault(`CHITIN_REVIEWER_${tier}_MODEL`, defaultModel),
   });
   return {
     R0: { driver: null, model: null },                                          // GH bot, not dispatched

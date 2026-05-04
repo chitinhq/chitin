@@ -54,31 +54,47 @@ describe('planInvocation', () => {
     expect(plan.args).not.toContain('main');
   });
 
-  it('dispatches codex via `codex exec --json`', () => {
+  it('dispatches codex via `codex exec --json` without --cd (req.repo is a slug, spawn cwd handles dir)', () => {
     const plan = planInvocation({
       ...baseReq,
       allowed_drivers: ['codex'],
-      repo: '/home/red/workspace/chitin',
+      // baseReq.repo is "chitinhq/chitin" — a slug, not a filesystem
+      // path. Confirm planInvocation does NOT pass it through --cd
+      // (would point codex at a non-existent directory).
     });
     expect(plan.command).toBe('codex');
-    expect(plan.args.slice(0, 2)).toEqual(['exec', '--json']);
-    expect(plan.args).toContain('--cd');
+    expect(plan.args.slice(0, 3)).toEqual(['exec', '--json', '--skip-git-repo-check']);
+    expect(plan.args).not.toContain('--cd');
     // Prompt should be the last arg
     expect(plan.args[plan.args.length - 1]).toBe(baseReq.prompt);
   });
 
-  it('codex respects CHITIN_MODEL_CODEX env override', () => {
+  it('codex respects CHITIN_MODEL_CODEX env override (with whitespace trim)', () => {
     const orig = process.env.CHITIN_MODEL_CODEX;
     try {
-      process.env.CHITIN_MODEL_CODEX = 'gpt-5.5';
+      process.env.CHITIN_MODEL_CODEX = '  gpt-5.5  ';  // whitespace
       const plan = planInvocation({
         ...baseReq,
         allowed_drivers: ['codex'],
-        repo: '/home/red/workspace/chitin',
       });
       const idx = plan.args.indexOf('-m');
       expect(idx).toBeGreaterThan(-1);
       expect(plan.args[idx + 1]).toBe('gpt-5.5');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_MODEL_CODEX;
+      else process.env.CHITIN_MODEL_CODEX = orig;
+    }
+  });
+
+  it('codex ignores whitespace-only CHITIN_MODEL_CODEX (no -m emitted)', () => {
+    const orig = process.env.CHITIN_MODEL_CODEX;
+    try {
+      process.env.CHITIN_MODEL_CODEX = '   ';
+      const plan = planInvocation({
+        ...baseReq,
+        allowed_drivers: ['codex'],
+      });
+      expect(plan.args).not.toContain('-m');
     } finally {
       if (orig === undefined) delete process.env.CHITIN_MODEL_CODEX;
       else process.env.CHITIN_MODEL_CODEX = orig;
