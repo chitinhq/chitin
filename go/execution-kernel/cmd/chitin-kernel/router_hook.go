@@ -134,7 +134,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			body, _ := json.Marshal(composed)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
-			writeRouterTelemetry(errOut, "pre-action-block", outcome, false)
+			writeRouterTelemetry(errOut, "pre-action-block", outcome, false, false)
 			return claudecode.ExitBlock
 		}
 	}
@@ -178,7 +178,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 		// Log heuristic outcome to stderr for telemetry even if advisor skipped
 		if outcome.AnyFired {
-			writeRouterTelemetry(errOut, "heuristic-fired-no-advisor", outcome, kernelDeny)
+			writeRouterTelemetry(errOut, "heuristic-fired-no-advisor", outcome, kernelDeny, false)
 		}
 		return kernelCode
 	}
@@ -219,12 +219,20 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	// Step 4: compose
 	if advice.Verdict == "takeover" {
-		// Force a deny with the advisor's nudge as the reason
-		composed := map[string]string{"decision": "block", "reason": advice.Nudge}
+		// Force a deny with the advisor's nudge as the reason. If
+		// the advisor also flipped Escalate, attach an
+		// `escalation_requested: true` marker so downstream
+		// consumers (the Temporal activity, the dispatcher's tier
+		// ladder) can spawn a higher-tier driver instead of
+		// surfacing the deny to a human.
+		composed := map[string]interface{}{"decision": "block", "reason": advice.Nudge}
+		if advice.Escalate {
+			composed["escalation_requested"] = true
+		}
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
-		writeRouterTelemetry(errOut, "advisor-takeover", outcome, kernelDeny)
+		writeRouterTelemetry(errOut, "advisor-takeover", outcome, kernelDeny, advice.Escalate)
 		return claudecode.ExitBlock
 	}
 
@@ -238,6 +246,9 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			} else {
 				kernelObj["reason"] = advice.Nudge
 			}
+			if advice.Escalate {
+				kernelObj["escalation_requested"] = true
+			}
 			body, _ := json.Marshal(kernelObj)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
@@ -246,17 +257,28 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			_, _ = out.Write(kernelOut.Bytes())
 		}
 	} else if kernelCode == claudecode.ExitAllow {
-		// Kernel was silent (allow). Emit the advisor's nudge as a hint.
-		composed := map[string]string{"hookSpecificOutput": advice.Nudge}
+		// Kernel was silent (allow). Emit the advisor's nudge as a hint
+		// via the documented hookSpecificOutput channel. Note: the
+		// escalation_requested marker is intentionally NOT emitted
+		// here — the only consumer (Temporal activity) reads it from
+		// the deny-path chain envelope, and adding it to the allow
+		// stdout risks polluting Claude Code's tool response with a
+		// field it doesn't expect. Telemetry still records the flag
+		// in stderr below.
+		composed := map[string]interface{}{"hookSpecificOutput": advice.Nudge}
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
 	}
-	writeRouterTelemetry(errOut, "advisor-allow", outcome, kernelDeny)
+	writeRouterTelemetry(errOut, "advisor-allow", outcome, kernelDeny, advice.Escalate)
 	return kernelCode
 }
 
-func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny bool) {
+// writeRouterTelemetry emits one structured JSONL line per
+// router-hook invocation. The escalate field is always present
+// (false on paths that don't involve the advisor) so downstream
+// consumers see a stable schema across emit kinds.
+func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny, escalate bool) {
 	out := map[string]interface{}{
 		"ts":                time.Now().UTC().Format(time.RFC3339),
 		"level":             "info",
@@ -264,6 +286,7 @@ func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.Heuristi
 		"msg":               kind,
 		"kernel_denied":     kernelDeny,
 		"heuristic_outcome": outcome,
+		"escalate":          escalate,
 	}
 	body, _ := json.Marshal(out)
 	_, _ = errOut.Write(body)
