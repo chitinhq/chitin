@@ -348,6 +348,23 @@ function pickEntryToDispatch(entries: BacklogEntry[]): PickedEntry | null {
 
   for (const entry of entries) {
     if (entry.status !== 'ready') continue;
+
+    // Skip if a recent merged PR title contains the entry id (hand-merged/shipped)
+    try {
+      const recentPrs = git([
+        'log',
+        '--merges',
+        '--since=14.days',
+        '--pretty=%s',
+        '--grep', entry.id,
+      ]);
+      if (recentPrs && recentPrs.includes(entry.id)) {
+        log('info', 'skip entry: recent merged PR title contains entry id (already shipped)', { entry_id: entry.id });
+        continue;
+      }
+    } catch (err) {
+      log('warn', 'failed PR title scan for shipped entry check', { entry_id: entry.id, error: err instanceof Error ? err.message : String(err) });
+    }
     // T5 is human-only — skip even if the schema permits it (it doesn't,
     // but the tier field on the file might).
     if (entry.tier === 'T5') {
