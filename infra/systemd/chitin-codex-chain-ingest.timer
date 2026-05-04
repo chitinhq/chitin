@@ -1,0 +1,14 @@
+# Systemd timer for chitin-researcher.service
+# Fires every 4 hours, persistent across reboots.
+
+[Unit]
+Description=Chitin codex chain ingest timer
+
+[Timer]
+OnUnitActiveSec=1h
+OnBootSec=15min
+Persistent=true
+Unit=chitin-codex-chain-ingest.service
+
+[Install]
+WantedBy=timers.target
