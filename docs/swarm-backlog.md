@@ -5237,7 +5237,7 @@ soul_lens) + outcome dimensions (cost, efficacy per role).
 ```yaml
 id: routing-fingerprint-helper
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: libs/contracts/src/fingerprint.ts (new), libs/contracts/src/execution-request.schema.ts, apps/temporal-worker/src/activity.ts
@@ -5406,7 +5406,7 @@ full vision.
 ```yaml
 id: nx-generator-with-sync-driver-poc
 tier: T2
-status: ready
+status: partial
 estimated_loc: 350
 blocks: []
 file: tools/generators/investigate/generate.ts (new), tools/generators/investigate/schema.json (new)
