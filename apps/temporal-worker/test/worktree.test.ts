@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { ExecutionRequest } from '@chitin/contracts';
 import { __test__ } from '../src/activity.ts';
 
-const { provisionWorktree, captureWorktreeState } = __test__;
+const { provisionWorktree, captureWorktreeState, writeWorktreeIndex } = __test__;
 
 let repoDir: string;
 let savedRepoRoot: string | undefined;
@@ -191,6 +191,71 @@ describe('captureWorktreeState', () => {
     const state = captureWorktreeState(wt.path, req.base_ref!);
     expect(state.commits_added).toBe(2);
     expect(state.diff_shortstat).toMatch(/2 files changed/);
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
+});
+
+describe('writeWorktreeIndex', () => {
+  it('emits WORKTREE_INDEX.md containing coordinates, top-level entries, and doc pointers', async () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    // Add a CLAUDE.md so the doc-pointer existence check has at least
+    // one ✓ to assert.
+    writeFileSync(join(wt.path, 'CLAUDE.md'), '# project conventions\n');
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const idx = (await import('node:fs')).readFileSync(join(wt.path, 'WORKTREE_INDEX.md'), 'utf8');
+    expect(idx).toContain(`workflow_id: \`${req.workflow_id}\``);
+    expect(idx).toContain(`branch:      \`${wt.branch}\``);
+    expect(idx).toContain('## Top-level entries');
+    expect(idx).toContain('CLAUDE.md');
+    // ✓ marker for the existing CLAUDE.md, · marker for missing entries
+    expect(idx).toContain('✓ `CLAUDE.md`');
+    expect(idx).toContain('· `chitin.yaml`');
+    expect(idx).toContain('## Project manifests');
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
+
+  it('survives a worktree without node_modules/@nx', () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const idx = (require('node:fs') as typeof import('node:fs')).readFileSync(
+      join(wt.path, 'WORKTREE_INDEX.md'),
+      'utf8',
+    );
+    expect(idx).toContain('no node_modules/@nx');
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
+
+  it('hides only `.git` (not `.github` / `.gitignore`) from the top-level listing', () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    mkdirSync(join(wt.path, '.github'), { recursive: true });
+    writeFileSync(join(wt.path, '.gitignore'), 'node_modules\n');
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const idx = (require('node:fs') as typeof import('node:fs')).readFileSync(
+      join(wt.path, 'WORKTREE_INDEX.md'),
+      'utf8',
+    );
+    expect(idx).toContain('`.github`');
+    expect(idx).toContain('`.gitignore`');
+    // The .git metadata dir itself stays hidden.
+    expect(idx).not.toMatch(/`\.git`\s*$/m);
+    git(repoDir, ['worktree', 'remove', '--force', wt.path]);
+    git(repoDir, ['branch', '-D', wt.branch]);
+  });
+
+  it('does not leak WORKTREE_INDEX.md into git status (per-worktree exclude is wired)', () => {
+    const req = makeRequest();
+    const wt = provisionWorktree(req, repoDir);
+    writeWorktreeIndex(wt.path, req.workflow_id, wt.branch, req.base_ref!);
+    const status = git(wt.path, ['status', '--porcelain']);
+    // The index file MUST NOT show up — would otherwise be staged by
+    // the apply-step's `git add -A` and leak into PRs.
+    expect(status).not.toContain('WORKTREE_INDEX.md');
     git(repoDir, ['worktree', 'remove', '--force', wt.path]);
     git(repoDir, ['branch', '-D', wt.branch]);
   });
