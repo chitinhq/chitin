@@ -138,11 +138,19 @@ fi
 # dependencies, so failures here are non-fatal — log + continue.
 GEMINI_HOOK_INSTALLER="$REPO/scripts/install-gemini-hook.sh"
 if [[ -x "$GEMINI_HOOK_INSTALLER" ]]; then
-  if "$GEMINI_HOOK_INSTALLER" >/dev/null 2>&1; then
+  # Capture output so a failure surface is actually inspectable.
+  # On success, output is discarded (just the structured emit
+  # below). On failure, both stdout + stderr are tail-truncated
+  # and threaded into the structured log so operators can diagnose
+  # without spelunking through journal entries.
+  gemini_log=$(mktemp)
+  if "$GEMINI_HOOK_INSTALLER" >"$gemini_log" 2>&1; then
     emit ok gemini-hook-installed
   else
-    emit warn gemini-hook-install-failed "see install-gemini-hook output"
+    tail=$(tail -c 500 "$gemini_log" | tr '\n' ' ' | tr -d '"' || true)
+    emit warn gemini-hook-install-failed "tail=$tail"
   fi
+  rm -f "$gemini_log"
 fi
 
 emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"

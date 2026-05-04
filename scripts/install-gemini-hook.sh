@@ -18,7 +18,26 @@
 set -euo pipefail
 
 SETTINGS_PATH="${GEMINI_SETTINGS_PATH:-$HOME/.gemini/settings.json}"
-HOOK_BIN="${CHITIN_ROUTER_HOOK_BIN:-/home/red/workspace/chitin/bin/chitin-router-hook}"
+
+# Resolve the hook binary path. Priority order:
+#   1. CHITIN_ROUTER_HOOK_BIN env override (operator-driven)
+#   2. <this-script-dir>/../bin/chitin-router-hook (in-repo, the
+#      common case for chitin-kernel-redeploy.timer which calls
+#      this script from the chitin checkout root)
+#   3. `command -v chitin-router-hook` (PATH lookup, for cases
+#      where the operator installed the shim into ~/.local/bin)
+#
+# Fail with a clear message if none resolve, rather than writing
+# a hardcoded /home/red path into the operator's gemini config.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+HOOK_BIN="${CHITIN_ROUTER_HOOK_BIN:-}"
+if [[ -z "$HOOK_BIN" ]]; then
+  if [[ -x "$SCRIPT_DIR/../bin/chitin-router-hook" ]]; then
+    HOOK_BIN="$SCRIPT_DIR/../bin/chitin-router-hook"
+  elif command -v chitin-router-hook >/dev/null; then
+    HOOK_BIN=$(command -v chitin-router-hook)
+  fi
+fi
 
 if ! command -v jq >/dev/null; then
   echo "install-gemini-hook: jq is required (apt install jq)" >&2

@@ -199,7 +199,15 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 		hookChainID = newChainID()
 	}
 	if hookChainID != "" {
-		de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, "claude-code", func() string { return hookChainID })
+		// Surface label tracks the dispatched driver so chain
+		// telemetry doesn't mislabel gemini events as claude-code.
+		// The agent flag drives this — claude-code is the default
+		// when the flag is empty (single-driver legacy behavior).
+		surface := agent
+		if surface == "" {
+			surface = "claude-code"
+		}
+		de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
 		if deErr == nil {
 			defer deClose()
 			gate.OnDecision = de.emitDecision
