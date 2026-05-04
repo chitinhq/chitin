@@ -56,6 +56,53 @@ const TASK_QUEUE = 'chitin-worker-q';
 // ── Pure logic ──────────────────────────────────────────────────────
 
 /**
+ * Pure: decide which agents to dispatch for a PR, given running agents and options.
+ * Mirrors the per-PR agent dispatch logic in runIngesterTick.
+ */
+export function decideAgentDispatches(
+  pr: OpenPrSummary,
+  runningAgents: ReadonlySet<string>,
+  opts?: { commentResponderThreshold?: number }
+): {
+  dispatchPeerReviewer: boolean;
+  dispatchCommentResponder: boolean;
+  reasons: {
+    skip_peer_reviewer?: string;
+    skip_comment_responder?: string;
+  };
+} {
+  const peerWorkflowId = peerReviewerWorkflowIdForPr(pr.number);
+  const responderWorkflowId = commentResponderWorkflowIdForPr(pr.number);
+  const commentCount = pr.copilotCommentCount ?? 0;
+  const threshold = opts?.commentResponderThreshold ?? COMMENT_RESPONDER_THRESHOLD;
+  const reasons: { skip_peer_reviewer?: string; skip_comment_responder?: string } = {};
+
+  let dispatchPeerReviewer = true;
+  if (runningAgents.has(peerWorkflowId)) {
+    dispatchPeerReviewer = false;
+    reasons.skip_peer_reviewer = 'peer-reviewer already running';
+  }
+
+  let dispatchCommentResponder = false;
+  if (runningAgents.has(responderWorkflowId)) {
+    dispatchCommentResponder = false;
+    reasons.skip_comment_responder = 'comment-responder already running';
+  } else if (commentCount > threshold) {
+    dispatchCommentResponder = true;
+  } else {
+    dispatchCommentResponder = false;
+    reasons.skip_comment_responder = `comment count (${commentCount}) <= threshold (${threshold})`;
+  }
+
+  return {
+    dispatchPeerReviewer,
+    dispatchCommentResponder,
+    reasons,
+  };
+}
+
+
+/**
  * Stable parent_workflow_id for an ingester-spawned review-graph.
  * The review-graph workflow id derives from this as
  * `${parent_workflow_id}-review-graph` (matches review-graph-dispatch.ts).
@@ -490,11 +537,10 @@ export async function runIngesterTick(opts: {
   for (const decision of decisions) {
     if (decision.kind === 'skip') continue;
     const pr = decision.pr;
+    const agentDecision = decideAgentDispatches(pr, runningAgents);
 
-    // Peer-reviewer fires per-PR — independent second opinion. Skip
-    // if one is already running for this PR.
-    const peerWorkflowId = peerReviewerWorkflowIdForPr(pr.number);
-    if (!runningAgents.has(peerWorkflowId)) {
+    // Peer-reviewer
+    if (agentDecision.dispatchPeerReviewer) {
       if (opts.dryRun) {
         log(JSON.stringify({
           component: 'pr-event-ingester',
@@ -515,31 +561,14 @@ export async function runIngesterTick(opts: {
       }
     }
 
-    // Comment-responder fires when the PR has more than
-    // COMMENT_RESPONDER_THRESHOLD raw Copilot inline review
-    // comments. NOTE: the count is total inline comments returned
-    // by `/pulls/{n}/comments` — it does NOT distinguish resolved
-    // vs unresolved threads, so once a responder run completes the
-    // count remains above threshold and the next ingester tick
-    // will redispatch. That respawn is gated by the
-    // `runningAgents` check (one in flight blocks the next), but
-    // not by a "previously responded" check. Both gaps are
-    // tracked as backlog follow-ups
-    // (`pr-event-ingester-comment-count-is-unresolved` +
-    // `pr-event-ingester-dedup-against-completed-workflows`,
-    // PR #223).
-    // Same threshold as the §5 matrix's R1 escalation (>2
-    // comments) so the responder fires on roughly the same PRs
-    // that get an R1 reviewer.
-    const responderWorkflowId = commentResponderWorkflowIdForPr(pr.number);
-    const commentCount = pr.copilotCommentCount ?? 0;
-    if (commentCount > COMMENT_RESPONDER_THRESHOLD && !runningAgents.has(responderWorkflowId)) {
+    // Comment-responder
+    if (agentDecision.dispatchCommentResponder) {
       if (opts.dryRun) {
         log(JSON.stringify({
           component: 'pr-event-ingester',
           msg: 'would-enqueue-comment-responder',
           pr: pr.number,
-          comment_count: commentCount,
+          comment_count: pr.copilotCommentCount ?? 0,
         }));
         result.comment_responders_enqueued += 1;
       } else {
