@@ -8,7 +8,8 @@ print(
     "  python -m analysis.debt        # debt-ledger draft\n"
     "  python -m analysis.souls       # soul-routing decisions\n"
     "  python -m analysis.skill_mine  # workflow n-gram surface from chain telemetry\n"
-    "  python -m analysis.codex_mine  # codex session ingest + quota usage",
+    "  python -m analysis.codex_mine  # codex session ingest + quota usage\n"
+    "  python -m analysis.routing_elo  # ELO leaderboard per (role, task_class) — P4",
     file=sys.stderr,
 )
 sys.exit(2)
