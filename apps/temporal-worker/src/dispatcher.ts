@@ -59,33 +59,45 @@ const TMP_DIR = resolve(process.cwd(), 'tmp');
 // marker to allow re-dispatch.
 const STATE_DIR = resolve(homedir(), '.cache/chitin/swarm-state/dispatched');
 
-// Tier → driver routing. The cheapest reliable driver capable of the
-// work. local-qwen is architecturally the right T0 driver (free, on-
-// the-3090, mechanical) but qwen3-coder:30b on this rig was unstable
-// (ollama stream crashes mid-generation; agent misinterprets relative
-// paths as absolute; scope drift onto files outside the entry). T0
-// routed to copilot through 2026-05-02. As of 2026-05-03, T0 routes
-// to local-glm-flash (glm-4.7-flash:latest, hot on the 3090, 32K
-// context, 19 GB on disk). Operator can revert to copilot via env
-// override CHITIN_TIER_DRIVER_T0=copilot if local model regresses.
+// Tier → driver routing. Goal: every flat-rate / free account in
+// rotation, Anthropic Max plan reserved for actual escalation.
 //
-// 2026-05-02: T2 temporarily routed to copilot. The overnight 2026-05-02
-// run produced 4/4 bucket-B contaminated PRs on T2/T3 claude-code-
-// headless (and 1/5 successes total). Root cause: the worker's
-// writeWorktreeClaudeSettings overwrites the worktree's
-// .claude/settings.json, and the apply step's "tracked diff" heuristic
-// auto-commits + ships the modification as task work whenever the
-// agent declined to commit real edits. The apply-step revert in
-// apply-workflow-result.revertWorktreeSettingsArtifact closes the
-// auto-commit path; once it's been live for a swarm cycle and the
-// rate stays at 0, flip T2 (and T3) back to claude-code-headless.
-// See docs/observations/2026-05-02-bucket-b-after-action.md.
+// 2026-05-04 reshuffle, driven by measured Copilot Pro premium-request
+// multipliers + the realization that each subscription has its own
+// independent rate-limit budget. Spreading T1-T3 across them prevents
+// any single sub from blowing through its quota.
+//
+//   T0 → openclaw-glm-flash     3090, glm-4.7-flash (~30B), free unlimited
+//   T1 → openclaw-glm-flash     3090, same model — exercises the GPU on
+//                                bulk simple-write work; cascades to copilot
+//                                free-tier (gpt-5-mini, 0×) on failure
+//   T2 → copilot                Copilot Pro, model defaults to claude-haiku-4-5
+//                                (0.33× — bulk, ~900/mo budget)
+//   T3 → openclaw-glm-cloud     Ollama Cloud sub, glm-5.1:cloud (opus-light);
+//                                heavy reasoning that doesn't need Anthropic
+//   T4 → claude-code-headless   Anthropic Max, opus-4-7 — escalation only
+//
+// Operator can override per-tier via CHITIN_TIER_DRIVER_T<N> env at
+// runtime without a code change. The autonomous swarm picks up the
+// new mapping on next dispatcher tick.
+//
+// Pre-2026-05-04 mapping had T2 and T3 on claude-code-headless directly,
+// which made the swarm's bulk programmer tier dependent on the metered
+// Anthropic plan. The reshuffle moves bulk to Copilot's haiku-4-5 (cheap-
+// multiplier) and shifts the GPU-resident glm-flash from T0-only to
+// T0+T1 so the 3090 actually does work.
+//
+// Historical bucket-B fix (2026-05-02): T2 routed to copilot to sidestep
+// the writeWorktreeClaudeSettings auto-commit issue. apply-workflow-result
+// .revertWorktreeSettingsArtifact closed that path; T2 remains on copilot
+// for the cost-multiplier reasons above. See docs/observations/
+// 2026-05-02-bucket-b-after-action.md.
 const TIER_DRIVER_DEFAULTS: Record<Tier, DriverId> = {
-  T0: 'local-glm-flash',             // glm-4.7-flash:latest on the 3090 via ollama
-  T1: 'copilot',                     // Copilot GPT-4.1 free
-  T2: 'copilot',                     // (was claude-code-headless — see comment above)
-  T3: 'claude-code-headless',        // claude-sonnet-4-6
-  T4: 'claude-code-headless',        // claude-opus-4-7
+  T0: 'openclaw-glm-flash',          // 3090: glm-4.7-flash:latest (~30B)
+  T1: 'openclaw-glm-flash',          // 3090: same model — bulk simple write on the GPU
+  T2: 'copilot',                     // Copilot Pro: claude-haiku-4-5 (0.33×) — bulk programmer
+  T3: 'openclaw-glm-cloud',          // Ollama Cloud sub: glm-5.1:cloud (opus-light) — heavy reasoning
+  T4: 'claude-code-headless',        // Anthropic Max: claude-opus-4-7 — escalation only
 };
 
 // Operator can override per-tier driver routing via env:
@@ -115,7 +127,7 @@ const TIER_DRIVER: Record<Tier, DriverId> = (Object.keys(TIER_DRIVER_DEFAULTS) a
 //
 // Slice 7-tuning history:
 //   180s (slice 7) — too short, even healthy runs hit it
-//   480s (first tuning) — productive for copilot but local-qwen still
+//   480s (first tuning) — productive for copilot but the small 30B local still
 //                         couldn't finish stable runs
 //   1200s/1800s (this tuning) — give complex T2+ work real room. The
 //                         SIGKILL fix means stuck = killed-at-budget,

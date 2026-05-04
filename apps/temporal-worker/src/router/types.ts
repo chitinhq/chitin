@@ -91,7 +91,7 @@ export interface RouterPolicy {
       | 'kernel_denied'
     >;
     chain: { max_depth: number; tier_steps: string[] };
-    /** Model id (e.g., 'claude-code-headless', 'gemini-cli', 'local-glm-flash'). */
+    /** Model id (e.g., 'claude-code-headless', 'gemini-cli', 'openclaw-glm-flash'). */
     model: string;
   };
 }

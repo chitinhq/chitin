@@ -73,11 +73,19 @@ function envOrDefault(name: string, fallback: string | null): string | null {
 
 // Default tier→driver mapping (constant; no env reads, safe to
 // evaluate at module load in the workflow isolate).
+//
+// 2026-05-04 reshuffle, driven by Copilot Pro premium-request multipliers:
+//   R1: gpt-5-mini    (0× free, was gpt-4.1 also free; gpt-5-mini is newer)
+//   R2: haiku-4-5     (0.33× — was sonnet-4.6 at 1×; haiku is the bulk-reviewer
+//                       capability tier and 3× cheaper per dispatch)
+//   R3: opus-4-7      (Anthropic Max plan, unchanged — escalation only)
+//
+// Operator can override per-tier with CHITIN_REVIEWER_R<N>_{DRIVER,MODEL}.
 const REVIEW_TIER_DRIVER_DEFAULTS: Record<ReviewTier, { driver: string | null; model: string | null }> = {
   R0: { driver: null, model: null },                                          // GH bot, not dispatched
-  R1: { driver: 'copilot', model: 'gpt-4.1' },
-  R2: { driver: 'copilot', model: 'claude-sonnet-4.6' },
-  R3: { driver: 'claude-code-headless', model: 'claude-opus-4-7' },
+  R1: { driver: 'copilot', model: 'gpt-5-mini' },                             // 0× free
+  R2: { driver: 'copilot', model: 'claude-haiku-4-5' },                       // 0.33× — bulk reviewer
+  R3: { driver: 'claude-code-headless', model: 'claude-opus-4-7' },           // metered, escalation
   R4: { driver: null, model: null },                                          // operator, not dispatched
 };
 

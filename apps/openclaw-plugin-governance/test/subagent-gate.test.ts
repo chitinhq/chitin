@@ -20,9 +20,9 @@ describe('isClaudeCodeAgent (ToS denylist)', () => {
 
   it.each([
     'copilot',
-    'local-qwen',
-    'local-glm',
-    'local-deepseek',
+    'openclaw-glm-flash',
+    'openclaw-glm-cloud',
+    'openclaw-deepseek',
     'main',
     'qwen-agent',
     'claudia', // partial substring of "claude" only — must not match
