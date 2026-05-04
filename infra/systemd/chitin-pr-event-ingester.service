@@ -16,4 +16,10 @@ EnvironmentFile=-%h/.config/systemd/user/chitin.env
 ExecStart=/usr/bin/env pnpm exec tsx apps/temporal-worker/src/pr-event-ingester.ts
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=60
+# Up to 1000 open PRs per tick × multiple gh + Temporal calls each.
+# Network slowness on a busy GH day can push the tick past 60s and
+# systemd-kill a healthy in-flight ingest, leaving the swarm
+# starved until the next tick. 5 min is roomy enough that a healthy
+# tick never trips it; runaway behaviour gets caught at the
+# OnUnitActiveSec=5min boundary instead.
+TimeoutStartSec=300
