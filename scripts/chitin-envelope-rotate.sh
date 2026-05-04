@@ -25,10 +25,26 @@
 # operator activity doesn't trip them, low enough that runaway
 # spend gets caught fast." Operator can override via env vars.
 
-set -euo pipefail
+set -uo pipefail
+# NOTE: deliberately NO `-e`. Bash's `set -e` + `pipefail` causes
+# `x=$(failing-cmd | tail -1)` to abort the script silently when
+# `failing-cmd` exits non-zero — `tail` succeeds on empty input, but
+# pipefail surfaces the leftmost failure to the assignment, which
+# `set -e` then treats as fatal. The earlier shape made the
+# `emit fail envelope-create-failed; exit 3` branch dead code: a
+# kernel error produced exit=1 with NO log entry. Explicit error
+# checking via captured exit codes is more honest here.
 
-CHITIN_DIR="${CHITIN_DIR:-$HOME/.chitin}"
-CURRENT_ENVELOPE_FILE="$CHITIN_DIR/current-envelope"
+# Resolve chitin's state dir the same way the kernel does:
+#   1. CHITIN_HOME env (kernel's `chitinDir()` honors this)
+#   2. CHITIN_DIR env (rotator-only convention; defers to CHITIN_HOME
+#      when both set)
+#   3. $HOME/.chitin (default)
+# If only CHITIN_DIR was honored and chitin.env sets CHITIN_HOME=/x,
+# the rotator updates /home/<user>/.chitin/current-envelope but the
+# kernel reads /x/current-envelope — rotation silently no-ops.
+CHITIN_HOME="${CHITIN_HOME:-${CHITIN_DIR:-$HOME/.chitin}}"
+CURRENT_ENVELOPE_FILE="$CHITIN_HOME/current-envelope"
 
 # Default caps. Override via env vars if the operator wants
 # tighter or looser limits per-rotation.
@@ -37,7 +53,7 @@ ENV_BYTES="${CHITIN_ENVELOPE_BYTES:-33554432}"   # 32 MB
 ENV_USD="${CHITIN_ENVELOPE_USD:-2.0}"
 
 LOG="${CHITIN_ENVELOPE_ROTATE_LOG:-$HOME/.cache/chitin/envelope-rotate.jsonl}"
-mkdir -p "$(dirname "$LOG")" "$CHITIN_DIR"
+mkdir -p "$(dirname "$LOG")" "$CHITIN_HOME"
 
 emit() {
   local kind="$1" msg="$2"
@@ -54,8 +70,14 @@ emit() {
     | tee -a "$LOG" >&2
 }
 
+# Hard-fail on missing prerequisites — without these the rotator
+# silently passes through and rotation effectively never happens.
 if ! command -v chitin-kernel >/dev/null; then
   emit fail kernel-binary-missing
+  exit 2
+fi
+if ! command -v jq >/dev/null; then
+  emit fail jq-missing "rotator depends on jq for envelope state introspection"
   exit 2
 fi
 
@@ -65,16 +87,26 @@ if [[ -f "$CURRENT_ENVELOPE_FILE" ]]; then
   current_id=$(tr -d '[:space:]' < "$CURRENT_ENVELOPE_FILE")
 fi
 
-# Check whether the current envelope is still open. We grep
-# `chitin-kernel envelope list` (returns one line of JSON);
-# the envelope is open iff its closed_at is null.
+# Check whether the current envelope is still open. Use --limit=0
+# (no limit) so the lookup doesn't drop the current envelope out
+# of the response after enough rotation history accumulates —
+# `envelope list` defaults to 20, so without --limit=0 this check
+# would silently false-fail after ~20 rotations and trigger a
+# fresh create every tick (spend leak that compounds).
 needs_rotation=1
+list_failed=0
 if [[ -n "$current_id" ]]; then
-  if chitin-kernel envelope list 2>/dev/null \
-    | jq -e --arg id "$current_id" '
-        .[] | select(.id == $id) | (.closed_at == null)
-      ' >/dev/null 2>&1; then
-    needs_rotation=0
+  list_out=$(chitin-kernel envelope list --limit=0 2>&1)
+  list_rc=$?
+  if [[ "$list_rc" -ne 0 ]]; then
+    emit warn envelope-list-failed "rc=$list_rc tail=$(echo "$list_out" | tail -c 300 | tr '\n' ' ')"
+    list_failed=1
+  else
+    if echo "$list_out" | jq -e --arg id "$current_id" '
+          .[] | select(.id == $id) | (.closed_at == null)
+        ' >/dev/null 2>&1; then
+      needs_rotation=0
+    fi
   fi
 fi
 
@@ -83,14 +115,26 @@ if [[ "$needs_rotation" -eq 0 ]]; then
   exit 0
 fi
 
-# Rotate: create a fresh envelope, update the pointer.
-new_id=$(chitin-kernel envelope create \
+# Don't create a new envelope if we couldn't introspect — the
+# existing pointer might still be fine; we just couldn't verify.
+# Better to wait for the next tick than to leak spend.
+if [[ "$list_failed" -eq 1 ]]; then
+  emit skip "envelope list failed; preserving existing pointer to avoid spend leak"
+  exit 0
+fi
+
+# Rotate: create a fresh envelope, update the pointer. Capture
+# exit code explicitly so a kernel failure produces a real fail
+# emit (not silent script abort under set -e).
+create_out=$(chitin-kernel envelope create \
   --calls="$ENV_CALLS" \
   --bytes="$ENV_BYTES" \
-  --usd="$ENV_USD" 2>&1 | tail -1 | tr -d '[:space:]')
+  --usd="$ENV_USD" 2>&1)
+create_rc=$?
+new_id=$(echo "$create_out" | tail -1 | tr -d '[:space:]')
 
-if [[ -z "$new_id" ]] || ! [[ "$new_id" =~ ^[A-Z0-9]+$ ]]; then
-  emit fail envelope-create-failed "raw_output=$new_id"
+if [[ "$create_rc" -ne 0 ]] || [[ -z "$new_id" ]] || ! [[ "$new_id" =~ ^[A-Z0-9]+$ ]]; then
+  emit fail envelope-create-failed "rc=$create_rc raw_output=$(echo "$create_out" | tail -c 300 | tr '\n' ' ')"
   exit 3
 fi
 
