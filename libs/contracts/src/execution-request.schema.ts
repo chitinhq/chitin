@@ -66,6 +66,12 @@ export const RoleSchema = z.enum([
 export const DriverIdSchema = z.enum([
   'copilot',
   'claude-code-headless',
+  // `codex` = OpenAI Codex CLI (codex exec --json). Used as an
+  // alternative reviewer in REVIEW_TIER_DRIVER — gives the
+  // review-graph a non-Anthropic reasoning lens. No PreToolUse
+  // hook; governance is post-hoc via codex_mine ingest + the
+  // chitin-budget usage feed (5h/1w rate-limit visibility).
+  'codex',
   'local-qwen',
   // `local-glm` historically routed to glm-5.1:cloud for reasoning
   // delegation; kept for that role. `local-glm-flash` is the local

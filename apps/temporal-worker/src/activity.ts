@@ -133,6 +133,33 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
         args,
       };
     }
+    case 'codex': {
+      // OpenAI Codex CLI in non-interactive mode. Real-time
+      // governance is wired via codex's PreToolUse hook (codex
+      // 0.128.0+ — verified 2026-05-04, see project memory
+      // `Codex DOES have PreToolUse hooks`). The hook is
+      // installed via scripts/install-codex-hook.sh, which writes
+      // a [[hooks.PreToolUse]] block into ~/.codex/config.toml
+      // pointing at chitin-router-hook --agent=codex. codex_mine
+      // remains useful for retrospective audits + the universal
+      // usage feed.
+      //
+      // --json emits structured event lines so downstream can
+      // parse tool calls + completions. cwd is the spawn cwd
+      // (set by runAgentTurn from req.base_ref's worktree path);
+      // we deliberately DO NOT pass --cd here because req.repo is
+      // a slug ("chitinhq/chitin"), not a filesystem path —
+      // passing it would fail. -m sets model; ChatGPT Plus
+      // default is gpt-5.4.
+      const args = ['exec', '--json', '--skip-git-repo-check'];
+      const model = (process.env.CHITIN_MODEL_CODEX ?? '').trim();
+      if (model) args.push('-m', model);
+      args.push(req.prompt);
+      return {
+        command: 'codex',
+        args,
+      };
+    }
     case 'local-qwen':
     case 'local-glm':
     case 'local-glm-flash':
