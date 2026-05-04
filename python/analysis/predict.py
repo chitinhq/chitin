@@ -12,12 +12,12 @@ expanded to ~30 stdlib lines; readability stays.
 
 Public API:
     extract_features(decisions) -> X, y, vocab
-    train(X, y, ...) -> Model
-    predict(model, vocab, action_type, agent, hour) -> float
+    train(X, y, vocab, ...) -> Model         # vocab is a positional
+    predict(model, action_type, agent, hour) -> float
 
 CLI:
-    python -m analysis predict \\
-        --decisions-dir=$HOME/.chitin/decisions \\
+    python -m analysis.predict train --decisions-dir=$HOME/.chitin
+    python -m analysis.predict predict \\
         --action-type=shell.exec --agent=claude-code --hour=14
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ import json
 import math
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -253,8 +253,11 @@ def from_dict(d: dict) -> Model:
 def _cli_train(args: argparse.Namespace) -> int:
     decisions_dir = Path(args.decisions_dir).expanduser()
     now = datetime.now(timezone.utc)
+    # 1-year lookback. timedelta(days=365) handles Feb 29 cleanly;
+    # now.replace(year=now.year - 1) crashes on leap day because
+    # the prior year has no Feb 29.
     window = Window(
-        since=now.replace(year=now.year - 1),  # 1y window — predictor wants depth
+        since=now - timedelta(days=365),
         until=now,
     )
     result = load_gov_decisions(decisions_dir, window)
@@ -306,7 +309,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pt = sub.add_parser("train", help="train + persist a model from gov-decisions JSONL")
-    pt.add_argument("--decisions-dir", default="~/.chitin/decisions")
+    # gov-decisions-*.jsonl files live at the top of ~/.chitin (alongside
+    # events-*.jsonl), not in a sub-directory. The default below matches
+    # the kernel's actual layout.
+    pt.add_argument("--decisions-dir", default="~/.chitin")
     pt.add_argument("--out", default="~/.chitin/predict-model.json")
     pt.add_argument("--iterations", type=int, default=200)
     pt.add_argument("--lr", type=float, default=0.05)
@@ -317,7 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--model", default="~/.chitin/predict-model.json")
     pp.add_argument("--action-type", required=True)
     pp.add_argument("--agent", default="")
-    pp.add_argument("--hour", type=int, default=datetime.now().hour)
+    # Use UTC for the default hour: training timestamps come from the
+    # kernel in UTC, so a local-time default (datetime.now().hour) on
+    # a non-UTC host would bucket the same action into a different
+    # time-of-day feature than the model was trained on.
+    pp.add_argument("--hour", type=int, default=datetime.now(timezone.utc).hour)
     pp.set_defaults(func=_cli_predict)
 
     args = p.parse_args(argv)

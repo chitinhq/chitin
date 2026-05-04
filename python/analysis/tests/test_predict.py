@@ -1,6 +1,7 @@
 """Tests for analysis.predict — stdlib logistic regression."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -116,6 +117,55 @@ def test_persistence_roundtrip_preserves_predictions() -> None:
     p_orig = predict(model, "rm.recursive", "a", 12)
     p_rest = predict(restored, "rm.recursive", "a", 12)
     assert abs(p_orig - p_rest) < 1e-9
+
+
+# ──────────────────────────────────────────────────────────────────
+# CLI end-to-end
+# ──────────────────────────────────────────────────────────────────
+
+def test_cli_train_then_predict_roundtrip(tmp_path) -> None:
+    """End-to-end: spawn the CLI to train against synthetic
+    gov-decisions JSONL, then spawn it again to predict. Catches
+    regressions like the wrong-default-decisions-path bug Copilot
+    surfaced on PR #256."""
+    import subprocess
+    import sys
+
+    decisions_dir = tmp_path / "chitin"
+    decisions_dir.mkdir()
+    fixture = decisions_dir / "gov-decisions-2026-05-03.jsonl"
+    rows = []
+    for i in range(40):
+        ok = "true" if i % 4 != 0 else "false"
+        rows.append(
+            f'{{"ts":"2026-05-03T10:{i:02d}:00Z","allowed":{ok},'
+            f'"action_type":"shell.exec","agent":"claude-code"}}'
+        )
+    fixture.write_text("\n".join(rows) + "\n")
+
+    model_path = tmp_path / "model.json"
+    train_proc = subprocess.run(
+        [sys.executable, "-m", "analysis.predict", "train",
+         f"--decisions-dir={decisions_dir}",
+         f"--out={model_path}",
+         "--iterations=50"],
+        capture_output=True, text=True,
+    )
+    assert train_proc.returncode == 0, f"train failed: {train_proc.stderr}"
+    assert model_path.exists()
+
+    predict_proc = subprocess.run(
+        [sys.executable, "-m", "analysis.predict", "predict",
+         f"--model={model_path}",
+         "--action-type=shell.exec",
+         "--agent=claude-code",
+         "--hour=10"],
+        capture_output=True, text=True,
+    )
+    assert predict_proc.returncode == 0, f"predict failed: {predict_proc.stderr}"
+    out = json.loads(predict_proc.stdout)
+    assert "predicted_deny_probability" in out
+    assert 0.0 <= out["predicted_deny_probability"] <= 1.0
 
 
 def test_base_rate_recorded() -> None:
