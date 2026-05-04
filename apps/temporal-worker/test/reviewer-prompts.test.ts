@@ -47,8 +47,20 @@ describe('ReviewerFindingSchema', () => {
     expect(() => ReviewerFindingSchema.parse(bad)).toThrow();
   });
 
-  it('rejects an unknown category', () => {
-    const bad = { severity: '🔴', file: 'x.ts', category: 'security', summary: 's' };
+  it('accepts off-canonical category strings (was: rejects "security")', () => {
+    // Updated 2026-05-04: schema was z.enum but agents in practice
+    // invent reasonable categories like "infra"/"security"/"perf"
+    // and rejecting them cascaded the entire review to parse-fail
+    // (PR #277 R3 produced a real findings payload with
+    // category:"infra" and the gatekeeper showed parse-fail because
+    // schema validation threw). Accept any non-empty string;
+    // downstream tooling normalizes.
+    const ok = { severity: '🔴', file: 'x.ts', category: 'security', summary: 's' };
+    expect(() => ReviewerFindingSchema.parse(ok)).not.toThrow();
+  });
+
+  it('rejects empty category string', () => {
+    const bad = { severity: '🔴', file: 'x.ts', category: '', summary: 's' };
     expect(() => ReviewerFindingSchema.parse(bad)).toThrow();
   });
 
@@ -150,6 +162,54 @@ describe('parseReviewerOutput', () => {
     if (r.ok) {
       expect(r.output.findings[0].line).toBe(372);
       expect(r.output.findings[0].suggested_fix).toBe('reorder');
+    }
+  });
+
+
+  it('parses the marker when embedded inside Claude Code stream-json (escaped quotes)', () => {
+    // Real-world tail captured from PR #275 R3 reviewer 2026-05-04.
+    // Claude Code's --output-format stream-json wraps the agent's
+    // text in JSON-encoded fields; the marker shows up with escaped
+    // backslashes inside the wrapper. Pre-fix: parseReviewerOutput
+    // saw the escaped form, JSON.parse threw, every reviewer tier
+    // parse-failed → review chain cascaded to operator. Pin so this
+    // doesn't regress.
+    const streamJsonTail =
+      'some preamble\n' +
+      '{"type":"assistant","message":{"content":[{"type":"text",' +
+      '"text":"clean diff.\\n\\n<<<REVIEW>>>{\\"decision\\":\\"approve\\",\\"confidence\\":\\"high\\",\\"findings\\":[]}"}]}}\n' +
+      '{"type":"result","subtype":"success","result":"... <<<REVIEW>>>{\\"decision\\":\\"approve\\",\\"confidence\\":\\"high\\",\\"findings\\":[]}"}\n';
+    const r = parseReviewerOutput(streamJsonTail);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.output.decision).toBe('approve');
+      expect(r.output.confidence).toBe('high');
+      expect(r.output.findings).toEqual([]);
+    }
+  });
+
+  it('parses the marker when emitted raw (agent printed directly to stdout)', () => {
+    // Plain-text driver path (codex / openclaw / older claude)
+    // emits the marker line without the stream-json wrapper.
+    const rawTail =
+      'reviewing the diff... ok approving.\n' +
+      '<<<REVIEW>>>{"decision":"approve","confidence":"high","findings":[]}\n';
+    const r = parseReviewerOutput(rawTail);
+    expect(r.ok).toBe(true);
+  });
+
+  it('prefers the LATEST valid emit when multiple markers appear (e.g., agent self-corrected)', () => {
+    const tail =
+      '<<<REVIEW>>>{"decision":"approve","confidence":"low","findings":[]}\n' +
+      'on reflection, this is bigger than I thought\n' +
+      '<<<REVIEW>>>{"decision":"request_changes","confidence":"high","findings":[' +
+      '{"severity":"🔴","file":"x","category":"bug","summary":"y"}]}\n';
+    const r = parseReviewerOutput(tail);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.output.decision).toBe('request_changes');
+      expect(r.output.confidence).toBe('high');
+      expect(r.output.findings).toHaveLength(1);
     }
   });
 });

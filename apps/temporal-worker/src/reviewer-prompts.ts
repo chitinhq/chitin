@@ -57,7 +57,14 @@ export const ReviewerFindingSchema: z.ZodType<ReviewerFinding> = z.object({
   severity: z.enum(['🔴', '🟡', '🟢']),
   file: z.string().min(1),
   line: z.number().int().positive().optional(),
-  category: z.enum(['bug', 'test_gap', 'design', 'doc']),
+  // Canonical set: bug/test_gap/design/doc/infra/security/perf.
+  // Accept any non-empty string — agents reasonably invent
+  // categories ("infra", "ops") and rejecting them at the schema
+  // level loses the actual finding payload (the gatekeeper digest
+  // shows tier-log "parse-fail" but the marker WAS emitted; only
+  // the category was off-enum). Downstream consumers should
+  // normalize.
+  category: z.string().min(1),
   summary: z.string().min(1),
   suggested_fix: z.string().optional(),
 });
@@ -199,38 +206,185 @@ export function parseReviewerOutput(
     return { ok: false, error: 'no <<<REVIEW>>> marker in stdout' };
   }
   const after = stdoutTail.slice(lastMarker + REVIEW_MARKER.length);
-  // Take everything up to the first newline (the contract is "one
-  // line"). This shields against trailing noise the agent might
-  // emit despite instructions.
-  const lineEnd = after.indexOf('\n');
-  const candidate = (lineEnd >= 0 ? after.slice(0, lineEnd) : after).trim();
-  if (!candidate.startsWith('{')) {
-    return { ok: false, error: `expected JSON object after marker, got: ${truncate(candidate, 200)}` };
+
+  // Two valid forms appear in the wild:
+  //
+  //   raw:        `{"decision":"approve",...}`
+  //   stream-json embedded: `{\"decision\":\"approve\",...}`
+  //
+  // The second arises because Claude Code's --output-format stream-json
+  // wraps the agent's text in JSON-encoded "text" fields and a final
+  // "result" field — both contain the marker line embedded as a
+  // string. So the same `<<<REVIEW>>>{...}` may appear two or three
+  // times in stdout, with different escaping.
+  //
+  // Strategy: walk all occurrences of the marker (newest first via
+  // splitting on the marker) and attempt to parse each candidate as
+  // either raw JSON or JSON-after-unescape. First well-formed +
+  // schema-valid wins.
+  const candidates: string[] = collectCandidates(stdoutTail);
+  if (candidates.length === 0) {
+    return { ok: false, error: `expected JSON object after marker, got: ${truncate(after, 200)}` };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate);
-  } catch (err) {
-    // Include the candidate slice so debugging doesn't require
-    // re-fetching the raw stdout. Truncated to keep error messages
-    // readable in logs (full slice is in stdout_tail anyway).
-    return {
-      ok: false,
-      error:
-        `JSON.parse failed: ${err instanceof Error ? err.message : String(err)} ` +
-        `(candidate: ${truncate(candidate, 200)})`,
-    };
+  let lastParseError = '';
+  for (const cand of candidates) {
+    const tryShapes: string[] = [cand];
+    // Escaped form: candidate contains `\"` or `\\`. JSON-string-decode
+    // by wrapping in quotes and using JSON.parse — that's the standard
+    // way to unescape one level of JSON encoding.
+    if (cand.includes('\\"') || cand.includes('\\\\')) {
+      try {
+        // Wrap the candidate as a JSON string literal then parse to
+        // unescape it. Need to make sure unescaped quotes inside don't
+        // break the wrap — but since the candidate is the escaped form,
+        // any `"` inside should have come from `\"` already (after the
+        // round-trip the inner `"` chars are valid JSON syntax of the
+        // decoded object).
+        const wrapped = `"${cand.replace(/(?<!\\)"/g, '\\"')}"`;
+        const unescaped = JSON.parse(wrapped);
+        if (typeof unescaped === 'string') tryShapes.push(unescaped);
+      } catch {
+        // unescape failed; fall through to direct parse attempt
+      }
+    }
+    for (const shape of tryShapes) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(shape);
+      } catch (err) {
+        lastParseError = `JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (candidate: ${truncate(shape, 200)})`;
+        continue;
+      }
+      const result = ReviewerOutputSchema.safeParse(parsed);
+      if (result.success) {
+        return { ok: true, output: result.data };
+      }
+      lastParseError = `schema validation: ${result.error.message} (candidate: ${truncate(shape, 200)})`;
+    }
   }
+  return { ok: false, error: lastParseError || 'no parseable candidate after any <<<REVIEW>>> marker' };
+}
 
-  const result = ReviewerOutputSchema.safeParse(parsed);
-  if (!result.success) {
-    return {
-      ok: false,
-      error: `schema validation: ${result.error.message} (candidate: ${truncate(candidate, 200)})`,
-    };
+// Walk every occurrence of REVIEW_MARKER in stdout. Two cases:
+//
+//   raw      `<<<REVIEW>>>{"decision":"approve",...}`   (agent printed directly)
+//   escaped  `<<<REVIEW>>>{\"decision\":\"approve\",...}` (marker appears inside
+//                                                          a stream-json
+//                                                          "text" or "result"
+//                                                          field; quotes
+//                                                          backslash-escaped)
+//
+// For each occurrence, derive a candidate JSON string by:
+//   raw     → walk a brace-balanced object from the next `{`
+//   escaped → walk an "escaped-brace-balanced" object treating `\"` as
+//             one logical char, `\{` as the opening, `\}` as the closing
+//
+// Returned newest-first.
+function collectCandidates(stdout: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  while (true) {
+    const idx = stdout.indexOf(REVIEW_MARKER, from);
+    if (idx < 0) break;
+    const start = idx + REVIEW_MARKER.length;
+    const raw = sliceRawObject(stdout, start);
+    if (raw) out.push(raw);
+    const esc = sliceEscapedObject(stdout, start);
+    if (esc && esc !== raw) out.push(esc);
+    from = start + 1;
   }
-  return { ok: true, output: result.data };
+  return out.reverse();
+}
+
+// Walk from `from` until a `{`, then balanced JSON-aware to the
+// matching `}`. For RAW (unescaped) JSON.
+function sliceRawObject(src: string, from: number): string | null {
+  // Skip whitespace.
+  let i = from;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  if (src[i] !== '{') return null;
+
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let j = i; j < src.length; j += 1) {
+    const c = src[j];
+    if (inStr) {
+      if (escaped) { escaped = false; continue; }
+      if (c === '\\') { escaped = true; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(i, j + 1);
+    }
+  }
+  return null;
+}
+
+// Walk from `from` until a `\\{` or `{`, then JSON-string-decode
+// the slice. The "escaped" form has every `"` written as `\"` and
+// every `\` as `\\`; we capture up to the closing `\}` and decode.
+function sliceEscapedObject(src: string, from: number): string | null {
+  // Skip whitespace.
+  let i = from;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  // Skip a leading `\` if escape-form; tolerate either `{` or `\{`.
+  let openIdx: number;
+  if (src.slice(i, i + 2) === '\\{') openIdx = i;
+  else if (src[i] === '{') openIdx = i;
+  else return null;
+
+  // Walk forward respecting `\\"` as one logical (escaped) `"` and
+  // `\\\\` as one logical `\`. depth bumps on `{` or `\\{` (treat as
+  // open), drops on `}` or `\\}`. Stop at depth 0.
+  //
+  // The ESCAPED level is tricky because the same `{` might be raw
+  // (depth bump) OR `\{` (still depth bump, but consume two chars).
+  // We treat `\{` and `{` identically for nesting count.
+  let depth = 0;
+  let j = openIdx;
+  let inStr = false;
+  while (j < src.length) {
+    // Look for two-char escape sequences first.
+    if (src[j] === '\\' && j + 1 < src.length) {
+      const next = src[j + 1];
+      if (next === '"') {
+        // `\"` flips inStr (this is the escaped `"` representing the
+        // start/end of a JSON string in the encoded form).
+        inStr = !inStr;
+        j += 2;
+        continue;
+      }
+      if (next === '\\') { j += 2; continue; }
+      if (!inStr && next === '{') { depth += 1; j += 2; continue; }
+      if (!inStr && next === '}') {
+        depth -= 1;
+        if (depth === 0) return src.slice(openIdx, j + 2);
+        j += 2;
+        continue;
+      }
+      // Other `\X` — pass through.
+      j += 2;
+      continue;
+    }
+    const c = src[j];
+    if (!inStr && c === '{') depth += 1;
+    else if (!inStr && c === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(openIdx, j + 1);
+    } else if (!inStr && c === '"') {
+      inStr = true;
+    } else if (inStr && c === '"') {
+      inStr = false;
+    }
+    j += 1;
+  }
+  return null;
 }
 
 function truncate(s: string, max: number): string {
