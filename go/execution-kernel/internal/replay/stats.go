@@ -2,6 +2,7 @@ package replay
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,19 +27,54 @@ type BucketStats struct {
 	SuccessRate float64 `json:"success_rate"`
 }
 
+// SupportedAxes is the closed set of axis labels accepted by
+// ComputeStats. Exposed so the CLI can validate `--by=...` up
+// front and produce a useful error instead of silently returning
+// an empty bucket map.
+var SupportedAxes = []string{"tool_name", "action_type", "rule_id", "decision", "agent"}
+
+// IsSupportedAxis reports whether a is a known axis label.
+func IsSupportedAxis(a string) bool {
+	for _, s := range SupportedAxes {
+		if s == a {
+			return true
+		}
+	}
+	return false
+}
+
 // ComputeStats reads all chain JSONL files in ~/.chitin/ and
-// aggregates decisions by axis. Axis can be:
+// aggregates decisions by axis. Axis must be one of SupportedAxes;
+// an unknown axis returns an explicit error rather than silently
+// returning empty results (which would mask CLI typos).
+//
+// Axis labels:
 //   - tool_name      (which Claude Code tool)
 //   - action_type    (which gov action)
 //   - rule_id        (which policy rule)
 //   - decision       (allow/deny — pivot for sanity-check)
 //   - agent          (agent_instance_id)
 func ComputeStats(axis string) (*Stats, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+	return ComputeStatsIn(axis, "")
+}
+
+// ComputeStatsIn is ComputeStats with an explicit chain dir. Empty
+// chitinDir resolves to ~/.chitin (the default). The override
+// path exists for tests + advanced operator scenarios; production
+// CLI use should call ComputeStats.
+func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
+	if !IsSupportedAxis(axis) {
+		return nil, fmt.Errorf("unsupported axis %q (want one of: %s)",
+			axis, strings.Join(SupportedAxes, ", "))
 	}
-	pattern := filepath.Join(home, ".chitin", "events-*.jsonl")
+	if chitinDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		chitinDir = filepath.Join(home, ".chitin")
+	}
+	pattern := filepath.Join(chitinDir, "events-*.jsonl")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
@@ -48,6 +84,12 @@ func ComputeStats(axis string) (*Stats, error) {
 		Buckets: make(map[string]BucketStats),
 	}
 	for _, p := range matches {
+		// Note: we read the whole file and split on newlines for
+		// simplicity. For typical chain logs this is well under 5MB
+		// per file. Streaming via bufio.Scanner would help if a
+		// long-running install accumulates >100MB per session,
+		// which is not the current regime — measure before
+		// switching.
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -116,14 +158,22 @@ func extractAxis(ev, payload map[string]interface{}, axis string) string {
 }
 
 // SortedBucketKeys returns bucket keys sorted by decision count
-// descending (most-frequent first).
+// descending (most-frequent first), with bucket-name lexicographic
+// as the tie-breaker. The named tie-breaker matters because two
+// runs over the same data must produce identical CLI output —
+// without it, ties resolve via Go map iteration order, which is
+// randomized.
 func (s *Stats) SortedBucketKeys() []string {
 	keys := make([]string, 0, len(s.Buckets))
 	for k := range s.Buckets {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		return s.Buckets[keys[i]].Decisions > s.Buckets[keys[j]].Decisions
+		bi, bj := s.Buckets[keys[i]], s.Buckets[keys[j]]
+		if bi.Decisions != bj.Decisions {
+			return bi.Decisions > bj.Decisions
+		}
+		return keys[i] < keys[j]
 	})
 	return keys
 }

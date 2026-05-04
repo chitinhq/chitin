@@ -182,7 +182,9 @@ Default: tool_name.`)
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(stats)
+		if err := enc.Encode(stats); err != nil {
+			exitErr("chain_stats_json", err.Error())
+		}
 		return
 	}
 	fmt.Printf("chitin chain stats — by %s\n", axis)
