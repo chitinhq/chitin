@@ -4986,6 +4986,128 @@ matrix becomes its own scope-down entry as it ships.
 - [ ] Each matrix row reaches "✓" status (or operator decision: "won't ship — explain why")
 - [ ] tier-router-by-data primitive proven against 30+ days of chain telemetry
 - [ ] End-to-end smoke: a swarm dispatch starts at T0, escalates through router heuristics + advisor consultation, reaches successful completion (or operator-takeover) without any operator manual intervention
+
+## Cohort: gemini + codex governance follow-ups (filed 2026-05-04)
+
+Filed after PRs #267 (gemini-cli governance), #268 (codex_mine), #269 (universal usage schema), #270 (codex reviewer driver). These five are the deferred items called out in those PR descriptions.
+
+### `gemini-usage-feed-producer`
+
+```yaml
+id: gemini-usage-feed-producer
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: apps/temporal-worker/src/activity.ts, python/analysis/gemini_mine.py (new)
+role: programmer
+```
+
+Gemini doesn't expose quota the way codex does (no `rate_limits` in its session JSONL today). Need to scrape gemini's stderr for rate-limit signatures (`429`, `quota exceeded`, `daily limit reached`) and project them into the universal usage-feed schema at `~/.cache/chitin/usage/gemini.json`. Schema in `docs/runbooks/usage-feeds.md`; producer interface mirrors `analysis.codex_mine.usage_to_feed`.
+
+Activity-layer integration: when an activity spawns gemini, pipe stderr through a scraper that detects rate-limit lines and writes a transient warning. A periodic timer aggregates the warnings into the feed file, same shape as the codex feed.
+
+**Acceptance:**
+- [ ] `~/.cache/chitin/usage/gemini.json` exists after a gemini run that exercises tools
+- [ ] `chitin-budget --check` exits 1 if a rate-limit was seen in the last hour
+- [ ] Live-tested against a real gemini session (with intentional throttle if possible)
+
+### `ollama-cloud-usage-capture`
+
+```yaml
+id: ollama-cloud-usage-capture
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: []
+file: apps/temporal-worker/src/activity.ts, libs/adapters/openclaw/ (existing)
+role: programmer
+```
+
+Ollama Cloud surfaces quota via response headers (`X-RateLimit-Remaining`, `X-RateLimit-Reset`, etc) on every API call. Capture those at the activity layer (or in the openclaw plugin if openclaw's the dispatch path) and emit a `~/.cache/chitin/usage/ollama-cloud.json` feed with `axis: rpm_tpm`.
+
+Why this matters: ollama-cloud is the local-tier fallback when 3090 is busy or off; without quota visibility, dispatching to ollama-cloud right after hitting the 5h codex window is a pattern that'll silently degrade. Universal usage feed surfaces both.
+
+**Acceptance:**
+- [ ] Feed file populated after a 3090-fallback dispatch
+- [ ] `chitin-budget` renders an ollama-cloud row with `rpm` + `tpm` percentages
+- [ ] Stale-feed detection in chitin-status (warn if `last_observed > 30min`)
+
+### `codex-via-openclaw-collapse`
+
+Upstream dependency: openclaw codex provider support. Status flips to `ready` when openclaw releases it. Tracked here as `blocked` because there's no parent entry inside chitin to express the dependency from (the parser's `blocks:` field reads from the BLOCKER's frame, but the blocker is external).
+
+```yaml
+id: codex-via-openclaw-collapse
+tier: T2
+status: blocked
+estimated_loc: 100
+blocks: []
+file: apps/temporal-worker/src/activity.ts (planInvocation case), libs/contracts/src/execution-request.schema.ts (no change)
+role: programmer
+```
+
+PR #270 ships `codex` as a direct-exec driver. Today's openclaw (2026.4.25) has providers `{ollama, ollama-cloud}` only — no codex provider. Sam Altman publicly stated codex CLI auth can power openclaw (i.e., openclaw drives `codex exec` per turn under the operator's ChatGPT Plus credentials, no OpenAI API key needed). When openclaw ships that, the codex case in `activity.ts::planInvocation` collapses into the local-* / openclaw branch — same chitin gate surface as the other openclaw-managed agents.
+
+Note: PR #272 ships REAL-TIME codex governance via the codex-cli PreToolUse hook (codex 0.128.0+), so this entry is no longer a security-only concern — it's about consolidating dispatch through openclaw for consistency.
+
+**Acceptance:**
+- [ ] codex dispatch goes through openclaw, not direct `codex exec`
+- [ ] chitin's `before_tool_call` plugin fires for codex tool calls, gating in real time
+- [ ] `codex_mine` post-hoc ingest still runs as a safety net; chain has both pre and post records for the same call
+- [ ] Direct `codex exec` path either removed OR retained as fallback when openclaw isn't running
+
+### `chitin-codex-chain-ingest-timer`
+
+```yaml
+id: chitin-codex-chain-ingest-timer
+tier: T1
+status: ready
+estimated_loc: 80
+blocks: []
+file: infra/systemd/chitin-codex-chain-ingest.{service,timer}, scripts/chitin-codex-chain-ingest.sh
+role: programmer
+```
+
+PR #269 ships a `chitin-codex-usage-feed.timer` (10-min cadence) that refreshes the budget feed but NOT the chain events. Add a parallel `chitin-codex-chain-ingest.timer` that runs `python -m analysis.codex_mine ingest --out-dir ~/.chitin` on a longer cadence (1h is enough — chain is for analysis, not real-time). After it lands, `chain stats` and `skill_mine` see codex traffic alongside Claude Code and gemini, closing the cross-driver mining loop.
+
+Why two separate timers: usage feed needs to be fresh (operator dashboard), chain ingest is bulk-process (analysis only). Splitting the cadence keeps the cheap thing cheap.
+
+**Acceptance:**
+- [ ] After 24h: `~/.chitin/codex-events-*.jsonl` files exist for every codex session
+- [ ] `chitin-kernel chain stats --by=action_type` shows codex `shell.exec` calls alongside other drivers
+- [ ] `python -m analysis.skill_mine` includes codex sessions in its n-gram surface (chain_id grouping handles it for free)
+
+### `nx-target-consistency-and-validate`
+
+```yaml
+id: nx-target-consistency-and-validate
+tier: T2
+status: ready
+estimated_loc: 300
+blocks: []
+file: nx.json, project.json (across apps/*), apps/cli/tsconfig.json, package.json, .github/workflows/ci.yml
+references_finding: 2026-05-04 codex review of chitin repo (operational-polish gaps)
+role: programmer
+```
+
+Codex's read of the chitin repo (2026-05-04) flagged operational-polish gaps:
+
+1. `nx run cli:build` is broken (referenced in `README.md:16` quickstart but only `execution-kernel` actually has a buildable Nx target)
+2. App-level TS typecheck targets are effectively disabled because `noEmit: true` conflicts with Nx's inferred typecheck flow (`apps/cli/tsconfig.json:8` is the canonical example)
+3. No top-level `validate` target unifying Go tests + TS tests/typecheck + Python pytest + boundary lint
+
+Fixes:
+- (a) Make `nx run cli:build` actually work, OR remove the README reference (don't ship a broken quickstart)
+- (b) Restore TS typecheck for app projects via per-project `typecheck` target that doesn't conflict with `noEmit`
+- (c) Add a `nx run-many --target=validate` (or root package.json script) that runs the full validation matrix; wire into CI as the merge gate
+
+**Acceptance:**
+- [ ] `nx run cli:build` succeeds OR README updated to reflect reality
+- [ ] `nx run-many --target=typecheck` passes across all app projects
+- [ ] A single `pnpm validate` (or equivalent) runs Go tests + TS tests + TS typecheck + Python pytest + boundary lint, all of which pass
+- [ ] CI workflow uses the unified target
+
 ## Ecosystem opportunity — chain as the substrate (filed 2026-05-03 evening)
 
 ### `chitin-ecosystem-opportunity-rollup`
