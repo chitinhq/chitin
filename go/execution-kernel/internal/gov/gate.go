@@ -2,6 +2,7 @@ package gov
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -64,6 +65,26 @@ type FingerprintContext struct {
 	Role        string
 	WorkflowID  string
 	Fingerprint string
+}
+
+// FingerprintContextFromEnv reads the CHITIN_* env vars that the
+// dispatching agent sets on its spawn (see
+// apps/temporal-worker/src/activity.ts). Single helper so every Gate
+// constructor in the kernel + drivers populates the same way; before
+// this helper, gate_hook.go was the only caller, leaving copilot
+// driver runs and the operator-CLI gate-evaluate path writing
+// fingerprint-less rows even when the env was set (Copilot finding
+// on PR #294).
+//
+// Reads are best-effort — missing env vars produce empty strings,
+// which the JSON layer drops via omitempty.
+func FingerprintContextFromEnv() FingerprintContext {
+	return FingerprintContext{
+		Model:       os.Getenv("CHITIN_MODEL"),
+		Role:        os.Getenv("CHITIN_ROLE"),
+		WorkflowID:  os.Getenv("CHITIN_WORKFLOW_ID"),
+		Fingerprint: os.Getenv("CHITIN_FINGERPRINT"),
+	}
 }
 
 // Evaluate is the single entry point: normalize-already-done Action →

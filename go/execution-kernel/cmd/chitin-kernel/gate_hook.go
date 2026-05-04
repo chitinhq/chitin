@@ -203,14 +203,9 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 		},
 		// P2 routing-as-learning-system: stamp fingerprint dims onto every
 		// Decision the gate writes when the dispatching agent supplies
-		// them via env. Empty values pass through omitempty on the JSON
-		// tags so pre-fingerprint dispatches keep working.
-		Fingerprint: gov.FingerprintContext{
-			Model:       os.Getenv("CHITIN_MODEL"),
-			Role:        os.Getenv("CHITIN_ROLE"),
-			WorkflowID:  os.Getenv("CHITIN_WORKFLOW_ID"),
-			Fingerprint: os.Getenv("CHITIN_FINGERPRINT"),
-		},
+		// them via env. FingerprintContextFromEnv centralizes the env
+		// read so all Gate constructors stay in sync.
+		Fingerprint: gov.FingerprintContextFromEnv(),
 	}
 	// F4 addendum: wire OnDecision to emit a `decision` chain event via
 	// the canonical path. chain_id = HookInput.SessionID when available
