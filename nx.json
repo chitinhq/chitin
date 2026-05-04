@@ -25,5 +25,13 @@
         }
       }
     }
-  ]
+  ],
+  "targetDefaults": {
+    "validate": {
+      "dependsOn": [
+        "^validate"
+      ],
+      "inputs": ["default"]
+    }
+  }
 }
