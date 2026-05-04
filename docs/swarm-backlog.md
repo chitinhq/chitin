@@ -5035,20 +5035,21 @@ Why this matters: ollama-cloud is the local-tier fallback when 3090 is busy or o
 
 ### `codex-via-openclaw-collapse`
 
+Upstream dependency: openclaw codex provider support. Status flips to `ready` when openclaw releases it. Tracked here as `blocked` because there's no parent entry inside chitin to express the dependency from (the parser's `blocks:` field reads from the BLOCKER's frame, but the blocker is external).
+
 ```yaml
 id: codex-via-openclaw-collapse
 tier: T2
 status: blocked
-blocked_by: openclaw codex provider support (upstream)
 estimated_loc: 100
 blocks: []
 file: apps/temporal-worker/src/activity.ts (planInvocation case), libs/contracts/src/execution-request.schema.ts (no change)
 role: programmer
 ```
 
-PR #270 ships `codex` as a direct-exec driver because today's openclaw (2026.4.25) has providers `{ollama, ollama-cloud}` only — no codex provider. Sam Altman publicly stated codex CLI auth can power openclaw (i.e., openclaw drives `codex exec` per turn under the operator's ChatGPT Plus credentials, no OpenAI API key needed). When openclaw ships that, the codex case in `activity.ts::planInvocation` collapses into the local-* / openclaw branch — same chitin gate surface as the other openclaw-managed agents (pre-tool gating via `before_tool_call` plugin instead of post-hoc audit only).
+PR #270 ships `codex` as a direct-exec driver. Today's openclaw (2026.4.25) has providers `{ollama, ollama-cloud}` only — no codex provider. Sam Altman publicly stated codex CLI auth can power openclaw (i.e., openclaw drives `codex exec` per turn under the operator's ChatGPT Plus credentials, no OpenAI API key needed). When openclaw ships that, the codex case in `activity.ts::planInvocation` collapses into the local-* / openclaw branch — same chitin gate surface as the other openclaw-managed agents.
 
-Block reason: upstream feature. Status flips to `ready` the moment openclaw releases codex provider support.
+Note: PR #272 ships REAL-TIME codex governance via the codex-cli PreToolUse hook (codex 0.128.0+), so this entry is no longer a security-only concern — it's about consolidating dispatch through openclaw for consistency.
 
 **Acceptance:**
 - [ ] codex dispatch goes through openclaw, not direct `codex exec`
