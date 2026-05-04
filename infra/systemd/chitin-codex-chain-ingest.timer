@@ -1,5 +1,6 @@
-# Systemd timer for chitin-researcher.service
-# Fires every 4 hours, persistent across reboots.
+# Systemd timer for chitin-codex-chain-ingest.service.
+# Fires hourly. Persistent so missed ticks during downtime fire
+# on next boot.
 
 [Unit]
 Description=Chitin codex chain ingest timer
