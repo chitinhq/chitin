@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionRequest } from '@chitin/contracts';
-import { __test__ } from '../src/activity.ts';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { __test__, isWorkerOwnedPath } from '../src/activity.ts';
 
 const { planInvocation, resolvePolicySrc, resolveAgent, DRIVER_AGENT_MAP } = __test__;
 
@@ -389,5 +391,62 @@ describe('parseToolSummary', () => {
       tools: ['x'],
       failures: 0,
     });
+  });
+});
+
+// ─── isWorkerOwnedPath ─────────────────────────────────────────────────────
+//
+// Cleanup-cleanup-rmSync gate. The 2026-05-04 cwd-rm incident (#280)
+// established the invariant: never rm a path the worker doesn't
+// unambiguously own. This test pins the contract so a future refactor
+// can't reintroduce the trap.
+
+describe('isWorkerOwnedPath', () => {
+  const repoRoot = '/home/red/workspace/chitin';
+  const swarmRoot = resolve(homedir(), '.cache/chitin/swarm-worktrees');
+
+  it('returns true for paths strictly under tmpdir()', () => {
+    expect(isWorkerOwnedPath('/tmp/chitin-worker-abc-xyz', repoRoot)).toBe(true);
+  });
+
+  it('returns true for paths strictly under SWARM_WORKTREES_ROOT', () => {
+    expect(isWorkerOwnedPath(`${swarmRoot}/wf-test-001`, repoRoot)).toBe(true);
+  });
+
+  it('returns false for repoRoot itself (reviewer mode)', () => {
+    // Reviewer dispatch sets workDir = repoRoot so `gh pr diff` works.
+    // The cleanup must never rm this — that's the #280 incident.
+    expect(isWorkerOwnedPath(repoRoot, repoRoot)).toBe(false);
+  });
+
+  it('returns false for sibling paths that share a prefix with tmpdir()', () => {
+    // The bug Copilot caught: raw startsWith('/tmp') would also match
+    // '/tmp-backup'. Strictly-under check rejects sibling-prefix paths.
+    expect(isWorkerOwnedPath('/tmp-backup/something', repoRoot)).toBe(false);
+  });
+
+  it('returns false for sibling paths that share a prefix with SWARM_WORKTREES_ROOT', () => {
+    expect(isWorkerOwnedPath(`${swarmRoot}-old/wf-x`, repoRoot)).toBe(false);
+  });
+
+  it('returns false for arbitrary paths outside both roots', () => {
+    expect(isWorkerOwnedPath('/etc', repoRoot)).toBe(false);
+    expect(isWorkerOwnedPath('/home/red/workspace', repoRoot)).toBe(false);
+    expect(isWorkerOwnedPath('/var/log/chitin.log', repoRoot)).toBe(false);
+  });
+
+  it('returns false when repoRoot itself is under tmpdir() (test rig edge case)', () => {
+    // CI / test environments sometimes check out the repo into a tempdir.
+    // The allowlist would normally match (path is under tmpdir), but the
+    // explicit repoRoot guard short-circuits to false. Reviewer mode is
+    // protected even on unusual rigs.
+    const repoUnderTmp = '/tmp/chitin-checkout';
+    expect(isWorkerOwnedPath(repoUnderTmp, repoUnderTmp)).toBe(false);
+  });
+
+  it('returns false for the empty path', () => {
+    // resolve('') returns cwd, which is unlikely to be under tmpdir or
+    // swarmRoot — but pin the behaviour so a regression is loud.
+    expect(isWorkerOwnedPath('', repoRoot)).toBe(false);
   });
 });
