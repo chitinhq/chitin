@@ -283,6 +283,56 @@ def usage_to_dict(u: Usage) -> dict:
     }
 
 
+def usage_to_feed(u: Usage) -> dict:
+    """Render Usage in the universal usage-feed schema that
+    chitin-budget reads. The schema is shared across drivers:
+
+      {
+        driver:         <name>,
+        axis:           "quota_percent" | "calls_count" | "rpm_tpm" | "usd",
+        plan_type:      <vendor plan label, optional>,
+        last_observed:  <iso8601>,
+        warnings:       [<rate-limit-hit indicators>],
+        calls_total:    <int>,
+        windows: [
+          {label, used_percent, window_minutes, resets_at}
+        ]
+      }
+
+    Different drivers populate different `axis` shapes; chitin-budget
+    branches on `axis` for rendering. This function emits the codex
+    flavor (axis=quota_percent, two windows: 5h primary + 1w
+    secondary). Other drivers (gemini, ollama-cloud, anthropic) get
+    sibling functions that emit the same envelope shape so the
+    reader stays vendor-neutral.
+    """
+    warnings = []
+    if u.rate_limit_reached_type:
+        warnings.append(f"rate_limit_reached:{u.rate_limit_reached_type}")
+    return {
+        "driver": u.driver,
+        "axis": "quota_percent",
+        "plan_type": u.plan_type,
+        "last_observed": u.last_observed_ts,
+        "warnings": warnings,
+        "calls_total": u.function_calls_total,
+        "windows": [
+            {
+                "label": "primary",
+                "used_percent": u.primary_used_percent,
+                "window_minutes": u.primary_window_minutes,
+                "resets_at": u.primary_resets_at,
+            },
+            {
+                "label": "secondary",
+                "used_percent": u.secondary_used_percent,
+                "window_minutes": u.secondary_window_minutes,
+                "resets_at": u.secondary_resets_at,
+            },
+        ],
+    }
+
+
 # ──────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────
@@ -303,6 +353,13 @@ def _cli_usage(args: argparse.Namespace) -> int:
     root = Path(args.sessions_dir).expanduser()
     paths = sessions_in(root)
     u = extract_usage(paths)
+    if args.write_feed:
+        feed_path = Path(args.write_feed).expanduser()
+        feed_path.parent.mkdir(parents=True, exist_ok=True)
+        feed_path.write_text(json.dumps(usage_to_feed(u), indent=2) + "\n")
+        sys.stderr.write(f"wrote usage feed to {feed_path}\n")
+        # Also emit the human (or JSON) summary so the timer log
+        # captures something useful.
     if args.json:
         print(json.dumps(usage_to_dict(u), indent=2))
         return 0
@@ -384,6 +441,12 @@ def main(argv: list[str] | None = None) -> int:
     pu = sub.add_parser("usage", help="summarize codex quota state")
     pu.add_argument("--sessions-dir", default=str(CODEX_SESSIONS_ROOT))
     pu.add_argument("--json", action="store_true")
+    pu.add_argument(
+        "--write-feed",
+        metavar="PATH",
+        default="",
+        help="also write the usage-feed JSON (universal schema chitin-budget reads) to PATH; ~/.cache/chitin/usage/codex.json is the conventional location",
+    )
     pu.set_defaults(func=_cli_usage)
 
     pi = sub.add_parser("ingest", help="project codex function_calls into chitin events JSONL")

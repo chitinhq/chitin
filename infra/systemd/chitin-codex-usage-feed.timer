@@ -1,0 +1,17 @@
+# Timer for chitin-codex-usage-feed.service.
+# 10-minute cadence — fast enough that operators see usage drift
+# in something close to real time, slow enough that we don't
+# pound on the codex sessions dir. Persistent so a missed tick
+# from a powered-off rig fires on the next boot.
+
+[Unit]
+Description=Refresh codex usage feed every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=chitin-codex-usage-feed.service
+
+[Install]
+WantedBy=timers.target
