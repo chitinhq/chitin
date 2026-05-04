@@ -5108,6 +5108,117 @@ Fixes:
 - [ ] A single `pnpm validate` (or equivalent) runs Go tests + TS tests + TS typecheck + Python pytest + boundary lint, all of which pass
 - [ ] CI workflow uses the unified target
 
+## Operational hardening — surfaced by 2026-05-04 cwd-rm incident
+
+### `agent-lockdown-auto-recovery`
+
+```yaml
+id: agent-lockdown-auto-recovery
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: scripts/chitin-agent-unlock.sh, infra/systemd/chitin-agent-unlock.service, infra/systemd/chitin-agent-unlock.timer, go/execution-kernel/internal/gov/escalation.go (read-side)
+references_finding: docs/observations/2026-05-04-reviewer-cwd-rm-incident.md (action item 5); feedback_sticky_state_needs_recovery_automation.md
+role: programmer
+```
+
+Sticky-state pattern: when an agent racks up 10+ denials it lockdown's
+in `agent_state.locked=1` (escalation.go:87). The 2026-05-04 envelope-
+closed cascade locked `copilot-cli` for 3+ hours before manual reset.
+Same shape as the envelope-rotator (PR #277) — needs an automated
+ager that distinguishes infrastructure denials (envelope-closed,
+policy-load-error) from agent-misbehavior denials (rule violations).
+
+Approach (subject to design tightening — programmer should propose):
+- Read `agent_state` rows where `locked=1`.
+- For each, look at the most recent N denials in `denials` table.
+- If denials are dominated by `envelope-closed` / `policy-load-error`
+  / other infra reasons AND `locked_ts` is older than 1h AND no new
+  denials in last 30m, auto-reset via `chitin-kernel gate reset
+  --agent=<id>`.
+- Emit a chain event for every auto-reset so operators can see the
+  recovery happened.
+- Do NOT auto-reset locks driven by policy violations — those are
+  the signal the lockdown was designed for.
+
+The selection criteria are the design — get them wrong and the
+mechanism papers over real problems. Programmer should propose the
+selection logic in the PR description before the implementation
+lands.
+
+**Acceptance:**
+- [ ] Locked agents whose denials are infra-source get age-out reset
+      after 1h of no new denial activity
+- [ ] Locked agents whose denials include any policy-violation signal
+      do NOT auto-reset (operator-only)
+- [ ] Each auto-reset emits a chain event with kind=`agent-unlock-auto`
+      and the rationale (which denial classes were considered, the
+      counts, the age)
+- [ ] systemd timer runs every 15min; cost: one sqlite read
+
+### `alarm-on-systemd-chdir-failures`
+
+```yaml
+id: alarm-on-systemd-chdir-failures
+tier: T2
+status: ready
+estimated_loc: 150
+blocks: []
+file: apps/temporal-worker/src/alarm-feeder.ts (or co-located new file), infra/systemd/chitin-alarm-feeder.service (env addition only)
+references_finding: docs/observations/2026-05-04-reviewer-cwd-rm-incident.md (action item 3)
+role: programmer
+```
+
+The 2026-05-04 cwd-rm incident left `journalctl --user -u chitin-*`
+showing `code=exited, status=200/CHDIR` for ~3h before the operator
+noticed. The signal was loud and machine-readable; nothing was
+listening.
+
+Extend `chitin-alarm-feeder` to scan recent journal output for any
+`status=200/CHDIR` or `status=203/EXEC` failure on a `chitin-*`
+unit and surface it as a chain alarm event (so the slack-feeder
+or any downstream consumer can route it).
+
+**Acceptance:**
+- [ ] alarm-feeder detects 200/CHDIR + 203/EXEC on chitin-* units
+- [ ] Detection emits a chain event with kind=`systemd-unit-failure`
+      and the unit name, status code, and failure timestamp
+- [ ] Test fixture: synthetic journal output containing one CHDIR
+      failure produces exactly one chain alarm event
+- [ ] No false positives on healthy `Type=oneshot` units that exit
+      cleanly with `status=0/SUCCESS`
+
+### `cleanup-ownership-allowlist`
+
+```yaml
+id: cleanup-ownership-allowlist
+tier: T1
+status: ready
+estimated_loc: 80
+blocks: []
+file: apps/temporal-worker/src/activity.ts
+references_finding: docs/observations/2026-05-04-reviewer-cwd-rm-incident.md (action item 4)
+role: programmer
+```
+
+The fix in PR #280 guards the `rmSync(workDir)` cleanup with
+`workDir !== repoRoot`. That protects the specific variable name
+that bit us, but a future role that sets `workDir = someOtherSharedDir`
+would re-introduce the trap. Replace the blacklist with an allowlist:
+only rm paths the worker unambiguously owns (`tmpdir()` prefix or
+`SWARM_WORKTREES_ROOT` prefix). Any other path → log + skip.
+
+**Acceptance:**
+- [ ] Cleanup rm is gated by an `isWorkerOwnedPath(p)` helper that
+      returns true only for `tmpdir()` or `SWARM_WORKTREES_ROOT`
+      prefixes
+- [ ] Reviewer mode (workDir = repoRoot) and any future "run in $X"
+      mode are protected without per-mode case statements
+- [ ] Unit test covers: tempdir cleanup happens, repoRoot is never
+      rm'd, `SWARM_WORKTREES_ROOT/<id>` cleanup paths still work,
+      `/etc` (or other arbitrary) paths log + skip
+
 ## Ecosystem opportunity — chain as the substrate (filed 2026-05-03 evening)
 
 ### `chitin-ecosystem-opportunity-rollup`
