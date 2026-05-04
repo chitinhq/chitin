@@ -1,0 +1,17 @@
+[Unit]
+Description=Auto-recover chitin agents locked by infrastructure failures
+
+[Service]
+Type=oneshot
+ExecStart=%h/workspace/chitin/scripts/chitin-agent-unlock.sh
+
+# Caps — one sqlite read + jq over two JSONL files; no network, no build.
+MemoryMax=128M
+CPUQuota=50%
+TimeoutStartSec=60
+
+# Don't auto-restart — failures want operator attention via the log.
+Restart=no
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Trigger chitin-agent-unlock every 15 min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+Unit=chitin-agent-unlock.service
+
+[Install]
+WantedBy=timers.target
