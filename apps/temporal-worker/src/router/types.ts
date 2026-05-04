@@ -91,10 +91,15 @@ export interface RouterPolicy {
       | 'kernel_denied'
     >;
     chain: { max_depth: number; tier_steps: string[] };
-    /** Driver id from DriverIdSchema (e.g., 'claude-code-headless', 'copilot',
-     *  'codex', 'gemini', 'openclaw-glm-flash'). Despite the field name,
-     *  this is a driver id, not a model name — the actual model is resolved
-     *  per-driver from CHITIN_MODEL_<DRIVER>_<TIER> env or driver defaults. */
+    /** Driver id intended for the router's advisor invocation (e.g.,
+     *  'claude-code-headless', 'copilot', 'codex', 'gemini',
+     *  'openclaw-glm-flash'). Despite the field name it carries a
+     *  driver id, not a model name. NOTE 2026-05-04: this field is
+     *  parsed from chitin.yaml but `hook-wrapper.ts` currently calls
+     *  `callAdvisor()` with the hard-coded Claude binary; operators
+     *  changing this value won't see per-driver dispatch until
+     *  `callAdvisor` is taught to honor it (tracked as a router-
+     *  driver-dispatch follow-up). */
     model: string;
   };
 }
