@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  decideAgentDispatches,
   parentWorkflowIdForPr,
   pickPrsToIngest,
   reviewGraphWorkflowIdForPr,
   synthesizeBacklogEntry,
   type OpenPrSummary,
 } from '../src/pr-event-ingester.ts';
+
+// peerReviewer + commentResponder workflow id helpers — same
+// modules pr-event-ingester imports them from. Keeps test
+// indirection one level shallow.
+import { peerReviewerWorkflowIdForPr } from '../src/peer-reviewer/dispatch.ts';
+import { commentResponderWorkflowIdForPr } from '../src/comment-responder/dispatch.ts';
 
 function pr(overrides: Partial<OpenPrSummary> & { number: number }): OpenPrSummary {
   return {
@@ -164,5 +171,95 @@ describe('pickPrsToIngest — mixed batch', () => {
       'ingest',
       'ingest',
     ]);
+  });
+});
+
+
+describe('decideAgentDispatches — peer-reviewer + comment-responder gating', () => {
+  // Per Copilot review on PR #264: matrix coverage for the new
+  // refactored helper. Tests the three branches called out:
+  // runningAgents dedup, threshold boundary, skip reasons.
+
+  const basePr = (overrides: Partial<OpenPrSummary>): OpenPrSummary => pr({ number: 100, ...overrides });
+
+  it('dispatches both when nothing is running and comments exceed threshold', () => {
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 5 }),
+      new Set<string>(),
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchPeerReviewer).toBe(true);
+    expect(d.dispatchCommentResponder).toBe(true);
+    expect(d.reasons).toEqual({});
+  });
+
+  it('skips peer-reviewer when its workflow is already running', () => {
+    const running = new Set<string>([peerReviewerWorkflowIdForPr(100)]);
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 5 }),
+      running,
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchPeerReviewer).toBe(false);
+    expect(d.reasons.skip_peer_reviewer).toContain('peer-reviewer already running');
+    expect(d.dispatchCommentResponder).toBe(true);
+  });
+
+  it('skips comment-responder when its workflow is already running, even with comments above threshold', () => {
+    const running = new Set<string>([commentResponderWorkflowIdForPr(100)]);
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 5 }),
+      running,
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchCommentResponder).toBe(false);
+    expect(d.reasons.skip_comment_responder).toContain('comment-responder already running');
+    // peer-reviewer still gets dispatched
+    expect(d.dispatchPeerReviewer).toBe(true);
+  });
+
+  it('skips comment-responder at the threshold boundary (count <= threshold)', () => {
+    // count == threshold → skip (the gate is `>` not `>=`)
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 2 }),
+      new Set<string>(),
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchCommentResponder).toBe(false);
+    expect(d.reasons.skip_comment_responder).toMatch(/<= threshold/);
+  });
+
+  it('dispatches comment-responder one above the threshold boundary', () => {
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 3 }),
+      new Set<string>(),
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchCommentResponder).toBe(true);
+    expect(d.reasons.skip_comment_responder).toBeUndefined();
+  });
+
+  it('uses default threshold when opts is omitted', () => {
+    // The default threshold is whatever the module exports —
+    // we assert behavior, not the number: a low comment count
+    // (0) below any reasonable default must skip.
+    const d = decideAgentDispatches(basePr({ copilotCommentCount: 0 }), new Set<string>());
+    expect(d.dispatchCommentResponder).toBe(false);
+  });
+
+  it('dedups both agents simultaneously when both are already running', () => {
+    const running = new Set<string>([
+      peerReviewerWorkflowIdForPr(100),
+      commentResponderWorkflowIdForPr(100),
+    ]);
+    const d = decideAgentDispatches(
+      basePr({ copilotCommentCount: 10 }),
+      running,
+      { commentResponderThreshold: 2 },
+    );
+    expect(d.dispatchPeerReviewer).toBe(false);
+    expect(d.dispatchCommentResponder).toBe(false);
+    expect(d.reasons.skip_peer_reviewer).toBeDefined();
+    expect(d.reasons.skip_comment_responder).toBeDefined();
   });
 });
