@@ -1,0 +1,15 @@
+# Systemd timer for chitin-codex-chain-ingest.service.
+# Fires hourly. Persistent so missed ticks during downtime fire
+# on next boot.
+
+[Unit]
+Description=Chitin codex chain ingest timer
+
+[Timer]
+OnUnitActiveSec=1h
+OnBootSec=15min
+Persistent=true
+Unit=chitin-codex-chain-ingest.service
+
+[Install]
+WantedBy=timers.target
