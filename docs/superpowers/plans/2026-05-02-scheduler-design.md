@@ -11,6 +11,8 @@ Two compatible goals, both served by the same artifact:
 1. **Personal scheduler.** Operator's daily task list + calendar. Voice/chat ingest, time-of-day-aware slotting, Slack/ntfy notifications, local Angular dashboard.
 2. **Swarm coordination substrate.** The same ranking primitive that decides "what's the operator's next task" also decides "what's the swarm's next backlog entry to dispatch." Today's `apps/temporal-worker/src/dispatcher.ts:pickEntryToDispatch` and a personal scheduler's `next()` are isomorphic — both rank a queue against context to pick a slot.
 
+**Note:** The scheduler is also slated to subsume the swarm backlog. Backlog entries in `docs/swarm-backlog.md` will become scheduler items, retaining fields like `status`, `tier`, `role`, and `blocks`, and gaining scheduling metadata (e.g., deadlines, preferred windows). The dispatcher will eventually read from the scheduler API instead of markdown. The flat-file backlog is interim until this migration completes.
+
 The hard rule: swarm may tune the heuristic, never the kernel. Architecture must enforce that, not by convention.
 
 ## Package layout (Nx)
