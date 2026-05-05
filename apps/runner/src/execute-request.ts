@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs';
 import { ExecutionRequestSchema, type ExecutionRequest, type Tier } from '@chitin/contracts';
 import { runAgentTurn } from './activity.ts';
 import type { ActivityResult } from './activity-types.ts';
+import { buildRequestFromKanbanCard } from './kanban-card-to-request.ts';
 
 const MAX_ATTEMPTS = parseInt(process.env.CHITIN_RUNNER_MAX_ATTEMPTS ?? '5', 10);
 
@@ -163,24 +164,37 @@ export async function runWithEscalation(
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
-    options: { 'request-file': { type: 'string' } },
+    options: {
+      'request-file': { type: 'string' },
+      'from-kanban-card': { type: 'string' },
+    },
     strict: false,
   });
 
-  const path = values['request-file'] as string | undefined;
-  if (!path) {
-    process.stderr.write('chitin-execute-request: --request-file <path> is required\n');
+  const requestFile = values['request-file'] as string | undefined;
+  const kanbanCardId = values['from-kanban-card'] as string | undefined;
+
+  if (!requestFile && !kanbanCardId) {
+    process.stderr.write('chitin-execute-request: one of --request-file <path> or --from-kanban-card <task_id> is required\n');
+    process.exit(1);
+  }
+  if (requestFile && kanbanCardId) {
+    process.stderr.write('chitin-execute-request: --request-file and --from-kanban-card are mutually exclusive\n');
     process.exit(1);
   }
 
-  const reqJson = readFileSync(path, 'utf8');
-  const initial = ExecutionRequestSchema.parse(JSON.parse(reqJson));
+  const initial = requestFile
+    ? ExecutionRequestSchema.parse(JSON.parse(readFileSync(requestFile, 'utf8')))
+    : buildRequestFromKanbanCard(kanbanCardId!);
+
   logLine('info', 'starting', {
     workflow_id: initial.workflow_id,
     initial_tier: initial.tier,
     initial_role: initial.role,
     max_attempts: MAX_ATTEMPTS,
+    source: requestFile ? 'request-file' : 'kanban-card',
   });
+
   const final = await runWithEscalation(initial, { runFn: runAgentTurn });
   process.stdout.write(JSON.stringify(final) + '\n');
 }
