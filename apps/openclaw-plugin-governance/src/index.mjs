@@ -1,4 +1,4 @@
-import { evaluateGate } from './chitin-bridge.mjs';
+import { evaluateRouter } from './chitin-bridge.mjs';
 
 const PLUGIN_ID = 'chitin-governance';
 
@@ -37,12 +37,15 @@ const plugin = {
 
     // ── pre-tool gate (pi runtime) ───────────────────────────────────────
     api.on('before_tool_call', async (event, ctx) => {
-      const decision = await evaluateGate(
+      const decision = await evaluateRouter(
         {
           agent: ctx.agentId ?? 'openclaw-plugin',
           tool: event.toolName,
           params: event.params ?? {},
           cwd: process.cwd(),
+          // Stable session id per (agent, cwd) so the floundering
+          // heuristic can read prior chain events for this session.
+          sessionId: `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`,
         },
         cfg,
       );
@@ -140,7 +143,11 @@ export function resolveConfig(raw) {
     mode: r.mode === 'observe' ? 'observe' : 'enforce',
     workerMode: r.workerMode === true,
     denyOnError: r.denyOnError !== false,
-    timeoutMs: typeof r.timeoutMs === 'number' && r.timeoutMs >= 100 ? r.timeoutMs : 5000,
+    // Default 30s: covers the router pipeline including a possible advisor
+    // (claude -p) round-trip which can take 5-15s. The pre-router gate path
+    // was 5s — bumped because evaluateRouter replaced evaluateGate as the
+    // default invocation surface.
+    timeoutMs: typeof r.timeoutMs === 'number' && r.timeoutMs >= 100 ? r.timeoutMs : 30000,
   };
 }
 

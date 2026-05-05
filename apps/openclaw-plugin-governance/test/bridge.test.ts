@@ -117,11 +117,14 @@ describe('evaluateGate (bridge → chitin-kernel subprocess)', () => {
   });
 });
 
-describe('plugin.before_tool_call params handling', () => {
+describe('plugin.before_tool_call (calls evaluateRouter)', () => {
   type Handler = (event: { toolName: string; params?: unknown }, ctx: { agentId?: string }) => Promise<unknown>;
 
-  function captureBeforeToolCall(kernelStdoutJson: string): { handler: Handler; cleanup: () => void } {
-    const fake = makeFakeKernel(`echo '${kernelStdoutJson}'; exit 0`);
+  // The plugin now calls `evaluateRouter`, which uses the Claude Code
+  // hook protocol: exit 0 + empty stdout = allow; exit non-0 + first
+  // JSON line `{"decision":"block","reason":"..."}` = deny.
+  function captureBeforeToolCall(scriptBody: string): { handler: Handler; cleanup: () => void } {
+    const fake = makeFakeKernel(scriptBody);
     let handler: Handler | undefined;
     const api = {
       pluginConfig: { kernelPath: fake.path, timeoutMs: 2000, mode: 'enforce' },
@@ -135,32 +138,42 @@ describe('plugin.before_tool_call params handling', () => {
     return { handler, cleanup: fake.cleanup };
   }
 
-  it('returns undefined when kernel allows with empty params object', async () => {
-    // Empty `{}` is truthy in JS — the pre-fix `decision.params ? ...` branch
-    // would return `{ params: {} }` and clobber the agent's actual args. The
-    // fix uses `Object.keys(...).length > 0` so {} now resolves to undefined.
-    const { handler, cleanup } = captureBeforeToolCall('{"allowed":true,"params":{}}');
+  it('returns undefined when router allows (exit 0, no stdout)', async () => {
+    const { handler, cleanup } = captureBeforeToolCall(`exit 0`);
     try {
       const result = await handler(
         { toolName: 'shell.exec', params: { cmd: 'ls' } },
         { agentId: 'test-agent' },
       );
+      // Allow → return undefined → openclaw proceeds with the agent's
+      // original params unchanged.
       expect(result).toBeUndefined();
     } finally {
       cleanup();
     }
   });
 
-  it('returns the rewrite when kernel allows with non-empty params', async () => {
-    const { handler, cleanup } = captureBeforeToolCall('{"allowed":true,"params":{"cmd":"ls -la"}}');
+  it('blocks when router denies (exit non-0 + decision:block JSON)', async () => {
+    const { handler, cleanup } = captureBeforeToolCall(
+      `echo '{"decision":"block","reason":"router denied"}'; exit 2`,
+    );
     try {
-      const result = await handler(
-        { toolName: 'shell.exec', params: { cmd: 'ls' } },
+      const result = (await handler(
+        { toolName: 'shell.exec', params: { cmd: 'rm -rf /' } },
         { agentId: 'test-agent' },
-      );
-      expect(result).toEqual({ params: { cmd: 'ls -la' } });
+      )) as { block?: boolean; blockReason?: string } | undefined;
+      expect(result?.block).toBe(true);
+      expect(result?.blockReason).toBe('router denied');
     } finally {
       cleanup();
     }
   });
+
+  // Param rewrites are NOT supported by `router evaluate` — it uses
+  // the Claude Code hook protocol which has no param-modification
+  // surface. The pre-router code path (evaluateGate) DID propagate
+  // param rewrites; that capability is exercised in the
+  // `describe('evaluateGate ...')` block at the top of this file
+  // for direct callers, but no longer reachable through the plugin's
+  // before_tool_call handler.
 });

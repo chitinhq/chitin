@@ -114,3 +114,121 @@ function failClosed(opts, reason) {
   }
   return { allow: true };
 }
+
+/**
+ * Invoke `chitin-kernel router evaluate --hook-stdin` (the router-pipeline
+ * path: kernel verdict → heuristics → advisor → composed response).
+ *
+ * Why a second function alongside `evaluateGate`:
+ *
+ * - `evaluateGate` calls `chitin-kernel gate evaluate` with FLAGS, gets a
+ *   {allowed, reason, rule_id} JSON back. Deterministic-only — no
+ *   heuristics, no advisor.
+ * - `evaluateRouter` calls `chitin-kernel router evaluate` with a Claude
+ *   Code-style HookInput on STDIN, gets the Claude Code hook protocol
+ *   back: exit 0 + empty stdout = allow; exit non-0 + first JSON line
+ *   {"decision":"block","reason":"..."} = deny.
+ *
+ * Rationale (2026-05-05): the openclaw plugin originally called
+ * `evaluateGate`, which meant T0/T1/T3 agents (every openclaw-driven
+ * tier) bypassed heuristics + advisor. T4 (claude-code-headless) was the
+ * only tier that hit the router pipeline — exactly inverted from where
+ * the advisor is most valuable: Claude itself is the agent at T4, so a
+ * smaller advisor checking a smarter agent has marginal worth; cheap
+ * local glm-flash at T0 benefits MUCH more from a Claude-class second
+ * opinion. This function flips the wiring: openclaw → router → advisor.
+ *
+ * @param {GateInput & { sessionId?: string }} input
+ * @param {BridgeOptions} opts
+ * @returns {Promise<GateDecision>}
+ */
+export async function evaluateRouter(input, opts) {
+  const hookInput = {
+    hook_event_name: 'PreToolUse',
+    tool_name: input.tool,
+    tool_input: input.params ?? {},
+    cwd: input.cwd ?? process.cwd(),
+    session_id: input.sessionId ?? `openclaw-${input.agent}`,
+  };
+
+  const args = ['router', 'evaluate', '--hook-stdin', '--agent', input.agent];
+
+  let stdout = '';
+  let stderr = '';
+  let timedOut = false;
+  let exitCode = -1;
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(opts.kernelPath, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, opts.timeoutMs);
+      child.stdout.on('data', (b) => (stdout += b.toString()));
+      child.stderr.on('data', (b) => (stderr += b.toString()));
+      child.on('close', (code) => {
+        clearTimeout(killTimer);
+        exitCode = code ?? -1;
+        resolve(undefined);
+      });
+      child.on('error', reject);
+      child.stdin.write(JSON.stringify(hookInput));
+      child.stdin.end();
+    });
+
+    if (timedOut) {
+      return failClosed(opts, `chitin-kernel router timed out after ${opts.timeoutMs}ms`);
+    }
+
+    return parseRouterDecision(exitCode, stdout, opts);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('ENOENT')) {
+      return failClosed(opts, `chitin-kernel binary not found at "${opts.kernelPath}"`);
+    }
+    return failClosed(
+      opts,
+      `chitin-kernel router invocation failed: ${msg}${stderr ? ` | stderr: ${stderr.slice(0, 200)}` : ''}`,
+    );
+  }
+}
+
+/**
+ * Parse the Claude Code hook protocol output from `router evaluate
+ * --hook-stdin`. Contract:
+ *   exit 0, empty/non-block stdout            → allow
+ *   exit non-0, first JSON line {decision,..} → deny
+ *
+ * @param {number} exitCode
+ * @param {string} stdout
+ * @param {BridgeOptions} opts
+ * @returns {GateDecision}
+ */
+function parseRouterDecision(exitCode, stdout, opts) {
+  if (exitCode === 0) {
+    return { allow: true };
+  }
+  const firstLine = stdout.split('\n').find((l) => l.trim().startsWith('{')) ?? '';
+  if (!firstLine) {
+    return failClosed(opts, `chitin-kernel router exited ${exitCode} with no parseable verdict`);
+  }
+  try {
+    const j = JSON.parse(firstLine);
+    if (j.decision === 'block') {
+      return {
+        allow: false,
+        reason: typeof j.reason === 'string' ? j.reason : 'denied by chitin router',
+        ruleId: 'router_block',
+      };
+    }
+    return failClosed(
+      opts,
+      `chitin-kernel router returned non-block deny verdict: ${JSON.stringify(j).slice(0, 200)}`,
+    );
+  } catch {
+    return failClosed(opts, `chitin-kernel router returned unparseable verdict: ${firstLine.slice(0, 200)}`);
+  }
+}
