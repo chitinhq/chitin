@@ -2723,6 +2723,82 @@ findings → comment-responder → fix commit → review-graph re-runs →
 gatekeeper auto-merge (or operator at R4). That closes the loop the
 factory design described.
 
+### `comment-responder-mutable-status` (filed 2026-05-05)
+
+```yaml
+id: comment-responder-mutable-status
+tier: T2
+status: ready
+estimated_loc: 120
+blocks: []
+file: apps/temporal-worker/src/comment-responder/* (extend), apps/temporal-worker/src/review-graph-workflow.ts (verdict-marker hookup), libs/contracts/src/comment-verdict.schema.ts (new)
+references_finding: 2026-05-05-clawsweeper-ecosystem-adopt
+role: programmer
+```
+
+Today: `comment-responder` (and the broader review-graph) post a
+**new** comment per pass. A PR that walks R0 → R1 → R2 → R3 ends
+up with a stack of comments — all relevant, none authoritative. The
+operator has to scroll to find the latest verdict, and downstream
+tooling has to scrape prose to pick out the current state.
+
+OpenClaw's clawsweeper (https://github.com/openclaw/clawsweeper, v0.2.0
+2026-05-03) solved this with a single mutable status comment per
+PR/issue, edited in place, with hidden HTML markers carrying the
+machine-readable verdict. Same pattern fits chitin's review-graph
+naturally — each tier just updates the same comment instead of
+appending.
+
+Two concrete wins:
+1. **Cleaner PR threads.** One comment per swarm-touched PR, always
+   reflecting current state. The growth pattern stops.
+2. **Machine-readable verdicts.** Hidden markers (e.g.
+   `<!-- chitin:verdict tier=R2 status=approve -->`) let the
+   gatekeeper, `entryIdInRecentSubjects`, the pr-event-ingester, and
+   any future operator-command surface read the verdict without
+   scraping prose.
+
+Approach (subject to design tightening — programmer should propose):
+
+1. Define a `MutableStatusComment` helper (probably under
+   `apps/temporal-worker/src/comment-responder/mutable-status.ts`)
+   with `read(prNumber)`, `upsert(prNumber, body, verdictMeta)`,
+   `findByMarker(prNumber, marker)`. Identifies "the chitin status
+   comment" via a top-of-body magic-string marker
+   (`<!-- chitin-status-comment v1 -->`).
+2. Verdict markers: structured HTML comments embedded in the body.
+   Schema lives in `libs/contracts/src/comment-verdict.schema.ts`
+   (new). Fields: `tier` (R0–R4), `status` (approve / changes_requested
+   / pending), `workflow_id`, `ts`. Zod-parsed; mismatch fails closed
+   (assume "no verdict").
+3. Plumb through `review-graph-workflow.ts`: every R-tier completion
+   calls `upsert(prNumber, renderedBody, {tier, status, ...})` instead
+   of `gh pr comment ...`. The renderer composes the new comment from
+   prior verdict + this tier's findings.
+4. Backward compatibility for PRs that already have an append-style
+   comment chain: don't migrate. New mutable comment lands on top of
+   the stack; older stuck comments remain as historical record.
+
+**Acceptance:**
+- [ ] PRs touched by review-graph after merge have exactly one
+      `chitin-status-comment` body, edited across tiers
+- [ ] Each verdict marker parses cleanly via the zod schema
+- [ ] `gatekeeper.ts` reads the latest verdict via marker, not prose scraping
+- [ ] PRs touched before merge are unaffected (no migration churn)
+- [ ] Vitest covers: first-tier upsert (creates), second-tier upsert
+      (edits), missing-marker (creates new), malformed-marker (logs +
+      fails closed)
+- [ ] Documentation: one paragraph in `apps/temporal-worker/src/comment-responder/README.md`
+      (or equivalent) describing the marker schema for future readers
+
+**Caveat — interaction with comment-responder fix loop:** when the
+responder lands a fix commit and re-runs review-graph, the SAME
+comment gets re-edited with the new verdict. The history of "was
+changes_requested at R1, now approve at R2" lives only in the chain
+audit log, not in the GitHub thread. That's intentional (cleaner
+thread) but worth calling out for operators expecting forensic
+history visible in the PR — point them at the chain.
+
 ### `swarm-implementor-pnpm-lock-discipline`
 
 ```yaml
