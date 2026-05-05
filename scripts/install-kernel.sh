@@ -199,7 +199,8 @@ fi
 # structured log.
 for installer in \
   "$REPO/scripts/install-gemini-hook.sh" \
-  "$REPO/scripts/install-codex-hook.sh"; do
+  "$REPO/scripts/install-codex-hook.sh" \
+  "$REPO/scripts/install-hermes-hook.sh"; do
   [[ -x "$installer" ]] || continue
   hook_log=$(mktemp)
   if "$installer" >"$hook_log" 2>&1; then
