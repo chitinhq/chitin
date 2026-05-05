@@ -349,3 +349,148 @@ export function skillFolderForRole(rootDir: string, role: string): string {
   return join(rootDir, SKILLS_ROOT, role);
 }
 
+// ── Caching layer ──────────────────────────────────────────────────
+//
+// Skill folders are static files that change rarely; in a worker
+// process that dispatches dozens of agents per minute, re-reading
+// SKILL.md + companions for every dispatch is pure overhead. We
+// keep a small in-process LRU keyed by absolute folder path.
+//
+// Invalidation:
+//   - Env var CHITIN_STITCHER_NO_CACHE=1 disables caching entirely
+//     (set by integration tests / when authoring a skill folder).
+//   - TTL via CHITIN_STITCHER_TTL_MS (default 5 minutes). Past TTL
+//     the entry is re-read from disk on next access.
+//   - clearSkillCache() exported for explicit invalidation in tests.
+//
+// Hit-rate counters (cacheStats) are read by the worker's metrics
+// surface — "measurable hit rate on repeat dispatches" per the
+// entry's acceptance criteria.
+
+interface CacheEntry {
+  skill: ParsedSkill;
+  loadedAt: number;
+}
+
+const SKILL_CACHE = new Map<string, CacheEntry>();
+const CACHE_MAX_ENTRIES = 64;
+const DEFAULT_TTL_MS = 5 * 60 * 1000;
+
+const cacheStats = { hits: 0, misses: 0, evictions: 0 };
+
+function cacheEnabled(): boolean {
+  return process.env.CHITIN_STITCHER_NO_CACHE !== '1';
+}
+
+function cacheTtlMs(): number {
+  const raw = process.env.CHITIN_STITCHER_TTL_MS;
+  if (!raw) return DEFAULT_TTL_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TTL_MS;
+}
+
+/** Pure: O(1) LRU touch — delete + re-set moves the key to MRU end. */
+function touch(key: string, entry: CacheEntry): void {
+  SKILL_CACHE.delete(key);
+  SKILL_CACHE.set(key, entry);
+}
+
+/**
+ * Cached variant of loadSkill. Fresh reads on cache miss, expiry,
+ * or when caching is disabled. Updates cacheStats so the worker
+ * can expose hit/miss telemetry.
+ */
+export function loadSkillCached(folder: string): ParsedSkill {
+  const key = resolve(folder);
+  if (!cacheEnabled()) {
+    cacheStats.misses += 1;
+    return loadSkill(folder);
+  }
+  const now = Date.now();
+  const existing = SKILL_CACHE.get(key);
+  if (existing && now - existing.loadedAt < cacheTtlMs()) {
+    cacheStats.hits += 1;
+    touch(key, existing);
+    return existing.skill;
+  }
+  cacheStats.misses += 1;
+  const skill = loadSkill(folder);
+  SKILL_CACHE.set(key, { skill, loadedAt: now });
+  while (SKILL_CACHE.size > CACHE_MAX_ENTRIES) {
+    const oldest = SKILL_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    SKILL_CACHE.delete(oldest);
+    cacheStats.evictions += 1;
+  }
+  return skill;
+}
+
+/** Snapshot of cache counters; safe for a metrics endpoint. */
+export function getCacheStats(): { hits: number; misses: number; evictions: number; size: number } {
+  return { ...cacheStats, size: SKILL_CACHE.size };
+}
+
+/** Drop all cached skill folders + reset counters. Tests + skill
+ *  authors call this; the worker doesn't need it in normal flow. */
+export function clearSkillCache(): void {
+  SKILL_CACHE.clear();
+  cacheStats.hits = 0;
+  cacheStats.misses = 0;
+  cacheStats.evictions = 0;
+}
+
+// ── Unified tier-aware dispatch ───────────────────────────────────
+
+/**
+ * Tier classification per project_driver_model_tier_map. T0-T2 do
+ * NOT have native skill discovery, so the stitcher inlines the
+ * SKILL.md body into a prompt string. T3-T4 (Claude Code headless)
+ * receive the folder path and let the harness load it.
+ */
+export type Tier = 'T0' | 'T1' | 'T2' | 'T3' | 'T4';
+
+export interface StitchedSkill {
+  /** Inlined prompt string — populated for T0-T2 only. */
+  prompt?: string;
+  /** Skill folder path — populated for T3-T4 only. The dispatcher
+   *  copies this into the agent's working dir. */
+  folderPath?: string;
+  /** Frontmatter, exposed for both shapes (e.g. `tools` allowlist
+   *  the dispatcher feeds into ExecutionRequest). */
+  frontmatter: SkillFrontmatter;
+}
+
+/**
+ * Single entry point the dispatcher calls. Resolves the role's
+ * skill folder under `rootDir`, branches on tier-shape, and returns
+ * either an inlined prompt (T0-T2) or a folder path (T3-T4).
+ *
+ * Caching is automatic via loadSkillCached; bypass with
+ * CHITIN_STITCHER_NO_CACHE=1.
+ */
+export function stitchForTier(
+  rootDir: string,
+  role: string,
+  vars: Record<string, unknown>,
+  tier: Tier,
+): StitchedSkill {
+  const folder = skillFolderForRole(rootDir, role);
+  const skill = loadSkillCached(folder);
+  if (tier === 'T3' || tier === 'T4') {
+    return {
+      folderPath: materializePath(skill.folder),
+      frontmatter: skill.frontmatter,
+    };
+  }
+  const prompt = renderSkillBody(skill.body, vars, (relativePath) => {
+    const fullPath = join(skill.folder, relativePath);
+    try {
+      return readFileSync(fullPath, 'utf8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`stitcher: cannot read companion ${relativePath}: ${msg}`);
+    }
+  });
+  return { prompt, frontmatter: skill.frontmatter };
+}
+
