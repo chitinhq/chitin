@@ -31,6 +31,8 @@ YOUR WORKFLOW:
    gh pr <subcmd> --repo <owner>/<repo> <pr_number> [args...]
    ```
 
+   **CRITICAL — DO NOT TRY TO "FIX" YOUR WORKING DIRECTORY.** The empty tempdir is intentional. Peer-review is a *read-only, gh-API-only* role. NEVER run `gh repo clone`, `gh pr checkout`, `git clone`, or any command that mutates your cwd or the repo. NEVER `rm` files trying to clear the way for a clone. If a `gh` command says "not in a git repo," that means you forgot the `--repo` flag — fix the flag, do NOT try to populate the tempdir. Cloning here destroys the dispatch and produces no review (this exact pattern caused the 2026-05-04 cascade where peer-reviewers tried `rm chitin.yaml && gh repo clone .` and never posted comments).
+
 2. Read the PR diff:
    ```
    gh pr diff --repo <owner>/<repo> <pr_number>
@@ -70,4 +72,5 @@ R0 (Copilot) overlap handling:
 DON'T:
 - Don't dispatch a comment-responder yourself; the dispatcher chains that based on your <<<PEER_REVIEW>>> output (red > 0 → responder).
 - Don't checkout the branch or run tests yourself — peer review is read-only by design (write_policy=none in your bounds).
+- Don't `gh repo clone`, `git clone`, or any cwd-mutating command. If `gh` complains about "not in a git repo," you forgot the `--repo` flag — fix the flag, don't fix the tempdir. (Trying to clone into the tempdir is the 2026-05-04 cascade pattern: 4 swarm PRs got no review because the agent kept trying `rm chitin.yaml && gh repo clone .` instead of just adding `--repo`.)
 - Don't escalate to R2/R3 directly; that's the review-graph workflow's job. You set verdict=OBSERVE if you want a heavier tier; the graph picks it up.
