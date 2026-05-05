@@ -172,6 +172,25 @@ for installer in \
   rm -f "$hook_log"
 done
 
+# Sync systemd user units with infra/systemd/. New units (e.g. a
+# freshly-merged chitin-foo.timer) get auto-enabled here so the
+# install step matches the merge step — closes the 2026-05-04
+# pattern where PR #282 shipped chitin-agent-unlock.{service,timer}
+# but the operator never `cp`'d + `enable`'d them, missing a 20.5h
+# auto-recovery window. Idempotent; existing timers' enable state
+# is preserved (operator-disabled units stay disabled).
+INSTALL_UNITS="$REPO/scripts/install-systemd-units.sh"
+if [[ -x "$INSTALL_UNITS" ]]; then
+  units_log=$(mktemp)
+  if "$INSTALL_UNITS" >"$units_log" 2>&1; then
+    emit ok systemd-units-synced
+  else
+    tail=$(tail -c 500 "$units_log" | tr '\n' ' ' | tr -d '"' || true)
+    emit warn systemd-units-sync-failed "tail=$tail"
+  fi
+  rm -f "$units_log"
+fi
+
 # Rotate the budget envelope if the active one closed. Without
 # this, a sticky-closed envelope deny-cascades every tool call
 # until manual rotation. Idempotent; no-op when the active

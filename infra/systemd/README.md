@@ -31,6 +31,39 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 
 ## Install
 
+First-time setup is one command:
+
+```bash
+bash scripts/install-systemd-units.sh --enable-all
+```
+
+After that, **just pull main**. `chitin-kernel-redeploy.timer` fires
+every 15 min and re-runs `install-systemd-units.sh` automatically,
+auto-enabling any newly-shipped timers. Existing timers' enable state
+is preserved (manual `systemctl --user disable <unit>` actions stick).
+
+Closes the recurring "shipped a unit, forgot to install" gap that
+caused 2026-05-04's 20.5h auto-recovery outage (PR #282 shipped the
+unlock units, operator never enabled them, missed the lockdown).
+
+For ad-hoc operator use:
+
+```bash
+# Default: link all + auto-enable NEW timers only (existing untouched)
+bash scripts/install-systemd-units.sh
+
+# Force-enable every timer (e.g. fresh checkout, prior state lost)
+bash scripts/install-systemd-units.sh --enable-all
+
+# Preview without changes
+bash scripts/install-systemd-units.sh --dry-run
+```
+
+The legacy manual snippet below still works but is no longer the
+recommended path:
+
+<details><summary>Legacy: cp + per-unit enable</summary>
+
 ```bash
 mkdir -p ~/.config/systemd/user
 cp infra/systemd/*.{service,timer} ~/.config/systemd/user/
@@ -47,6 +80,8 @@ systemctl --user enable --now chitin-groomer.timer
 systemctl --user enable --now chitin-agent-unlock.timer
 systemctl --user enable --now chitin-watchdog.timer
 ```
+
+</details>
 
 To survive logout (start at boot):
 
