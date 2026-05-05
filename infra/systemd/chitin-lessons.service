@@ -23,5 +23,11 @@ EnvironmentFile=-%h/.config/systemd/user/chitin.env
 ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/lessons.ts
 StandardOutput=journal
 StandardError=journal
-# 60s is generous for a `gh pr list` of 30 + a markdown rewrite.
-TimeoutStartSec=60
+# 30 min covers high-merge-volume days. The script does one `gh pr list`
+# + one `gh pr diff` + one `claude -p --model haiku` distillation per
+# NEW PR. claude has its own 60s per-call internal timeout with heuristic
+# fallback, so the worst case is bounded at ~60s × N_new_prs. With ~30
+# merged swarm PRs/day at peak (2026-05-03 cohort), the bound is 30 min.
+# Header docstring in lessons.ts says "heuristic-only v1" — that's
+# outdated; LLM distillation has shipped since.
+TimeoutStartSec=1800
