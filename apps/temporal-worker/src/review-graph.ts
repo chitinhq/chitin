@@ -433,3 +433,41 @@ export const __test__ = {
   isKernelInternal,
   isSchemaFile,
 };
+
+// ─── Cross-module result types ─────────────────────────────────────────────
+//
+// Relocated from the now-deleted review-graph-workflow.ts so the
+// gatekeeper (which consumes the review-graph terminal state) doesn't
+// depend on a Temporal-flavored module. The types are shape-only;
+// chitin's lobster runtime emits envelopes that callers map into
+// these shapes when they need to drive gatekeeper logic.
+
+/**
+ * Final action the review-graph terminates with. The gatekeeper
+ * consumes this to decide auto-merge vs. escalate vs.
+ * wait-for-implementor.
+ */
+export type ReviewGraphAction =
+  | 'approve'                    // all reviewers said approve; gatekeeper checks other gates + merges
+  | 'request-changes'            // a reviewer wants implementor changes (with high/medium confidence)
+  | 'escalate-to-operator'       // R3 returned low confidence OR explicit escalate; human pickup
+  | 'parse-failure-at-r4';       // every tier's output failed to parse; chain ran out of tiers
+
+export interface ReviewGraphResult {
+  final_tier: ReviewTier;
+  action: ReviewGraphAction;
+  /** The last successful parse, when one happened. Undefined when
+   *  every tier produced unparseable output. */
+  output?: ReviewerOutput;
+  /** Whether `t5_shape` was detected on input. The gatekeeper escalates
+   *  on this regardless of `action`. */
+  t5_shape: boolean;
+  /** Tier-by-tier audit trail. Each entry: tier the chain visited,
+   *  whether the reviewer's emit parsed, the parsed output if so. */
+  tier_log: Array<{
+    tier: ReviewTier;
+    parsed: boolean;
+    output?: ReviewerOutput;
+    error?: string;
+  }>;
+}

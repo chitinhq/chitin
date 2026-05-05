@@ -420,25 +420,9 @@ describe('parseToolSummary', () => {
   });
 });
 
-// ─── executeRequestWorkflow.name drift guard ─────────────────────────────
-//
-// dispatcher.ts and submit.ts each declare a local
-// `const WORKFLOW_NAME = 'executeRequestWorkflow'` — a literal string
-// that must stay equal to the actual function's `.name`. If someone
-// renames the function (or the literal) without updating both, Temporal
-// silently dispatches to a workflow type that doesn't exist. This test
-// pins the contract.
-//
-// Imports the function as a VALUE (not type) so `.name` is reachable at
-// runtime — the original test in PR #317 imported it as a type and
-// asserted on `undefined`.
-import { executeRequestWorkflow } from '../src/workflow.ts';
-
-describe('executeRequestWorkflow.name drift guard', () => {
-  it('matches the WORKFLOW_NAME literal used in dispatcher.ts and submit.ts', () => {
-    expect(executeRequestWorkflow.name).toBe('executeRequestWorkflow');
-  });
-});
+// (executeRequestWorkflow.name drift guard removed in step 4 of the
+// Temporal-removal migration — the workflow + the WORKFLOW_NAME
+// literals it pinned no longer exist.)
 
 // ─── isWorkerOwnedPath ─────────────────────────────────────────────────────
 //

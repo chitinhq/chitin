@@ -45,8 +45,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import type { ReviewGraphAction, ReviewGraphResult } from './review-graph-workflow.ts';
-import type { PrMeta } from './review-graph.ts';
+import type { ReviewGraphAction, ReviewGraphResult, PrMeta } from './review-graph.ts';
 import type { Tier } from '@chitin/contracts';
 
 export interface GatekeeperInput {

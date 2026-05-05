@@ -12,8 +12,7 @@ import {
   type GatekeeperInput,
   type GatekeeperOutcome,
 } from '../src/gatekeeper.ts';
-import type { ReviewGraphResult } from '../src/review-graph-workflow.ts';
-import type { PrMeta, ReviewerOutput, ReviewerFinding } from '../src/review-graph.ts';
+import type { ReviewGraphResult, PrMeta, ReviewerOutput, ReviewerFinding } from '../src/review-graph.ts';
 
 const { ACTION_EMOJI, ACTION_HEADLINE } = __test__;
 
