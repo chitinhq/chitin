@@ -33,6 +33,13 @@ const HERMES = process.env.HERMES_BIN ?? `${process.env.HOME}/.local/bin/hermes`
 const BOARD = process.env.HERMES_KANBAN_BOARD ?? 'chitin';
 const BACKLOG_PATH = resolve(process.cwd(), 'docs/swarm-backlog.md');
 
+// When set, every mirrored card's --assignee is forced to this value
+// instead of entry.role. Used to route the whole backlog through the
+// `chitin-runner` hermes profile (which proxies to
+// chitin-execute-request) rather than naming each role as its own
+// profile. Unset = legacy behavior (assignee = entry.role).
+const ASSIGNEE_OVERRIDE = process.env.HERMES_KANBAN_ASSIGNEE_OVERRIDE;
+
 interface MirrorResult {
   entry_id: string;
   status: string;
@@ -207,7 +214,8 @@ function mirrorEntry(entry: ReturnType<typeof parseBacklog>[number]): MirrorResu
   // For in_design entries, create directly in triage so we don't have to
   // "demote" from ready afterward (no kanban cmd does that without recreate).
   if (targetColumn === 'triage') args.push('--triage');
-  if (entry.role) args.push('--assignee', entry.role);
+  const assignee = ASSIGNEE_OVERRIDE ?? entry.role;
+  if (assignee) args.push('--assignee', assignee);
   args.push('--priority', tierToPriority(entry.tier));
 
   let cardId: string | undefined;
