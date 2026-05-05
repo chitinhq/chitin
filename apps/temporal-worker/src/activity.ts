@@ -832,6 +832,16 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     }
   }
 
+  // Gemini usage-feed projection. Scrape stderr_tail (the bounded
+  // window already captured for Temporal) for rate-limit signatures
+  // and write/update the universal feed. Always runs on gemini
+  // dispatches — even with zero events, the file is touched so the
+  // budget tooling can rely on its existence + updated_at.
+  if (plan.command === 'gemini') {
+    const events = scrapeGeminiRateLimitEvents(result.stderr_tail);
+    writeGeminiUsageFeed(events);
+  }
+
   if (useWorktree && worktreeInfo) {
     try {
       result.worktree = captureWorktreeState(worktreeInfo.path, req.base_ref!);
@@ -959,6 +969,87 @@ function findMatchingOpenBrace(s: string, end: number): number {
   return -1;
 }
 
+// Universal usage feed for gemini. Gemini doesn't expose rate-limit
+// state via session JSONL the way codex does (no `rate_limits` block),
+// so we scrape stderr for signatures and project them into
+// ~/.cache/chitin/usage/gemini.json. Mirrors the producer interface of
+// analysis.codex_mine.usage_to_feed; schema documented in
+// docs/runbooks/usage-feeds.md. chitin-budget --check reads this feed
+// to gate dispatches when the provider is known-throttled in the last
+// hour.
+const GEMINI_USAGE_FEED_DIR = resolve(homedir(), '.cache/chitin/usage');
+const GEMINI_USAGE_FEED_PATH = join(GEMINI_USAGE_FEED_DIR, 'gemini.json');
+
+const GEMINI_RATE_LIMIT_PATTERNS: Array<{ re: RegExp; signature: string }> = [
+  { re: /\b429\b/, signature: '429' },
+  { re: /quota exceeded/i, signature: 'quota_exceeded' },
+  { re: /daily limit reached/i, signature: 'daily_limit_reached' },
+  { re: /resource[_ ]exhausted/i, signature: 'resource_exhausted' },
+  { re: /rate[- ]?limit/i, signature: 'rate_limit' },
+];
+
+interface GeminiUsageEvent {
+  ts: string;
+  kind: 'rate_limit';
+  signature: string;
+  line: string;
+}
+
+interface GeminiUsageFeed {
+  driver: 'gemini';
+  schema_version: 1;
+  updated_at: string;
+  events: GeminiUsageEvent[];
+}
+
+function scrapeGeminiRateLimitEvents(stderr: string): GeminiUsageEvent[] {
+  const events: GeminiUsageEvent[] = [];
+  const now = new Date().toISOString();
+  for (const raw of stderr.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    for (const { re, signature } of GEMINI_RATE_LIMIT_PATTERNS) {
+      if (re.test(line)) {
+        events.push({ ts: now, kind: 'rate_limit', signature, line: line.slice(0, 500) });
+        break;
+      }
+    }
+  }
+  return events;
+}
+
+// Always touches the feed file (even with zero new events) so the file
+// exists after any gemini dispatch — chitin-budget --check uses
+// `updated_at` as a "ran recently" signal independent of the events
+// array, and tooling can rely on the file's existence after a run.
+function writeGeminiUsageFeed(newEvents: GeminiUsageEvent[]): void {
+  try {
+    mkdirSync(GEMINI_USAGE_FEED_DIR, { recursive: true });
+    let events: GeminiUsageEvent[] = [];
+    if (existsSync(GEMINI_USAGE_FEED_PATH)) {
+      try {
+        const parsed = JSON.parse(readFileSync(GEMINI_USAGE_FEED_PATH, 'utf8'));
+        if (parsed && Array.isArray(parsed.events)) events = parsed.events;
+      } catch {
+        // corrupt file — start fresh
+      }
+    }
+    events.push(...newEvents);
+    // Cap retained events so a chronically throttled provider doesn't
+    // grow the feed file unbounded.
+    if (events.length > 1000) events = events.slice(-1000);
+    const feed: GeminiUsageFeed = {
+      driver: 'gemini',
+      schema_version: 1,
+      updated_at: new Date().toISOString(),
+      events,
+    };
+    writeFileSync(GEMINI_USAGE_FEED_PATH, JSON.stringify(feed, null, 2));
+  } catch {
+    // Best-effort — never block the activity result on telemetry.
+  }
+}
+
 // Re-export runGatekeeperNotify so the worker registers it as an
 // activity. Workflows can't make HTTP calls; reviewGraphWorkflow
 // proxies this for the terminal-state Slack digest.
@@ -986,8 +1077,12 @@ export const __test__ = {
   writeWorktreeIndex,
   provisionOpenclawState,
   extractHookEvents,
+  scrapeGeminiRateLimitEvents,
+  writeGeminiUsageFeed,
   DRIVER_AGENT_MAP,
   SWARM_WORKTREES_ROOT,
   CLAUDE_TIER_MODEL,
   COPILOT_TIER_MODEL,
+  GEMINI_USAGE_FEED_PATH,
+  GEMINI_USAGE_FEED_DIR,
 };
