@@ -29,6 +29,7 @@
 
 import { runAgentTurn } from './activity.ts';
 import { listRunningExecuteRequestsFromDisk } from './spawn-execute-request.ts';
+import { findReadyCardByTitle, claimCard, completeCard } from './kanban-bridge.ts';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { DriverId, Tier } from '@chitin/contracts';
 import { execFileSync, execSync } from 'node:child_process';
@@ -741,12 +742,23 @@ async function main() {
     // nothing to gate notifyDispatchStart on. Fire it before the run
     // since the marker is already on disk.
     await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
+
+    // Hermes kanban: flip the card ready→running so the operator's
+    // dashboard reflects in-flight state. Best-effort — kanban hiccups
+    // never block dispatch (claimCard returns false silently on any
+    // error). Card may be null when the mirror hasn't synced yet.
+    const card = findReadyCardByTitle(entry.id);
+    if (card) {
+      claimCard(card.id);
+    }
+
     log('info', 'workflow started', {
       workflow_id: workflowId,
       tier,
       driver,
       model,
       role: resolvedRole,
+      kanban_card_id: card?.id ?? null,
     });
 
     let result: ActivityResult;
@@ -759,6 +771,14 @@ async function main() {
       // the run terminated. exit_code=-1 + commits=0 is the SIGKILL
       // signature; commits=0 alone signals re-dispatchable.
       recordDispatchOutcome(entry.id, { exit_code: -1, commits_added: 0 });
+      // Best-effort: mark the kanban card complete with the failure
+      // outcome so the dashboard doesn't show it stuck on running.
+      if (card) {
+        completeCard(card.id, {
+          result: `crashed: ${msg.slice(0, 200)}`,
+          metadata: { workflow_id: workflowId, exit_code: -1, error: msg.slice(0, 500) },
+        });
+      }
       throw err;
     }
     // Record terminal outcome on the marker so the next dispatcher
@@ -818,6 +838,25 @@ async function main() {
       commits_added: result.worktree?.commits_added ?? 0,
       uncommitted: result.worktree?.has_uncommitted_changes ?? false,
     });
+
+    // Hermes kanban: flip the card running→done with the dispatch
+    // outcome. Best-effort — completeCard returns false silently if
+    // hermes is missing or the card has been archived/reassigned.
+    if (card) {
+      completeCard(card.id, {
+        result: result.exit_code === 0 ? 'shipped' : `exit ${result.exit_code}`,
+        metadata: {
+          workflow_id: workflowId,
+          exit_code: result.exit_code,
+          duration_ms: result.duration_ms,
+          commits_added: result.worktree?.commits_added ?? 0,
+          tier,
+          driver,
+          model,
+          role: resolvedRole ?? 'system',
+        },
+      });
+    }
 
     // Run apply step inline. apply-workflow-result.ts handles push + PR
     // when the worktree has work, no-ops otherwise. Best-effort: failures
