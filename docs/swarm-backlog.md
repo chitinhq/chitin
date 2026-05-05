@@ -1228,6 +1228,119 @@ escape — sufficient depth.
 
 ---
 
+### `wire-comment-responder-precheck-or-relocate-to-kernel`
+
+```yaml
+id: wire-comment-responder-precheck-or-relocate-to-kernel
+tier: T2
+status: ready
+estimated_loc: 100
+blocks: []
+file: apps/temporal-worker/src/comment-responder/dispatch.ts, apps/temporal-worker/src/comment-responder/enqueue-activity.ts, apps/temporal-worker/src/skills/comment-responder.ts (relocate?), go/execution-kernel/internal/policy/rules/no-rm-recursive.go (alt path)
+references_pr: 343
+references_finding: 2026-05-05-rm-rf-clone-recurrence
+role: programmer
+```
+
+**Wiring follow-up to PR #343.** PR #343 shipped `precheckShellCommand`
+as a pure tested function at `apps/temporal-worker/src/skills/comment-responder.ts`
+— but **nothing on main calls it.** The actual comment-responder
+agent-spawn flow lives in `apps/temporal-worker/src/comment-responder/`
+(different directory) and the agent (claude-code-headless / copilot-cli)
+generates shell commands that flow through the Go kernel's PreToolUse
+hook, not through any TS pre-check.
+
+Two fix paths — programmer should pick one:
+
+1. **TS-layer wire** (if there's any post-LLM / pre-spawn shell
+   composition in the comment-responder activity that can intercept):
+   call `precheckShellCommand` there; on `ok=false`, refuse the
+   forward and log a `bootstrap-rejected` chain event with the
+   returned `event_kind`. Also relocate `src/skills/comment-responder.ts`
+   → `src/comment-responder/precheck.ts` to colocate with the rest
+   of the skill's TS code (the `src/skills/` sibling location is
+   confusingly close to `src/comment-responder/` and `skills/comment-responder/`).
+2. **Kernel-layer port** (if there's no TS shell-forwarding surface):
+   port the regex pair (`RM_RECURSIVE_RE` + `GH_REPO_CLONE_RE` + the
+   ordering check) into a new Go rule. Don't reuse `no-rm-recursive`
+   — that rule is the lockdown trigger; this should fire EARLIER as
+   a "rewrite/refuse with retry recipe" so we avoid the lockdown
+   cascade entirely. Land alongside `no-rm-recursive`, evaluated
+   first.
+
+The earlier intercept is the whole point — kernel `no-rm-recursive`
+already catches the pattern, but with deny+escalate, which produces
+the 2091-event lockdown cascade documented in `/mine` 2026-05-05.
+The pre-check needs to fire BEFORE the kernel rule and replace the
+command with a corrective error the agent can use to retry, not
+trigger lockdown.
+
+Acceptance: a synthetic `rm -rf ./* && gh repo clone .` from
+copilot-cli in the comment-responder workflow either (a) emits a
+`bootstrap-rejected` chain event without any kernel deny, or (b)
+fires the new kernel rule with a `rewrite` outcome before
+`no-rm-recursive` sees it. Either path; not both.
+
+---
+
+### `kernel-chain-event-read-dispatch-meta-for-tagging`
+
+```yaml
+id: kernel-chain-event-read-dispatch-meta-for-tagging
+tier: T3
+status: ready
+estimated_loc: 200
+blocks: []
+file: go/execution-kernel/internal/governance/, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
+references_pr: 344
+references_finding: 2026-05-05-fingerprint-coverage-gap
+role: programmer
+```
+
+**Layer-2 follow-up to PR #344.** PR #344 wired `(role, model, tier,
+driver)` through the dispatcher's `dispatch_meta` envelope so the
+tuple is now propagated forward from dispatch time. But the chain
+events that produce the 92% `(untagged) × (none)` bucket in
+`fingerprint-outcomes` are emitted by the **Go kernel's PreToolUse
+hook**, not by the dispatcher itself. The kernel doesn't read
+`dispatch_meta` yet, so its emitted events still have empty
+role/model.
+
+Fix scope:
+
+1. **Persist dispatch_meta to a kernel-readable channel.** Either
+   (a) the activity writes `dispatch_meta.json` into the worktree
+   on spawn and the kernel reads it on each PreToolUse, or (b) the
+   tuple is passed via env vars (`CHITIN_DISPATCH_ROLE`,
+   `CHITIN_DISPATCH_MODEL`, `CHITIN_DISPATCH_TIER`,
+   `CHITIN_DISPATCH_DRIVER`) on the agent spawn. Option (b) is
+   simpler — env vars survive across PreToolUse calls without disk
+   I/O.
+2. **Kernel reads + tags.** Wherever `gov-decisions-<date>.jsonl`
+   rows are written in `go/execution-kernel/internal/governance/`,
+   fill in `role` / `model` from the dispatch context. Where the
+   context is genuinely absent (raw shell hook, no workflow), tag
+   `role=external` / `model=null` so the (untagged) bucket shrinks
+   to genuinely-external events.
+3. **Update `fingerprint_outcomes.py`** to rename `(untagged)` →
+   `(external)` and add an alarm if `(external)` exceeds 30% of
+   dispatches (regression detector for the next missing emitter).
+
+Edge cases:
+
+- System-level housekeeping events (chain rotation, alarm-feeder)
+  legitimately have no role — tag `role=system` so they're separable.
+- Schema migration: `libs/chain/src/event.ts` may need optional
+  `role`/`model` fields added. Make them optional in the type,
+  required-with-explicit-null at the kernel write site (lesson #287).
+
+Acceptance: re-run `python -m analysis.fingerprint_outcomes --since
+24h` after this lands; the `(untagged)` row should shrink to <30%
+of dispatches. ELO leaderboard then reflects real distribution
+across roles/models, not an 8% sample.
+
+---
+
 ### `chain-fingerprint-tagging-coverage`
 
 ```yaml
