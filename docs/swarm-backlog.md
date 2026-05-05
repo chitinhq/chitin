@@ -1167,7 +1167,7 @@ fresh checkout can wire it once.
 ```yaml
 id: comment-responder-executor-hard-stop-rm-rf-clone
 tier: T2
-status: ready
+status: partial
 estimated_loc: 50
 blocks: []
 file: apps/temporal-worker/src/skills/comment-responder.ts, apps/temporal-worker/test/comment-responder.test.ts
@@ -1346,7 +1346,7 @@ across roles/models, not an 8% sample.
 ```yaml
 id: chain-fingerprint-tagging-coverage
 tier: T3
-status: ready
+status: partial
 estimated_loc: 250
 blocks: []
 file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/activity.ts, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
@@ -5956,7 +5956,7 @@ needs an explicit signal). When unset, fingerprint records `none`.
 ```yaml
 id: chain-fingerprint-tagging
 tier: T2
-status: ready
+status: partial
 estimated_loc: 250
 blocks: ['routing-fingerprint-helper']
 file: go/execution-kernel/internal/gov/decision.go, go/execution-kernel/cmd/chitin-kernel/hook.go, apps/temporal-worker/src/activity.ts (writeback)
