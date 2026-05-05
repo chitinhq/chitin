@@ -45,14 +45,13 @@ import {
   enqueueCommentResponder,
   commentResponderWorkflowIdForPr,
 } from './comment-responder/dispatch.ts';
+import { listRunningExecuteRequestsFromDisk } from './spawn-execute-request.ts';
 
 // Threshold above which the ingester dispatches a comment-responder.
 // Mirrors the §5 review-graph trigger ("Copilot bot leaves > 2 inline
 // comments → escalate to R1") so the comment-responder fires on
 // roughly the same PRs that get an R1 reviewer.
 const COMMENT_RESPONDER_THRESHOLD = 2;
-
-const EXECUTE_REQUEST_WORKFLOW_NAME = 'executeRequestWorkflow';
 
 const TASK_QUEUE = 'chitin-worker-q';
 
@@ -491,52 +490,28 @@ export async function listRunningReviewGraphWorkflows(_client: Client): Promise<
 }
 
 /**
- * Query Temporal for currently-running peer-reviewer + comment-
- * responder workflow ids. Both share the executeRequestWorkflow type;
- * we filter by workflow_id prefix in-process (NOT in the visibility
- * query) because `STARTS_WITH` + boolean OR in visibility queries
- * isn't uniformly supported across Temporal visibility backends —
- * the default SQLite backend in particular rejects it. (Copilot
- * review #211 #3.)
- *
- * Failure mode: if the visibility query throws (backend down, schema
- * drift, etc.), this returns an empty set and logs a warn line
- * rather than letting the entire ingester tick fail. Treating "no
- * running agents" on query failure means the ingester might
- * dispatch a duplicate peer-reviewer for one tick — which Temporal
- * itself rejects via stable workflow id, since peer-review-pr-<n>
- * is a unique-by-PR id. Fail-open here is bounded.
+ * List currently-running peer-reviewer + comment-responder workflow
+ * ids. Post-cut-over the source of truth is the log-file mtime in
+ * `~/.cache/chitin/execute-request-logs/` — see
+ * listRunningExecuteRequestsFromDisk for the oracle. The `_client` /
+ * `_log` args are retained as no-ops so callers don't need to change
+ * shape; removed once the dispatcher.ts cut-over completes and the
+ * Temporal client drops out of the ingester entirely.
  */
 export async function listRunningAgentWorkflows(
-  client: Client,
-  log?: (line: string) => void,
+  _client: Client,
+  _log?: (line: string) => void,
 ): Promise<Set<string>> {
+  const all = listRunningExecuteRequestsFromDisk();
   const ids = new Set<string>();
-  try {
-    const iter = client.workflow.list({
-      query: `WorkflowType="${EXECUTE_REQUEST_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
-    });
-    for await (const wf of iter) {
-      const id = wf.workflowId;
-      // Filter to the agent ids in-process (peer-review-pr-* and
-      // comment-respond-pr-*) so the visibility query stays
-      // backend-portable.
-      if (id.startsWith('peer-review-pr-') || id.startsWith('comment-respond-pr-')) {
-        ids.add(id);
-      }
+  for (const id of all) {
+    // Match the existing in-process filter shape — peer-reviewer and
+    // comment-responder use stable per-PR workflow ids; other
+    // execute-request runs (programmer, groomer) live in the same
+    // log dir but aren't relevant to the per-PR dedup pool here.
+    if (id.startsWith('peer-review-pr-') || id.startsWith('comment-respond-pr-')) {
+      ids.add(id);
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'warn',
-      component: 'pr-event-ingester',
-      msg: 'listRunningAgentWorkflows failed; treating as empty',
-      error: msg,
-    });
-    if (log) log(line);
-    else console.warn(line);
-    return new Set();
   }
   return ids;
 }
@@ -723,8 +698,6 @@ export async function runIngesterTick(opts: {
         result.peer_reviewers_enqueued += 1;
       } else {
         const peerRes = await enqueuePeerReviewer({
-          client: opts.client,
-          taskQueue: opts.taskQueue,
           pr_url: pr.url,
           repo: opts.repo,
           log,
@@ -761,8 +734,6 @@ export async function runIngesterTick(opts: {
         result.comment_responders_enqueued += 1;
       } else {
         const respRes = await enqueueCommentResponder({
-          client: opts.client,
-          taskQueue: opts.taskQueue,
           pr_url: pr.url,
           repo: opts.repo,
           log,

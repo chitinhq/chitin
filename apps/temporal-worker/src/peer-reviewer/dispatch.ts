@@ -13,18 +13,16 @@
 // try to push an empty diff as a no-op PR.
 
 import { randomUUID } from 'node:crypto';
-import type { Client } from '@temporalio/client';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
-import type { executeRequestWorkflow } from '../workflow.ts';
 import type { BacklogEntry } from '../grooming/parse-backlog.ts';
 import { buildPeerReviewerPrompt } from './prompt.ts';
-
-const EXECUTE_REQUEST_WORKFLOW_NAME = 'executeRequestWorkflow';
+import {
+  spawnExecuteRequest,
+  type SpawnExecuteRequestInput,
+} from '../spawn-execute-request.ts';
 
 export interface EnqueuePeerReviewerInput {
-  client: Client;
-  taskQueue: string;
   /** PR URL for the agent to review. Required — the prompt's step-0
    *  guard refuses to act without a PR URL in the entry detail. */
   pr_url: string;
@@ -37,6 +35,9 @@ export interface EnqueuePeerReviewerInput {
   tier?: Tier;
   /** Optional log sink (defaults to console.log). Tests inject. */
   log?: (line: string) => void;
+  /** Injectable spawn for tests. Defaults to the chitin-execute-request
+   *  detached spawn from spawn-execute-request.ts. */
+  spawnFn?: SpawnExecuteRequestInput['spawnFn'];
 }
 
 export interface EnqueuePeerReviewerResult {
@@ -132,9 +133,14 @@ export function buildPeerReviewerRequest(
 }
 
 /**
- * Spawn the peer-reviewer workflow. Failure is logged but never
+ * Spawn the peer-reviewer agent. Failure is logged but never
  * propagates — peer review is consultative; missing it is not worse
  * than the pre-PR baseline where Copilot R0 was the only review.
+ *
+ * Pre-cut-over: client.workflow.start(executeRequestWorkflow, ...) with
+ * USE_EXISTING for race-safe re-entry. Post-cut-over: detached spawn
+ * of chitin-execute-request, with log-file-mtime dedup playing the
+ * USE_EXISTING role (recent log → already in flight, skip).
  */
 export async function enqueuePeerReviewer(
   input: EnqueuePeerReviewerInput,
@@ -157,30 +163,33 @@ export async function enqueuePeerReviewer(
     return { enqueued: false, error: msg };
   }
 
-  try {
-    await input.client.workflow.start<typeof executeRequestWorkflow>(EXECUTE_REQUEST_WORKFLOW_NAME, {
-      args: [request],
-      taskQueue: input.taskQueue,
-      workflowId: request.workflow_id,
-      // Stable per-PR workflow id means concurrent ingester ticks
-      // can race a workflow.start() against an already-running run.
-      // USE_EXISTING returns a handle to the running workflow rather
-      // than throwing WorkflowExecutionAlreadyStartedError, so the
-      // ingester doesn't inflate its `errors` counter on the race.
-      // (Copilot review #211 round-2 #2.)
-      workflowIdConflictPolicy: 'USE_EXISTING',
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  const spawnResult = await spawnExecuteRequest({
+    request,
+    spawnFn: input.spawnFn,
+  });
+
+  if (spawnResult.skipped_already_running) {
+    log(JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'info',
+      component: 'peer-reviewer-dispatch',
+      msg: 'peer-reviewer already in flight; skipping spawn',
+      workflow_id: request.workflow_id,
+      pr_url: input.pr_url,
+    }));
+    return { enqueued: false, workflow_id: request.workflow_id };
+  }
+
+  if (!spawnResult.enqueued) {
     log(JSON.stringify({
       ts: new Date().toISOString(),
       level: 'warn',
       component: 'peer-reviewer-dispatch',
-      msg: 'submit failed; PR review will rely on R0 only',
+      msg: 'spawn failed; PR review will rely on R0 only',
       pr_url: input.pr_url,
-      error: msg,
+      error: spawnResult.error,
     }));
-    return { enqueued: false, error: msg };
+    return { enqueued: false, error: spawnResult.error };
   }
 
   log(JSON.stringify({

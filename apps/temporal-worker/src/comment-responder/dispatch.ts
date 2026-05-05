@@ -15,18 +15,16 @@
 // running for this PR.
 
 import { randomUUID } from 'node:crypto';
-import type { Client } from '@temporalio/client';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { ExecutionRequest, DriverId, Tier } from '@chitin/contracts';
-import type { executeRequestWorkflow } from '../workflow.ts';
 import type { BacklogEntry } from '../grooming/parse-backlog.ts';
 import { buildCommentResponderPrompt } from './prompt.ts';
-
-const EXECUTE_REQUEST_WORKFLOW_NAME = 'executeRequestWorkflow';
+import {
+  spawnExecuteRequest,
+  type SpawnExecuteRequestInput,
+} from '../spawn-execute-request.ts';
 
 export interface EnqueueCommentResponderInput {
-  client: Client;
-  taskQueue: string;
   /** PR URL the agent is responding to. Required. */
   pr_url: string;
   /** Repo slug for the agent's gh calls. */
@@ -39,6 +37,8 @@ export interface EnqueueCommentResponderInput {
   tier?: Tier;
   /** Optional log sink (defaults to console.log). */
   log?: (line: string) => void;
+  /** Injectable spawn for tests. */
+  spawnFn?: SpawnExecuteRequestInput['spawnFn'];
 }
 
 export interface EnqueueCommentResponderResult {
@@ -138,9 +138,12 @@ export function buildCommentResponderRequest(
 }
 
 /**
- * Spawn the comment-responder workflow. Failure is logged but never
+ * Spawn the comment-responder agent. Failure is logged but never
  * propagates — missing the dispatch leaves the comments unaddressed,
  * but doesn't break the PR's existing state.
+ *
+ * Pre-cut-over: client.workflow.start with USE_EXISTING. Post-cut-over:
+ * spawnExecuteRequest with log-file dedup playing the USE_EXISTING role.
  */
 export async function enqueueCommentResponder(
   input: EnqueueCommentResponderInput,
@@ -163,28 +166,33 @@ export async function enqueueCommentResponder(
     return { enqueued: false, error: msg };
   }
 
-  try {
-    await input.client.workflow.start<typeof executeRequestWorkflow>(EXECUTE_REQUEST_WORKFLOW_NAME, {
-      args: [request],
-      taskQueue: input.taskQueue,
-      workflowId: request.workflow_id,
-      // Stable per-PR workflow id: USE_EXISTING returns a handle to
-      // the running workflow rather than throwing
-      // WorkflowExecutionAlreadyStartedError on concurrent ingester
-      // ticks. (Copilot review #211 round-2 #2.)
-      workflowIdConflictPolicy: 'USE_EXISTING',
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  const spawnResult = await spawnExecuteRequest({
+    request,
+    spawnFn: input.spawnFn,
+  });
+
+  if (spawnResult.skipped_already_running) {
+    log(JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'info',
+      component: 'comment-responder-dispatch',
+      msg: 'comment-responder already in flight; skipping spawn',
+      workflow_id: request.workflow_id,
+      pr_url: input.pr_url,
+    }));
+    return { enqueued: false, workflow_id: request.workflow_id };
+  }
+
+  if (!spawnResult.enqueued) {
     log(JSON.stringify({
       ts: new Date().toISOString(),
       level: 'warn',
       component: 'comment-responder-dispatch',
-      msg: 'submit failed; comments will remain unaddressed until next cycle',
+      msg: 'spawn failed; comments will remain unaddressed until next cycle',
       pr_url: input.pr_url,
-      error: msg,
+      error: spawnResult.error,
     }));
-    return { enqueued: false, error: msg };
+    return { enqueued: false, error: spawnResult.error };
   }
 
   log(JSON.stringify({

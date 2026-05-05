@@ -1,9 +1,35 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   buildCommentResponderEntry,
   buildCommentResponderRequest,
   commentResponderWorkflowIdForPr,
+  enqueueCommentResponder,
 } from '../src/comment-responder/dispatch.ts';
+import type { SpawnFnInput } from '../src/spawn-execute-request.ts';
+
+function withFreshDirs<T>(body: () => Promise<T>): Promise<T> {
+  const root = resolve(tmpdir(), `cr-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const logDir = resolve(root, 'logs');
+  const argsDir = resolve(root, 'args');
+  mkdirSync(logDir, { recursive: true });
+  mkdirSync(argsDir, { recursive: true });
+  const orig = {
+    log: process.env.CHITIN_EXECUTE_REQUEST_LOG_DIR,
+    args: process.env.CHITIN_EXECUTE_REQUEST_ARGS_DIR,
+  };
+  process.env.CHITIN_EXECUTE_REQUEST_LOG_DIR = logDir;
+  process.env.CHITIN_EXECUTE_REQUEST_ARGS_DIR = argsDir;
+  return body().finally(() => {
+    if (orig.log === undefined) delete process.env.CHITIN_EXECUTE_REQUEST_LOG_DIR;
+    else process.env.CHITIN_EXECUTE_REQUEST_LOG_DIR = orig.log;
+    if (orig.args === undefined) delete process.env.CHITIN_EXECUTE_REQUEST_ARGS_DIR;
+    else process.env.CHITIN_EXECUTE_REQUEST_ARGS_DIR = orig.args;
+    rmSync(root, { recursive: true, force: true });
+  });
+}
 
 describe('commentResponderWorkflowIdForPr', () => {
   it('produces a stable id per PR number', () => {
@@ -106,4 +132,59 @@ describe('buildCommentResponderRequest', () => {
     expect(req.prompt).toMatch(/Verify your dispatch shape FIRST/);
     expect(req.prompt).toMatch(/Reply to each individual review comment thread/);
   });
+});
+
+describe('enqueueCommentResponder', () => {
+  it('spawns chitin-execute-request when not already running', () =>
+    withFreshDirs(async () => {
+      const calls: SpawnFnInput[] = [];
+      const logs: string[] = [];
+      const r = await enqueueCommentResponder({
+        pr_url: 'https://github.com/chitinhq/chitin/pull/300',
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnFn: async (input) => { calls.push(input); },
+      });
+      expect(r.enqueued).toBe(true);
+      expect(r.workflow_id).toBe('comment-respond-pr-300');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].workflow_id).toBe('comment-respond-pr-300');
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.msg).toBe('comment-responder enqueued');
+    }));
+
+  it('skips spawn + logs info when an in-flight log file exists', () =>
+    withFreshDirs(async () => {
+      const logDir = process.env.CHITIN_EXECUTE_REQUEST_LOG_DIR!;
+      writeFileSync(resolve(logDir, 'comment-respond-pr-301.log'), '');
+      const calls: SpawnFnInput[] = [];
+      const logs: string[] = [];
+      const r = await enqueueCommentResponder({
+        pr_url: 'https://github.com/chitinhq/chitin/pull/301',
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnFn: async (input) => { calls.push(input); },
+      });
+      expect(r.enqueued).toBe(false);
+      expect(r.workflow_id).toBe('comment-respond-pr-301');
+      expect(calls).toHaveLength(0);
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.level).toBe('info');
+      expect(parsed.msg).toBe('comment-responder already in flight; skipping spawn');
+    }));
+
+  it('logs warn + returns enqueued=false when spawn throws', () =>
+    withFreshDirs(async () => {
+      const logs: string[] = [];
+      const r = await enqueueCommentResponder({
+        pr_url: 'https://github.com/chitinhq/chitin/pull/302',
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnFn: async () => { throw new Error('mock spawn explosion'); },
+      });
+      expect(r.enqueued).toBe(false);
+      expect(r.error).toContain('mock spawn explosion');
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.level).toBe('warn');
+    }));
 });

@@ -5,12 +5,14 @@
   "type": "module",
   "main": "./src/worker.ts",
   "bin": {
-    "chitin-agent-runner": "./bin/chitin-agent-runner"
+    "chitin-agent-runner": "./bin/chitin-agent-runner",
+    "chitin-execute-request": "./bin/chitin-execute-request"
   },
   "scripts": {
     "worker": "tsx src/worker.ts",
     "submit": "tsx src/submit.ts",
     "runner": "tsx src/runner.ts",
+    "execute-request": "tsx src/execute-request.ts",
     "test": "vitest run test"
   },
   "nx": {
