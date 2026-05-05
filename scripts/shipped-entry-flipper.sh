@@ -174,3 +174,13 @@ git commit -m "auto: flip $(echo ${#flipped_ids[@]}) backlog entries ready→par
 git push -u origin "$branch"
 gh pr create --title "auto: flip ${#flipped_ids[@]} entries ready→partial (shipped-entry-flipper)" --body "$body"
 emit ok "pr-opened" "branch=$branch" "flipped_count=${#flipped_ids[@]}"
+
+# Restore the operator's main checkout. Without this, the cron-fired
+# flipper leaves the working tree on `auto/shipped-entry-flipper-*`,
+# which then fails every chitin-kernel-redeploy.timer tick with
+# "Not possible to fast-forward" because main and the flipper branch
+# have diverged history. Symmetric to the no-flips-applied branch
+# above which already does `git checkout main`. The branch isn't
+# deleted locally because it's pushed to origin and the PR references
+# it — let the post-merge cleanup handle that.
+git checkout --quiet main 2>/dev/null || emit warn "post-pr-checkout-main-failed" "branch=$branch"

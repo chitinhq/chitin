@@ -82,6 +82,28 @@ if ! cd "$REPO" 2>/dev/null; then
   exit 1
 fi
 
+# Ensure we're on `main` before pulling. The chitin-shipped-entry-flipper
+# cron script (and others) leave the working tree on whatever branch
+# they created — `git pull --ff-only` against an unrelated branch
+# fails with "Not possible to fast-forward, aborting." Switch to main
+# defensively so the redeploy can proceed regardless of what other
+# crons left behind. --autostash preserves the operator's uncommitted
+# files (docs/roadmap.md, docs/swarm-lessons.md) across the switch.
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$current_branch" != "main" ]]; then
+  if ! git -c advice.detachedHead=false checkout main 2>/dev/null; then
+    # Stash + switch + pop, in case detachedHead-prevention or local
+    # uncommitted edits block a clean switch.
+    git stash push --include-untracked --quiet >/dev/null 2>&1 || true
+    if ! git checkout main 2>/dev/null; then
+      emit fail branch-switch-failed "from=$current_branch"
+      exit 1
+    fi
+    git stash pop --quiet >/dev/null 2>&1 || true
+  fi
+  emit ok auto-switched-to-main "from=$current_branch"
+fi
+
 old_sha=$(git rev-parse HEAD)
 if ! git fetch --quiet origin main; then
   emit fail fetch-failed "old_sha=$old_sha"
@@ -94,14 +116,28 @@ relevant_changes_since_last="(none)"
 
 if [[ "$old_sha" != "$new_sha" ]]; then
   if git diff --quiet "$old_sha" "$new_sha" -- go/ chitin.yaml; then
-    if ! git pull --ff-only --quiet origin main; then
+    # --autostash keeps the operator's uncommitted working-tree changes
+    # (e.g. docs/roadmap.md from chitin-researcher.service, docs/swarm-
+    # lessons.md from chitin-lessons.service — neither commits its
+    # writes). Without it, those uncommitted modifications block
+    # `--ff-only` and the redeploy timer fires fail-pull-conflict every
+    # 15 min. Auto-stash → fast-forward → auto-pop, transparent to the
+    # operator.
+    if ! git pull --ff-only --autostash --quiet origin main; then
       emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
       exit 1
     fi
     emit noop "no kernel-relevant changes" "old_sha=$old_sha" "new_sha=$new_sha"
     exit 0
   else
-    if ! git pull --ff-only --quiet origin main; then
+    # --autostash keeps the operator's uncommitted working-tree changes
+    # (e.g. docs/roadmap.md from chitin-researcher.service, docs/swarm-
+    # lessons.md from chitin-lessons.service — neither commits its
+    # writes). Without it, those uncommitted modifications block
+    # `--ff-only` and the redeploy timer fires fail-pull-conflict every
+    # 15 min. Auto-stash → fast-forward → auto-pop, transparent to the
+    # operator.
+    if ! git pull --ff-only --autostash --quiet origin main; then
       emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
       exit 1
     fi
