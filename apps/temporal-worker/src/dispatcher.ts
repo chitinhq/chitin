@@ -118,6 +118,43 @@ const TIER_DRIVER: Record<Tier, DriverId> = (Object.keys(TIER_DRIVER_DEFAULTS) a
   {} as Record<Tier, DriverId>,
 );
 
+// Tier → model mapping. Parallel axis to TIER_DRIVER so chain events
+// emitted by the activity / apply step can attribute (driver, model)
+// independently. Without this, the /mine fingerprint-outcomes view rolls
+// 92% of dispatches into the (untagged) × (none) row because the
+// dispatcher only propagated `tier` + `role` and the model was implicit
+// in the driver — the analysis layer can't recover it.
+//
+// Sourced from the comments on TIER_DRIVER_DEFAULTS:
+//   T0/T1 openclaw-glm-flash → glm-4.7-flash (3090, ~30B)
+//   T2    copilot            → claude-haiku-4-5 (Copilot Pro, 0.33×)
+//   T3    openclaw-glm-cloud → glm-5.1:cloud (Ollama Cloud, opus-light)
+//   T4    claude-code-headless → claude-opus-4-7 (Anthropic Max)
+//
+// Operator override matches the driver-override convention:
+//   CHITIN_TIER_MODEL_T2=claude-sonnet-4-6
+const TIER_MODEL_DEFAULTS: Record<Tier, string> = {
+  T0: 'glm-4.7-flash',
+  T1: 'glm-4.7-flash',
+  T2: 'claude-haiku-4-5',
+  T3: 'glm-5.1:cloud',
+  T4: 'claude-opus-4-7',
+};
+
+function envModelOverride(tier: Tier): string | undefined {
+  const v = process.env[`CHITIN_TIER_MODEL_${tier}`];
+  if (!v || !v.trim()) return undefined;
+  return v.trim();
+}
+
+const TIER_MODEL: Record<Tier, string> = (Object.keys(TIER_MODEL_DEFAULTS) as Tier[]).reduce(
+  (acc, tier) => {
+    acc[tier] = envModelOverride(tier) ?? TIER_MODEL_DEFAULTS[tier];
+    return acc;
+  },
+  {} as Record<Tier, string>,
+);
+
 // Per-entry wall_timeout — short enough that a stuck workflow doesn't
 // hold the queue long, generous enough that real work has room. The
 // wall_timeout is enforced by activity SIGKILL (slice 7a) — stuck
@@ -648,6 +685,7 @@ async function main() {
     const { entry, effectiveTier, priorMarker } = picked;
     const tier = effectiveTier;
     const driver = TIER_DRIVER[tier];
+    const model = TIER_MODEL[tier];
     const wallTimeout = TIER_WALL_TIMEOUT_S[tier];
     const maxToolCalls = TIER_MAX_TOOL_CALLS[tier];
     const workflowId = `swarm-${sanitize(entry.id)}-${Date.now()}`;
@@ -656,6 +694,7 @@ async function main() {
       entry_id: entry.id,
       tier,
       driver,
+      model,
       wall_timeout_s: wallTimeout,
       workflow_id: workflowId,
     });
@@ -716,7 +755,13 @@ async function main() {
     // workflow.start() doesn't claim a workflow exists in Slack that
     // never actually got created.
     await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
-    log('info', 'workflow started', { workflow_id: workflowId });
+    log('info', 'workflow started', {
+      workflow_id: workflowId,
+      tier,
+      driver,
+      model,
+      role: resolvedRole,
+    });
 
     let result: ActivityResult;
     try {
@@ -745,11 +790,29 @@ async function main() {
         {
           workflow_id: workflowId,
           result,
+          // dispatch_meta carries the (role, model, tier, driver) tuple
+          // forward to apply-workflow-result.ts and any chain-event
+          // emitters that read the envelope. This is the dispatcher's
+          // contribution to the fingerprint-tagging fix: the tuple is
+          // known at dispatch time but was previously dropped on the
+          // floor, leaving 92% of chain events in the (untagged) ×
+          // (none) bucket. role=null/system here means the entry has
+          // no role-aware skill — keep it as an explicit null rather
+          // than omitted, so downstream fingerprint hashes stay stable
+          // (lesson #287).
+          dispatch_meta: {
+            entry_id: entry.id,
+            tier,
+            driver,
+            model,
+            role: resolvedRole ?? null,
+          },
           pr_title: `swarm: ${entry.id}`,
           pr_body:
             `Picked up by the autonomous dispatcher (slice 7).\n\n` +
             `Backlog entry: \`${entry.id}\`\n` +
-            `Tier: \`${tier}\`  •  Driver: \`${driver}\`\n` +
+            `Tier: \`${tier}\`  •  Driver: \`${driver}\`  •  Model: \`${model}\`\n` +
+            `Role: \`${resolvedRole ?? 'system'}\`\n` +
             `Workflow: \`${workflowId}\`\n\n` +
             `## Entry context\n\n${entry.description.slice(0, 4000)}\n`,
         },
@@ -759,6 +822,10 @@ async function main() {
     );
     log('info', 'workflow complete', {
       workflow_id: workflowId,
+      tier,
+      driver,
+      model,
+      role: resolvedRole,
       exit_code: result.exit_code,
       duration_ms: result.duration_ms,
       worktree_present: !!result.worktree,
