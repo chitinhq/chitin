@@ -60,10 +60,13 @@ describe('resolveConfig (plugin defaults — slice 3 default-enforce)', () => {
     expect(resolveConfig({ denyOnError: false }).denyOnError).toBe(false);
   });
 
-  it('timeoutMs defaults to 5000; rejects <100 and non-numbers', () => {
-    expect(resolveConfig({}).timeoutMs).toBe(5000);
-    expect(resolveConfig({ timeoutMs: '5000' }).timeoutMs).toBe(5000);
-    expect(resolveConfig({ timeoutMs: 50 }).timeoutMs).toBe(5000);
+  it('timeoutMs defaults to 30000; rejects <100 and non-numbers', () => {
+    // Default bumped 5000 → 30000 when the plugin switched from
+    // `evaluateGate` to `evaluateRouter` (router pipeline can include
+    // a 5-15s claude-advisor LLM round-trip; 5s ceiling was too tight).
+    expect(resolveConfig({}).timeoutMs).toBe(30000);
+    expect(resolveConfig({ timeoutMs: '5000' }).timeoutMs).toBe(30000); // string falls to default
+    expect(resolveConfig({ timeoutMs: 50 }).timeoutMs).toBe(30000); // <100 falls to default
     expect(resolveConfig({ timeoutMs: 100 }).timeoutMs).toBe(100);
     expect(resolveConfig({ timeoutMs: 1500 }).timeoutMs).toBe(1500);
   });
