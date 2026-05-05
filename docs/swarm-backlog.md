@@ -4310,7 +4310,7 @@ Steps:
 ```yaml
 id: pr-event-ingester-dedup-against-completed-workflows
 tier: T3
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/src/peer-reviewer/dispatch.ts, apps/temporal-worker/src/comment-responder/dispatch.ts
