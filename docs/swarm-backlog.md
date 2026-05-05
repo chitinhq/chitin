@@ -878,6 +878,62 @@ asserting `executeRequestWorkflow.name === WORKFLOW_NAME`.
 
 ---
 
+### `t0-glm-flash-smoke-confirm-end-to-end` (filed 2026-05-05)
+
+```yaml
+id: t0-glm-flash-smoke-confirm-end-to-end
+tier: T0
+status: ready
+estimated_loc: 8
+blocks: []
+file: docs/observations/2026-05-05-t0-glm-flash-smoke.md (new)
+references_finding: 2026-05-05-openclaw-include-hook-events-fix-verification
+role: programmer
+```
+
+End-to-end smoke test for the T0 driver (openclaw-glm-flash on the
+3090) after PR #318 landed. The fix removed the unsupported
+`--include-hook-events` flag that had been making every T0/T1
+dispatch exit 1 in 2s since the 2026-05-04 17:00 UTC shift-left.
+
+The fix is verified at the openclaw layer (manual `openclaw agent
+--local --agent glm-flash-agent` completes), but no T0 backlog entry
+has actually walked end-to-end since — every other T0 entry got
+deduped against recently-merged swarm PRs of the same id. This
+entry has a unique id so it won't dedup, providing a clean
+end-to-end signal: glm-flash on the 3090 produces commits that
+land in main.
+
+**Task:** Create a new file at the path above containing a single
+short paragraph confirming the run. Suggested content:
+
+```markdown
+# T0 glm-flash smoke confirm — 2026-05-05
+
+This file was created by the chitin swarm's T0 driver
+(openclaw-glm-flash on the local 3090) as the first end-to-end
+verification after PR #318 landed. If you see it in main, the
+shift-left routing is functional from dispatcher → glm-flash →
+commit → push → PR.
+```
+
+Exact content doesn't matter — the artifact is the existence of
+a new file in `docs/observations/` after the dispatch.
+
+**Acceptance:**
+- [ ] New file at `docs/observations/2026-05-05-t0-glm-flash-smoke.md`
+      exists in main with non-empty content
+- [ ] CI green
+- [ ] PR title includes `t0-glm-flash-smoke-confirm-end-to-end`
+      so the shipped-entry-flipper recognizes it
+
+**Why a smoke test instead of a real backlog item:** the goal is to
+*verify* T0 works, not produce useful artifacts. After this lands,
+delete this entry's file or leave it as a historical observation —
+operator's call.
+
+---
+
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
