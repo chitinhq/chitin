@@ -39,6 +39,27 @@ LOG="${CHITIN_INSTALL_KERNEL_LOG:-$HOME/.cache/chitin/install-kernel.jsonl}"
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$BIN")"
 
+# Ensure `go` is on PATH. Under systemd --user (the production caller),
+# the inherited PATH often misses /usr/local/go/bin and ~/go/bin even
+# though the operator's interactive shell has them. The result was
+# 13h of failed redeploys logged as "build-failed" on 2026-05-04 with
+# the build actually fine — `go` simply wasn't reachable. Probe in
+# order: existing PATH → /usr/local/go/bin → $HOME/go/bin. Fail with
+# a structured chain log if none works so the caller sees the cause
+# instead of a generic exit-2.
+ensure_go_on_path() {
+  if command -v go >/dev/null 2>&1; then return 0; fi
+  for candidate in /usr/local/go/bin "$HOME/go/bin"; do
+    if [[ -x "$candidate/go" ]]; then
+      export PATH="$candidate:$PATH"
+      return 0
+    fi
+  done
+  emit fail go-not-found "searched=PATH,/usr/local/go/bin,$HOME/go/bin"
+  return 1
+}
+ensure_go_on_path || exit 2
+
 emit() {
   local kind="$1" msg="$2"
   shift 2
