@@ -26,6 +26,8 @@ User-mode systemd units that run the autonomous swarm: worker daemon
 | `chitin-stale-doc-detector.timer` | timer | Fires the stale-doc detector once per day. |
 | `chitin-agent-unlock.service` | oneshot | Auto-recovery for agents lockdown'd by infrastructure-only denials (envelope-closed cascades, etc). Skips agents with any policy-violation history — those stay operator-only. |
 | `chitin-agent-unlock.timer` | timer | Fires the agent-unlock check every 15 min. |
+| `chitin-watchdog.service` | oneshot | Desktop-notification surface for chain signals: locked agents, failed `chitin-*` units, rollup alarms. Suppresses repeats by hashing the signal set; re-fires when the set changes. |
+| `chitin-watchdog.timer` | timer | Fires the watchdog every 15 min. |
 
 ## Install
 
@@ -43,6 +45,7 @@ systemctl --user enable --now chitin-alarm-feeder.timer
 systemctl --user enable --now chitin-stale-doc-detector.timer
 systemctl --user enable --now chitin-groomer.timer
 systemctl --user enable --now chitin-agent-unlock.timer
+systemctl --user enable --now chitin-watchdog.timer
 ```
 
 To survive logout (start at boot):
