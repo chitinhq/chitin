@@ -183,7 +183,16 @@ export function revertWorktreeSettingsArtifact(worktreePath: string): void {
 // is also worker-written but lives in `.git/info/exclude`, so it
 // never appears in `git status --porcelain` output and doesn't need
 // a prefix here.
-const BOOTSTRAP_UNTRACKED_PREFIXES = ['.claude/'];
+const BOOTSTRAP_UNTRACKED_PREFIXES = [
+  '.claude/',
+  'AGENTS.md',
+  'HEARTBEAT.md',
+  'IDENTITY.md',
+  'SOUL.md',
+  'TOOLS.md',
+  'USER.md',
+  '.openclaw/'
+];
 
 // Return untracked files that look like real agent work — i.e. NOT
 // under a known bootstrap path. Uses `-uall` so a new directory
