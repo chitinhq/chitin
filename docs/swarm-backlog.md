@@ -1087,6 +1087,81 @@ the apply-step).
 
 ---
 
+### `hermes-whatsapp-alarm-relay` (filed 2026-05-05)
+
+```yaml
+id: hermes-whatsapp-alarm-relay
+tier: T2
+status: ready
+estimated_loc: 250
+blocks: []
+file: scripts/chitin-alarm-relay.sh (new), infra/systemd/chitin-alarm-relay.service (new), infra/systemd/chitin-alarm-relay.timer (new), apps/temporal-worker/src/alarm-feeder.ts (extend with hermes hook)
+references_finding: 2026-05-05-hermes-shape-c-whatsapp-alarm-route
+role: programmer
+```
+
+Closes the loop opened by PR #340: hermes is now chitin-governed AND
+already wired to WhatsApp on this rig (operator gets daily messages
+from hermes today). Add a Shape-C alarm relay so chitin's chain
+signals (locked agents, failed `chitin-*` units, rollup alarms) reach
+the operator's phone without a desktop session.
+
+**Why this beats the existing watchdog:** the watchdog (PR #305) emits
+`notify-send` desktop notifications. Useful when operator is at the
+3090, useless off-box. The 2026-05-04 lockdown took 20.5h to surface
+because no off-box channel existed. This entry adds one.
+
+Approach (subject to design tightening — programmer should propose):
+
+1. New script `scripts/chitin-alarm-relay.sh`. Reads watchdog's signal
+   set (`~/.cache/chitin/watchdog-state.json`, computed by PR #305's
+   watchdog logic). When signals are non-empty AND distinct from
+   prior relay-tick state, send a hermes message via the hermes CLI:
+   ```
+   hermes send --to <CHITIN_ALARM_PEER> --message "<digest>"
+   ```
+   Stable peer is the operator's phone-as-self-chat (the channel
+   already in use for daily hermes messages).
+
+2. Suppression: separate state file
+   `~/.cache/chitin/alarm-relay-state.json` so the relay's dedup is
+   independent of the watchdog's own. (Operator may want desktop and
+   phone notifications on different cadences — desktop on every
+   change, phone only on persistent or new-class signals.)
+
+3. New systemd unit `chitin-alarm-relay.{service,timer}` firing
+   every 15 min, mirroring the watchdog. Auto-installed via #313's
+   idempotent installer.
+
+4. Extend `alarm-feeder.ts` so high-severity alarms (e.g., locked
+   agent for >1h, failed unit older than 1 redeploy cycle) flag
+   themselves for relay. Most alarms stay desktop-only; phone is
+   reserved for "you should look at this even if you're not at
+   the box."
+
+**Acceptance:**
+- [ ] Operator receives a hermes message within 15 min of:
+      (a) any locked agent persisting >1h,
+      (b) a chitin-* systemd unit failing for >2 consecutive ticks
+- [ ] Relay state suppresses repeats — same signal-set across
+      consecutive ticks doesn't re-message
+- [ ] Recovery transition emits one "all clear" message
+- [ ] Vitest covers: empty signals, novel signals, suppressed
+      repeats, recovery message
+
+**Caveat — operator notification fatigue:** desktop watchdog +
+phone relay is two channels. If both fire on the same signal,
+operator sees noise. Default split: desktop for all changes, phone
+only for sustained / high-severity. Operator-tunable thresholds
+in `chitin.yaml` (new section `alarm_relay:`).
+
+**Caveat — hermes peer config:** the entry assumes a stable
+`CHITIN_ALARM_PEER` env var with the operator's preferred hermes
+channel/peer. Document this in `infra/systemd/README.md` so a
+fresh checkout can wire it once.
+
+---
+
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
