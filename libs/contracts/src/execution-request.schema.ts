@@ -50,6 +50,11 @@ export const RoleSchema = z.enum([
   'analyst',            // Author analysis-lib queries; explain telemetry
   'refactorer',         // Find duplication / dead code / hot-path debt
   'debt-curator',       // Maintain debt-ledger; surface debt that blocks other work
+  'advisor',            // Diagnose-don't-fix: when T4 escalates, switch to advisor
+                        //   role at T4. Output: structured recommendation
+                        //   (decompose / prompt-gap / operator-pickup / skill-gap).
+                        //   The runner's escalation loop flips role to advisor
+                        //   when at-T4 still escalating; see runWithEscalation.
 ]);
 
 // Driver tiers for the swarm.

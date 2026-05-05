@@ -180,6 +180,37 @@ Reference: \`python/analysis/investigate.py\` is the recipe source. Read it befo
 // these with real per-role prompts (reviewer reads the PR's diff; qa
 // runs validation suites; etc.). For now the stub frames the role and
 // points at the entry — better than crashing, worse than the eventual
+function buildAdvisorEntryPrompt(entry: BacklogEntry): string {
+  return `You are the chitin ADVISOR. You were spawned because lower tiers (T0..T3) attempted this task and the kernel's router/advisor signaled "this exceeds the implementor's competence" — and then T4-as-implementor ALSO escalated.
+
+Your job is NOT to ship the work. Your job is to DIAGNOSE why the work didn't land at lower tiers and emit a structured recommendation that the operator (or another swarm role) can act on.
+
+ENTRY ID: ${entry.id}
+ENTRY DETAIL:
+${entry.description}
+
+DIAGNOSIS PROCESS:
+1. Read the prior tier's escalation context in this prompt's "MID-TASK CONTINUATION" header (added by the runner). It tells you which tier last gave up and what the router/advisor said about why.
+2. Read the entry detail above. Decide which category the failure belongs to:
+   - **decompose** — entry is too big / too cross-cutting; needs to be split into smaller entries
+   - **prompt-gap** — the lower-tier prompts didn't include context this work needed; recommend a skill or prompt addition
+   - **operator-pickup** — genuinely requires operator judgment (governance edits, irreversible ops, ambiguous spec)
+   - **skill-gap** — the swarm doesn't have the right tool or knowledge yet; surface what's missing
+   - **infra-blocker** — external dependency broken (CI flaky, repo config wrong, kernel rule mis-tuned)
+3. Emit your recommendation as the LAST line of your output, exactly:
+
+<<<ADVISOR>>>{"category": "<one of the 5 above>", "diagnosis": "<one paragraph>", "recommended_action": "<one paragraph>", "priority": "low" | "medium" | "high"}
+
+Do NOT attempt the implementation yourself. Do NOT push commits. Do NOT modify files in the worktree. Your write_policy is 'none' for a reason.
+
+CONSTRAINTS:
+- Read entry's file: scope to inform diagnosis; do not edit.
+- Use gh CLI to read related PRs / issues if helpful.
+- Use chain telemetry (\`chitin chain replay\` if available) to inspect the prior tiers' actions.
+- Stay terse. The recommendation is for the operator's queue; long prose dilutes it.
+- See apps/runner/skills/advisor/SKILL.md for the full diagnosis taxonomy + examples.`;
+}
+
 // dedicated template.
 function buildStubPrompt(role: Role, entry: BacklogEntry): string {
   return `You are playing the ${role} role in the chitin swarm — see docs/design/2026-05-02-swarm-as-software-factory.md §3 for what this role owns.
@@ -246,6 +277,13 @@ const ROLE_PROMPTS: Record<Role, RolePromptBuilder> = {
   analyst: buildAnalystEntryPrompt,
   refactorer: (entry) => buildStubPrompt('refactorer', entry),
   'debt-curator': (entry) => buildStubPrompt('debt-curator', entry),
+  // Advisor: diagnose-don't-fix. The runner's escalation loop flips an
+  // ExecutionRequest's role to 'advisor' when it's at T4 AND the
+  // kernel's router/advisor STILL escalated. The advisor's job is not
+  // to ship the work — it's to diagnose why T0..T3 + T4-as-implementor
+  // couldn't and emit a structured recommendation (decompose / prompt-
+  // gap / operator-pickup / skill-gap). See apps/runner/skills/advisor.
+  advisor: buildAdvisorEntryPrompt,
 };
 
 const ROLE_VOCAB = new Set<string>(Object.keys(ROLE_PROMPTS));
