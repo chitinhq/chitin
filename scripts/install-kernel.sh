@@ -56,7 +56,10 @@ emit() {
   printf '%s\n' "$line" | tee -a "$LOG" >&2
 }
 
-cd "$REPO"
+if ! cd "$REPO" 2>/dev/null; then
+  emit fail chdir-failed "repo=$REPO"
+  exit 1
+fi
 
 old_sha=$(git rev-parse HEAD)
 if ! git fetch --quiet origin main; then
