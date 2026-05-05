@@ -166,11 +166,16 @@ describe('planInvocation', () => {
     expect(plan.args).toContain('--include-hook-events');
   });
 
-  it('openclaw-* drivers include --include-hook-events for chain visibility', () => {
+  it('openclaw-* drivers do NOT pass --include-hook-events (openclaw 2026.4.x rejects it)', () => {
+    // Inverted from the previous assertion: openclaw 2026.4.x exits 1
+    // on `--include-hook-events` ("error: unknown option"). PR #318
+    // removed the flag from the openclaw branch; chain visibility for
+    // openclaw runs is provided by the chitin-governance plugin's
+    // emission, not the CLI flag.
     for (const driver of ['openclaw-glm-flash', 'openclaw-glm-cloud', 'openclaw-deepseek'] as const) {
       const plan = planInvocation({ ...baseReq, allowed_drivers: [driver] });
       expect(plan.command).toBe('openclaw');
-      expect(plan.args).toContain('--include-hook-events');
+      expect(plan.args).not.toContain('--include-hook-events');
     }
   });
 });
@@ -415,14 +420,23 @@ describe('parseToolSummary', () => {
   });
 });
 
-// ─── executeRequestWorkflow.name === WORKFLOW_NAME ─────────────────────────
+// ─── executeRequestWorkflow.name drift guard ─────────────────────────────
+//
+// dispatcher.ts and submit.ts each declare a local
+// `const WORKFLOW_NAME = 'executeRequestWorkflow'` — a literal string
+// that must stay equal to the actual function's `.name`. If someone
+// renames the function (or the literal) without updating both, Temporal
+// silently dispatches to a workflow type that doesn't exist. This test
+// pins the contract.
+//
+// Imports the function as a VALUE (not type) so `.name` is reachable at
+// runtime — the original test in PR #317 imported it as a type and
+// asserted on `undefined`.
+import { executeRequestWorkflow } from '../src/workflow.ts';
 
-import { WORKFLOW_NAME } from '../src/submit';
-import type { executeRequestWorkflow } from '../src/submit';
-
-describe('WORKFLOW_NAME matches executeRequestWorkflow.name', () => {
-  it('should match the actual workflow function name', () => {
-    expect((executeRequestWorkflow as any).name).toBe(WORKFLOW_NAME);
+describe('executeRequestWorkflow.name drift guard', () => {
+  it('matches the WORKFLOW_NAME literal used in dispatcher.ts and submit.ts', () => {
+    expect(executeRequestWorkflow.name).toBe('executeRequestWorkflow');
   });
 });
 

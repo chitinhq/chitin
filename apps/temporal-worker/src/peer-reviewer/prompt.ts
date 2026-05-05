@@ -28,7 +28,6 @@ import type { BacklogEntry } from '../grooming/parse-backlog.ts';
  */
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { BacklogEntry } from '../grooming/parse-backlog.ts';
 import { renderSkill } from '../skill-loader/stitcher.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
