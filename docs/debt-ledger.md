@@ -116,3 +116,183 @@ description: |
   shipped in PR #134 via `agent-adversarial-review-pass`). Track
   here so progress is visible across the role taxonomy.
 ```
+
+---
+
+```yaml
+id: stale-doc-docs-archive-map-go-execution-kernel-internal-g-a01c3fad
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/archive-map.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/archive-map.md:19.
+  Reference: go/execution-kernel/internal/governance/ (no longer exists in the working tree).
+  Context: `internal/policy`, `internal/invariant`, `internal/drift`, `internal/gate`, `in…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-decisions-2026-05-03-no-g-apps-scheduler-dashboard-20199f38
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/decisions/2026-05-03-no-github-issues.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/decisions/2026-05-03-no-github-issues.md:12.
+  Reference: apps/scheduler-dashboard (no longer exists in the working tree).
+  Context: The flat-file backlog is an interim solution. The upcoming `libs/scheduler` lib…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-design-2026-05-04-bounded-go-execution-kernel-internal-b-909dc9f5
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/design/2026-05-04-bounded-context-v1.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/design/2026-05-04-bounded-context-v1.md:413.
+  Reference: go/execution-kernel/internal/blobs/ (no longer exists in the working tree).
+  Context: - [ ] `go/execution-kernel/internal/blobs/` package: `Write(payload)
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-04-20-p-libs-contracts-src-chitindir-r-71cb6ab4
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-04-20-phase-a-restart-notes.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-04-20-phase-a-restart-notes.md:36.
+  Reference: libs/contracts/src/chitindir-resolve.test.ts (no longer exists in the working tree).
+  Context: The plan writes `libs/contracts/src/chitindir-resolve.test.ts`.
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-04-22-a-docs-superpowers-specs-2026-04-416d4c68
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-04-22-autonomy-v1-post-mortem.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-04-22-autonomy-v1-post-mortem.md:24.
+  Reference: docs/superpowers/specs/2026-04-21-hermes-autonomy-v1-design.md (no longer exists in the working tree).
+  Context: Spec: `docs/superpowers/specs/2026-04-21-hermes-autonomy-v1-design.md`
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-05-03-s-tests-backlog-entry-shape-test-6ec96526
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-05-03-skill-mining-report.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-05-03-skill-mining-report.md:148.
+  Reference: tests/backlog-entry-shape.test.ts (no longer exists in the working tree).
+  Context: - cat /home/red/workspace/chitin/tools/lint/tests/backlog-entry-shape.test.ts |…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-05-03-s-apps-tempor-67d957e4
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-05-03-skill-mining-report.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-05-03-skill-mining-report.md:180.
+  Reference: apps/tempor (no longer exists in the working tree).
+  Context: - /home/red/workspace/chitin/.claude/worktrees/agent-af63538e4b495669b/apps/tem…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-05-03-s-docs-observations-2026-05-02-o-c492a4d0
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-05-03-skill-mining-report.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-05-03-skill-mining-report.md:180.
+  Reference: docs/observations/2026-05-02-openclaw-usage- (no longer exists in the working tree).
+  Context: - /home/red/workspace/chitin/.claude/worktrees/agent-af63538e4b495669b/apps/tem…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-2026-05-03-s-apps-tempor-8df11f23
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/2026-05-03-skill-mining-report.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/2026-05-03-skill-mining-report.md:181.
+  Reference: apps/tempor (no longer exists in the working tree).
+  Context: - /home/red/workspace/chitin/.claude/worktrees/agent-af76f3397321eabbc/apps/tem…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
+
+---
+
+```yaml
+id: stale-doc-docs-observations-research-202-docs-reference-templates-SOUL--c68668fb
+discovered_at: 2026-05-05T04:00:08.751Z
+discovered_by: swarm
+severity: low
+category: doc-debt
+file: docs/observations/research/2026-04-19-openclaw-soul-verification-suntzu.md
+status: open
+shipped_in:
+description: |
+  Stale doc reference detected at docs/observations/research/2026-04-19-openclaw-soul-verification-suntzu.md:46.
+  Reference: docs/reference/templates/SOUL.md (no longer exists in the working tree).
+  Context: The canonical bootstrap template, **`docs/reference/templates/SOUL.md`** in `op…
+  Surfaced by chitin-stale-doc-detector.timer; operator updates the doc to remove or repoint the reference.
+```
