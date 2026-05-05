@@ -1,5 +1,7 @@
 # Swarm Backlog
 
+**Note:** This file is the interim work-tracking surface for the Chitin swarm. Expect migration to the scheduler system (`libs/scheduler`) when its workflow-item shape ships; at that point, backlog entries will become scheduler items and this file will be retired.
+
 Tier-tagged work the local 24/7 swarm chews through. Distinct from `roadmap.md`:
 the roadmap is *strategy* (where chitin is going), this doc is *execution*
 (what individual issues are ready to grab, sized for which tier).
