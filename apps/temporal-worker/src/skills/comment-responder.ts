@@ -34,10 +34,12 @@ export interface PrecheckResult {
   event_kind?: 'bootstrap-rejected';
 }
 
-// `rm -rf`, `rm -fr`, `rm -Rf`, `rm -rfv`, etc. — any clustered
-// recursive+force flag combination. Word boundary on both sides so
-// `confirm-rf` or `armrf` doesn't match.
-const RM_RECURSIVE_RE = /\brm\s+-[rRfF]+\b/;
+// `rm -rf`, `rm -fr`, `rm -Rf`, `rm -rfv`, `rm -r`, etc. — any
+// short-flag cluster that contains the recursive flag (`r` or `R`).
+// Combined with `gh repo clone` on the same chain, that's the
+// bootstrap pattern regardless of which other flags are clustered.
+// Word boundary on `rm` so `confirm` or `armrf` doesn't match.
+const RM_RECURSIVE_RE = /\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*\b/;
 
 // `gh repo clone` — the exact pattern that combined with `rm -rf`
 // produces the bootstrap. `gh repo view` / `gh repo create` etc.
@@ -80,8 +82,8 @@ const REJECT_MESSAGE =
  *   - `rm -rf ./* && gh repo clone .`         → REJECT (the lockdown shape)
  *   - `rm -rf ./* || true && gh repo clone .` → REJECT (the exact 2026-05
  *                                                       trigger shape)
- *   - `rm -fr` / `rm -Rf` / `rm -rfv`         → REJECT path covered (any
- *                                                clustered -[rRfF] flag)
+ *   - `rm -fr` / `rm -Rf` / `rm -rfv` / `rm -r` → REJECT (any short-flag
+ *                                                cluster containing r/R)
  */
 export function precheckShellCommand(command: string): PrecheckResult {
   for (const line of command.split('\n')) {
