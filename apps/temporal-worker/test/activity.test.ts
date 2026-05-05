@@ -415,6 +415,17 @@ describe('parseToolSummary', () => {
   });
 });
 
+// ─── executeRequestWorkflow.name === WORKFLOW_NAME ─────────────────────────
+
+import { WORKFLOW_NAME } from '../src/submit';
+import type { executeRequestWorkflow } from '../src/submit';
+
+describe('WORKFLOW_NAME matches executeRequestWorkflow.name', () => {
+  it('should match the actual workflow function name', () => {
+    expect((executeRequestWorkflow as any).name).toBe(WORKFLOW_NAME);
+  });
+});
+
 // ─── isWorkerOwnedPath ─────────────────────────────────────────────────────
 //
 // Cleanup-cleanup-rmSync gate. The 2026-05-04 cwd-rm incident (#280)
