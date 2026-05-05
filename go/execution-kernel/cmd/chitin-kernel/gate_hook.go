@@ -14,6 +14,7 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/codex"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/gemini"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/hermes"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/tier"
 )
@@ -141,6 +142,16 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 			ToolInput:      payload.ToolInput,
 		}
 		action, err = gemini.Normalize(gPayload)
+	case "hermes":
+		hPayload := hermes.HookInput{
+			SessionID:      payload.SessionID,
+			TranscriptPath: payload.TranscriptPath,
+			Cwd:            payload.Cwd,
+			HookEventName:  payload.HookEventName,
+			ToolName:       payload.ToolName,
+			ToolInput:      payload.ToolInput,
+		}
+		action, err = hermes.Normalize(hPayload)
 	default:
 		action, err = claudecode.Normalize(payload)
 	}
