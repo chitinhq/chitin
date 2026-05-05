@@ -27,7 +27,8 @@
 //   --dry-run: print the entry that would be dispatched, exit 0
 //   without submitting.
 
-import { Connection, Client } from '@temporalio/client';
+import { runAgentTurn } from './activity.ts';
+import { listRunningExecuteRequestsFromDisk } from './spawn-execute-request.ts';
 import { ExecutionRequestSchema } from '@chitin/contracts';
 import type { DriverId, Tier } from '@chitin/contracts';
 import { execFileSync, execSync } from 'node:child_process';
@@ -36,7 +37,6 @@ import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { ActivityResult } from './activity-types.ts';
-import type { executeRequestWorkflow } from './workflow.ts';
 import { parseBacklog, type BacklogEntry } from './grooming/parse-backlog.ts';
 import { buildPromptForEntry, resolveEntryRole } from './role-prompts.ts';
 import {
@@ -47,8 +47,6 @@ import {
   extractPrUrl,
 } from './notify.ts';
 
-const WORKFLOW_NAME = 'executeRequestWorkflow';
-const TASK_QUEUE = 'chitin-worker-q';
 const BACKLOG_PATH = resolve(process.cwd(), 'docs/swarm-backlog.md');
 const TMP_DIR = resolve(process.cwd(), 'tmp');
 // Slice 7b: persistent markers for dispatched entries. Prevents the
@@ -245,16 +243,15 @@ function entryHasOriginBranch(entryId: string): boolean {
   }
 }
 
-// Find any currently-running swarm workflow via the Temporal client.
-// We use the visibility list-workflows endpoint with a simple status
-// filter. Returns the workflow_id of the first running one, or null.
-async function findRunningSwarmWorkflow(client: Client): Promise<string | null> {
-  // The query language Temporal supports varies by server config; fall
-  // back to a broad list + manual filter. Limit to a small number for
-  // cheap polling.
-  for await (const wf of client.workflow.list({ query: "ExecutionStatus='Running'" })) {
-    if (wf.workflowId.startsWith('swarm-')) {
-      return wf.workflowId;
+// Find any currently-running swarm workflow via the disk-based
+// execute-request log oracle. Pre-cut-over this queried Temporal
+// visibility (workflow.list({query: "ExecutionStatus='Running'"}));
+// post-cut-over the source of truth is
+// ~/.cache/chitin/execute-request-logs/<workflow_id>.log mtime.
+function findRunningSwarmWorkflow(): string | null {
+  for (const id of listRunningExecuteRequestsFromDisk()) {
+    if (id.startsWith('swarm-')) {
+      return id;
     }
   }
   return null;
@@ -664,11 +661,8 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
   log('info', 'dispatcher start', { dryRun });
 
-  const conn = await Connection.connect({ address: '127.0.0.1:7233' });
-  const client = new Client({ connection: conn, namespace: 'default' });
-
   try {
-    const running = await findRunningSwarmWorkflow(client);
+    const running = findRunningSwarmWorkflow();
     if (running) {
       log('info', 'swarm workflow already in flight; exiting', { running });
       await notifyTickIdle(`workflow already in flight (${running})`);
@@ -739,21 +733,13 @@ async function main() {
     // pickup. priorMarker carries the tier_attempts ladder forward.
     writeDispatchMarker(entry.id, workflowId, tier, driver, priorMarker);
 
-    let handle;
-    try {
-      handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
-        args: [req],
-        taskQueue: TASK_QUEUE,
-        workflowId,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'submit', error: msg });
-      throw err;
-    }
-    // notifyDispatchStart fires AFTER successful submit so a failed
-    // workflow.start() doesn't claim a workflow exists in Slack that
-    // never actually got created.
+    // Pre-cut-over: client.workflow.start (submit) + handle.result
+    // (await completion) were two stages that could fail independently
+    // (submit failed → notify; await failed → notify with stage:'workflow').
+    // Post-cut-over: runAgentTurn is one in-process call that runs the
+    // agent to completion. The "submit" stage no longer exists — there's
+    // nothing to gate notifyDispatchStart on. Fire it before the run
+    // since the marker is already on disk.
     await notifyDispatchStart({ entry_id: entry.id, tier, driver, workflow_id: workflowId });
     log('info', 'workflow started', {
       workflow_id: workflowId,
@@ -765,7 +751,7 @@ async function main() {
 
     let result: ActivityResult;
     try {
-      result = (await handle.result()) as ActivityResult;
+      result = await runAgentTurn(req);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await notifyDispatchError({ entry_id: entry.id, workflow_id: workflowId, stage: 'workflow', error: msg });
@@ -921,7 +907,9 @@ async function main() {
       }
     }
   } finally {
-    await conn.close();
+    // No connection lifecycle to close post-cut-over (Temporal client
+    // dropped). Block kept so the try/catch shape stays the same in
+    // case future cleanup needs to land here.
   }
 }
 

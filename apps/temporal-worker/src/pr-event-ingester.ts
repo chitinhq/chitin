@@ -25,7 +25,6 @@
 //   --repo:    repo slug (default: read from `gh repo view --json nameWithOwner`)
 //   --dry-run: print the PRs that would be ingested, exit 0 without enqueueing.
 
-import { Connection, Client } from '@temporalio/client';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -53,7 +52,6 @@ import { listRunningExecuteRequestsFromDisk } from './spawn-execute-request.ts';
 // roughly the same PRs that get an R1 reviewer.
 const COMMENT_RESPONDER_THRESHOLD = 2;
 
-const TASK_QUEUE = 'chitin-worker-q';
 
 // ── Per-PR dispatch markers ─────────────────────────────────────────
 //
@@ -485,7 +483,7 @@ export function enrichPr(repo: string, pr: OpenPrSummary): OpenPrSummary {
  * removed once the rest of the per-PR pipeline cuts over and we
  * can drop the Temporal client from the ingester entirely.
  */
-export async function listRunningReviewGraphWorkflows(_client: Client): Promise<Set<string>> {
+export async function listRunningReviewGraphWorkflows(): Promise<Set<string>> {
   return listRunningReviewGraphWorkflowsFromDisk();
 }
 
@@ -498,10 +496,7 @@ export async function listRunningReviewGraphWorkflows(_client: Client): Promise<
  * shape; removed once the dispatcher.ts cut-over completes and the
  * Temporal client drops out of the ingester entirely.
  */
-export async function listRunningAgentWorkflows(
-  _client: Client,
-  _log?: (line: string) => void,
-): Promise<Set<string>> {
+export async function listRunningAgentWorkflows(): Promise<Set<string>> {
   const all = listRunningExecuteRequestsFromDisk();
   const ids = new Set<string>();
   for (const id of all) {
@@ -533,8 +528,6 @@ export interface IngesterTickResult {
 }
 
 export async function runIngesterTick(opts: {
-  client: Client;
-  taskQueue: string;
   repo: string;
   dryRun?: boolean;
   log?: (line: string) => void;
@@ -570,8 +563,8 @@ export async function runIngesterTick(opts: {
     return enrichPr(opts.repo, s);
   });
 
-  const running = await listRunningReviewGraphWorkflows(opts.client);
-  const runningAgents = await listRunningAgentWorkflows(opts.client, log);
+  const running = await listRunningReviewGraphWorkflows();
+  const runningAgents = await listRunningAgentWorkflows();
   const decisions = pickPrsToIngest(enriched, running);
 
   for (const decision of decisions) {
@@ -771,15 +764,9 @@ async function main() {
   const repoFromFlag = repoIdx >= 0 ? args[repoIdx + 1] : undefined;
   const repo = repoFromFlag ?? defaultRepo();
 
-  const connection = await Connection.connect({ address: '127.0.0.1:7233' });
-  try {
-    const client = new Client({ connection, namespace: 'default' });
-    const result = await runIngesterTick({ client, taskQueue: TASK_QUEUE, repo, dryRun });
-    if (result.errors > 0) {
-      process.exit(1);
-    }
-  } finally {
-    await connection.close();
+  const result = await runIngesterTick({ repo, dryRun });
+  if (result.errors > 0) {
+    process.exit(1);
   }
 }
 
