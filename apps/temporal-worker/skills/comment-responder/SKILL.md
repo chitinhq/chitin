@@ -28,12 +28,14 @@ YOUR WORKFLOW (one tool call per step where possible):
 
    Make NO edits, commits, or comments. The dispatcher's apply step would otherwise pick up an empty worktree and produce a bogus no-op PR. Bail before that happens.
 
-1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** You're running in an empty tempdir (no git repo, no working clone), so `gh pr checkout <pr_number>` would fail with "not in a git repo." Clone the repo first into the cwd, then check out the PR's branch:
+1. **Extract <owner>/<repo> + <pr_number> from the PR URL above.** You're running in a tempdir (no git repo, no working clone), so `gh pr checkout <pr_number>` would fail with "not in a git repo." Clone the repo into a SUBDIRECTORY (NOT the cwd), then `cd` into it, then check out the PR's branch:
    ```
-   gh repo clone <owner>/<repo> .
+   gh repo clone <owner>/<repo>
+   cd <repo>
    gh pr checkout <pr_number>
    ```
-   The first command clones into `.` (cwd); the second switches the worktree to the PR's branch so subsequent edits + commits land on it.
+
+   **CRITICAL — DO NOT use `gh repo clone .` (clone-into-cwd) or `rm -rf` to clear cwd.** The tempdir may already contain chitin bootstrap files (`WORKTREE_INDEX.md`, `.claude/settings.json`, etc.) — `gh repo clone .` would fail because cwd isn't empty, and `rm -rf ./*` would trigger the kernel's `no-rm-recursive` guard, locking down the agent. Cloning to a subdirectory sidesteps both. (This exact `rm -rf ./* && gh repo clone .` pattern caused the 2026-05-04T03:27 lockdown of copilot-cli and recurred 2026-05-05T03:23 — explicit guidance now to prevent the next round.)
 
 2. Pull all unresolved inline comments:
    ```
