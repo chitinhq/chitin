@@ -93,12 +93,25 @@ async function main() {
   if (wt.has_uncommitted_changes) {
     revertWorktreeSettingsArtifact(wt.path);
     const trackedDiff = git(wt.path, ['--no-pager', 'diff', '--shortstat']).length > 0;
-    if (trackedDiff) {
-      console.log('[apply-result] auto-committing tracked uncommitted changes…');
+    const realUntracked = listRealUntrackedFiles(wt.path);
+    // Auto-commit when there are TRACKED edits OR untracked files at
+    // non-bootstrap paths. The original Slice 7 heuristic rejected
+    // untracked-only outcomes wholesale, but that loses real work for
+    // entries that legitimately produce only new files (e.g.,
+    // `tools/lint/role-coverage.ts` for a new lint rule) — those land
+    // as untracked-only because the agent didn't `git add`+commit.
+    // Bootstrap blocklist is small + explicit (.claude/), and other
+    // chitin-written files (WORKTREE_INDEX.md) are already in
+    // .git/info/exclude so they don't show in porcelain output.
+    if (trackedDiff || realUntracked.length > 0) {
+      const reason = trackedDiff
+        ? 'tracked uncommitted changes'
+        : `${realUntracked.length} untracked file(s) at non-bootstrap paths`;
+      console.log(`[apply-result] auto-committing: ${reason}…`);
       git(wt.path, ['add', '-A']);
       git(wt.path, ['commit', '-m', defaultCommitMessage(env)]);
     } else {
-      console.log('[apply-result] worktree has untracked-only changes (likely agent bootstrap files); skipping auto-commit.');
+      console.log('[apply-result] worktree has only bootstrap-path untracked changes; skipping auto-commit.');
       // If there are no committed changes either, treat as no-work-done
       // and skip push entirely (don't pollute origin with empty branches).
       if (wt.commits_added === 0) {
@@ -161,6 +174,40 @@ export function revertWorktreeSettingsArtifact(worktreePath: string): void {
     console.log('[apply-result] reverted writeWorktreeClaudeSettings artifact: .claude/settings.json');
   } catch (err) {
     console.warn(`[apply-result] revert of .claude/settings.json failed (ignored): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Path prefixes that chitin's worker writes into every worktree at
+// provisioning time. Untracked files under these are treated as
+// bootstrap noise, not agent work product. Note: `WORKTREE_INDEX.md`
+// is also worker-written but lives in `.git/info/exclude`, so it
+// never appears in `git status --porcelain` output and doesn't need
+// a prefix here.
+const BOOTSTRAP_UNTRACKED_PREFIXES = ['.claude/'];
+
+// Return untracked files that look like real agent work — i.e. NOT
+// under a known bootstrap path. Uses `-uall` so a new directory
+// shows its files individually rather than as a single dir entry,
+// which is needed for the prefix filter to work.
+//
+// Errors are swallowed and treated as "no real untracked" — same
+// fail-safe as `revertWorktreeSettingsArtifact`. The caller still
+// has the trackedDiff check + commits_added counter as backstops.
+export function listRealUntrackedFiles(worktreePath: string): string[] {
+  try {
+    const out = git(worktreePath, ['status', '--porcelain', '-uall']);
+    if (!out) return [];
+    const real: string[] = [];
+    for (const line of out.split('\n')) {
+      if (!line.startsWith('?? ')) continue;
+      const path = line.slice(3);
+      if (BOOTSTRAP_UNTRACKED_PREFIXES.some((p) => path.startsWith(p))) continue;
+      real.push(path);
+    }
+    return real;
+  } catch (err) {
+    console.warn(`[apply-result] listRealUntrackedFiles failed (ignored): ${err instanceof Error ? err.message : String(err)}`);
+    return [];
   }
 }
 
