@@ -1000,6 +1000,93 @@ issue, not a chitin source issue, so the trigger differs.
 
 ---
 
+### `apply-step-exclude-openclaw-bootstrap-files` (filed 2026-05-05)
+
+```yaml
+id: apply-step-exclude-openclaw-bootstrap-files
+tier: T1
+status: ready
+estimated_loc: 30
+blocks: []
+file: apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/activity.ts (writeWorktreeIndex pattern), apps/temporal-worker/test/grooming-list-real-untracked.test.ts (extend)
+references_finding: 2026-05-05-t0-smoke-pr-326-bootstrap-pollution
+role: programmer
+```
+
+Tonight's T0 smoke (PR #326, closed) shipped the requested
+`docs/observations/2026-05-05-t0-glm-flash-smoke.md` AND seven
+openclaw-bootstrap files at repo root that the agent shouldn't have
+committed: `AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `SOUL.md`,
+`TOOLS.md`, `USER.md`, `.openclaw/workspace-state.json`.
+
+Same shape as the existing handlers for chitin's own bootstrap:
+- `.claude/settings.json` reverted in `revertWorktreeSettingsArtifact`
+- `WORKTREE_INDEX.md` added to `.git/info/exclude` in
+  `writeWorktreeIndex` so it never appears in `git status --porcelain`
+
+openclaw-spawned agents (T0/T1/T3 — glm-flash, glm-cloud, deepseek)
+write these identity/state files into the cwd at session start.
+They're agent bootstrap, not task work product. Currently:
+- The apply-step's `BOOTSTRAP_UNTRACKED_PREFIXES` only includes
+  `'.claude/'` (PR #303). Doesn't catch the openclaw set.
+- These files aren't in `.git/info/exclude` either, so they show
+  up in `git status` and get auto-committed when the apply-step
+  detects "tracked uncommitted changes."
+
+Approach (subject to design tightening — programmer should propose):
+
+Two tactics, pick one OR combine:
+
+A. **Add openclaw bootstrap to `BOOTSTRAP_UNTRACKED_PREFIXES`** in
+   `apply-workflow-result.ts:listRealUntrackedFiles`. Easier to test.
+   Misses the case where the agent `git add`s them (turning untracked
+   into tracked).
+
+B. **Extend the worker's worktree-setup to write the openclaw bootstrap
+   names into `.git/info/exclude`** at the same point we already do for
+   `WORKTREE_INDEX.md` (apps/temporal-worker/src/activity.ts:548-554).
+   Cleaner: git ignores them at every layer, no special-case needed in
+   apply-step. The list of names lives in one place — the openclaw
+   driver activity branch — close to where openclaw spawns.
+
+Recommended: **(B)**, because the existing `WORKTREE_INDEX.md` pattern
+already proves the model works and keeps the special-casing local to
+the openclaw driver.
+
+The 7 names to add (from PR #326's `gh pr view 326 --json files`):
+```
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+.openclaw/
+```
+
+Last is a directory prefix — every file under `.openclaw/` is
+bootstrap state per openclaw's docs.
+
+**Acceptance:**
+- [ ] After landing, a fresh T0 dispatch on a tiny "create one file"
+      entry produces a PR with ONLY the requested file (no AGENTS.md,
+      no IDENTITY.md, etc.)
+- [ ] Existing `WORKTREE_INDEX.md` exclude continues to work
+- [ ] No regression in the 11-test
+      `grooming-list-real-untracked.test.ts` suite (which pinned the
+      `.claude/`-only filter behavior in PR #303)
+- [ ] Test added: vitest case verifying openclaw files are excluded
+      via `.git/info/exclude` in a scratch worktree
+
+**Caveat:** if a backlog entry's `file:` field legitimately names one
+of these paths (unlikely — `IDENTITY.md` at repo root is reserved for
+openclaw), the agent's edit would be silently dropped. Same caveat
+already documented for `.claude/settings.json` — same mitigation
+(operator pre-commits, or future plumbing of entry's file scope into
+the apply-step).
+
+---
+
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
