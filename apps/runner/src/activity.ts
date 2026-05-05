@@ -798,6 +798,14 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
           ? extractHookEvents(tailStdout)
           : undefined;
         const tool_summary = plan.command === 'openclaw' ? parseToolSummary(stdout) : undefined;
+        // Always scan for the kernel's escalation_requested marker — it
+        // can fire on any agent's run, not just stream-json with
+        // --include-hook-events. The signal is rare enough that a full
+        // tail scan per call is fine.
+        const escalationPartial = extractEscalationRequest(tailStdout);
+        const escalation_requested = escalationPartial
+          ? { from_tier: req.tier, advisor_nudge: escalationPartial.advisor_nudge }
+          : undefined;
         resolvePromise({
           exit_code: code ?? -1,
           stdout_tail: tailStdout,
@@ -805,6 +813,7 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
           duration_ms: Date.now() - start,
           ...(hookEvents ? { hook_events: hookEvents } : {}),
           ...(tool_summary ? { tool_summary } : {}),
+          ...(escalation_requested ? { escalation_requested } : {}),
         });
       });
       child.on('error', reject);
@@ -924,6 +933,58 @@ function extractHookEvents(stdoutTail: string): HookEventSummary[] | undefined {
     out.push(summary);
   }
   return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Scan the agent's stream-json stdout for the kernel's
+ * `escalation_requested: true` marker. The kernel's PreToolUse hook
+ * writes this into its decision JSON on the takeover-with-escalate
+ * path (see go/execution-kernel/cmd/chitin-kernel/router_hook.go:230,
+ * :250). The agent's stream-json wraps that decision JSON inside a
+ * hook event (typically a PreToolUse event whose `decision` is
+ * "deny" with the advisor's nudge as `reason`).
+ *
+ * Strategy: walk every hook_event line; for events with
+ * `escalation_requested: true` at the top level OR nested inside
+ * `kernelOutput`/`hookSpecificOutput`, capture the first such event's
+ * reason as the advisor_nudge. Returns undefined when no event has
+ * the marker (the common case — most runs don't escalate).
+ *
+ * `from_tier` is filled in by the runner (it has the original req's
+ * tier; the activity doesn't need to re-derive it).
+ */
+function extractEscalationRequest(stdoutTail: string): { advisor_nudge: string } | undefined {
+  for (const line of stdoutTail.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object') continue;
+    const ev = parsed as Record<string, unknown>;
+    // Top-level on the event itself (older / direct shape):
+    if (ev.escalation_requested === true) {
+      const reason = typeof ev.reason === 'string' ? ev.reason : 'router/advisor requested tier escalation';
+      return { advisor_nudge: reason };
+    }
+    // Nested inside the kernel-decision payload the hook emitted:
+    for (const key of ['kernelOutput', 'hookSpecificOutput', 'output', 'response']) {
+      const nested = ev[key];
+      if (nested && typeof nested === 'object') {
+        const n = nested as Record<string, unknown>;
+        if (n.escalation_requested === true) {
+          const reason = typeof n.reason === 'string'
+            ? n.reason
+            : typeof ev.reason === 'string' ? ev.reason : 'router/advisor requested tier escalation';
+          return { advisor_nudge: reason };
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1112,6 +1173,7 @@ export const __test__ = {
   writeWorktreeIndex,
   provisionOpenclawState,
   extractHookEvents,
+  extractEscalationRequest,
   scrapeGeminiRateLimitEvents,
   writeGeminiUsageFeed,
   DRIVER_AGENT_MAP,

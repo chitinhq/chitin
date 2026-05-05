@@ -29,6 +29,29 @@ export interface ActivityResult {
    * consumers (apply-step, audit log) actually use.
    */
   hook_events?: HookEventSummary[];
+
+  /**
+   * Mid-task escalation request raised by the kernel's router/advisor.
+   * Set when ANY hook event in the agent's stream-json carries
+   * `escalation_requested: true` (the kernel writes this into its
+   * PreToolUse-hook output on a takeover-with-escalate path; see
+   * docs/design/2026-05-03-mid-task-continuation.md).
+   *
+   * The runner (chitin-execute-request) consumes this signal: when
+   * present AND under the attempt cap, it bumps the agent's tier and
+   * re-spawns with the escalation context as a prompt prefix. When
+   * absent, the run is terminal (success or hard failure).
+   *
+   * Field shape mirrors the design doc's Step 1 ExecutionRequest
+   * `escalation_context`: `from_tier` (the tier that was running when
+   * the advisor decided escalate), `advisor_nudge` (the advisor's
+   * one-line reason for the takeover, used as prompt context for the
+   * next tier).
+   */
+  escalation_requested?: {
+    from_tier: string;
+    advisor_nudge: string;
+  };
 }
 
 /**

@@ -172,6 +172,23 @@ export const ExecutionRequestSchema = z
     // collision-resistant for the dispatch volumes we'd ever hit).
     // Absent = older callers / pre-fingerprint dispatches.
     fingerprint: z.string().regex(/^[a-f0-9]{12}$/).optional(),
+    // Mid-task continuation context: present on continuation runs
+    // spawned by the runner's loop after the kernel's router/advisor
+    // requested escalation on the previous attempt. The runner injects
+    // the prior tier's nudge as a prompt prefix so the higher-tier
+    // driver picks up where the lower one left off.
+    // See docs/design/2026-05-03-mid-task-continuation.md.
+    escalation_context: z
+      .object({
+        /** The tier that ran the previous attempt and triggered escalation. */
+        from_tier: TierSchema,
+        /** Router/advisor's one-line reason for the takeover, surfaced to the
+         *  next tier as prompt context. */
+        advisor_nudge: z.string(),
+        /** 1-based attempt counter, capped by the runner's MAX_ATTEMPTS. */
+        attempt: z.number().int().min(1),
+      })
+      .optional(),
   })
   .superRefine((req, ctx) => {
     if (req.network_policy === 'open' && (req.risk_level === 'high' || req.risk_level === 'irreversible')) {
