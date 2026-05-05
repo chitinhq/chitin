@@ -843,8 +843,43 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
     }
   }
 
+  // Ollama Cloud usage capture: if this was an ollama-cloud fallback, capture quota headers and emit usage feed
+  try {
+    await captureOllamaCloudUsage(req, result);
+  } catch (err) {
+    // Non-fatal: log to stderr_tail for operator visibility
+    const msg = err instanceof Error ? err.message : String(err);
+    result.stderr_tail = `${result.stderr_tail}\n[ollama-cloud-usage-capture] ${msg}`.slice(-TAIL_BYTES);
+  }
   return result;
 }
+
+// Capture Ollama Cloud quota headers and emit usage feed if applicable
+async function captureOllamaCloudUsage(req: ExecutionRequest, result: ActivityResult): Promise<void> {
+  // Only run for openclaw-glm-cloud driver (Ollama Cloud)
+  if (!req.allowed_drivers.includes('openclaw-glm-cloud')) return;
+  // Look for quota headers in tool_summary or stdout_tail
+  const summary = result.tool_summary || parseToolSummary(result.stdout_tail || '');
+  if (!summary || typeof summary !== 'object') return;
+  // Expect quota headers in summary.headers or summary.quota or similar
+  const headers = summary.headers || summary.quota || {};
+  const rpm = Number(headers['X-RateLimit-Remaining'] ?? headers['x-ratelimit-remaining']);
+  const tpm = Number(headers['X-RateLimit-Reset'] ?? headers['x-ratelimit-reset']);
+  if (!Number.isFinite(rpm) && !Number.isFinite(tpm)) return;
+  // Write usage feed
+  const usageFeedPath = join(homedir(), '.cache/chitin/usage/ollama-cloud.json');
+  const usage = {
+    axis: 'rpm_tpm',
+    observed_at: new Date().toISOString(),
+    rpm: Number.isFinite(rpm) ? rpm : null,
+    tpm: Number.isFinite(tpm) ? tpm : null,
+    workflow_id: req.workflow_id,
+    run_id: req.run_id,
+  };
+  mkdirSync(join(homedir(), '.cache/chitin/usage'), { recursive: true });
+  writeFileSync(usageFeedPath, JSON.stringify(usage, null, 2));
+}
+
 
 /**
  * Project the agent's stream-json stdout tail into a typed
