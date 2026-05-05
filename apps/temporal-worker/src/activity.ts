@@ -288,6 +288,16 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       // dispatches passes through before_tool_call → chitin gate. The per-
       // driver agent mapping routes to distinct openclaw agents so each
       // tier runs its own model.
+      //
+      // No `--include-hook-events`: openclaw 2026.4.x doesn't support that
+      // flag (it's claude-code-only). Passing it caused `openclaw agent` to
+      // exit 1 immediately on every T0/T1 dispatch from 2026-05-04 17:00
+      // UTC (shift-left routing reshuffle, when T0/T1 first started routing
+      // to openclaw-glm-flash) until 2026-05-05 02:09 UTC (this fix), with
+      // every run silently producing `commits_added: 0` and "agent made no
+      // changes." Hook-event capture for openclaw runs happens via the
+      // chitin-governance plugin's chain emission instead — the flag is
+      // unnecessary on this path.
       return {
         command: 'openclaw',
         args: [
@@ -295,7 +305,6 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
           '--local',
           '--agent', resolveAgent(driver),
           '--json',
-          '--include-hook-events',
           '--timeout', String(req.bounds.wall_timeout_s),
           '--message', req.prompt,
         ],
