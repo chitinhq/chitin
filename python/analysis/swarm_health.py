@@ -508,8 +508,20 @@ def main(argv: list[str] | None = None) -> int:
         print("[rollup] posted to Slack", file=sys.stderr)
 
     if report.alarms:
-        print(f"[rollup] {len(report.alarms)} alarm(s) fired", file=sys.stderr)
-        return 1
+        # Alarms surface via three paths today:
+        #   (a) the rollup JSON, which chitin-alarm-feeder reads to file
+        #       backlog entries, and chitin-watchdog (PR #305) reads to
+        #       emit operator desktop notifications.
+        #   (b) Slack post above (when CHITIN_SLACK_WEBHOOK_URL is set).
+        #   (c) stderr line below for journalctl readers.
+        # The legacy "exit 1 if alarms fired" made systemd mark the unit
+        # as failed, which was the alarm channel before paths (a)–(c)
+        # existed. It's now noise — chitin-swarm-rollup was a permanent
+        # `systemctl --user list-units --state=failed` entry, both
+        # confusing humans and triggering a false positive in the
+        # watchdog's failed-units signal. Exit 0 so "failed" means
+        # "actually broken".
+        print(f"[rollup] {len(report.alarms)} alarm(s) fired (visible via JSON + watchdog + slack)", file=sys.stderr)
     return 0
 
 

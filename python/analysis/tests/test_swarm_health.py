@@ -295,8 +295,15 @@ def test_main_writes_journal_and_exits_zero_when_healthy(tmp_path, monkeypatch, 
     assert parsed["alarms"] == []
 
 
-def test_main_returns_one_when_alarms_fire(tmp_path, monkeypatch):
-    """End-to-end: alarm fires → exit 1 (so systemd flags the unit)."""
+def test_main_returns_zero_even_when_alarms_fire(tmp_path, monkeypatch):
+    """End-to-end: alarm fires → exit 0; alarms surface via JSON,
+    watchdog, and slack — not via systemd's failed-unit signal.
+
+    Pre-watchdog (PR #305) the rollup exited 1 to mark the unit failed
+    as the alarm channel. Now it's noise: chitin-swarm-rollup was
+    permanently in `--state=failed`, both confusing humans and tripping
+    the watchdog's failed-units detector. Exit 0 makes "failed" mean
+    "actually broken"."""
     state_dir = tmp_path / "state"
     tmp_dir = tmp_path / "tmp"
     rollup_dir = tmp_path / "rollups"
@@ -329,4 +336,9 @@ def test_main_returns_one_when_alarms_fire(tmp_path, monkeypatch):
         "--window", "24h",
         "--no-slack",
     ])
-    assert rc == 1
+    assert rc == 0
+    # Alarm content must still be present in the rollup JSON — that's
+    # the contract the watchdog + alarm-feeder rely on now.
+    rollup_path = next(rollup_dir.iterdir())
+    rollup = json.loads(rollup_path.read_text())
+    assert len(rollup["alarms"]) >= 1
