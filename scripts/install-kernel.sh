@@ -251,9 +251,9 @@ fi
 emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"
 
 # --- Chitin worker restart logic for TS changes ---
-# Track last-applied SHA for apps/temporal-worker/src/ in ~/.cache/chitin/install-kernel-state.json
+# Track last-applied SHA for apps/runner/src/ in ~/.cache/chitin/install-kernel-state.json
 STATE_FILE="$HOME/.cache/chitin/install-kernel-state.json"
-TS_PATH="apps/temporal-worker/src/"
+TS_PATH="apps/runner/src/"
 
 restart_worker=0
 restart_reason=""
@@ -272,7 +272,7 @@ if [[ -z "$last_ts_sha" ]]; then
   jq -n --arg sha "$current_head" '{ts_worker_sha: $sha}' > "$STATE_FILE"
   emit noop "ts-worker baseline set" "ts_worker_sha=$current_head"
 else
-  # Check for changes in apps/temporal-worker/src/ since last applied
+  # Check for changes in apps/runner/src/ since last applied
   if ! git diff --quiet "$last_ts_sha" "$current_head" -- "$TS_PATH"; then
     restart_worker=1
     restart_reason="ts-changed"

@@ -13,7 +13,7 @@ Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/b
 # Optional per-user secrets (CHITIN_SLACK_WEBHOOK_URL etc). Leading dash
 # = file is optional; absence is fine.
 EnvironmentFile=-%h/.config/systemd/user/chitin.env
-ExecStart=/usr/bin/env pnpm exec tsx apps/temporal-worker/src/pr-event-ingester.ts
+ExecStart=/usr/bin/env pnpm exec tsx apps/runner/src/pr-event-ingester.ts
 StandardOutput=journal
 StandardError=journal
 # Up to 1000 open PRs per tick × multiple gh + Temporal calls each.

@@ -412,7 +412,7 @@ top of the same plumbing.
       to the v2 union with the documented field set
 - [ ] `go/execution-kernel/internal/blobs/` package: `Write(payload)
       → ref` and `Read(ref) → bytes` against SQLite blobs table
-- [ ] `apps/temporal-worker/...` Claude Code PostToolUse handler
+- [ ] `apps/runner/...` Claude Code PostToolUse handler
       fires `tool_output_captured` for every tool return
 - [ ] `chitin-kernel inspect <ref>` retrieves bytes from the blob
       store; exits non-zero on missing/corrupted ref

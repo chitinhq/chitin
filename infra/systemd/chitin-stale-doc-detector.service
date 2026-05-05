@@ -16,7 +16,7 @@ WorkingDirectory=%h/workspace/chitin
 Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
 Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.config/systemd/user/chitin.env
-ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/stale-doc-detector.ts
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/runner/src/stale-doc-detector.ts
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=60

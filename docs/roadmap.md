@@ -60,7 +60,7 @@ Four invariants documented at [`architecture/layer-contracts.md`](./architecture
 
 Three coordinated PRs ship the local 24/7 swarm:
 
-- **PR #81 — slice 1+2** — Temporal worker (`apps/temporal-worker/`) + chitin-governance openclaw plugin (`apps/openclaw-plugin-governance/`). `ExecutionRequest` is the `AllowedDrivers` primitive in concrete form (`libs/contracts/src/execution-request.schema.ts`). End-to-end verified: Temporal → openclaw → plugin's `before_tool_call` hook → kernel deny.
+- **PR #81 — slice 1+2** — Temporal worker (`apps/runner/`) + chitin-governance openclaw plugin (`apps/openclaw-plugin-governance/`). `ExecutionRequest` is the `AllowedDrivers` primitive in concrete form (`libs/contracts/src/execution-request.schema.ts`). End-to-end verified: Temporal → openclaw → plugin's `before_tool_call` hook → kernel deny.
 - **PR #83 — slice 3a (core normalizer)** — openclaw pi-runtime tool names (`exec`, `process`, `read`, `write`, `edit`) mapped to canonical action types in `gov.Normalize()`.
 - **PR #84 — slice 3 (chat-domain + routing + default-enforce)** — 14 chat-domain tools mapped (memory, sessions, image, ollama_web, cron, subagents) plus per-driver agent routing in `activity.ts` (`local-qwen → qwen-agent`, etc.) and default mode flipped from `observe` to `enforce`. End-to-end verified with qwen3-coder:30b dispatching the `read` tool.
 
@@ -117,3 +117,8 @@ Renamed `chitinhq/chitin → chitinhq/chitin-archive` at `v1.0.0`; archived ever
 - [arxiv] [2605.00942](https://arxiv.org/abs/2605.00942) — PPO guided Agentic Pipeline for Adaptive Prompt Selection and Test Case Generation
 - [arxiv] [2605.01008](https://arxiv.org/abs/2605.01008) — Semantics-Based Verification of an Implemented Shor Oracle for ECDLP in Qrisp
 - [arxiv] [2605.01042](https://arxiv.org/abs/2605.01042) — ProMoTA: a model-driven framework for end-to-end traceability analysis
+- [arxiv] [2605.01104](https://arxiv.org/abs/2605.01104) — RECAP: An End-to-End Platform for Capturing, Replaying, and Analyzing AI-Assisted Programming Interactions
+- [arxiv] [2605.01159](https://arxiv.org/abs/2605.01159) — A Domain-Driven Design Simulator for Business Logic-Rich Microservice Systems
+- [arxiv] [2605.01160](https://arxiv.org/abs/2605.01160) — The Productivity-Reliability Paradox: Specification-Driven Governance for AI-Augmented Software Development
+- [arxiv] [2605.01209](https://arxiv.org/abs/2605.01209) — ClarifySTL: An Interactive LLM Agent Framework for STL Transformation through Requirements Clarification
+- [arxiv] [2605.01264](https://arxiv.org/abs/2605.01264) — FeedbackLLM: Metadata driven Multi-Agentic Language Agnostic Test Case Generator with Evolving prompt and Coverage Feedback

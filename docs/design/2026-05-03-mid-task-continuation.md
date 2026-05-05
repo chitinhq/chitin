@@ -42,7 +42,7 @@ The audit (`docs/observations/2026-05-03-mcp-gate-coverage-audit.md` companion e
 
 1. **Router has the decision, but it's dead.** Pre-this-PR, `AdvisorResponse.Escalate bool` (`internal/router/types.go:67`) was set by the advisor and never read. THIS PR wires it through to the chain envelope (`escalation_requested: true`) and to router-hook telemetry — so any consumer can react.
 
-2. **Activity has no loop.** `apps/temporal-worker/src/workflow.ts:20-22` — `executeRequestWorkflow` is a stateless proxy. It does NOT loop on tier; it does NOT inspect activity output for escalation markers; it just returns whatever the activity returns.
+2. **Activity has no loop.** `apps/runner/src/workflow.ts:20-22` — `executeRequestWorkflow` is a stateless proxy. It does NOT loop on tier; it does NOT inspect activity output for escalation markers; it just returns whatever the activity returns.
 
 3. **ExecutionRequest has no escalation_context field.** `libs/contracts/src/execution-request.schema.ts` carries prompt + tier + bounds but no "prior driver tried this; here's what they found" channel. Without this, T2 starts cold.
 
@@ -70,7 +70,7 @@ The activity passes this to the higher-tier driver via prompt prefix or environm
 
 ### Step 2: Activity detects the escalation marker
 
-`apps/temporal-worker/src/activity.ts` parses kernel chain output. When the LAST decision event has `escalation_requested: true`, the activity returns:
+`apps/runner/src/activity.ts` parses kernel chain output. When the LAST decision event has `escalation_requested: true`, the activity returns:
 
 ```typescript
 return {

@@ -33,7 +33,7 @@ bash tools/generators/systemd-unit/generate.sh \
 Per-flag:
 - `--name` — e.g. `pr-event-ingester` (becomes `chitin-pr-event-ingester.{service,timer}`)
 - `--description` — human label (appears in `systemctl status`)
-- `--ts-script` — shorthand: `pnpm exec tsx apps/temporal-worker/src/<script>.ts`
+- `--ts-script` — shorthand: `pnpm exec tsx apps/runner/src/<script>.ts`
 - `--exec` — full ExecStart path (alternative to `--ts-script`)
 - `--interval` — e.g. `5min`, `1h`, `24h` (`OnUnitActiveSec`)
 - `--calendar` — e.g. `'*-*-* 06:00:00'` (`OnCalendar`)

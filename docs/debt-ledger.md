@@ -56,7 +56,7 @@ discovered_at: 2026-05-02T14:30:00Z
 discovered_by: swarm
 severity: high
 category: doc-debt
-file: apps/temporal-worker/src/activity.ts
+file: apps/runner/src/activity.ts
 status: open
 shipped_in:
 description: |
@@ -82,7 +82,7 @@ discovered_at: 2026-05-02T16:50:00Z
 discovered_by: operator
 severity: high
 category: code-debt
-file: apps/temporal-worker/src/dispatcher.ts
+file: apps/runner/src/dispatcher.ts
 status: claimed
 shipped_in:
 description: |
@@ -101,7 +101,7 @@ discovered_at: 2026-05-02T16:00:00Z
 discovered_by: operator
 severity: medium
 category: code-debt
-file: apps/temporal-worker/src/role-prompts.ts
+file: apps/runner/src/role-prompts.ts
 status: open
 shipped_in:
 description: |

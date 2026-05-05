@@ -37,7 +37,7 @@ Surveyed every code path that receives an MCP tool call and traced whether it no
    - **The advisor itself is not gated** — its recommendations don't touch the kernel gate
    - Acceptable: kernel deny is final; advisor can only soften, not break-through
 
-6. **Temporal-worker hook wrapper** (`apps/temporal-worker/src/router/hook-wrapper.ts:65-90`)
+6. **Temporal-worker hook wrapper** (`apps/runner/src/router/hook-wrapper.ts:65-90`)
    - Same shape as #5; same constraint.
 
 7. **TS governance libs** (`libs/governance/src/classifier.ts`)

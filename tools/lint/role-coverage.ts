@@ -1,6 +1,6 @@
 // Structural linter: every `Role` enum value in @chitin/contracts'
 // RoleSchema has a corresponding ROLE_PROMPTS entry in
-// apps/temporal-worker/src/role-prompts.ts (and vice versa).
+// apps/runner/src/role-prompts.ts (and vice versa).
 //
 // Why: adding a role to RoleSchema without touching ROLE_PROMPTS
 // fails silently at dispatch time — the dispatcher's prompt-builder
@@ -119,7 +119,7 @@ export async function lintRoleCoverage(opts: {
 
 async function main(): Promise<void> {
   const root = process.cwd();
-  const rolePromptsPath = resolve(root, 'apps/temporal-worker/src/role-prompts.ts');
+  const rolePromptsPath = resolve(root, 'apps/runner/src/role-prompts.ts');
   const result = await lintRoleCoverage({ rolePromptsPath });
 
   if (result.missingPrompts.length > 0) {
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
     console.error('');
     console.error(
       'Add a builder entry to ROLE_PROMPTS in ' +
-      'apps/temporal-worker/src/role-prompts.ts',
+      'apps/runner/src/role-prompts.ts',
     );
   }
 

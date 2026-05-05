@@ -17,7 +17,7 @@ EnvironmentFile=-%h/.config/systemd/user/chitin.env
 # service will start, fail with "module not found", and the timer
 # tick exits non-zero. That's intentional per the backlog entry's
 # note: the unit is fine as text pointing at a not-yet-existing path.
-ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/researcher.ts
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/runner/src/researcher.ts
 StandardOutput=journal
 StandardError=journal
 # 20min is generous for a research pass.

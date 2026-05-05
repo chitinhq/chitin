@@ -23,7 +23,7 @@ chitin event chain so audit can reconcile.
 
 **Activity dispatch (slice 6c):** the activity reads `ExecutionRequest.tier`
 and threads `--model <id>` into the spawn args. Maps live in
-`apps/temporal-worker/src/activity.ts` (`CLAUDE_TIER_MODEL`,
+`apps/runner/src/activity.ts` (`CLAUDE_TIER_MODEL`,
 `COPILOT_TIER_MODEL`). Override per tier per driver via
 `CHITIN_MODEL_<DRIVER_KEY>_<TIER>` env. Local-* drivers ignore tier — model
 is set per openclaw agent at agent-creation time (slice 3).
@@ -55,7 +55,7 @@ tier: T1
 status: partial
 estimated_loc: 60
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-blocks.test.ts
+file: apps/runner/src/dispatcher.ts, apps/runner/test/dispatcher-blocks.test.ts
 references_finding: 2026-05-02-redundant-dispatch-during-in-flight-blockers
 role: programmer
 ```
@@ -114,7 +114,7 @@ tier: T3
 status: ready
 estimated_loc: 400
 blocks: []
-file: apps/temporal-worker/src/review-graph.ts, apps/temporal-worker/src/workflow.ts, apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/grooming/apply-workflow-result.ts
+file: apps/runner/src/review-graph.ts, apps/runner/src/workflow.ts, apps/runner/src/dispatcher.ts, apps/runner/src/grooming/apply-workflow-result.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
 precondition: |
@@ -140,7 +140,7 @@ reviewer's decision is a chain event with its own gov-decision row;
 the chain is traversable end-to-end via `parent_workflow_id`.
 
 Implementation steps:
-1. New `apps/temporal-worker/src/review-graph.ts`:
+1. New `apps/runner/src/review-graph.ts`:
    - `REVIEW_TIER_DRIVER` map (R0=copilot-bot-only, R1=copilot/gpt-4.1,
      R2=copilot/gpt-5.4 or sonnet, R3=cch/opus, R4=escalate)
    - `computeStartingTier(prMeta, entry, telemetry)` — reads §5 trigger
@@ -190,14 +190,14 @@ status: completed
 shipped_in: PR #134
 estimated_loc: 200
 blocks: [review-graph-executor]
-file: apps/temporal-worker/src/reviewer-prompts.ts, apps/temporal-worker/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
+file: apps/runner/src/reviewer-prompts.ts, apps/runner/src/role-prompts.ts, docs/design/2026-05-02-swarm-as-software-factory.md
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
 ```
 
 > **✅ COMPLETED 2026-05-02 in PR #134.** Real adversarial-review
 > prompt builder + structured-output parser shipped in
-> `apps/temporal-worker/src/reviewer-prompts.ts` (separate module
+> `apps/runner/src/reviewer-prompts.ts` (separate module
 > from `role-prompts.ts` for cleaner separation between dispatcher-
 > level role prompts and the review-graph's child-workflow
 > prompts). 35 tests cover the schema + parser + tier-tone
@@ -271,7 +271,7 @@ tier: T2
 status: partial
 estimated_loc: 200
 blocks: []
-file: docs/debt-ledger.md, python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
+file: docs/debt-ledger.md, python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/runner/src/grooming/parse-backlog.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (debt-curator role) + §9 Phase 3
 role: programmer
 ```
@@ -342,7 +342,7 @@ tier: T1
 status: partial
 estimated_loc: 120
 blocks: []
-file: python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/temporal-worker/src/grooming/parse-backlog.ts
+file: python/analysis/debt.py, python/analysis/__init__.py, python/analysis/tests/test_debt_ledger.py, apps/runner/src/grooming/parse-backlog.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (debt-curator role)
 role: programmer
 ```
@@ -366,7 +366,7 @@ Scope:
 3. `python/analysis/tests/test_debt_ledger.py`: fixture-driven tests.
    At minimum: well-formed entry round-trips; missing required field
    → parse_error; status filter helper; severity filter helper.
-4. `apps/temporal-worker/src/grooming/parse-backlog.ts`: when the
+4. `apps/runner/src/grooming/parse-backlog.ts`: when the
    GROOM stage sizes a new backlog entry, look up its `file:` paths
    against the debt-ledger and bump the tier estimate by one level
    if any debt-ledger file matches (cross-cutting implications).
@@ -404,7 +404,7 @@ tier: T1
 status: partial
 estimated_loc: 80
 blocks: []
-file: apps/temporal-worker/src/researcher-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/researcher-prompts.test.ts
+file: apps/runner/src/researcher-prompts.ts, apps/runner/src/role-prompts.ts, apps/runner/test/researcher-prompts.test.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role)
 role: programmer
 ```
@@ -415,7 +415,7 @@ real adversarial-research prompt template, parallel to what
 
 Scope:
 
-1. New `apps/temporal-worker/src/researcher-prompts.ts`:
+1. New `apps/runner/src/researcher-prompts.ts`:
    - `buildResearcherPrompt({ source_summaries, existing_candidate_ids, since_window_hours })`
      — produces the agent's prompt. Tier-tone is consistent (research
      is a synthesis task; one tone fits all dispatched tiers).
@@ -463,7 +463,7 @@ periodically. Mirrors the existing `chitin-dispatcher.service` /
 Scope:
 
 1. `chitin-researcher.service` (oneshot): runs
-   `pnpm exec tsx apps/temporal-worker/src/researcher.ts`. Working
+   `pnpm exec tsx apps/runner/src/researcher.ts`. Working
    directory is the chitin repo root (`Environment=` or
    `WorkingDirectory=`).
 2. `chitin-researcher.timer`: fires every 4h
@@ -496,7 +496,7 @@ tier: T2
 status: partial
 estimated_loc: 200
 blocks: [researcher-role-prompt-template]
-file: apps/temporal-worker/src/researcher.ts, apps/temporal-worker/test/researcher.test.ts, docs/roadmap.md
+file: apps/runner/src/researcher.ts, apps/runner/test/researcher.test.ts, docs/roadmap.md
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (researcher role) + §9 Phase 3
 role: programmer
 ```
@@ -621,9 +621,9 @@ Verification checklist (for whoever picks this up):
    (matches the local-* / claude-code-headless naming pattern).
    Adding to:
    - `libs/contracts/src/execution-request.schema.ts` `DriverIdSchema`
-   - `apps/temporal-worker/src/activity.ts` `planInvocation` switch +
+   - `apps/runner/src/activity.ts` `planInvocation` switch +
      `DRIVER_AGENT_MAP`
-   - `apps/temporal-worker/src/dispatcher.ts` `TIER_DRIVER` (don't
+   - `apps/runner/src/dispatcher.ts` `TIER_DRIVER` (don't
      route by default — gate behind a flag until benched)
 6. Smoke-test: dispatch one trivial T1 entry through the new driver
    via `submit.ts` (DRIVER=chatgpt-via-openclaw). Confirm the run
@@ -649,7 +649,7 @@ tier: T2
 status: partial
 estimated_loc: 80
 blocks: []
-file: docs/runbooks/local-qwen-stack.md (new), apps/temporal-worker/src/activity.ts
+file: docs/runbooks/local-qwen-stack.md (new), apps/runner/src/activity.ts
 references_finding: 2026-05-02-overnight-driver-mix
 ```
 
@@ -798,7 +798,7 @@ tier: T1
 status: partial
 estimated_loc: 40
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts
+file: apps/runner/src/dispatcher.ts
 references_finding: overnight-2026-05-02-bucket-b-contamination
 ```
 
@@ -867,11 +867,11 @@ tier: T0
 status: partial
 estimated_loc: 8
 blocks: []
-file: apps/temporal-worker/test/activity.test.ts (new file or extend)
+file: apps/runner/test/activity.test.ts (new file or extend)
 references_issue: 82
 ```
 
-`apps/temporal-worker/src/submit.ts:8` uses `WORKFLOW_NAME = 'executeRequestWorkflow'`
+`apps/runner/src/submit.ts:8` uses `WORKFLOW_NAME = 'executeRequestWorkflow'`
 as a string, with `import type { executeRequestWorkflow }` for type safety.
 If the export is renamed, the string goes stale silently. Add a unit test
 asserting `executeRequestWorkflow.name === WORKFLOW_NAME`.
@@ -950,7 +950,7 @@ role: programmer
 `install-kernel.sh` (run every 15 min by chitin-kernel-redeploy.timer)
 already pulls main, rebuilds the Go kernel when `go/` changed, syncs
 systemd units (#313). It does NOT restart `chitin-worker.service` when
-TypeScript under `apps/temporal-worker/src/` changes — so a merged TS
+TypeScript under `apps/runner/src/` changes — so a merged TS
 fix can sit unapplied for hours while the worker process runs the old
 in-memory code.
 
@@ -971,12 +971,12 @@ Approach (subject to design tightening — programmer should propose):
 1. Track last-applied SHA per-source-tree at
    `~/.cache/chitin/install-kernel-state.json` (or extend the existing
    chain log). Compare current main HEAD against last applied.
-2. If `git diff <last>..<HEAD> -- apps/temporal-worker/src/` is
+2. If `git diff <last>..<HEAD> -- apps/runner/src/` is
    non-empty: `systemctl --user restart chitin-worker.service` and
    wait for `active (running)` (`systemctl --user is-active`).
 3. Emit a structured chain event `worker-restarted` with
    `{old_sha, new_sha, restart_dur_ms, commits_in_diff}`.
-4. Idempotent: no-op when nothing in apps/temporal-worker/src/ changed.
+4. Idempotent: no-op when nothing in apps/runner/src/ changed.
 
 Boundary cases:
 - New checkout, no prior state → skip restart (worker is on whatever
@@ -986,7 +986,7 @@ Boundary cases:
   to triage; don't loop-restart.
 
 **Acceptance:**
-- [ ] After landing a TS-only change to apps/temporal-worker/src/,
+- [ ] After landing a TS-only change to apps/runner/src/,
       next `chitin-kernel-redeploy.timer` tick restarts the worker
       automatically (verified via journalctl)
 - [ ] No-op when no TS changes since last redeploy
@@ -1008,7 +1008,7 @@ tier: T1
 status: partial
 estimated_loc: 30
 blocks: []
-file: apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/activity.ts (writeWorktreeIndex pattern), apps/temporal-worker/test/grooming-list-real-untracked.test.ts (extend)
+file: apps/runner/src/grooming/apply-workflow-result.ts, apps/runner/src/activity.ts (writeWorktreeIndex pattern), apps/runner/test/grooming-list-real-untracked.test.ts (extend)
 references_finding: 2026-05-05-t0-smoke-pr-326-bootstrap-pollution
 role: programmer
 ```
@@ -1044,7 +1044,7 @@ A. **Add openclaw bootstrap to `BOOTSTRAP_UNTRACKED_PREFIXES`** in
 
 B. **Extend the worker's worktree-setup to write the openclaw bootstrap
    names into `.git/info/exclude`** at the same point we already do for
-   `WORKTREE_INDEX.md` (apps/temporal-worker/src/activity.ts:548-554).
+   `WORKTREE_INDEX.md` (apps/runner/src/activity.ts:548-554).
    Cleaner: git ignores them at every layer, no special-case needed in
    apply-step. The list of names lives in one place — the openclaw
    driver activity branch — close to where openclaw spawns.
@@ -1095,7 +1095,7 @@ tier: T2
 status: partial
 estimated_loc: 250
 blocks: []
-file: scripts/chitin-alarm-relay.sh (new), infra/systemd/chitin-alarm-relay.service (new), infra/systemd/chitin-alarm-relay.timer (new), apps/temporal-worker/src/alarm-feeder.ts (extend with hermes hook)
+file: scripts/chitin-alarm-relay.sh (new), infra/systemd/chitin-alarm-relay.service (new), infra/systemd/chitin-alarm-relay.timer (new), apps/runner/src/alarm-feeder.ts (extend with hermes hook)
 references_finding: 2026-05-05-hermes-shape-c-whatsapp-alarm-route
 role: programmer
 ```
@@ -1170,7 +1170,7 @@ tier: T2
 status: ready
 estimated_loc: 50
 blocks: []
-file: apps/temporal-worker/src/skills/comment-responder.ts, apps/temporal-worker/test/comment-responder.test.ts
+file: apps/runner/src/skills/comment-responder.ts, apps/runner/test/comment-responder.test.ts
 references_finding: 2026-05-05-rm-rf-clone-recurrence
 references_pr: 336
 role: programmer
@@ -1236,16 +1236,16 @@ tier: T2
 status: ready
 estimated_loc: 100
 blocks: []
-file: apps/temporal-worker/src/comment-responder/dispatch.ts, apps/temporal-worker/src/comment-responder/enqueue-activity.ts, apps/temporal-worker/src/skills/comment-responder.ts (relocate?), go/execution-kernel/internal/policy/rules/no-rm-recursive.go (alt path)
+file: apps/runner/src/comment-responder/dispatch.ts, apps/runner/src/comment-responder/enqueue-activity.ts, apps/runner/src/skills/comment-responder.ts (relocate?), go/execution-kernel/internal/policy/rules/no-rm-recursive.go (alt path)
 references_pr: 343
 references_finding: 2026-05-05-rm-rf-clone-recurrence
 role: programmer
 ```
 
 **Wiring follow-up to PR #343.** PR #343 shipped `precheckShellCommand`
-as a pure tested function at `apps/temporal-worker/src/skills/comment-responder.ts`
+as a pure tested function at `apps/runner/src/skills/comment-responder.ts`
 — but **nothing on main calls it.** The actual comment-responder
-agent-spawn flow lives in `apps/temporal-worker/src/comment-responder/`
+agent-spawn flow lives in `apps/runner/src/comment-responder/`
 (different directory) and the agent (claude-code-headless / copilot-cli)
 generates shell commands that flow through the Go kernel's PreToolUse
 hook, not through any TS pre-check.
@@ -1349,7 +1349,7 @@ tier: T3
 status: ready
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/activity.ts, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
+file: apps/runner/src/dispatcher.ts, apps/runner/src/activity.ts, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
 references_finding: 2026-05-05-fingerprint-coverage-gap
 role: programmer
 ```
@@ -1429,7 +1429,7 @@ tier: T1
 status: ready
 estimated_loc: 8
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts
+file: apps/runner/src/dispatcher.ts
 ```
 
 The slice-7-tuning prompt names the entry's `file` field as the
@@ -1449,7 +1449,7 @@ tier: T1
 status: ready
 estimated_loc: 15
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts
+file: apps/runner/src/dispatcher.ts
 ```
 
 Slice-7-tuning live run: agent picked `test/bridge.test.ts` instead of
@@ -1470,7 +1470,7 @@ tier: T1
 status: ready
 estimated_loc: 20
 blocks: []
-file: apps/temporal-worker/src/activity.ts
+file: apps/runner/src/activity.ts
 ```
 
 Add `--include-hook-events` to the `claude -p` invocation and the
@@ -1511,7 +1511,7 @@ tier: T0
 status: blocked
 estimated_loc: 4
 blocks: [dispatcher-prompt-relative-path-prefix, dispatcher-prompt-scope-discipline, qwen-ollama-stream-instability-investigation]
-file: apps/temporal-worker/src/dispatcher.ts
+file: apps/runner/src/dispatcher.ts
 ```
 
 Final entry in the qwen-layer arc. Once the three blockers above ship,
@@ -1570,7 +1570,7 @@ tier: T2
 status: ready
 estimated_loc: 60
 blocks: []
-file: apps/temporal-worker/src/activity.ts
+file: apps/runner/src/activity.ts
 references_issue: 82
 references_finding: 11
 ```
@@ -1620,7 +1620,7 @@ tier: T1
 status: partial
 estimated_loc: 40
 blocks: []
-file: apps/temporal-worker/src/activity-types.ts, src/activity.ts
+file: apps/runner/src/activity-types.ts, src/activity.ts
 references_issue: 82
 references_finding: 12
 ```
@@ -1898,7 +1898,7 @@ tier: T2
 status: ready
 estimated_loc: 60
 blocks: []
-file: libs/contracts/src/execution-request.schema.ts, apps/temporal-worker/src/activity.ts, openclaw agent config
+file: libs/contracts/src/execution-request.schema.ts, apps/runner/src/activity.ts, openclaw agent config
 ```
 
 `local-glm` and `local-deepseek` driver ids are misnomers — `glm-5.1:cloud`
@@ -1942,7 +1942,7 @@ status: completed
 shipped_in: PR #130 (Phase 1 of swarm-as-software-factory; design doc PR #129)
 estimated_loc: 200
 blocks: []
-file: apps/temporal-worker/src/grooming/parse-backlog.ts, apps/temporal-worker/src/dispatcher.ts, docs/swarm-backlog.md
+file: apps/runner/src/grooming/parse-backlog.ts, apps/runner/src/dispatcher.ts, docs/swarm-backlog.md
 ```
 
 > **✅ COMPLETED 2026-05-02 in PR #130.** Vocabulary landed slightly
@@ -1950,7 +1950,7 @@ file: apps/temporal-worker/src/grooming/parse-backlog.ts, apps/temporal-worker/s
 > were work-shape labels; the design doc reframed them as agent
 > ROLES — programmer/reviewer/researcher/etc.). See
 > `docs/design/2026-05-02-swarm-as-software-factory.md` §3 for the
-> final taxonomy and `apps/temporal-worker/src/role-prompts.ts` for
+> final taxonomy and `apps/runner/src/role-prompts.ts` for
 > the role-prompt registry. Per-role prompt templates beyond
 > `programmer` are stubs in this slice — follow-up entries (one per
 > role) flesh out the dedicated prompts.
@@ -1984,7 +1984,7 @@ tier: T1
 status: in_design
 estimated_loc: 80
 blocks: [role-typed-backlog-entries]
-file: docs/swarm-lessons.md (new), apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/dispatcher.ts
+file: docs/swarm-lessons.md (new), apps/runner/src/grooming/apply-workflow-result.ts, apps/runner/src/dispatcher.ts
 ```
 
 After every merged swarm PR, the apply step distills one sentence
@@ -2020,7 +2020,7 @@ tier: T2
 status: in_design
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/eval/ (new dir)
+file: apps/runner/src/eval/ (new dir)
 ```
 
 Periodic chitin-internal eval. Pick a reference set of past merged
@@ -2051,7 +2051,7 @@ status: partial
 shipped_in: PR #130 (schema fields only; orchestration in Phase 2)
 estimated_loc: 400
 blocks: [role-typed-backlog-entries]
-file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/workflow.ts
+file: apps/runner/src/dispatcher.ts, apps/runner/src/workflow.ts
 ```
 
 > **🟡 PARTIAL 2026-05-02 in PR #130.** The schema fields
@@ -2088,7 +2088,7 @@ tier: T2
 status: in_design
 estimated_loc: 150
 blocks: []
-file: apps/temporal-worker/src/activity.ts, libs/telemetry/src/ (existing)
+file: apps/runner/src/activity.ts, libs/telemetry/src/ (existing)
 ```
 
 Emit OTEL spans in the format expected by `abhi1693/openclaw-mission-control`
@@ -2173,7 +2173,7 @@ tier: T3
 status: in_design
 estimated_loc: 600
 blocks: []
-file: apps/temporal-worker/src/drivers/ (new), libs/contracts/src/execution-request.schema.ts
+file: apps/runner/src/drivers/ (new), libs/contracts/src/execution-request.schema.ts
 ```
 
 Add a Playwright-based browser driver so the swarm can interact with
@@ -2207,7 +2207,7 @@ tier: T3
 status: in_design
 estimated_loc: 300
 blocks: [playwright-driver-prototype]
-file: apps/temporal-worker/src/integrations/notebooklm/ (new)
+file: apps/runner/src/integrations/notebooklm/ (new)
 ```
 
 Use the playwright driver to upload a markdown source to NotebookLM,
@@ -2328,17 +2328,17 @@ T5 only:     ∞  (governance-config edits, ambiguous strategy)
 ```bash
 # Worker must be running:
 CHITIN_REPO_ROOT=/home/red/workspace/chitin \
-  pnpm exec tsx apps/temporal-worker/src/worker.ts &
+  pnpm exec tsx apps/runner/src/worker.ts &
 
 # Submit:
 PROMPT='<from swarm-backlog entry implementation_steps>' \
 WORKFLOW_ID=swarm-<entry-id>-$(date +%s) \
 BASE_REF=main DRIVER=local-qwen TIER=T0 \
 WALL_TIMEOUT_S=120 MAX_TOOL_CALLS=10 \
-  pnpm exec tsx apps/temporal-worker/src/submit.ts
+  pnpm exec tsx apps/runner/src/submit.ts
 
 # Apply:
-pnpm exec tsx apps/temporal-worker/src/grooming/apply-workflow-result.ts \
+pnpm exec tsx apps/runner/src/grooming/apply-workflow-result.ts \
   --result tmp/result-<workflow-id>.json --apply
 ```
 
@@ -2360,7 +2360,7 @@ tier: T2
 status: in_design
 estimated_loc: 150
 blocks: []
-file: apps/temporal-worker/src/product-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/product-prompts.test.ts
+file: apps/runner/src/product-prompts.ts, apps/runner/src/role-prompts.ts, apps/runner/test/product-prompts.test.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (product role)
 role: programmer
 ```
@@ -2398,7 +2398,7 @@ tier: T2
 status: in_design
 estimated_loc: 180
 blocks: []
-file: apps/temporal-worker/src/architect-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/architect-prompts.test.ts
+file: apps/runner/src/architect-prompts.ts, apps/runner/src/role-prompts.ts, apps/runner/test/architect-prompts.test.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (architect role)
 role: programmer
 ```
@@ -2428,7 +2428,7 @@ tier: T3
 status: in_design
 estimated_loc: 250
 blocks: [architect-role-prompt-template]
-file: apps/temporal-worker/src/qa-prompts.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/test/qa-prompts.test.ts
+file: apps/runner/src/qa-prompts.ts, apps/runner/src/role-prompts.ts, apps/runner/test/qa-prompts.test.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (qa role) + Phase 4
 role: programmer
 ```
@@ -2461,7 +2461,7 @@ tier: T2
 status: in_design
 estimated_loc: 90
 blocks: []
-file: apps/temporal-worker/src/review-graph-dispatch.ts, apps/temporal-worker/test/review-graph-dispatch-r0-wait.test.ts
+file: apps/runner/src/review-graph-dispatch.ts, apps/runner/test/review-graph-dispatch-r0-wait.test.ts
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5 (R0 fires before R1)
 role: programmer
 ```
@@ -3101,7 +3101,7 @@ tier: T2
 status: partial
 estimated_loc: 250
 blocks: [comment-responder]
-file: apps/temporal-worker/src/pr-event-ingester.ts (new), apps/temporal-worker/src/worker.ts (wire)
+file: apps/runner/src/pr-event-ingester.ts (new), apps/runner/src/worker.ts (wire)
 references_finding: 2026-05-03-review-graph-not-firing-on-non-dispatcher-prs
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §5
 role: programmer
@@ -3110,7 +3110,7 @@ role: programmer
 The review-graph (`reviewGraphWorkflow`, in production per factory
 design §5) currently only runs on PRs the dispatcher itself opens —
 `enqueueReviewGraph` is called from exactly one place,
-`apps/temporal-worker/src/dispatcher.ts:711`, on the programmer-success
+`apps/runner/src/dispatcher.ts:711`, on the programmer-success
 path. PRs opened by humans, by interactive Claude Code sessions, by
 Copilot (when wired), or by any caller that's not the dispatcher
 never trigger the §5 trigger matrix.
@@ -3127,7 +3127,7 @@ trigger matrix, and calls `enqueueReviewGraph` when a PR matches and
 has no existing review-graph workflow.
 
 Steps:
-1. Create `apps/temporal-worker/src/pr-event-ingester.ts`. Polls
+1. Create `apps/runner/src/pr-event-ingester.ts`. Polls
    `gh api repos/chitinhq/chitin/pulls?state=open` every 5 minutes
    (mirrors `chitin-dispatcher.timer` cadence — file the
    companion systemd timer separately or fold into the dispatcher
@@ -3140,7 +3140,7 @@ Steps:
    per PR. Skip if the workflow already exists.
 3. Read PR metadata: review comment count, diff size, files
    touched. Match against the §5 trigger matrix in
-   `apps/temporal-worker/src/review-graph.ts: computeStartingTier`,
+   `apps/runner/src/review-graph.ts: computeStartingTier`,
    which returns a `ReviewTier` (R0–R4). R0 means "no chitin
    dispatch needed; Copilot's server-side review covers it"; R4
    means "ping operator." R1–R3 are the dispatchable tiers.
@@ -3184,7 +3184,7 @@ tier: T2
 status: partial
 estimated_loc: 350
 blocks: []
-file: apps/temporal-worker/src/role-prompts.ts (extend), apps/temporal-worker/src/comment-responder/* (new), libs/contracts/src/execution-request.schema.ts (extend RoleSchema)
+file: apps/runner/src/role-prompts.ts (extend), apps/runner/src/comment-responder/* (new), libs/contracts/src/execution-request.schema.ts (extend RoleSchema)
 references_finding: 2026-05-03-no-comment-responder-role
 references_design: docs/design/2026-05-02-swarm-as-software-factory.md §3 (role registry)
 role: programmer
@@ -3218,8 +3218,8 @@ comment recording which were applied vs dismissed (and why).
 Steps:
 1. Extend `RoleSchema` in `libs/contracts/src/execution-request.schema.ts`
    to include `'comment-responder'`. Bump
-   `apps/temporal-worker/src/role-prompts.ts` `ROLE_PROMPTS` map.
-2. Author `apps/temporal-worker/src/comment-responder/prompt.ts`. The
+   `apps/runner/src/role-prompts.ts` `ROLE_PROMPTS` map.
+2. Author `apps/runner/src/comment-responder/prompt.ts`. The
    prompt walks the agent through:
    - List comments via `gh api repos/<owner>/<repo>/pulls/<pr>/comments`
    - For each: read the comment + the diff_hunk + the linked file/line
@@ -3228,7 +3228,7 @@ Steps:
    - For applies: edit the file, run targeted tests, commit
    - At end: post one summary comment to the PR (`gh pr comment`)
      with apply/dismiss/escalate per comment + reasons
-3. Author `apps/temporal-worker/src/comment-responder/dispatch.ts` —
+3. Author `apps/runner/src/comment-responder/dispatch.ts` —
    companion to `review-graph-dispatch.ts`. Triggered by the
    review-graph (or by `pr-event-ingester` directly) when a PR's
    comment count crosses a threshold AND the PR has no in-flight
@@ -3268,7 +3268,7 @@ tier: T2
 status: ready
 estimated_loc: 120
 blocks: []
-file: apps/temporal-worker/src/comment-responder/* (extend), apps/temporal-worker/src/review-graph-workflow.ts (verdict-marker hookup), libs/contracts/src/comment-verdict.schema.ts (new)
+file: apps/runner/src/comment-responder/* (extend), apps/runner/src/review-graph-workflow.ts (verdict-marker hookup), libs/contracts/src/comment-verdict.schema.ts (new)
 references_finding: 2026-05-05-clawsweeper-ecosystem-adopt
 role: programmer
 ```
@@ -3298,7 +3298,7 @@ Two concrete wins:
 Approach (subject to design tightening — programmer should propose):
 
 1. Define a `MutableStatusComment` helper (probably under
-   `apps/temporal-worker/src/comment-responder/mutable-status.ts`)
+   `apps/runner/src/comment-responder/mutable-status.ts`)
    with `read(prNumber)`, `upsert(prNumber, body, verdictMeta)`,
    `findByMarker(prNumber, marker)`. Identifies "the chitin status
    comment" via a top-of-body magic-string marker
@@ -3325,7 +3325,7 @@ Approach (subject to design tightening — programmer should propose):
 - [ ] Vitest covers: first-tier upsert (creates), second-tier upsert
       (edits), missing-marker (creates new), malformed-marker (logs +
       fails closed)
-- [ ] Documentation: one paragraph in `apps/temporal-worker/src/comment-responder/README.md`
+- [ ] Documentation: one paragraph in `apps/runner/src/comment-responder/README.md`
       (or equivalent) describing the marker schema for future readers
 
 **Caveat — interaction with comment-responder fix loop:** when the
@@ -3344,7 +3344,7 @@ tier: T2
 status: ready
 estimated_loc: 200
 blocks: []
-file: apps/temporal-worker/src/lessons.ts (refactor distillation path)
+file: apps/runner/src/lessons.ts (refactor distillation path)
 references_finding: 2026-05-04-lessons-service-timeout
 role: programmer
 ```
@@ -3410,7 +3410,7 @@ tier: T2
 status: ready
 estimated_loc: 50
 blocks: []
-file: apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/src/gatekeeper.ts
+file: apps/runner/src/role-prompts.ts, apps/runner/src/gatekeeper.ts
 references_finding: 2026-05-03-swarm-cohort-lockfile-drift
 role: programmer
 ```
@@ -3432,7 +3432,7 @@ Three places this can be enforced (pick one — the cheapest is best):
 1. **Pre-commit hook in implementor worktree** — refuse to stage
    `package.json` changes without a matching `pnpm-lock.yaml` change.
    Cheapest, but only fires at the implementor's commit step.
-2. **Role-prompt rule** in `apps/temporal-worker/src/role-prompts.ts`
+2. **Role-prompt rule** in `apps/runner/src/role-prompts.ts`
    ("if you edit package.json, run `pnpm install --no-frozen-lockfile`
    before committing"). Soft enforcement, but cheap and reusable.
 3. **Dispatcher post-write check** — after the implementor returns, the
@@ -3546,7 +3546,7 @@ role: programmer
 
 Compile-time guarantee that every `Role` enum value in
 `libs/contracts/src/execution-request.schema.ts` has a corresponding
-`ROLE_PROMPTS` entry in `apps/temporal-worker/src/role-prompts.ts`.
+`ROLE_PROMPTS` entry in `apps/runner/src/role-prompts.ts`.
 Today, adding a role to the enum without touching the prompts map
 fails silently at dispatch time (the dispatcher tries to build
 a prompt for the unknown role). Lint catches it at PR time.
@@ -3634,7 +3634,7 @@ expectations:
 
 Steps:
 1. Reuse `parseBacklog` from
-   `apps/temporal-worker/src/grooming/parse-backlog.ts`.
+   `apps/runner/src/grooming/parse-backlog.ts`.
 2. Run it; collect parse errors + cross-check id matching.
 3. Validate `role` against `RoleSchema`.
 4. CI gate on PRs that touch `docs/swarm-backlog.md`.
@@ -3663,11 +3663,11 @@ role: programmer
 scaffolds the cross-cutting set every new agent role touches:
 
 - libs/contracts/src/execution-request.schema.ts: add `<name>` to RoleSchema
-- apps/temporal-worker/src/role-prompts.ts: register prompt builder + import
-- apps/temporal-worker/src/<name>/prompt.ts: shape-appropriate prompt template
-- apps/temporal-worker/src/<name>/dispatch.ts: enqueue helper companion
-- apps/temporal-worker/src/<name>/index.ts: barrel
-- apps/temporal-worker/test/<name>.test.ts: stub tests covering invariants
+- apps/runner/src/role-prompts.ts: register prompt builder + import
+- apps/runner/src/<name>/prompt.ts: shape-appropriate prompt template
+- apps/runner/src/<name>/dispatch.ts: enqueue helper companion
+- apps/runner/src/<name>/index.ts: barrel
+- apps/runner/test/<name>.test.ts: stub tests covering invariants
 
 The `--shape` flag picks defaults:
 - `reviewer`: bounds matching R1-R3 (read-only, network=allowlist),
@@ -3877,7 +3877,7 @@ Five entries, ordered:
    skill-authoring guide, replaces the originally-filed
    prompt-authoring doc.
 2. lint-skill-folder-shape (T1) — structural linter over
-   apps/temporal-worker/skills/**/SKILL.md.
+   apps/runner/skills/**/SKILL.md.
 3. skill-folder-dispatcher-stitcher (T2) — adapter for tiers
    without harness-native skill discovery (Copilot CLI, ollama
    models including the new GLM-4.7-flash T0). Loads SKILL.md
@@ -3970,7 +3970,7 @@ references_finding: 2026-05-03-skill-authoring-quality-gate
 role: programmer
 ```
 
-Structural linter over apps/temporal-worker/skills/**/. Same shape
+Structural linter over apps/runner/skills/**/. Same shape
 as the three linters from #204/#205/#206: pure rules + dynamic-import
 I/O + nx target + CI step. Soft-blocked on the skill-authoring doc
 (linter rules cite specific sections).
@@ -4013,7 +4013,7 @@ tier: T2
 status: partial
 estimated_loc: 400
 blocks: [migrate-role-prompts-to-skill-folders]
-file: apps/temporal-worker/src/skill-loader/stitcher.ts (new), apps/temporal-worker/src/skill-loader/tests/stitcher.test.ts (new)
+file: apps/runner/src/skill-loader/stitcher.ts (new), apps/runner/src/skill-loader/tests/stitcher.test.ts (new)
 references_finding: 2026-05-03-cross-tier-skill-loading
 role: programmer
 ```
@@ -4026,7 +4026,7 @@ across all tiers.
 
 What it does:
 - Given a role + entry, locates the corresponding skill folder
-  (apps/temporal-worker/skills/<role>/).
+  (apps/runner/skills/<role>/).
 - Reads SKILL.md and any files SKILL.md references.
 - For T3-T4 (Claude Code headless): copies the skill folder into
   the agent's working dir; the harness handles loading.
@@ -4064,7 +4064,7 @@ tier: T2
 status: partial
 estimated_loc: 600
 blocks: []
-file: apps/temporal-worker/skills/{programmer,researcher,analyst,comment-responder,peer-reviewer}/SKILL.md (new), apps/temporal-worker/src/role-prompts.ts (refactor)
+file: apps/runner/skills/{programmer,researcher,analyst,comment-responder,peer-reviewer}/SKILL.md (new), apps/runner/src/role-prompts.ts (refactor)
 references_finding: 2026-05-03-skill-folder-migration
 role: programmer
 ```
@@ -4074,12 +4074,12 @@ authoring doc. The prompt.ts files become thin shims that call the
 stitcher rather than building strings inline.
 
 Per role:
-- apps/temporal-worker/skills/<role>/SKILL.md: the role frame +
+- apps/runner/skills/<role>/SKILL.md: the role frame +
   workflow, lifted from the existing prompt.ts string (rewritten
   to authoring-doc shape).
-- apps/temporal-worker/skills/<role>/<supporting>.md: per-skill
+- apps/runner/skills/<role>/<supporting>.md: per-skill
   rubrics, templates, examples extracted from the inline prompt.
-- apps/temporal-worker/src/<role>/prompt.ts: simplifies to
+- apps/runner/src/<role>/prompt.ts: simplifies to
   `(entry) => stitcher.assemble('<role>', entry, tier)`.
 
 Migration order: simplest first. peer-reviewer (read-only) →
@@ -4559,7 +4559,7 @@ tier: T2
 status: ready
 estimated_loc: 150
 blocks: []
-file: docs/swarm-lessons/, apps/temporal-worker/src/lessons.ts, apps/temporal-worker/src/role-prompts.ts, apps/temporal-worker/src/grooming/parse-backlog.ts (role label per PR)
+file: docs/swarm-lessons/, apps/runner/src/lessons.ts, apps/runner/src/role-prompts.ts, apps/runner/src/grooming/parse-backlog.ts (role label per PR)
 references_finding: 2026-05-03 PR cascade — peer-reviewer + comment-responder roles produce review findings but don't get lessons today
 role: programmer
 ```
@@ -4575,7 +4575,7 @@ Steps:
    (preserve content; this is the existing scope).
 2. Add empty `docs/swarm-lessons/{peer-reviewer,comment-responder,
    analyst}.md` with the same header format.
-3. Lessons extractor (`apps/temporal-worker/src/lessons.ts`)
+3. Lessons extractor (`apps/runner/src/lessons.ts`)
    reads the merged PR's role label (the dispatch marker
    `~/.cache/chitin/swarm-state/dispatched/<entry-id>.json`
    already records it) and routes the distilled lesson to the
@@ -4603,7 +4603,7 @@ tier: T3
 status: ready
 estimated_loc: 300
 blocks: [per-role-lessons-files]
-file: apps/temporal-worker/src/lessons.ts (extends), apps/temporal-worker/src/lessons/copilot-review-distill.ts, apps/temporal-worker/test/copilot-review-distill.test.ts
+file: apps/runner/src/lessons.ts (extends), apps/runner/src/lessons/copilot-review-distill.ts, apps/runner/test/copilot-review-distill.test.ts
 references_finding: 2026-05-03 PR cascade — Copilot reviews are the richest lesson signal; today's extractor reads commit messages only
 role: programmer
 ```
@@ -4794,7 +4794,7 @@ tier: T2
 status: partial
 estimated_loc: 100
 blocks: []
-file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/test/pr-event-ingester.test.ts
+file: apps/runner/src/pr-event-ingester.ts, apps/runner/test/pr-event-ingester.test.ts
 references_finding: Copilot review on PR #211 #4 + PR #212 #1 (same finding, different PR)
 role: programmer
 ```
@@ -4850,7 +4850,7 @@ tier: T3
 status: partial
 estimated_loc: 200
 blocks: []
-file: apps/temporal-worker/src/pr-event-ingester.ts, apps/temporal-worker/src/peer-reviewer/dispatch.ts, apps/temporal-worker/src/comment-responder/dispatch.ts
+file: apps/runner/src/pr-event-ingester.ts, apps/runner/src/peer-reviewer/dispatch.ts, apps/runner/src/comment-responder/dispatch.ts
 references_finding: Copilot review on PR #212 #4
 role: programmer
 ```
@@ -4908,7 +4908,7 @@ tier: T2
 status: ready
 estimated_loc: 100
 blocks: [pr-event-ingester-dedup-against-completed-workflows]
-file: apps/temporal-worker/src/pr-event-ingester.ts
+file: apps/runner/src/pr-event-ingester.ts
 references_finding: Copilot review on PR #212 #5
 role: programmer
 ```
@@ -4949,7 +4949,7 @@ distinction (responder won't refire anyway).
       resolved → count returns 2
 - [ ] Test: PR with 5 reviewer comments, 5 reply comments
       (`in_reply_to_id` set) → count returns 5 (only root-level)
-file: docs/swarm-lessons/<role>.md (format change), apps/temporal-worker/src/lessons.ts (entry parser), apps/temporal-worker/src/role-prompts.ts (renderer)
+file: docs/swarm-lessons/<role>.md (format change), apps/runner/src/lessons.ts (entry parser), apps/runner/src/role-prompts.ts (renderer)
 references_finding: 2026-05-03 PR cascade — one-sentence lesson loses the WHY and the SHAPE
 role: programmer
 ```
@@ -5017,7 +5017,7 @@ tier: T0
 status: ready
 estimated_loc: 500
 blocks: [per-role-lessons-files, copilot-review-lessons-extractor, code-pattern-lessons]
-file: apps/temporal-worker/src/lessons-curator/dispatch.ts, apps/temporal-worker/src/lessons-curator/prompt.ts (or skill folder), apps/temporal-worker/src/lessons-curator/cluster.ts (deterministic), infra/systemd/chitin-lessons-curator.{service,timer}, docs/runbooks/chitin-lessons-curator.md
+file: apps/runner/src/lessons-curator/dispatch.ts, apps/runner/src/lessons-curator/prompt.ts (or skill folder), apps/runner/src/lessons-curator/cluster.ts (deterministic), infra/systemd/chitin-lessons-curator.{service,timer}, docs/runbooks/chitin-lessons-curator.md
 references_finding: 2026-05-03 operator framing — "this is all data for us to see how to improve the swarm" + "shift majority of work left, push towards T0 doing majority of work"
 role: analyst
 ```
@@ -5122,7 +5122,7 @@ tier: T2
 status: partial
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/test/dispatcher-skip-shipped.test.ts, apps/temporal-worker/src/grooming/parse-backlog.ts
+file: apps/runner/src/dispatcher.ts, apps/runner/test/dispatcher-skip-shipped.test.ts, apps/runner/src/grooming/parse-backlog.ts
 references_finding: 2026-05-03 cascade — swarm dispatched #216 (comment-responder) and #218 (pr-event-ingester) against entries already implemented by hand-merged PRs, producing regressive stub PRs that had to be closed
 role: programmer
 ```
@@ -5169,7 +5169,7 @@ right combo):
     entry's first draft flagged the brittleness: 14-day file-path
     scan flags ALL ready entries that share any file with a
     recent commit. The backlog has multiple independent ready
-    entries targeting `apps/temporal-worker/src/dispatcher.ts`;
+    entries targeting `apps/runner/src/dispatcher.ts`;
     one recent dispatcher commit would suppress all of them
     for two weeks. Plus the `file:` field today routinely
     includes annotations like `(new)`, `(extend)`, `(new dir)`,
@@ -5198,7 +5198,7 @@ all acceptance criteria met."
       chitin-shipped-entry-flipper.timer`
 - [ ] Optional: backlog-schema extension to add a `sentinel:`
       field; dispatcher reads it and verifies before dispatch
-- [ ] Test (in `apps/temporal-worker/test/dispatcher-skip-shipped.test.ts`):
+- [ ] Test (in `apps/runner/test/dispatcher-skip-shipped.test.ts`):
       synthetic entry id appears in synthetic PR title →
       auto-flipper proposes status update
 - [ ] Test: entry id NOT in any PR title → no action
@@ -5299,7 +5299,7 @@ tier: T5
 status: in_design
 estimated_loc: TBD (multi-subsystem; this entry is the design doc and the rollup of MVP entries below)
 blocks: []
-file: docs/design/2026-05-03-agent-router.md (design), apps/temporal-worker/src/router/, go/execution-kernel/internal/gov/advisor.go, python/analysis/floundering.py
+file: docs/design/2026-05-03-agent-router.md (design), apps/runner/src/router/, go/execution-kernel/internal/gov/advisor.go, python/analysis/floundering.py
 references_finding: 2026-05-03 evening operator framing — multi-dimensional routing (model + agent + cost) with uncertainty + floundering + shared memory + flat-cost-only billing
 role: architect
 ```
@@ -5405,7 +5405,7 @@ role: programmer
 ```
 
 The router's heuristic+policy layer ships as TypeScript MVP in
-`apps/temporal-worker/src/router/`. Operator hot-path concern:
+`apps/runner/src/router/`. Operator hot-path concern:
 every tool call that hits the slow path eats `pnpm tsx` startup
 (~500ms-1s). With many tool calls per session, that adds up.
 
@@ -5445,7 +5445,7 @@ tier: T2
 status: ready
 estimated_loc: 250
 blocks: [router-heuristics-go-sdk]
-file: apps/temporal-worker/src/router/plugin-loader.ts, libs/router-plugin-api/
+file: apps/runner/src/router/plugin-loader.ts, libs/router-plugin-api/
 references_finding: 2026-05-03 evening operator framing — heuristics should be exposed as plugin surface so others can configure custom plugins via chitin.yaml
 role: programmer
 ```
@@ -5678,7 +5678,7 @@ tier: T2
 status: partial
 estimated_loc: 200
 blocks: []
-file: apps/temporal-worker/src/activity.ts, python/analysis/gemini_mine.py (new)
+file: apps/runner/src/activity.ts, python/analysis/gemini_mine.py (new)
 role: programmer
 ```
 
@@ -5699,7 +5699,7 @@ tier: T2
 status: partial
 estimated_loc: 250
 blocks: []
-file: apps/temporal-worker/src/activity.ts, libs/adapters/openclaw/ (existing)
+file: apps/runner/src/activity.ts, libs/adapters/openclaw/ (existing)
 role: programmer
 ```
 
@@ -5722,7 +5722,7 @@ tier: T2
 status: blocked
 estimated_loc: 100
 blocks: []
-file: apps/temporal-worker/src/activity.ts (planInvocation case), libs/contracts/src/execution-request.schema.ts (no change)
+file: apps/runner/src/activity.ts (planInvocation case), libs/contracts/src/execution-request.schema.ts (no change)
 role: programmer
 ```
 
@@ -5844,7 +5844,7 @@ tier: T2
 status: partial
 estimated_loc: 150
 blocks: []
-file: apps/temporal-worker/src/alarm-feeder.ts (or co-located new file), infra/systemd/chitin-alarm-feeder.service (env addition only)
+file: apps/runner/src/alarm-feeder.ts (or co-located new file), infra/systemd/chitin-alarm-feeder.service (env addition only)
 references_finding: docs/observations/2026-05-04-reviewer-cwd-rm-incident.md (action item 3)
 role: programmer
 ```
@@ -5876,7 +5876,7 @@ tier: T1
 status: partial
 estimated_loc: 80
 blocks: []
-file: apps/temporal-worker/src/activity.ts
+file: apps/runner/src/activity.ts
 references_finding: docs/observations/2026-05-04-reviewer-cwd-rm-incident.md (action item 4)
 role: programmer
 ```
@@ -5919,7 +5919,7 @@ tier: T2
 status: partial
 estimated_loc: 200
 blocks: []
-file: libs/contracts/src/fingerprint.ts (new), libs/contracts/src/execution-request.schema.ts, apps/temporal-worker/src/activity.ts
+file: libs/contracts/src/fingerprint.ts (new), libs/contracts/src/execution-request.schema.ts, apps/runner/src/activity.ts
 references_finding: project_routing_as_learning_system.md (P2 phase)
 role: programmer
 ```
@@ -5959,7 +5959,7 @@ tier: T2
 status: ready
 estimated_loc: 250
 blocks: ['routing-fingerprint-helper']
-file: go/execution-kernel/internal/gov/decision.go, go/execution-kernel/cmd/chitin-kernel/hook.go, apps/temporal-worker/src/activity.ts (writeback)
+file: go/execution-kernel/internal/gov/decision.go, go/execution-kernel/cmd/chitin-kernel/hook.go, apps/runner/src/activity.ts (writeback)
 references_finding: project_routing_as_learning_system.md (P2 phase)
 role: programmer
 ```

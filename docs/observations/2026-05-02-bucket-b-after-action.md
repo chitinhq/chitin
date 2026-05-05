@@ -49,7 +49,7 @@ The actual chain:
 1. The dispatcher provisions a fresh worktree off `main` for each
    dispatch.
 2. For claude-code-headless, the worker calls
-   `writeWorktreeClaudeSettings(worktreePath)` (`apps/temporal-worker/
+   `writeWorktreeClaudeSettings(worktreePath)` (`apps/runner/
    src/activity.ts:219`) before spawning the agent. This writes the
    chitin gate hook config to `worktree/.claude/settings.json` —
    **overwriting** whatever main had checked out there (the Nx-plugin
@@ -188,9 +188,9 @@ absent.
 - PRs #114, #117, #118, #120 — the four closed contaminated PRs;
   diff in #114 was the byte-level evidence that finally cracked the
   real root cause.
-- `apps/temporal-worker/src/activity.ts:219` — `writeWorktreeClaudeSettings`,
+- `apps/runner/src/activity.ts:219` — `writeWorktreeClaudeSettings`,
   the worker write that creates the artifact.
-- `apps/temporal-worker/src/grooming/apply-workflow-result.ts` —
+- `apps/runner/src/grooming/apply-workflow-result.ts` —
   where the "tracked diff exists → auto-commit + push" heuristic
   lives, and where PR #123 plants the revert.
 - `go/execution-kernel/internal/govhookinstall/install.go` — where

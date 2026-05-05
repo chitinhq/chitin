@@ -4,7 +4,7 @@ type: investigation
 scope: qwen3-coder:30b — ollama stream instability on RTX 3090
 related:
   - docs/swarm-backlog.md (qwen-layer reliability section)
-  - apps/temporal-worker/src/dispatcher.ts
+  - apps/runner/src/dispatcher.ts
 ---
 
 # qwen3-coder:30b Ollama Stream Instability

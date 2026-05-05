@@ -48,7 +48,7 @@ Invariant restated: **Temporal schedules. OpenClaw executes. Drivers (Claude Cod
 | Worktree provisioning, draft-PR-only output, bootstrap rules, `worker-mode` gate flag, `worker_task_id` end-to-end | **All stand unchanged.** `worker_task_id` becomes Temporal's `workflow_id` (or `run_id` — TBD in slice 1). |
 | Invariants 1–5 of parent spec | **All stand unchanged.** Plane-orthogonal. |
 | Observability loop (chain, OTEL projection, decisions stream consumes worker-tagged decisions) | **Stands.** Worker tag becomes `workflow_id`. |
-| Acceptance criteria | **Stands**, with one rename: "openclaw worker plugin published" → "Temporal worker app deployed (`apps/temporal-worker/`)." |
+| Acceptance criteria | **Stands**, with one rename: "openclaw worker plugin published" → "Temporal worker app deployed (`apps/runner/`)." |
 
 ## The `execution_request` contract
 
@@ -80,13 +80,13 @@ export const ExecutionRequestSchema = z.object({
 
 Two enforcement points use this contract:
 
-1. **Pre-activity gate** (DEFERRED — not in slice 1/2). Will validate the request via `chitin-kernel task validate <req.json>` and narrow `allowed_drivers` (policy can shrink, never expand) before Temporal dispatches the activity. Slice 1 ships zod-parse-only at the submit boundary (`apps/temporal-worker/src/submit.ts`); the kernel-side validate + narrow path is a future slice. Tracking item: implement `chitin-kernel task validate` and route submit through it.
+1. **Pre-activity gate** (DEFERRED — not in slice 1/2). Will validate the request via `chitin-kernel task validate <req.json>` and narrow `allowed_drivers` (policy can shrink, never expand) before Temporal dispatches the activity. Slice 1 ships zod-parse-only at the submit boundary (`apps/runner/src/submit.ts`); the kernel-side validate + narrow path is a future slice. Tracking item: implement `chitin-kernel task validate` and route submit through it.
 2. **Per-tool-call gate (existing).** Inside the agent session, every tool call still passes `gov.Gate.Evaluate()` via the PreToolUse hook. The contract carried at session-start tags every gov-decision row with `workflow_id` so the analysis layer can group decisions by workflow.
 
 ## Locked sub-decisions (this session)
 
 1. **SDK language for the Temporal worker: TypeScript.** Reasons: `libs/contracts` is zod-native (worker imports `ExecutionRequest` with zero codegen); openclaw's surface is TS/jiti so spawning agent turns is cheap; Go-side stays Go (gate, kernel, decisions). Tradeoff: two languages in the loop, but that's already true.
-2. **Worker code location: `apps/temporal-worker/` in the chitin monorepo.** Pins contract version. Talks to the Go kernel via `chitin-kernel gate evaluate` subprocess (same contract Claude Code's hook uses). Spawns openclaw via `acpx`.
+2. **Worker code location: `apps/runner/` in the chitin monorepo.** Pins contract version. Talks to the Go kernel via `chitin-kernel gate evaluate` subprocess (same contract Claude Code's hook uses). Spawns openclaw via `acpx`.
 3. **Temporal runtime: docker-compose with Postgres-backed Temporal server.** `start-dev` SQLite path doesn't survive `docker system prune` and 24/7 means *survives reboots*. ~5min of infra setup buys real durability.
 4. **First driver: Claude Code → ollama `qwen3-coder:30b` only.** Don't build the routing tier in v1; prove the loop with one driver, one model. Tier policy (P0/P1/P2/P3) is slice 2.
 5. **Submission CLI goes through chitin, not directly to Temporal.** `chitin-kernel task submit` validates the `execution_request`, runs the pre-activity gate, then posts to Temporal. Keeps validation in the enforcement plane.
@@ -105,7 +105,7 @@ $ chitin-kernel task submit \
 
 # chitin validates execution_request → posts to Temporal
 # Temporal CLI shows running workflow
-# apps/temporal-worker/ activity picks up
+# apps/runner/ activity picks up
 # acpx spawns claude-code with ANTHROPIC_BASE_URL=ollama, model=qwen3-coder:30b
 # claude-code emits one Bash tool call
 # chitin gate evaluates in worker-mode, allows
@@ -143,7 +143,7 @@ What slice 1 explicitly does **not** include (deferred to slices 2+):
 Slice 1 is "done shipping" when:
 
 - [ ] `libs/contracts/src/execution-request.ts` exists; Go regeneration produces `go/execution-kernel/internal/contracts/execution_request.go`.
-- [ ] `apps/temporal-worker/` exists with one workflow + one activity that consumes `ExecutionRequest`.
+- [ ] `apps/runner/` exists with one workflow + one activity that consumes `ExecutionRequest`.
 - [ ] `docker-compose.yml` for local Temporal + Postgres, `chitin-kernel worker doctor` reports green.
 - [ ] `chitin-kernel task submit` validates and posts; `chitin-kernel task list` shows status from Temporal.
 - [ ] One end-to-end task: submit → workflow → activity → claude-code (qwen3-coder:30b via ollama) → one Bash tool call → chitin gate → gov-decision row tagged with `workflow_id` + `run_id` → workflow completes.

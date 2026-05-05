@@ -132,7 +132,7 @@ importers:
         specifier: workspace:*
         version: link:../../libs/contracts
 
-  apps/temporal-worker:
+  apps/runner:
     dependencies:
       '@chitin/contracts':
         specifier: workspace:*

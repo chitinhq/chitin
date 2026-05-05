@@ -78,7 +78,7 @@ prompt and tool-set.
 
 | Role | Owns | Today | Reference patterns |
 |------|------|-------|--------------------|
-| `researcher` | Pull external signals (arxiv, Reddit, X, openclaw upstream, ollama releases). Open candidate entries in `roadmap.md`. | **In production.** `chitin-researcher.timer` fires every 4h via `apps/temporal-worker/src/researcher.ts` (#147); 5-source dedupe + cap. Per-role prompt template at `researcher-prompts.ts` (#143). | NotebookLM ingestion, awesome-openclaw-agents registry, dev.to community mining |
+| `researcher` | Pull external signals (arxiv, Reddit, X, openclaw upstream, ollama releases). Open candidate entries in `roadmap.md`. | **In production.** `chitin-researcher.timer` fires every 4h via `apps/runner/src/researcher.ts` (#147); 5-source dedupe + cap. Per-role prompt template at `researcher-prompts.ts` (#143). | NotebookLM ingestion, awesome-openclaw-agents registry, dev.to community mining |
 | `product` | Turn raw signals into 1-paragraph problem statements with success criteria. | Filed as in_design backlog entry `product-role-prompt-template` (#161). | MetaGPT's PM role; LangChain agentic-engineering writeups |
 | `groomer` | Tier-classify entries; size; identify file scope; mark blockers; verify against schema. | **Two-half production.** Candidate-promoter (`chitin-groomer.timer`, #157) drips arxiv candidates → in_design entries; existing `groom-pass.ts` (Copilot-driven) classifies in_design → ready. | Lobster's deterministic YAML-first pattern (ggondim) |
 | `architect` | Write `docs/design/<entry-id>.md` ADRs: context / options / decision / tradeoffs. | Filed as in_design backlog entry `architect-role-prompt-template` (#161). | MetaGPT architect role; AutoCodeRover patch-context |

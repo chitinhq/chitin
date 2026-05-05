@@ -69,7 +69,7 @@ export const RoleSchema = z.enum([
 //    codex, gemini) and gates per-tool-call via PreToolUse hooks. Model
 //    selection is per-call via the driver-specific flag: `--model` for
 //    copilot and claude-code-headless, `-m` for codex and gemini (see
-//    apps/temporal-worker/src/activity.ts planInvocation).
+//    apps/runner/src/activity.ts planInvocation).
 //
 // 2. Via openclaw plugin: `openclaw-glm-flash` (3090 local, glm-4.7-flash),
 //    `openclaw-glm-cloud` (Ollama Cloud, glm-5.1:cloud), `openclaw-deepseek`

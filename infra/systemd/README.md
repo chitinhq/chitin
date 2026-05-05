@@ -125,9 +125,9 @@ systemctl --user start chitin-researcher.service
 
 # Or run dispatcher directly (dry-run available)
 cd ~/workspace/chitin
-pnpm exec tsx apps/temporal-worker/src/dispatcher.ts --dry-run
-pnpm exec tsx apps/temporal-worker/src/dispatcher.ts
-pnpm exec tsx apps/temporal-worker/src/researcher.ts
+pnpm exec tsx apps/runner/src/dispatcher.ts --dry-run
+pnpm exec tsx apps/runner/src/dispatcher.ts
+pnpm exec tsx apps/runner/src/researcher.ts
 ```
 
 ## What gets dispatched

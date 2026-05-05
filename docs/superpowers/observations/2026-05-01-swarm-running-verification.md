@@ -9,7 +9,7 @@
 | Temporal server (Postgres-backed) | docker container `chitin-temporal-server` | up, port 7233 |
 | Temporal Postgres | docker container `chitin-temporal-postgres` | healthy |
 | Temporal UI | docker container `chitin-temporal-ui` | up, port 8233 |
-| Temporal worker | `tsx src/worker.ts` (apps/temporal-worker) | polling `chitin-worker-q` |
+| Temporal worker | `tsx src/worker.ts` (apps/runner) | polling `chitin-worker-q` |
 | OpenClaw gateway | `openclaw-gateway` | up, port 18789 |
 | Chitin governance plugin | `~/.openclaw/extensions/chitin-governance` → symlink to `apps/openclaw-plugin-governance` | registered, enabled, mode=observe |
 | Chitin kernel | `chitin-kernel` on PATH | gating; gov-decisions stream live at `~/.chitin/gov-decisions-2026-05-01.jsonl` |
@@ -83,7 +83,7 @@ Wrote this gov-decisions row at `2026-05-01T02:39:34Z`:
 The full causal chain:
 1. `chitin-kernel task submit` → posts `ExecutionRequest` to Temporal
 2. Temporal worker polls, claims activity
-3. Activity (`runAgentTurn` in `apps/temporal-worker/src/activity.ts`) seeds chitin.yaml in tmpdir, spawns `openclaw agent --local --agent main --message <prompt>`
+3. Activity (`runAgentTurn` in `apps/runner/src/activity.ts`) seeds chitin.yaml in tmpdir, spawns `openclaw agent --local --agent main --message <prompt>`
 4. OpenClaw loads chitin-governance plugin from `~/.openclaw/extensions/chitin-governance`
 5. OpenClaw spawns local agent with pi-agent-core harness, runs ollama qwen-coder model
 6. Model emits `memory_search` tool_use

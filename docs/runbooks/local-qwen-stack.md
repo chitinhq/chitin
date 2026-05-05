@@ -142,7 +142,7 @@ DRIVER=local-qwen \
 WALL_TIMEOUT_S=180 \
 MAX_TOOL_CALLS=5 \
 PROMPT="Use the Bash tool to run exactly: echo ok > /tmp/qwen-smoke.txt. Then stop." \
-pnpm exec tsx apps/temporal-worker/src/submit.ts
+pnpm exec tsx apps/runner/src/submit.ts
 ```
 
 While the workflow runs, watch ollama:
@@ -166,7 +166,7 @@ the config.
 ## 5. Re-enable T0 routing to local-qwen
 
 Once smoke-test passes, flip `TIER_DRIVER[T0]` in
-`apps/temporal-worker/src/dispatcher.ts` from `'copilot'` back to
+`apps/runner/src/dispatcher.ts` from `'copilot'` back to
 `'local-qwen'`. That's a one-line change tracked as a separate
 backlog entry (`dispatcher-flip-t0-back-to-local-qwen` in
 `docs/swarm-backlog.md`). Don't flip until you have a successful

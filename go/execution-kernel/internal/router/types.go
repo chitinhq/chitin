@@ -14,7 +14,7 @@
 //     ↓ if yes → spawn `claude -p` with structured prompt, parse response
 //   step 4: compose final hook output
 //
-// The TS implementation in apps/temporal-worker/src/router/ is the
+// The TS implementation in apps/runner/src/router/ is the
 // design substrate that informed this port. Test fixtures port
 // directly (see router_test.go).
 package router

@@ -20,7 +20,7 @@ Environment=CHITIN_REPO_ROOT=%h/workspace/chitin
 Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.config/systemd/user/chitin.env
 # Routes through pnpm exec tsx, matching dispatcher / researcher.
-ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/temporal-worker/src/lessons.ts
+ExecStart=/home/red/.vite-plus/bin/pnpm exec tsx apps/runner/src/lessons.ts
 StandardOutput=journal
 StandardError=journal
 # 30 min covers high-merge-volume days. The script does one `gh pr list`

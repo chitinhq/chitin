@@ -12,7 +12,7 @@
 #   --name <name>          Unit name, e.g. pr-event-ingester (required)
 #   --description <text>   Human-readable description (required)
 #   --exec <path>          ExecStart command (required unless --ts-script)
-#   --ts-script <name>     Shorthand for pnpm exec tsx apps/temporal-worker/src/<name>.ts
+#   --ts-script <name>     Shorthand for pnpm exec tsx apps/runner/src/<name>.ts
 #   --interval <duration>  OnUnitActiveSec, e.g. 5min, 1h, 24h (mutually exclusive with --calendar)
 #   --calendar <spec>      OnCalendar spec, e.g. '*-*-* 06:00:00' (mutually exclusive with --interval)
 #   --boot-delay <dur>     OnBootSec (default: 5min)
@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     # Use bare `pnpm` and rely on the unit's PATH (set in service.tmpl
     # to include %h/.vite-plus/bin). Avoids hardcoding /home/red/...
     # which breaks on every other operator's machine.
-    --ts-script)   EXEC_START="pnpm exec tsx apps/temporal-worker/src/$2.ts"; shift 2 ;;
+    --ts-script)   EXEC_START="pnpm exec tsx apps/runner/src/$2.ts"; shift 2 ;;
     --interval)    INTERVAL="$2";                                                              shift 2 ;;
     --calendar)    CALENDAR="$2";                                                              shift 2 ;;
     --boot-delay)  BOOT_DELAY="$2";                                                            shift 2 ;;

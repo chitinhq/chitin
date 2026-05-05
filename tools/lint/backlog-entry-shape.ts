@@ -29,7 +29,7 @@ const TIER_PATTERN = /^T[0-5]$/;
 // real entries use lifecycle states like `shipped`, `completed`,
 // `blocked`, `decomposed`, `partial`. The parser passes status
 // through as a string regardless; the typing in
-// apps/temporal-worker/src/grooming/parse-backlog.ts is
+// apps/runner/src/grooming/parse-backlog.ts is
 // historical and should be widened in a follow-up to match.
 //
 // The dispatcher only DISPATCHES entries with `status: ready`; the

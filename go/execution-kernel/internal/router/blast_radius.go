@@ -8,7 +8,7 @@ import (
 
 // blastRadiusAxes computes the four-axis breakdown for a hook input.
 // Mirrors the TS implementation in
-// apps/temporal-worker/src/router/heuristics/blast-radius.ts.
+// apps/runner/src/router/heuristics/blast-radius.ts.
 //
 // Axes (each 0.0-1.0):
 //   - reversibility: 1.0=fully reversible, 0.0=irreversible

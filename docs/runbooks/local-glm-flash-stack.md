@@ -36,7 +36,7 @@ ollama ps                            # confirm it's loaded on GPU
 
 ## 2. Configure the openclaw `glm-flash-agent`
 
-The chitin activity (`apps/temporal-worker/src/activity.ts`) routes
+The chitin activity (`apps/runner/src/activity.ts`) routes
 `local-glm-flash` to an openclaw agent named `glm-flash-agent`.
 Configure that agent in `~/.openclaw/openclaw.json`:
 
@@ -75,7 +75,7 @@ DRIVER=local-glm-flash \
 PROMPT='Use shell.exec to run exactly: echo hello-from-glm-flash. Then stop.' \
 MAX_TOOL_CALLS=3 \
 WALL_TIMEOUT_S=60 \
-pnpm exec tsx apps/temporal-worker/src/submit.ts
+pnpm exec tsx apps/runner/src/submit.ts
 ```
 
 Watch the worker log; expect:
@@ -125,7 +125,7 @@ operator (or the dispatcher's tier ladder) re-dispatches at T1.
 
 - The driver definition: `libs/contracts/src/execution-request.schema.ts`
   (`DriverIdSchema` enum)
-- Agent mapping: `apps/temporal-worker/src/activity.ts`
+- Agent mapping: `apps/runner/src/activity.ts`
   (`DRIVER_AGENT_MAP`)
-- Tier defaults + env override: `apps/temporal-worker/src/dispatcher.ts`
+- Tier defaults + env override: `apps/runner/src/dispatcher.ts`
   (`TIER_DRIVER_DEFAULTS` + `envDriverOverride`)

@@ -4,7 +4,7 @@ type: post-mortem
 scope: temporal-worker reviewer cwd-rm regression — checkout deleted, swarm dark ~3h
 active_soul: da Vinci
 related:
-  - apps/temporal-worker/src/activity.ts
+  - apps/runner/src/activity.ts
   - https://github.com/chitinhq/chitin/pull/280
   - docs/observations/2026-05-03-low-success-alarm-investigation.md
 ---
@@ -44,7 +44,7 @@ silencing the autonomous swarm for ~3h until manual recovery.
   restores the checkout at `main` (`021cf38`). Worker stopped to
   prevent re-deletion.
 - **~15:20 UTC** — Root cause located in
-  `apps/temporal-worker/src/activity.ts:697`. PR #280 opened with
+  `apps/runner/src/activity.ts:697`. PR #280 opened with
   `if (!useWorktree && workDir !== repoRoot)` guard plus four other
   unmerged reviewer-pipeline fixes that were stacked on the deleted
   worktree.

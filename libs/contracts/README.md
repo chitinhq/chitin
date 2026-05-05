@@ -20,7 +20,7 @@ single point of truth.
 ## Workflow-bundle caveat
 
 Temporal's workflow webpack bundle traces imports from `apps/
-temporal-worker/src/workflow.ts`. Anything VALUE-imported there
+runner/src/workflow.ts`. Anything VALUE-imported there
 (directly or transitively) goes into the bundle. `@chitin/contracts/
 index.ts` re-exports `hash.ts` + `chitindir-resolve.ts`, both of
 which import from `node:*` — which the bundler refuses.
@@ -44,7 +44,7 @@ has a paired `tests/<name>.schema.test.ts`.
 
 ## Related
 
-- `apps/temporal-worker/src/review-graph-workflow.ts` — illustrative
+- `apps/runner/src/review-graph-workflow.ts` — illustrative
   consumer of the type-only import pattern (hotfix #150 added the
   workflow-bundler note).
 - `go/execution-kernel/internal/event/` — the Go-side mirror of the

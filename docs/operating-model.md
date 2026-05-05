@@ -43,13 +43,13 @@ Single-box. One Linux workstation with an RTX 3090 hosts the entire dev + dogfoo
 | Drivers — Claude Code hook | `internal/driver/claudecode/normalize.go` + kernel install path | ✅ shipped (PR #66) |
 | Drivers — Codex CLI (PreToolUse) | `internal/driver/codex/normalize.go` + `scripts/install-codex-hook.sh` | ✅ shipped 2026-05-04 (#272) |
 | Drivers — Gemini CLI (BeforeTool) | `internal/driver/gemini/normalize.go` + `scripts/install-gemini-hook.sh` | ✅ shipped 2026-05-04 (#267) |
-| Drivers — Codex as activity-spawned reviewer (env-overridable per tier) | `apps/temporal-worker` `planInvocation` + `REVIEW_TIER_DRIVER` | ✅ shipped 2026-05-04 (#270) |
+| Drivers — Codex as activity-spawned reviewer (env-overridable per tier) | `apps/runner` `planInvocation` + `REVIEW_TIER_DRIVER` | ✅ shipped 2026-05-04 (#270) |
 | Drivers — Copilot CLI (wrapping) | Kernel `drive copilot` | ✅ shipped (PR #51) |
 | Drivers — openclaw (`local-*`) | openclaw `before_tool_call` plugin | ✅ shipped |
 | Plugin runtime (Python + TS heuristic plugins) | `internal/router/plugins` + opt-in side-effect gate libs | ✅ shipped (#235, #237, #241, #250) |
 | Plugin sandbox (bubblewrap, opt-in) | `internal/router/plugins/sandbox.go` | ✅ shipped 2026-05-03 (#255) |
 | OTEL emit (projection) | Go kernel `internal/emit` | ✅ F4 shipped before 2026-05-07 talk |
-| Worktree index (dispatcher writes `WORKTREE_INDEX.md`) | `apps/temporal-worker/src/activity.ts` | ✅ shipped 2026-05-03 (#261) |
+| Worktree index (dispatcher writes `WORKTREE_INDEX.md`) | `apps/runner/src/activity.ts` | ✅ shipped 2026-05-03 (#261) |
 | Souls library | `souls/canonical/` + `souls/experimental/` | ✅ shipped Phase 1.5 |
 
 ## Order of operations (current, not aspirational)

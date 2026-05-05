@@ -17,8 +17,8 @@ Chitin is *not* a tick-loop, not an agent runner, not an OTEL ingest target, not
 
 These are downstream consumers of the kernel — they run *on* chitin, they aren't chitin. Hosted in the same repo so they share `libs/contracts/` schemas and the Nx project graph; governed by the same kernel via the per-driver integration points (Claude Code PreToolUse for `claude-code-headless`, the Copilot CLI driver for `copilot`, the OpenClaw plugin for the `local-*` drivers, the Codex/Gemini PreToolUse hooks where applicable).
 
-- **Autonomous swarm runtime** (`apps/temporal-worker/`) — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. Design: [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
-- **Self-feeding telemetry loop** (cron scripts under `apps/temporal-worker/`) — periodic researcher / lessons / debt-curator / groomer / alarm-feeder / stale-doc detector keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions.
+- **Autonomous swarm runtime** (`apps/runner/`) — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. Design: [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
+- **Self-feeding telemetry loop** (cron scripts under `apps/runner/`) — periodic researcher / lessons / debt-curator / groomer / alarm-feeder / stale-doc detector keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions.
 
 ## Quick start
 
@@ -41,7 +41,7 @@ To run the autonomous swarm on your own rig, see [`infra/systemd/README.md`](./i
 .
 ├── apps/
 │   ├── cli/                          # operator CLI (`chitin`)
-│   ├── temporal-worker/              # autonomous swarm runtime + cron-fired scripts
+│   ├── runner/              # autonomous swarm runtime + cron-fired scripts
 │   └── openclaw-plugin-governance/   # openclaw integration: chitin gates every openclaw tool call
 ├── libs/
 │   ├── contracts/                    # canonical schemas (event chain, ExecutionRequest, envelope)
@@ -54,7 +54,7 @@ To run the autonomous swarm on your own rig, see [`infra/systemd/README.md`](./i
 | Package | What it owns |
 |---------|--------------|
 | `apps/cli` | Operator CLI (`init`, `events list/tail/tree`, `replay`, `health`, `ledger`, `review`, `install`). [README](./apps/cli/README.md) |
-| `apps/temporal-worker` | Dispatcher, review-graph workflow, gatekeeper, role-typed prompts, all cron scripts. [README](./apps/temporal-worker/README.md) |
+| `apps/runner` | Dispatcher, review-graph workflow, gatekeeper, role-typed prompts, all cron scripts. [README](./apps/runner/README.md) |
 | `apps/openclaw-plugin-governance` | openclaw plugin that wires chitin's policy gate into openclaw's tool-call lifecycle. [README](./apps/openclaw-plugin-governance/README.md) |
 | `libs/contracts` | Canonical schemas every chitin component agrees on. [README](./libs/contracts/README.md) |
 | `libs/telemetry` | Read-side of the event chain. [README](./libs/telemetry/README.md) |
