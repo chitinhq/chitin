@@ -1162,52 +1162,52 @@ fresh checkout can wire it once.
 
 ---
 
-### `comment-responder-forbid-mass-delete-bootstrap`
+### `comment-responder-executor-hard-stop-rm-rf-clone`
 
 ```yaml
-id: comment-responder-forbid-mass-delete-bootstrap
+id: comment-responder-executor-hard-stop-rm-rf-clone
 tier: T2
 status: ready
-estimated_loc: 80
+estimated_loc: 50
 blocks: []
-file: prompts/comment-responder.md, libs/governance/rules/no-rm-recursive.ts, apps/temporal-worker/src/skills/comment-responder.ts
+file: apps/temporal-worker/src/skills/comment-responder.ts, apps/temporal-worker/test/comment-responder.test.ts
 references_finding: 2026-05-05-rm-rf-clone-recurrence
+references_pr: 336
 role: programmer
 ```
 
-The `comment-responder` skill keeps emitting a destructive bootstrap
-of the form `rm -rf ./* .[^.]* 2>/dev/null || true && gh repo clone
-chitinhq/chitin . && gh pr checkout <N>` when it tries to set up a
-clean working dir. Telemetry from `/mine` 2026-05-05:
+**Layer-2 follow-up to PR #336.** PR #336 (merged 2026-05-05) shipped
+the prompt-fix layer — `comment-responder/SKILL.md` now contains an
+explicit "CRITICAL — DO NOT use `gh repo clone .` or `rm -rf` to
+clear cwd" warning quoting the 2026-05-04 + 2026-05-05 lockdowns.
+This entry adds the executor hard-stop layer that catches the case
+where an agent ignores the prompt.
+
+Telemetry context (from `/mine` 2026-05-05) — what motivated the
+defense-in-depth ask:
 
 - 12 trigger events in 48h (10 untagged + comment-respond-pr-305 +
-  comment-respond-pr-328) all from `copilot-cli` agent.
+  comment-respond-pr-328), all from `copilot-cli` agent, all using
+  the exact `rm -rf ./* .[^.]* 2>/dev/null || true && gh repo clone
+  chitinhq/chitin . && gh pr checkout <N>` shape.
 - Each trigger escalates through `normal → elevated → high →
   lockdown`; once locked, downstream `file.read` and `shell.exec`
-  cascade-deny **2091 times** in 48h. The lockdown rule entirely
-  dominates the chain's deny volume — every other rule combined is
-  noise.
+  cascade-deny **2091 times** in 48h. The lockdown rule dominates
+  the chain's deny volume — everything else is noise.
 - Two PRs (#305, #328) closed-without-merge as direct casualties.
-- Memory `2026-05-04 incident` documented this once; it recurred
-  the next day, so a prompt-only fix is not enough — needs a
-  hard-stop.
+- Recurrence across days proved a prompt-only fix is necessary but
+  not sufficient — agents can still emit the pattern under prompt
+  drift, model swap, or context truncation.
 
-Fix scope (defense in depth — both layers):
+Fix scope (this entry — layer 2 only):
 
-1. **Prompt fix** (`prompts/comment-responder.md`): add a
-   block-quoted "FORBIDDEN BOOTSTRAP PATTERNS" section listing the
-   exact rm-rf-clone shape and the right alternative (`gh repo
-   clone chitinhq/chitin /tmp/respond-<pr> && cd /tmp/respond-<pr>
-   && gh pr checkout <N>` — clone into a fresh dir, never into
-   cwd). Quote the recurrence as the *why*.
-2. **Skill executor pre-check** (`comment-responder.ts`): before
-   forwarding any composed shell to the agent, regex-strip any
-   command containing `rm -rf` followed (within the same shell
-   line) by `gh repo clone`. Replace with a single-line error that
-   tells the agent to use the `/tmp/respond-<pr>` recipe. This is
-   the hard-stop — the prompt fix can drift, the executor check
-   cannot.
-3. **Test**: fixture in `comment-responder.test.ts` that feeds a
+1. **Skill executor pre-check** (`comment-responder.ts`): before
+   forwarding any composed shell command to the agent, regex-reject
+   any command line containing `rm -rf` followed (within the same
+   shell chain — `&&`, `;`, `|`) by `gh repo clone`. Replace with a
+   single-line error that tells the agent to use the documented
+   subdir-clone recipe from SKILL.md.
+2. **Test**: fixture in `comment-responder.test.ts` that feeds a
    mock LLM response containing the forbidden pattern and asserts
    the executor refuses + logs a `bootstrap-rejected` chain event.
 
@@ -1215,16 +1215,16 @@ Edge cases:
 
 - A *legitimate* `rm -rf` in some other context (e.g. `rm -rf
   node_modules`) must not trigger — the regex is the conjunction:
-  `rm -rf` AND `gh repo clone` on the same shell line/chain.
-- The skill may legitimately want to clone fresh; the alternative
-  recipe must be in the rejection message so the agent knows what
-  to retry.
+  `rm -rf` AND `gh repo clone` on the same shell chain.
+- Reject message must point to SKILL.md's subdir-clone recipe so the
+  agent has a clear retry path.
 
 T2 because the regex needs care (false-positive risk) and the
-prompt rewrite touches a load-bearing skill. Land behind the
-existing `no-rm-recursive` policy rule, not in place of it — the
-policy rule is the *generic* guardrail; this entry adds the
-*specific* anti-pattern's hard-stop one layer earlier.
+executor surface is load-bearing. Lands behind the existing
+`no-rm-recursive` policy rule (the *generic* guardrail) and PR #336
+(the *prompt* layer); this entry adds the *executor* layer. With
+all three in place, the pattern needs three independent failures to
+escape — sufficient depth.
 
 ---
 
