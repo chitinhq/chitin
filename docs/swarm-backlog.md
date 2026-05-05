@@ -1162,6 +1162,144 @@ fresh checkout can wire it once.
 
 ---
 
+### `comment-responder-forbid-mass-delete-bootstrap`
+
+```yaml
+id: comment-responder-forbid-mass-delete-bootstrap
+tier: T2
+status: ready
+estimated_loc: 80
+blocks: []
+file: prompts/comment-responder.md, libs/governance/rules/no-rm-recursive.ts, apps/temporal-worker/src/skills/comment-responder.ts
+references_finding: 2026-05-05-rm-rf-clone-recurrence
+role: programmer
+```
+
+The `comment-responder` skill keeps emitting a destructive bootstrap
+of the form `rm -rf ./* .[^.]* 2>/dev/null || true && gh repo clone
+chitinhq/chitin . && gh pr checkout <N>` when it tries to set up a
+clean working dir. Telemetry from `/mine` 2026-05-05:
+
+- 12 trigger events in 48h (10 untagged + comment-respond-pr-305 +
+  comment-respond-pr-328) all from `copilot-cli` agent.
+- Each trigger escalates through `normal → elevated → high →
+  lockdown`; once locked, downstream `file.read` and `shell.exec`
+  cascade-deny **2091 times** in 48h. The lockdown rule entirely
+  dominates the chain's deny volume — every other rule combined is
+  noise.
+- Two PRs (#305, #328) closed-without-merge as direct casualties.
+- Memory `2026-05-04 incident` documented this once; it recurred
+  the next day, so a prompt-only fix is not enough — needs a
+  hard-stop.
+
+Fix scope (defense in depth — both layers):
+
+1. **Prompt fix** (`prompts/comment-responder.md`): add a
+   block-quoted "FORBIDDEN BOOTSTRAP PATTERNS" section listing the
+   exact rm-rf-clone shape and the right alternative (`gh repo
+   clone chitinhq/chitin /tmp/respond-<pr> && cd /tmp/respond-<pr>
+   && gh pr checkout <N>` — clone into a fresh dir, never into
+   cwd). Quote the recurrence as the *why*.
+2. **Skill executor pre-check** (`comment-responder.ts`): before
+   forwarding any composed shell to the agent, regex-strip any
+   command containing `rm -rf` followed (within the same shell
+   line) by `gh repo clone`. Replace with a single-line error that
+   tells the agent to use the `/tmp/respond-<pr>` recipe. This is
+   the hard-stop — the prompt fix can drift, the executor check
+   cannot.
+3. **Test**: fixture in `comment-responder.test.ts` that feeds a
+   mock LLM response containing the forbidden pattern and asserts
+   the executor refuses + logs a `bootstrap-rejected` chain event.
+
+Edge cases:
+
+- A *legitimate* `rm -rf` in some other context (e.g. `rm -rf
+  node_modules`) must not trigger — the regex is the conjunction:
+  `rm -rf` AND `gh repo clone` on the same shell line/chain.
+- The skill may legitimately want to clone fresh; the alternative
+  recipe must be in the rejection message so the agent knows what
+  to retry.
+
+T2 because the regex needs care (false-positive risk) and the
+prompt rewrite touches a load-bearing skill. Land behind the
+existing `no-rm-recursive` policy rule, not in place of it — the
+policy rule is the *generic* guardrail; this entry adds the
+*specific* anti-pattern's hard-stop one layer earlier.
+
+---
+
+### `chain-fingerprint-tagging-coverage`
+
+```yaml
+id: chain-fingerprint-tagging-coverage
+tier: T3
+status: ready
+estimated_loc: 250
+blocks: []
+file: apps/temporal-worker/src/dispatcher.ts, apps/temporal-worker/src/activity.ts, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
+references_finding: 2026-05-05-fingerprint-coverage-gap
+role: programmer
+```
+
+Telemetry blind spot: `/mine` 2026-05-05 shows 2317 of ~2530
+chain dispatches (92%) emit with empty `role`, `model`, and
+fingerprint fields — the `(untagged) × (none)` row in
+`fingerprint-outcomes`. The P2 fingerprint plumbing landed but
+isn't reaching the dispatcher path that produces the bulk of
+events; ELO leaderboard and outcomes analysis are computed against
+a 8% sample.
+
+Symptoms in the data:
+
+- `(untagged) × (none) × (any)` ELO row: 2317 dispatches, allow%
+  77.0%, 533 deny + 519 lockdown. The deny/lockdown concentration
+  here is exactly the rm-rf-clone cascade — meaning we cannot
+  attribute the pattern to a specific role/model from telemetry
+  alone, only by reading the action_target string.
+- Tagged rows total ~213 dispatches across `programmer` /
+  `reviewer` / `peer-reviewer` / `comment-responder` — these have
+  full ELO and allow rates. The tagged path works; the question is
+  why the other path doesn't.
+
+Fix scope:
+
+1. **Audit the emit sites**: grep `event.jsonl` write sites in
+   `dispatcher.ts`, `activity.ts`, and any direct callers in
+   `libs/chain/`. Find the ones that don't pass
+   `{role, model, fingerprint}` into the event constructor.
+2. **Identify the source**: is it copilot-cli's bootstrap path
+   (which the rm-rf-clone evidence points at)? Direct shell hooks
+   bypassing the activity? An older pre-P2 dispatch route still
+   live? Document each emitter and whether it has the context to
+   tag.
+3. **Wire the tags through**: every dispatch that goes through a
+   role-aware skill must propagate `{role, model}` into the chain
+   event envelope. Where the context truly isn't available (e.g.
+   raw shell hook with no workflow_id), tag explicitly as
+   `role=external` / `model=null` so the (untagged) bucket shrinks
+   to genuinely-external events.
+4. **Update `fingerprint_outcomes.py`**: rename `(untagged)` to
+   `(external)` once the wiring lands; add an alarm if the
+   `(external)` row exceeds 30% of dispatches, since that means a
+   new untagged emitter regressed in.
+
+Edge cases:
+
+- Some events legitimately don't have a role (system-level
+  housekeeping). Tag those `role=system` so they're separable from
+  unintentional misses.
+- Schema migration: `libs/chain/src/event.ts` may need a
+  non-breaking field add. Make `role` and `model` optional in the
+  type, required in the dispatcher path.
+
+T3 because cross-cutting (touches dispatcher + activity + chain
+schema + analysis) and the audit step is the actual work — the
+code change is small once the missing emitter is identified.
+This unblocks the entire P4 ELO + outcomes layer, which is
+currently making decisions on an 8% sample of the chain.
+
+---
+
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
