@@ -112,12 +112,34 @@ export async function runWithEscalation(
     const result = await deps.runFn(reqWithContext);
     lastResult = result;
 
+    // Silent-failure detection: T0 (and any tier) can run, exit cleanly,
+    // and produce no useful work — the kernel's router/advisor only
+    // fires on per-action heuristics, so a "did nothing" outcome doesn't
+    // raise escalation_requested. Verified live 2026-05-05: glm-4.7-flash
+    // at T0 ran 172s on a 4-LOC regex-tighten task, exit 0, 0 commits,
+    // file unchanged. Without this synthesis the always-T0 policy would
+    // silently waste cycles forever.
+    //
+    // Rule: if base_ref was set (we expected git commits) AND the
+    // worktree shows commits_added=0 AND no kernel-driven escalation
+    // was raised → synthesize one so the loop bumps tier.
+    const expectedCommits = !!reqWithContext.base_ref;
+    const actualCommits = result.worktree?.commits_added ?? 0;
+    if (expectedCommits && actualCommits === 0 && !result.escalation_requested) {
+      result.escalation_requested = {
+        from_tier: (req.tier as string | undefined) ?? 'T0',
+        advisor_nudge: `${req.tier ?? 'T0'} produced no commits despite base_ref=${reqWithContext.base_ref}; treating as silent failure (synthesized escalation, not kernel-driven)`,
+      };
+    }
+
     log('info', 'attempt-end', {
       workflow_id: req.workflow_id,
       attempt,
       tier: req.tier,
       exit_code: result.exit_code,
+      commits_added: actualCommits,
       escalation_requested: !!result.escalation_requested,
+      escalation_synthesized: expectedCommits && actualCommits === 0,
     });
 
     if (!result.escalation_requested) {

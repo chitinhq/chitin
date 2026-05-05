@@ -223,8 +223,22 @@ router:
       threshold: 0.6
     floundering:
       enabled: true
-      max_loop_count: 3
-      max_stall_seconds: 600
+      # Calibrated 2026-05-05 from 142 sessions of real chain telemetry
+      # (python -m analysis.floundering_calibration). The previous global
+      # values (max_loop_count=3, max_stall_seconds=600) were authored
+      # for the long-running Temporal-era T4 sessions; for the post-
+      # always-T0 architecture, T0's 60-180s typical run window NEVER
+      # crossed the 600s stall threshold, so the advisor never engaged.
+      # Live test 2026-05-05: glm-flash silent-failed in 172s, advisor
+      # never called. The new values target the 75th percentile of
+      # successful-session max_stall (data: 57s + buffer = 90) and the
+      # 90th percentile of successful-session max consecutive identical
+      # tool+target (data: 2). This catches T0 silent failures inside
+      # their typical run window and lets the advisor either nudge the
+      # agent (continue + nudge) or escalate (takeover + escalate).
+      # Per-tier thresholds are a follow-up — needs kernel schema change.
+      max_loop_count: 2
+      max_stall_seconds: 90
   advisor:
     enabled: true
     when: [blast_radius_above_threshold, floundering_detected]
