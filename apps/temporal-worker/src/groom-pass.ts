@@ -1,32 +1,32 @@
 // Slice 4 grooming dispatcher.
 //
-// For each in_design entry in docs/swarm-backlog.md, submit a Temporal
-// workflow with DRIVER=copilot, prompt the agent to classify the entry,
-// collect recommendations, and write a report.
+// For each in_design entry in docs/swarm-backlog.md, run a short
+// agent turn with DRIVER=copilot to classify the entry, collect
+// recommendations, and write a report.
 //
 // MVP scope: report only. The follow-up step (commit a backlog update +
 // open issues) lives in a separate stage (apply-recommendations.ts) so the
 // human can review the report between collection and commit.
 //
+// Pre-cut-over (Temporal): each entry → workflow.start(executeRequestWorkflow)
+// + handle.result(). Now: each entry → direct runAgentTurn(req). Same
+// code path, no orchestration round-trip.
+//
 // Usage:
 //   pnpm exec tsx apps/temporal-worker/src/groom-pass.ts [--limit N]
 //
 // Reads:  docs/swarm-backlog.md
-// Writes: tmp/grooming-pass-<workflowId>.json (report)
+// Writes: tmp/grooming-pass-<passId>.json (report)
 // Stdout: human-readable summary table
 
-import { Connection, Client } from '@temporalio/client';
 import { ExecutionRequestSchema } from '@chitin/contracts';
-import type { ActivityResult } from './activity-types.ts';
-import type { executeRequestWorkflow } from './workflow.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { runAgentTurn } from './activity.ts';
 import { parseBacklog } from './grooming/parse-backlog.ts';
 import { buildGroomingPrompt } from './grooming/prompt.ts';
 import { parseRecommendation, type GroomingRecommendation } from './grooming/parse-recommendation.ts';
 
-const WORKFLOW_NAME = 'executeRequestWorkflow';
-const TASK_QUEUE = 'chitin-worker-q';
 const BACKLOG_PATH = resolve(process.cwd(), 'docs/swarm-backlog.md');
 const TMP_DIR = resolve(process.cwd(), 'tmp');
 
@@ -57,13 +57,11 @@ async function main() {
     return;
   }
 
-  const conn = await Connection.connect({ address: '127.0.0.1:7233' });
-  const client = new Client({ connection: conn, namespace: 'default' });
   const results: GroomingResult[] = [];
 
-  // One workflow per entry; sequential to keep load on the kernel and
-  // Copilot session predictable. Slice 4b can parallelize once we trust the
-  // calibration.
+  // One agent turn per entry; sequential to keep load on the kernel and
+  // Copilot session predictable. Slice 4b can parallelize once we trust
+  // the calibration.
   for (const entry of targets) {
     const workflowId = `${passId}-${sanitize(entry.id)}`;
     const prompt = buildGroomingPrompt(entry);
@@ -82,12 +80,7 @@ async function main() {
         bounds: { max_tool_calls: 1, max_cost_usd: 0, wall_timeout_s: 90 },
         prompt,
       });
-      const handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
-        args: [req],
-        taskQueue: TASK_QUEUE,
-        workflowId,
-      });
-      const activityResult = (await handle.result()) as ActivityResult;
+      const activityResult = await runAgentTurn(req);
       const parse = parseRecommendation(activityResult.stdout_tail, entry.id);
       results.push({
         entryId: entry.id,
@@ -106,19 +99,17 @@ async function main() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  → workflow error: ${msg}`);
+      console.log(`  → run error: ${msg}`);
       results.push({
         entryId: entry.id,
         workflowId,
         exitCode: -2,
         durationMs: 0,
         stdoutTailLen: 0,
-        parse: { ok: false, error: `workflow error: ${msg}` },
+        parse: { ok: false, error: `run error: ${msg}` },
       });
     }
   }
-
-  await conn.close();
 
   mkdirSync(TMP_DIR, { recursive: true });
   const reportPath = resolve(TMP_DIR, `grooming-pass-${passId}.json`);

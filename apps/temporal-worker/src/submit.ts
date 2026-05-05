@@ -1,16 +1,22 @@
-import { Connection, Client } from '@temporalio/client';
+// Manual operator one-shot dispatch script.
+//
+// Pre-cut-over (Temporal): connected to localhost:7233, started
+// executeRequestWorkflow, awaited handle.result(). Now: directly
+// invokes runAgentTurn — same code path the Temporal workflow
+// previously wrapped, just no orchestration round-trip. Saves one
+// process boundary + the temporal-server dependency.
+//
+// Usage:
+//   pnpm exec tsx apps/temporal-worker/src/submit.ts
+//   PROMPT='write a haiku' DRIVER=copilot pnpm exec tsx ...
+//
+// Behavior contract preserved: writes tmp/result-<workflow_id>.json
+// envelope so apply-workflow-result.ts continues to work unchanged.
+
 import { ExecutionRequestSchema, type ExecutionRequest } from '@chitin/contracts';
-// Workflow code is type-only here. A runtime import would pull
-// `@temporalio/workflow` into the client process, which is meant to run
-// only inside the Temporal V8 isolate. The workflow is dispatched by name.
-import type { executeRequestWorkflow } from './workflow.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { ActivityResult } from './activity-types.ts';
-
-const WORKFLOW_NAME = 'executeRequestWorkflow';
-
-const TASK_QUEUE = 'chitin-worker-q';
+import { runAgentTurn } from './activity.ts';
 
 async function main() {
   const workflowId = process.env.WORKFLOW_ID ?? `wf-${Date.now()}`;
@@ -39,21 +45,11 @@ async function main() {
     ...(process.env.BASE_REF ? { base_ref: process.env.BASE_REF } : {}),
   });
 
-  const conn = await Connection.connect({ address: '127.0.0.1:7233' });
-  const client = new Client({ connection: conn, namespace: 'default' });
+  console.log(`[submit] running workflow_id=${workflowId}`);
+  const result = await runAgentTurn(req);
+  console.log('[submit] result:', JSON.stringify(result, null, 2));
 
-  console.log(`[submit] starting workflow_id=${workflowId}`);
-  const handle = await client.workflow.start<typeof executeRequestWorkflow>(WORKFLOW_NAME, {
-    args: [req],
-    taskQueue: TASK_QUEUE,
-    workflowId,
-  });
-
-  const result = (await handle.result()) as ActivityResult;
-  console.log('[submit] workflow result:', JSON.stringify(result, null, 2));
-  // Slice 5: write a result envelope file so apply-workflow-result.ts can
-  // consume it without re-querying Temporal. Always written; apply step
-  // is a no-op when result.worktree is absent.
+  // Slice 5 envelope contract — apply-workflow-result.ts consumes this.
   const tmpDir = resolve(process.cwd(), 'tmp');
   mkdirSync(tmpDir, { recursive: true });
   const envelopePath = resolve(tmpDir, `result-${workflowId}.json`);
@@ -71,7 +67,6 @@ async function main() {
     ),
   );
   console.log(`[submit] envelope → ${envelopePath}`);
-  await conn.close();
 }
 
 main().catch((err) => {
