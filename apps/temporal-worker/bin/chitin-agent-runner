@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# chitin-agent-runner — bin wrapper invoking src/runner.ts via tsx.
+#
+# Resolves to its sibling src/runner.ts so it works whether installed
+# via pnpm workspace symlink or run from the source tree.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec pnpm exec tsx "$SCRIPT_DIR/../src/runner.ts" "$@"

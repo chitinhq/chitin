@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "main": "./src/worker.ts",
+  "bin": {
+    "chitin-agent-runner": "./bin/chitin-agent-runner"
+  },
   "scripts": {
     "worker": "tsx src/worker.ts",
     "submit": "tsx src/submit.ts",
+    "runner": "tsx src/runner.ts",
     "test": "vitest run test"
   },
   "nx": {
