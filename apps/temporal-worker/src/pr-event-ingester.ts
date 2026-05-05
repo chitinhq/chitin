@@ -35,7 +35,7 @@ import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { computeStartingTier, type PrMeta } from './review-graph.ts';
 import {
   enqueueReviewGraph,
-  REVIEW_GRAPH_WORKFLOW_NAME,
+  listRunningReviewGraphWorkflowsFromDisk,
 } from './review-graph-dispatch.ts';
 import {
   enqueuePeerReviewer,
@@ -477,18 +477,17 @@ export function enrichPr(repo: string, pr: OpenPrSummary): OpenPrSummary {
 }
 
 /**
- * Query Temporal for currently-running review-graph workflow ids.
- * The dedup check uses this to avoid spawning a duplicate.
+ * List currently-running review-graph workflow ids. The dedup check
+ * uses this to avoid spawning a duplicate. Post-cut-over (lobster
+ * spawn replaces Temporal workflow), the source of truth is the
+ * log-file mtime in `~/.cache/chitin/review-graph-logs/` — see
+ * listRunningReviewGraphWorkflowsFromDisk for the oracle. The
+ * `_client` arg is retained so callers don't need to change shape;
+ * removed once the rest of the per-PR pipeline cuts over and we
+ * can drop the Temporal client from the ingester entirely.
  */
-export async function listRunningReviewGraphWorkflows(client: Client): Promise<Set<string>> {
-  const ids = new Set<string>();
-  const iter = client.workflow.list({
-    query: `WorkflowType="${REVIEW_GRAPH_WORKFLOW_NAME}" AND ExecutionStatus="Running"`,
-  });
-  for await (const wf of iter) {
-    ids.add(wf.workflowId);
-  }
-  return ids;
+export async function listRunningReviewGraphWorkflows(_client: Client): Promise<Set<string>> {
+  return listRunningReviewGraphWorkflowsFromDisk();
 }
 
 /**
@@ -634,8 +633,6 @@ export async function runIngesterTick(opts: {
         }
         try {
           const enqResult = await enqueueReviewGraph({
-            client: opts.client,
-            taskQueue: opts.taskQueue,
             parent_workflow_id: parentWorkflowIdForPr(decision.pr.number),
             pr_url: decision.pr.url,
             worktree: undefined,                  // ingester has no worktree

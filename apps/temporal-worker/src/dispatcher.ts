@@ -907,8 +907,6 @@ async function main() {
       try {
         const { enqueueReviewGraph } = await import('./review-graph-dispatch.ts');
         await enqueueReviewGraph({
-          client,
-          taskQueue: TASK_QUEUE,
           parent_workflow_id: workflowId,
           pr_url: prUrl,
           worktree: result.worktree,

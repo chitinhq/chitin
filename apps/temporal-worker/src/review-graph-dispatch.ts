@@ -1,35 +1,141 @@
 // Phase 2 step 3b: dispatcher → review-graph integration. After the
 // programmer dispatcher's apply step opens a PR, this enqueues the
-// reviewGraphWorkflow so the §5 escalation chain runs in parallel
-// with whatever the dispatcher does next (the next tick can pick a
-// new entry while the review proceeds).
+// review-graph so the §5 escalation chain runs in parallel with
+// whatever the dispatcher does next.
 //
-// The review-graph runs as a SEPARATE top-level workflow — it doesn't
-// block the dispatcher's tick. That preserves the "one swarm
-// workflow in flight at a time" invariant on the implementor side
-// while letting reviewers proceed independently. The next tick still
-// won't dispatch a new programmer until the review-graph (and any
-// other reviewer-side work) completes, because the running-workflow
-// scan in dispatcher.ts matches `swarm-*` prefix — which the
-// reviewer-graph + reviewer dispatches inherit via parent prefix.
+// Pre-cut-over (Temporal): client.workflow.start(reviewGraphWorkflow).
+// Now: detached spawn of `lobster run --file review-graph.lobster
+// --args-json '...'`. The lobster runtime cascades R1 → R2 → R3 with
+// approval gate at R3 → operator-pickup. Same fire-and-forget contract
+// as before (the dispatcher's tick doesn't wait on the review).
 //
-// Failure mode: if review-graph submit fails, log and move on. The
-// PR still exists; operator can manually start the review or merge
-// based on Copilot's R0 review. We never want a review-graph failure
-// to leave the dispatcher stuck (the implementor's work has shipped).
+// Failure mode: if the lobster spawn fails, log and move on. The PR
+// still exists; operator can manually start the review or merge based
+// on Copilot's R0. We never want a review-graph failure to leave the
+// dispatcher stuck (the implementor's work has shipped).
 
-import type { Client } from '@temporalio/client';
-import type { reviewGraphWorkflow } from './review-graph-workflow.ts';
+import { spawn as nodeSpawn } from 'node:child_process';
+import { mkdirSync, openSync, appendFileSync, readdirSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import type { WorktreeResult } from './activity-types.ts';
 import { resolveReviewTierDriver, type PrMeta, type ReviewTier } from './review-graph.ts';
 
-export const REVIEW_GRAPH_WORKFLOW_NAME = 'reviewGraphWorkflow';
+const LOBSTER_BIN =
+  process.env.LOBSTER_BIN ?? `${process.env.HOME ?? ''}/.local/bin/lobster`;
+const DEFAULT_LOBSTER_FILE = resolve(
+  process.cwd(),
+  'apps/temporal-worker/workflows/review-graph.lobster',
+);
+const DEFAULT_LOG_DIR = resolve(
+  process.env.HOME ?? '/tmp',
+  '.cache/chitin/review-graph-logs',
+);
+
+/**
+ * The log file at `${LOG_DIR}/<reviewGraphId>.log` is also our dedup
+ * oracle: if it exists with mtime within RUNNING_WINDOW_MS, treat the
+ * graph as in-flight. Pre-cut-over the dedup came from Temporal's
+ * visibility query; lobster doesn't expose an equivalent API for
+ * active runs (only paused workflows in LOBSTER_STATE_DIR), so we
+ * stand up our own mtime-based oracle.
+ *
+ * Window default 60 min: longest realistic lobster review-graph
+ * runtime (R3/Opus is the slow tier; observed ~5-15 min). Anything
+ * older is stale — likely crashed or the operator never approved
+ * the gate — so let the next ingester tick re-spawn.
+ */
+const RUNNING_WINDOW_MS = parseInt(
+  process.env.LOBSTER_REVIEW_GRAPH_RUNNING_WINDOW_MS ?? '3600000', 10,
+);
+
+function logDir(): string {
+  return process.env.LOBSTER_REVIEW_GRAPH_LOG_DIR ?? DEFAULT_LOG_DIR;
+}
+
+function logPathFor(reviewGraphId: string): string {
+  return resolve(logDir(), `${reviewGraphId}.log`);
+}
+
+/**
+ * True iff `<reviewGraphId>.log` exists and was touched within the
+ * dedup window. Caller of enqueueReviewGraph uses this to skip the
+ * spawn when an in-flight graph already exists.
+ */
+function isReviewGraphRunning(reviewGraphId: string, now: number = Date.now()): boolean {
+  try {
+    const st = statSync(logPathFor(reviewGraphId));
+    return now - st.mtimeMs < RUNNING_WINDOW_MS;
+  } catch {
+    return false;  // no log file → not running
+  }
+}
+
+/**
+ * List all currently in-flight review-graph workflow ids, by
+ * scanning the log dir for files whose mtime is within the dedup
+ * window. Replaces the pre-cut-over Temporal visibility query.
+ */
+export function listRunningReviewGraphWorkflowsFromDisk(now: number = Date.now()): Set<string> {
+  const ids = new Set<string>();
+  let entries: string[];
+  try {
+    entries = readdirSync(logDir());
+  } catch {
+    return ids;  // log dir doesn't exist yet → no in-flight graphs
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.log')) continue;
+    const fullPath = resolve(logDir(), name);
+    try {
+      const st = statSync(fullPath);
+      if (now - st.mtimeMs < RUNNING_WINDOW_MS) {
+        ids.add(name.slice(0, -'.log'.length));
+      }
+    } catch {
+      // file disappeared between readdir and stat — skip
+    }
+  }
+  return ids;
+}
+
+export interface LobsterSpawnInput {
+  /** Stable id used for the per-run log file name + telemetry correlation. */
+  reviewGraphId: string;
+  /** Pre-serialized args object passed to `lobster run --args-json`. */
+  argsJson: string;
+}
+
+/**
+ * Default lobster spawn — detached + log-redirected. Throws synchronously
+ * if the binary can't be located (caller's try/catch surfaces it as a
+ * warn log, same shape as the old Temporal-submit-failed branch).
+ */
+async function defaultSpawnLobster(input: LobsterSpawnInput): Promise<void> {
+  const lobsterFile = process.env.LOBSTER_REVIEW_GRAPH_FILE ?? DEFAULT_LOBSTER_FILE;
+  mkdirSync(logDir(), { recursive: true });
+  const logPath = logPathFor(input.reviewGraphId);
+  const out = openSync(logPath, 'a');
+
+  const child = nodeSpawn(
+    LOBSTER_BIN,
+    ['run', '--file', lobsterFile, '--mode', 'tool', '--args-json', input.argsJson],
+    { detached: true, stdio: ['ignore', out, out] },
+  );
+  child.on('error', (err) => {
+    try {
+      appendFileSync(logPath, `\n[spawn-error] ${err.message}\n`);
+    } catch {
+      // best-effort
+    }
+  });
+  if (!child.pid) {
+    throw new Error(`lobster spawn returned no pid (binary not found at ${LOBSTER_BIN}?)`);
+  }
+  child.unref();
+}
 
 export interface EnqueueReviewGraphInput {
-  client: Client;
-  /** Task queue the worker polls for review-graph dispatches. */
-  taskQueue: string;
   /** The programmer workflow_id that just finished. Becomes the
    *  parent_workflow_id on every reviewer dispatch the graph fires. */
   parent_workflow_id: string;
@@ -49,24 +155,31 @@ export interface EnqueueReviewGraphInput {
   repo: string;
   /** Optional pre-built PrMeta. When set, the dispatcher skips its
    *  worktree-derived rebuild and threads this object through to
-   *  reviewGraphWorkflow as-is. Callers like `pr-event-ingester`
+   *  the lobster review-graph as-is. Callers like `pr-event-ingester`
    *  that don't have a worktree but DO have authoritative diff
    *  stats from `gh pr view` should pass this so the §5 trigger
    *  matrix evaluates against real metadata, not zeros. */
   pr_meta?: PrMeta;
   /** Optional log sink (defaults to console.log). Tests inject. */
   log?: (line: string) => void;
+  /** Injectable for tests. Default spawns lobster detached. */
+  spawnLobster?: (input: LobsterSpawnInput) => Promise<void>;
 }
 
 export interface EnqueueReviewGraphResult {
-  /** Whether the review-graph workflow was actually submitted. False
-   *  when pr_url was absent (PR didn't open) or submit failed. */
+  /** Whether the review-graph spawn was actually fired. False when
+   *  pr_url was absent (PR didn't open), spawn failed, or the dedup
+   *  oracle says one is already in flight. */
   enqueued: boolean;
-  /** The review-graph workflow_id, when enqueued. */
+  /** The review-graph workflow_id, when enqueued (or when skipped
+   *  because one is already running — caller can correlate via id). */
   workflow_id?: string;
-  /** Failure message when enqueued=false because of a submit error
-   *  (vs. enqueued=false because pr_url was absent). */
+  /** Failure message when enqueued=false because of a spawn error. */
   error?: string;
+  /** When set, enqueued=false because the dedup oracle saw a recent
+   *  log-file mtime for this workflow_id. Caller should log as info,
+   *  not warn — the in-flight graph will continue without disturbance. */
+  skipped_already_running?: boolean;
 }
 
 /**
@@ -134,18 +247,35 @@ export function extractPrNumber(pr_url: string): number | undefined {
 }
 
 /**
- * Submit the review-graph workflow. Failure is logged but never
- * propagates — the implementor's work has already shipped (PR exists);
- * a missing review is not worse than the pre-Phase-2 baseline where
- * Copilot was the only reviewer.
+ * Spawn the review-graph as a detached lobster run. Failure is logged
+ * but never propagates — the implementor's work has already shipped
+ * (PR exists); a missing review is not worse than the pre-Phase-2
+ * baseline where Copilot was the only reviewer.
  */
 export async function enqueueReviewGraph(
   input: EnqueueReviewGraphInput,
 ): Promise<EnqueueReviewGraphResult> {
   const log = input.log ?? ((l: string) => console.log(l));
+  const spawnLobster = input.spawnLobster ?? defaultSpawnLobster;
 
   if (!input.pr_url) {
     return { enqueued: false };
+  }
+
+  const reviewGraphIdEarly = `${input.parent_workflow_id}-review-graph`;
+  if (isReviewGraphRunning(reviewGraphIdEarly)) {
+    log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'info',
+        component: 'review-graph-dispatch',
+        msg: 'review-graph already in flight; skipping spawn',
+        parent_workflow_id: input.parent_workflow_id,
+        review_graph_id: reviewGraphIdEarly,
+        pr_url: input.pr_url,
+      }),
+    );
+    return { enqueued: false, workflow_id: reviewGraphIdEarly, skipped_already_running: true };
   }
 
   // If a pre-built PrMeta was provided (pr-event-ingester path),
@@ -166,12 +296,12 @@ export async function enqueueReviewGraph(
         input.repo,
       );
 
-  // Resolve per-tier driver+model in regular Node (process.env is
-  // available here) and embed in the workflow input. The workflow
-  // isolate has no `process` global, so it can't run
-  // resolveReviewTierDriver itself — it reads input.tier_config
-  // when present, otherwise the static REVIEW_TIER_DRIVER defaults.
-  // Only R1/R2/R3 are dispatchable; R0/R4 stay null.
+  // Resolve per-tier driver+model in regular Node and embed in the
+  // input. (Pre-cut-over the workflow isolate couldn't read process.env;
+  // post-cut-over the lobster .lobster file just shells out to
+  // chitin-agent-runner which CAN read env, so this is technically
+  // redundant — but kept so the args envelope shape stays stable for
+  // any downstream consumer that reads it.)
   const tier_config: Record<ReviewTier, { driver: string | null; model: string | null }> = {
     R0: { driver: null, model: null },
     R1: resolveReviewTierDriver('R1'),
@@ -181,17 +311,23 @@ export async function enqueueReviewGraph(
   };
   const reviewGraphInput = { ...baseInput, tier_config };
 
-  // Reviewer chain workflow_id derives from the parent. Keep it
-  // greppable so the operator can correlate `swarm-<entry>-<ts>` to
-  // its review-graph chain.
+  // Greppable id: operator can correlate `swarm-<entry>-<ts>` to its
+  // review-graph chain via `<parent>-review-graph` log file name.
   const reviewGraphId = `${input.parent_workflow_id}-review-graph`;
 
+  // .lobster file's `args:` is a flat key→string map (lobster doesn't
+  // type args). Translate the structured ReviewGraphInput accordingly.
+  const lobsterArgs = {
+    pr_meta_json: JSON.stringify(reviewGraphInput.pr_meta),
+    entry_id: input.entry.id,
+    entry_file_scope: input.entry.file ?? '',
+    repo: input.repo,
+    parent_workflow_id: input.parent_workflow_id,
+    required_approver: process.env.LOBSTER_REQUIRED_APPROVER ?? '',
+  };
+
   try {
-    await input.client.workflow.start<typeof reviewGraphWorkflow>(REVIEW_GRAPH_WORKFLOW_NAME, {
-      args: [reviewGraphInput],
-      taskQueue: input.taskQueue,
-      workflowId: reviewGraphId,
-    });
+    await spawnLobster({ reviewGraphId, argsJson: JSON.stringify(lobsterArgs) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(
@@ -199,7 +335,7 @@ export async function enqueueReviewGraph(
         ts: new Date().toISOString(),
         level: 'warn',
         component: 'review-graph-dispatch',
-        msg: 'submit failed; PR will rely on Copilot R0 only',
+        msg: 'spawn failed; PR will rely on Copilot R0 only',
         parent_workflow_id: input.parent_workflow_id,
         pr_url: input.pr_url,
         error: msg,

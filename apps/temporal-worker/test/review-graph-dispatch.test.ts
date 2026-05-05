@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   buildReviewGraphInput,
   parseDiffShortstat,
   extractPrNumber,
   enqueueReviewGraph,
-  REVIEW_GRAPH_WORKFLOW_NAME,
+  listRunningReviewGraphWorkflowsFromDisk,
+  type LobsterSpawnInput,
 } from '../src/review-graph-dispatch.ts';
 import type { BacklogEntry } from '../src/grooming/parse-backlog.ts';
 import type { WorktreeResult } from '../src/activity-types.ts';
@@ -135,187 +139,199 @@ describe('buildReviewGraphInput', () => {
   });
 });
 
-// ─── enqueueReviewGraph ──────────────────────────────────────────────────
+// ─── enqueueReviewGraph (post-Temporal cut-over) ────────────────────────
 
-interface MockClient {
-  workflow: {
-    start: ReturnType<typeof makeStartFn>;
-  };
-  __startCalls: StartCall[];
+interface SpawnCall {
+  reviewGraphId: string;
+  args: Record<string, string>;  // parsed argsJson for assertion convenience
 }
 
-interface StartCall {
-  workflowName: string;
-  args: unknown[];
-  workflowId: string;
-  taskQueue: string;
-}
-
-function makeStartFn(calls: StartCall[], opts?: { rejectOn?: string }) {
-  return async (
-    workflowName: string,
-    options: { args: unknown[]; workflowId: string; taskQueue: string },
-  ) => {
-    if (opts?.rejectOn === workflowName) {
-      throw new Error('temporal submit failed (mock)');
+function makeMockSpawn(opts?: { reject?: boolean }) {
+  const calls: SpawnCall[] = [];
+  const fn = async (input: LobsterSpawnInput) => {
+    if (opts?.reject) {
+      throw new Error('lobster spawn failed (mock)');
     }
-    calls.push({
-      workflowName,
-      args: options.args,
-      workflowId: options.workflowId,
-      taskQueue: options.taskQueue,
-    });
-    return { workflowId: options.workflowId, firstExecutionRunId: 'mock-run' };
+    calls.push({ reviewGraphId: input.reviewGraphId, args: JSON.parse(input.argsJson) });
   };
+  return { fn, calls };
 }
 
-function makeMockClient(opts?: { rejectOn?: string }): MockClient {
-  const calls: StartCall[] = [];
-  return {
-    workflow: { start: makeStartFn(calls, opts) },
-    __startCalls: calls,
-  };
+// Each test gets its own log dir so the mtime-based dedup oracle
+// doesn't cross-contaminate between tests. Set via env var which
+// review-graph-dispatch.ts reads at log-path resolution time.
+function withFreshLogDir<T>(body: (logDir: string) => Promise<T>): Promise<T> {
+  const d = resolve(tmpdir(), `review-graph-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(d, { recursive: true });
+  const orig = process.env.LOBSTER_REVIEW_GRAPH_LOG_DIR;
+  process.env.LOBSTER_REVIEW_GRAPH_LOG_DIR = d;
+  return body(d).finally(() => {
+    if (orig === undefined) delete process.env.LOBSTER_REVIEW_GRAPH_LOG_DIR;
+    else process.env.LOBSTER_REVIEW_GRAPH_LOG_DIR = orig;
+    rmSync(d, { recursive: true, force: true });
+  });
 }
 
 describe('enqueueReviewGraph', () => {
-  it('submits the review-graph workflow when pr_url is set', async () => {
-    const client = makeMockClient();
-    const logs: string[] = [];
-    const r = await enqueueReviewGraph({
-      // The Client interface we accept matches Temporal's only on the
-      // workflow.start surface; cast through unknown for the test.
-      client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
-      taskQueue: 'chitin-worker-q',
-      parent_workflow_id: 'swarm-sample-12345',
-      pr_url: 'https://github.com/chitinhq/chitin/pull/300',
-      worktree: makeWorktree(),
-      entry: makeEntry(),
-      repo: 'chitinhq/chitin',
-      log: (l) => logs.push(l),
-    });
-    expect(r.enqueued).toBe(true);
-    expect(r.workflow_id).toBe('swarm-sample-12345-review-graph');
-    expect(client.__startCalls).toHaveLength(1);
-    expect(client.__startCalls[0].workflowName).toBe(REVIEW_GRAPH_WORKFLOW_NAME);
-    expect(client.__startCalls[0].workflowId).toBe('swarm-sample-12345-review-graph');
-    expect(client.__startCalls[0].taskQueue).toBe('chitin-worker-q');
-    // Telemetry log line on success.
-    expect(logs).toHaveLength(1);
-    const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
-    expect(parsed.component).toBe('review-graph-dispatch');
-    expect(parsed.msg).toBe('review-graph enqueued');
-    expect(parsed.diff_loc).toBe(59);
-  });
-
-  it('no-ops when pr_url is undefined (PR did not open)', async () => {
-    const client = makeMockClient();
-    const logs: string[] = [];
-    const r = await enqueueReviewGraph({
-      client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
-      taskQueue: 'chitin-worker-q',
-      parent_workflow_id: 'swarm-x-1',
-      pr_url: undefined,
-      worktree: makeWorktree(),
-      entry: makeEntry(),
-      repo: 'chitinhq/chitin',
-      log: (l) => logs.push(l),
-    });
-    expect(r.enqueued).toBe(false);
-    expect(r.workflow_id).toBeUndefined();
-    expect(client.__startCalls).toHaveLength(0);
-    // No log line — the no-op case is silent (next dispatcher tick
-    // gets the next pickup; no point spamming the journal).
-    expect(logs).toHaveLength(0);
-  });
-
-  it('logs warn and returns enqueued:false when temporal submit throws', async () => {
-    const client = makeMockClient({ rejectOn: REVIEW_GRAPH_WORKFLOW_NAME });
-    const logs: string[] = [];
-    const r = await enqueueReviewGraph({
-      client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
-      taskQueue: 'chitin-worker-q',
-      parent_workflow_id: 'swarm-failure-1',
-      pr_url: 'https://github.com/chitinhq/chitin/pull/400',
-      worktree: makeWorktree(),
-      entry: makeEntry(),
-      repo: 'chitinhq/chitin',
-      log: (l) => logs.push(l),
-    });
-    expect(r.enqueued).toBe(false);
-    expect(r.error).toContain('temporal submit failed');
-    // Implementor's work shipped — the warn log captures the event
-    // but NEVER propagates as a thrown error.
-    expect(logs).toHaveLength(1);
-    const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
-    expect(parsed.level).toBe('warn');
-    expect(parsed.component).toBe('review-graph-dispatch');
-  });
-
-  it('passes the correct args shape (ReviewGraphInput) to client.workflow.start', async () => {
-    const client = makeMockClient();
-    await enqueueReviewGraph({
-      client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
-      taskQueue: 'chitin-worker-q',
-      parent_workflow_id: 'parent-arg-shape-1',
-      pr_url: 'https://github.com/chitinhq/chitin/pull/500',
-      worktree: makeWorktree(),
-      entry: makeEntry({ id: 'arg-shape-test' }),
-      repo: 'chitinhq/chitin',
-    });
-    expect(client.__startCalls).toHaveLength(1);
-    const [arg] = client.__startCalls[0].args as [
-      {
-        parent_workflow_id: string;
-        pr_meta: { pr_number: number; pr_url: string };
-        entry: BacklogEntry;
-        repo: string;
-      },
-    ];
-    expect(arg.parent_workflow_id).toBe('parent-arg-shape-1');
-    expect(arg.pr_meta.pr_number).toBe(500);
-    expect(arg.entry.id).toBe('arg-shape-test');
-    expect(arg.repo).toBe('chitinhq/chitin');
-  });
-
-  it('embeds tier_config from CHITIN_REVIEWER_R<N>_{DRIVER,MODEL} env into workflow args', async () => {
-    // The workflow runs in a V8 isolate without `process` — env
-    // override resolution has to happen here in the dispatcher and
-    // be threaded through input. Regression test for Copilot's
-    // catch on PR #280: env overrides were a dead code path.
-    const orig = {
-      r1d: process.env.CHITIN_REVIEWER_R1_DRIVER,
-      r1m: process.env.CHITIN_REVIEWER_R1_MODEL,
-      r3d: process.env.CHITIN_REVIEWER_R3_DRIVER,
-    };
-    process.env.CHITIN_REVIEWER_R1_DRIVER = 'codex-cli';
-    process.env.CHITIN_REVIEWER_R1_MODEL = 'gpt-5.4';
-    process.env.CHITIN_REVIEWER_R3_DRIVER = 'gemini-cli';
-    try {
-      const client = makeMockClient();
-      await enqueueReviewGraph({
-        client: client as unknown as Parameters<typeof enqueueReviewGraph>[0]['client'],
-        taskQueue: 'chitin-worker-q',
-        parent_workflow_id: 'parent-tier-config-1',
-        pr_url: 'https://github.com/chitinhq/chitin/pull/600',
+  it('spawns lobster when pr_url is set', () =>
+    withFreshLogDir(async () => {
+      const spawn = makeMockSpawn();
+      const logs: string[] = [];
+      const r = await enqueueReviewGraph({
+        parent_workflow_id: 'swarm-sample-12345',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/300',
         worktree: makeWorktree(),
         entry: makeEntry(),
         repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnLobster: spawn.fn,
       });
-      const [arg] = client.__startCalls[0].args as [
-        { tier_config?: Record<string, { driver: string | null; model: string | null }> },
-      ];
-      expect(arg.tier_config).toBeDefined();
-      expect(arg.tier_config?.R1).toEqual({ driver: 'codex-cli', model: 'gpt-5.4' });
-      expect(arg.tier_config?.R3?.driver).toBe('gemini-cli');
-      // R2 unset → falls back to the static default.
-      expect(arg.tier_config?.R2?.driver).toBe('copilot');
-    } finally {
-      if (orig.r1d === undefined) delete process.env.CHITIN_REVIEWER_R1_DRIVER;
-      else process.env.CHITIN_REVIEWER_R1_DRIVER = orig.r1d;
-      if (orig.r1m === undefined) delete process.env.CHITIN_REVIEWER_R1_MODEL;
-      else process.env.CHITIN_REVIEWER_R1_MODEL = orig.r1m;
-      if (orig.r3d === undefined) delete process.env.CHITIN_REVIEWER_R3_DRIVER;
-      else process.env.CHITIN_REVIEWER_R3_DRIVER = orig.r3d;
-    }
-  });
+      expect(r.enqueued).toBe(true);
+      expect(r.workflow_id).toBe('swarm-sample-12345-review-graph');
+      expect(spawn.calls).toHaveLength(1);
+      expect(spawn.calls[0].reviewGraphId).toBe('swarm-sample-12345-review-graph');
+      // Telemetry log line on success.
+      expect(logs).toHaveLength(1);
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.component).toBe('review-graph-dispatch');
+      expect(parsed.msg).toBe('review-graph enqueued');
+      expect(parsed.diff_loc).toBe(59);
+    }));
+
+  it('no-ops when pr_url is undefined (PR did not open)', () =>
+    withFreshLogDir(async () => {
+      const spawn = makeMockSpawn();
+      const logs: string[] = [];
+      const r = await enqueueReviewGraph({
+        parent_workflow_id: 'swarm-x-1',
+        pr_url: undefined,
+        worktree: makeWorktree(),
+        entry: makeEntry(),
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnLobster: spawn.fn,
+      });
+      expect(r.enqueued).toBe(false);
+      expect(r.workflow_id).toBeUndefined();
+      expect(spawn.calls).toHaveLength(0);
+      expect(logs).toHaveLength(0);
+    }));
+
+  it('logs warn and returns enqueued:false when lobster spawn throws', () =>
+    withFreshLogDir(async () => {
+      const spawn = makeMockSpawn({ reject: true });
+      const logs: string[] = [];
+      const r = await enqueueReviewGraph({
+        parent_workflow_id: 'swarm-failure-1',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/400',
+        worktree: makeWorktree(),
+        entry: makeEntry(),
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnLobster: spawn.fn,
+      });
+      expect(r.enqueued).toBe(false);
+      expect(r.error).toContain('lobster spawn failed');
+      expect(logs).toHaveLength(1);
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.level).toBe('warn');
+      expect(parsed.component).toBe('review-graph-dispatch');
+    }));
+
+  it('passes the correct args (PrMeta + entry_id + repo) to lobster --args-json', () =>
+    withFreshLogDir(async () => {
+      const spawn = makeMockSpawn();
+      await enqueueReviewGraph({
+        parent_workflow_id: 'parent-arg-shape-1',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/500',
+        worktree: makeWorktree(),
+        entry: makeEntry({ id: 'arg-shape-test' }),
+        repo: 'chitinhq/chitin',
+        spawnLobster: spawn.fn,
+      });
+      expect(spawn.calls).toHaveLength(1);
+      const args = spawn.calls[0].args;
+      expect(args.entry_id).toBe('arg-shape-test');
+      expect(args.repo).toBe('chitinhq/chitin');
+      expect(args.parent_workflow_id).toBe('parent-arg-shape-1');
+      const prMeta = JSON.parse(args.pr_meta_json) as { pr_number?: number; pr_url?: string };
+      expect(prMeta.pr_number).toBe(500);
+      expect(prMeta.pr_url).toBe('https://github.com/chitinhq/chitin/pull/500');
+    }));
+
+  it('skips spawn when log file mtime is recent (dedup oracle)', () =>
+    withFreshLogDir(async (logDir) => {
+      // Pre-create a recent log file simulating an in-flight graph.
+      const reviewGraphId = 'parent-already-running-review-graph';
+      writeFileSync(resolve(logDir, `${reviewGraphId}.log`), 'pretend lobster output\n');
+      const spawn = makeMockSpawn();
+      const logs: string[] = [];
+      const r = await enqueueReviewGraph({
+        parent_workflow_id: 'parent-already-running',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/700',
+        worktree: makeWorktree(),
+        entry: makeEntry(),
+        repo: 'chitinhq/chitin',
+        log: (l) => logs.push(l),
+        spawnLobster: spawn.fn,
+      });
+      expect(r.enqueued).toBe(false);
+      expect(r.skipped_already_running).toBe(true);
+      expect(r.workflow_id).toBe(reviewGraphId);
+      expect(spawn.calls).toHaveLength(0);
+      const parsed = JSON.parse(logs[0]) as Record<string, unknown>;
+      expect(parsed.level).toBe('info');
+      expect(parsed.msg).toBe('review-graph already in flight; skipping spawn');
+    }));
+
+  it('re-spawns when log file mtime is older than dedup window (stale)', () =>
+    withFreshLogDir(async (logDir) => {
+      const reviewGraphId = 'parent-stale-review-graph';
+      const logPath = resolve(logDir, `${reviewGraphId}.log`);
+      writeFileSync(logPath, 'old lobster run\n');
+      // Backdate mtime by 2 hours (window default is 1 hour).
+      const twoHoursAgo = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      utimesSync(logPath, twoHoursAgo, twoHoursAgo);
+
+      const spawn = makeMockSpawn();
+      const r = await enqueueReviewGraph({
+        parent_workflow_id: 'parent-stale',
+        pr_url: 'https://github.com/chitinhq/chitin/pull/800',
+        worktree: makeWorktree(),
+        entry: makeEntry(),
+        repo: 'chitinhq/chitin',
+        spawnLobster: spawn.fn,
+      });
+      expect(r.enqueued).toBe(true);
+      expect(spawn.calls).toHaveLength(1);
+    }));
+});
+
+// ─── listRunningReviewGraphWorkflowsFromDisk ────────────────────────────
+
+describe('listRunningReviewGraphWorkflowsFromDisk', () => {
+  it('returns empty when log dir does not exist', () =>
+    withFreshLogDir(async (d) => {
+      rmSync(d, { recursive: true, force: true });  // delete the dir
+      const ids = listRunningReviewGraphWorkflowsFromDisk();
+      expect(ids.size).toBe(0);
+    }));
+
+  it('returns ids whose log files have mtime within the dedup window', () =>
+    withFreshLogDir(async (d) => {
+      writeFileSync(resolve(d, 'fresh-1-review-graph.log'), '');
+      writeFileSync(resolve(d, 'fresh-2-review-graph.log'), '');
+      // Stale: backdate by 2 hours
+      writeFileSync(resolve(d, 'stale-review-graph.log'), '');
+      const t = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      utimesSync(resolve(d, 'stale-review-graph.log'), t, t);
+      // Non-log file ignored
+      writeFileSync(resolve(d, 'README'), '');
+
+      const ids = listRunningReviewGraphWorkflowsFromDisk();
+      expect(ids.has('fresh-1-review-graph')).toBe(true);
+      expect(ids.has('fresh-2-review-graph')).toBe(true);
+      expect(ids.has('stale-review-graph')).toBe(false);
+      expect(ids.size).toBe(2);
+    }));
 });
