@@ -112,3 +112,23 @@ Renamed `chitinhq/chitin → chitinhq/chitin-archive` at `v1.0.0`; archived ever
 - [reddit] [1t1judm](https://reddit.com/r/LocalLLaMA/comments/1t1judm/qwen3627b_at_72_toks_on_rtx_3090_on_windows_using/) — Qwen3.6-27B at 72 tok/s on RTX 3090 on Windows using native vLLM (no WSL, no Docker), portable launcher and installer
 - [reddit] [1t1jc1d](https://reddit.com/r/LocalLLaMA/comments/1t1jc1d/have_qwen_said_anything_about_further_qwen_36/) — Have Qwen said anything about further Qwen 3.6 models?
 - [reddit] [1t1a8gf](https://reddit.com/r/LocalLLaMA/comments/1t1a8gf/qwen3627bnvfp4_images/) — Qwen3.6-27B-NVFP4 - images
+- [arxiv] [2605.00179](https://arxiv.org/abs/2605.00179) — DEPTEX: Organization-First, Open Source Dependency Risk Monitoring
+- [arxiv] [2605.00191](https://arxiv.org/abs/2605.00191) — What Characterizes a Software Leader? Identifying Leadership Practices from Practitioners Social Media
+- [arxiv] [2605.00352](https://arxiv.org/abs/2605.00352) — Integrating Log-Based Security Analytics in Agile Workflows: A Real-World Experience Report
+- [arxiv] [2605.00382](https://arxiv.org/abs/2605.00382) — Social Bias in LLM-Generated Code: Benchmark and Mitigation
+- [arxiv] [2605.00413](https://arxiv.org/abs/2605.00413) — ClozeMaster: Fuzzing Rust Compiler by Harnessing LLMs for Infilling Masked Real Programs
+- [arxiv] [2605.00433](https://arxiv.org/abs/2605.00433) — Improving LLM Code Generation via Requirement-Aware Curriculum Reinforcement Learning
+- [arxiv] [2605.00447](https://arxiv.org/abs/2605.00447) — Think Harder and Don't Overlook Your Options: Revisiting Issue-Commit Linking with LLM-Assisted Retrieval
+- [arxiv] [2605.00472](https://arxiv.org/abs/2605.00472) — Q-ARE: An Evaluation Dataset for Query Based API Recommendation
+- [arxiv] [2605.00504](https://arxiv.org/abs/2605.00504) — EnCoDe: Energy Estimation of Source Code At Design-Time
+- [arxiv] [2605.00531](https://arxiv.org/abs/2605.00531) — From Research to Practice: An Interactive Rapid Review of Autonomous Driving System Testing in Industry
+- [arxiv] [2605.00922](https://arxiv.org/abs/2605.00922) — To Vibe Research or Not to Vibe Research? Generative AI in Qualitative Research
+- [arxiv] [2605.00932](https://arxiv.org/abs/2605.00932) — Code World Model Preparedness Report
+- [arxiv] [2605.00942](https://arxiv.org/abs/2605.00942) — PPO guided Agentic Pipeline for Adaptive Prompt Selection and Test Case Generation
+- [arxiv] [2605.01008](https://arxiv.org/abs/2605.01008) — Semantics-Based Verification of an Implemented Shor Oracle for ECDLP in Qrisp
+- [arxiv] [2605.01042](https://arxiv.org/abs/2605.01042) — ProMoTA: a model-driven framework for end-to-end traceability analysis
+- [arxiv] [2605.01104](https://arxiv.org/abs/2605.01104) — RECAP: An End-to-End Platform for Capturing, Replaying, and Analyzing AI-Assisted Programming Interactions
+- [arxiv] [2605.01159](https://arxiv.org/abs/2605.01159) — A Domain-Driven Design Simulator for Business Logic-Rich Microservice Systems
+- [arxiv] [2605.01160](https://arxiv.org/abs/2605.01160) — The Productivity-Reliability Paradox: Specification-Driven Governance for AI-Augmented Software Development
+- [arxiv] [2605.01209](https://arxiv.org/abs/2605.01209) — ClarifySTL: An Interactive LLM Agent Framework for STL Transformation through Requirements Clarification
+- [arxiv] [2605.01264](https://arxiv.org/abs/2605.01264) — FeedbackLLM: Metadata driven Multi-Agentic Language Agnostic Test Case Generator with Evolving prompt and Coverage Feedback

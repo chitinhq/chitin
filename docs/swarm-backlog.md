@@ -939,7 +939,7 @@ operator's call.
 ```yaml
 id: install-kernel-restart-worker-on-ts-change
 tier: T2
-status: ready
+status: partial
 estimated_loc: 50
 blocks: []
 file: scripts/install-kernel.sh
@@ -1005,7 +1005,7 @@ issue, not a chitin source issue, so the trigger differs.
 ```yaml
 id: apply-step-exclude-openclaw-bootstrap-files
 tier: T1
-status: ready
+status: partial
 estimated_loc: 30
 blocks: []
 file: apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/activity.ts (writeWorktreeIndex pattern), apps/temporal-worker/test/grooming-list-real-untracked.test.ts (extend)
@@ -1092,7 +1092,7 @@ the apply-step).
 ```yaml
 id: hermes-whatsapp-alarm-relay
 tier: T2
-status: ready
+status: partial
 estimated_loc: 250
 blocks: []
 file: scripts/chitin-alarm-relay.sh (new), infra/systemd/chitin-alarm-relay.service (new), infra/systemd/chitin-alarm-relay.timer (new), apps/temporal-worker/src/alarm-feeder.ts (extend with hermes hook)
@@ -5562,7 +5562,7 @@ Filed after PRs #267 (gemini-cli governance), #268 (codex_mine), #269 (universal
 ```yaml
 id: gemini-usage-feed-producer
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: apps/temporal-worker/src/activity.ts, python/analysis/gemini_mine.py (new)
@@ -5583,7 +5583,7 @@ Activity-layer integration: when an activity spawns gemini, pipe stderr through 
 ```yaml
 id: ollama-cloud-usage-capture
 tier: T2
-status: ready
+status: partial
 estimated_loc: 250
 blocks: []
 file: apps/temporal-worker/src/activity.ts, libs/adapters/openclaw/ (existing)
