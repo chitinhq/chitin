@@ -324,3 +324,123 @@ func TestGate_FingerprintEmptyByDefault(t *testing.T) {
 		t.Errorf("expected empty fingerprint dims by default, got %+v", d)
 	}
 }
+
+// fingerprintEnvKeys are the env vars FingerprintContextFromEnv reads.
+// Centralized so the cleanup helper below can never drift from the
+// reader and leak a leftover value into adjacent tests.
+var fingerprintEnvKeys = []string{
+	"CHITIN_MODEL", "CHITIN_DISPATCH_MODEL",
+	"CHITIN_ROLE", "CHITIN_DISPATCH_ROLE",
+	"CHITIN_WORKFLOW_ID", "CHITIN_FINGERPRINT",
+}
+
+// withCleanFingerprintEnv saves+clears every fingerprint-related env
+// var for the duration of a test, then restores the original values.
+// The receiving test sets only the vars it cares about; everything
+// else is guaranteed unset, so a stale CHITIN_* in the developer's
+// shell can't make a passing test pass for the wrong reason.
+func withCleanFingerprintEnv(t *testing.T) {
+	t.Helper()
+	saved := make(map[string]string, len(fingerprintEnvKeys))
+	for _, k := range fingerprintEnvKeys {
+		if v, ok := os.LookupEnv(k); ok {
+			saved[k] = v
+		}
+		_ = os.Unsetenv(k)
+	}
+	t.Cleanup(func() {
+		for _, k := range fingerprintEnvKeys {
+			if v, ok := saved[k]; ok {
+				_ = os.Setenv(k, v)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		}
+	})
+}
+
+func TestFingerprintContextFromEnv_LegacyVarsRead(t *testing.T) {
+	// Original (pre-PR-#344) precedence: CHITIN_* names populate the
+	// fingerprint context directly. Regression guard so the
+	// CHITIN_DISPATCH_* fallback addition doesn't accidentally
+	// re-order precedence and break dispatchers still emitting the
+	// legacy names.
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_ROLE", "reviewer")
+	_ = os.Setenv("CHITIN_MODEL", "claude-sonnet-4-6")
+	_ = os.Setenv("CHITIN_WORKFLOW_ID", "wf-123")
+	_ = os.Setenv("CHITIN_FINGERPRINT", "fp-abc")
+	got := FingerprintContextFromEnv()
+	if got.Role != "reviewer" || got.Model != "claude-sonnet-4-6" ||
+		got.WorkflowID != "wf-123" || got.Fingerprint != "fp-abc" {
+		t.Errorf("legacy CHITIN_* vars not read correctly: %+v", got)
+	}
+}
+
+func TestFingerprintContextFromEnv_DispatchVarsFallback(t *testing.T) {
+	// PR #344 added CHITIN_DISPATCH_<DIM> for dispatch_meta. When the
+	// legacy name is unset, the kernel must fall back to the
+	// DISPATCH-prefixed name so role/model still tag the row.
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_DISPATCH_ROLE", "programmer")
+	_ = os.Setenv("CHITIN_DISPATCH_MODEL", "qwen3-coder")
+	got := FingerprintContextFromEnv()
+	if got.Role != "programmer" {
+		t.Errorf("Role from CHITIN_DISPATCH_ROLE: got %q want programmer", got.Role)
+	}
+	if got.Model != "qwen3-coder" {
+		t.Errorf("Model from CHITIN_DISPATCH_MODEL: got %q want qwen3-coder", got.Model)
+	}
+}
+
+func TestFingerprintContextFromEnv_LegacyWinsOverDispatch(t *testing.T) {
+	// Precedence: CHITIN_<DIM> beats CHITIN_DISPATCH_<DIM>. The legacy
+	// names are what existing dispatchers stamp; a stray DISPATCH-
+	// prefixed value (e.g. inherited from a parent shell) must not
+	// mask a freshly-set legacy value.
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_ROLE", "reviewer")
+	_ = os.Setenv("CHITIN_DISPATCH_ROLE", "programmer")
+	_ = os.Setenv("CHITIN_MODEL", "claude-opus-4-7")
+	_ = os.Setenv("CHITIN_DISPATCH_MODEL", "qwen3-coder")
+	got := FingerprintContextFromEnv()
+	if got.Role != "reviewer" {
+		t.Errorf("legacy CHITIN_ROLE must win: got %q want reviewer", got.Role)
+	}
+	if got.Model != "claude-opus-4-7" {
+		t.Errorf("legacy CHITIN_MODEL must win: got %q want claude-opus-4-7", got.Model)
+	}
+}
+
+func TestFingerprintContextFromEnv_DefaultsRoleToExternal(t *testing.T) {
+	// Acceptance criterion for kernel-chain-event-read-dispatch-meta-
+	// for-tagging: when no role is wired (raw shell hook, ad-hoc CLI
+	// invocation), the row must be tagged role=external rather than
+	// landing in the (untagged) bucket. Model stays empty so the JSON
+	// layer drops it via omitempty (downstream readers interpret
+	// missing as null).
+	withCleanFingerprintEnv(t)
+	got := FingerprintContextFromEnv()
+	if got.Role != "external" {
+		t.Errorf("Role default: got %q want external", got.Role)
+	}
+	if got.Model != "" {
+		t.Errorf("Model default: got %q want empty (omitempty → null)", got.Model)
+	}
+	if got.WorkflowID != "" || got.Fingerprint != "" {
+		t.Errorf("WorkflowID/Fingerprint must stay empty by default, got %+v", got)
+	}
+}
+
+func TestFingerprintContextFromEnv_SystemRoleHonored(t *testing.T) {
+	// System-level housekeeping (chain rotation, alarm-feeder) tags
+	// itself role=system explicitly so it's separable from raw
+	// external traffic. The kernel must not silently rewrite a
+	// non-empty role to anything else.
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_ROLE", "system")
+	got := FingerprintContextFromEnv()
+	if got.Role != "system" {
+		t.Errorf("explicit CHITIN_ROLE=system must pass through: got %q", got.Role)
+	}
+}
