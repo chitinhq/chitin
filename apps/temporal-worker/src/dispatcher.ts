@@ -323,12 +323,29 @@ function recordDispatchOutcome(
  * top of an already-pushed branch.
  */
 /**
+ * PR subject prefixes that FILE an entry rather than implement it.
+ * Mirrors `scripts/shipped-entry-flipper.sh`'s prefix filter so the
+ * two dedup paths agree. Without this, the dispatcher dedup matched
+ * the operator's own `backlog: <entry-id>` PR title and treated the
+ * fresh entry as already-shipped (2026-05-05 incident: PR #322 filed
+ * `t0-glm-flash-smoke-confirm-end-to-end`; dispatcher refused to
+ * dispatch the entry on the next tick because its id appeared in
+ * #322's merged title).
+ */
+const ENTRY_FILING_PREFIXES = /^(backlog|auto|docs?|test):/;
+
+/**
  * Check whether a backlog entry's id appears literally in the
  * recent-merged-PR-subjects scan. Pure string match — backlog ids
  * can contain regex metacharacters (e.g., `pr-event-ingester-1.0`
  * has `.`), so we deliberately skip --grep and do an in-memory
  * `includes` to avoid false matches AND `fatal: invalid regexp`
  * errors that would silently disable the suppression.
+ *
+ * Skips entry-FILING PR subjects (backlog:/auto:/docs:/test:) so
+ * the dedup only fires on IMPLEMENTATION PRs (feat:/fix:/swarm:/
+ * refactor:/perf:/chore:). Same convention as
+ * scripts/shipped-entry-flipper.sh.
  *
  * Exported for unit tests; not part of the public dispatcher API.
  */
@@ -343,6 +360,7 @@ export function entryIdInRecentSubjects(entryId: string, recentSubjects: string)
   const lines = recentSubjects.split('\n');
   for (const line of lines) {
     if (!line) continue;
+    if (ENTRY_FILING_PREFIXES.test(line)) continue;
     let idx = 0;
     while ((idx = line.indexOf(entryId, idx)) !== -1) {
       const before = idx === 0 ? '' : line[idx - 1];

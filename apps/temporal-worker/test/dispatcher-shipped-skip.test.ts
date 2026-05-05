@@ -68,4 +68,44 @@ describe('entryIdInRecentSubjects', () => {
     const subjects = 'fix: x\n\n\nswarm: target — closes\n';
     expect(entryIdInRecentSubjects('target', subjects)).toBe(true);
   });
+
+  // Entry-filing prefix filter — the dispatcher's dedup must NOT
+  // skip an entry just because the operator's `backlog: <id>` PR
+  // landed. Otherwise filing an entry instantly disqualifies it
+  // from being dispatched (2026-05-05 incident with PR #322 +
+  // entry t0-glm-flash-smoke-confirm-end-to-end).
+
+  it('does NOT match a `backlog:`-prefixed PR title', () => {
+    expect(entryIdInRecentSubjects('my-entry', 'backlog: my-entry (filed 2026-05-05)')).toBe(false);
+  });
+
+  it('does NOT match an `auto:`-prefixed PR title (auto-flipper / sweepers)', () => {
+    expect(entryIdInRecentSubjects('my-entry', 'auto: flip my-entry ready→partial')).toBe(false);
+  });
+
+  it('does NOT match a `docs:`-prefixed PR title', () => {
+    expect(entryIdInRecentSubjects('my-entry', 'docs: clarify my-entry rationale')).toBe(false);
+  });
+
+  it('does NOT match a `doc:`-prefixed PR title (singular alias)', () => {
+    expect(entryIdInRecentSubjects('my-entry', 'doc: my-entry footnote')).toBe(false);
+  });
+
+  it('does NOT match a `test:`-prefixed PR title', () => {
+    expect(entryIdInRecentSubjects('my-entry', 'test: my-entry boundary cases')).toBe(false);
+  });
+
+  it('STILL matches when an entry-filing PR sits next to a real implementation PR', () => {
+    const subjects = [
+      'backlog: my-entry (filed 2026-05-05)',  // would dedup-trip without the filter
+      'swarm: my-entry — closes #999',          // real implementation
+    ].join('\n');
+    expect(entryIdInRecentSubjects('my-entry', subjects)).toBe(true);
+  });
+
+  it('STILL matches feat:/fix:/swarm:/refactor:/perf:/chore: prefixes', () => {
+    for (const prefix of ['feat', 'fix', 'swarm', 'refactor', 'perf', 'chore']) {
+      expect(entryIdInRecentSubjects('my-entry', `${prefix}: my-entry — done`)).toBe(true);
+    }
+  });
 });
