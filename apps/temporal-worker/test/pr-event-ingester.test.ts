@@ -5,7 +5,9 @@ import {
   pickPrsToIngest,
   reviewGraphWorkflowIdForPr,
   synthesizeBacklogEntry,
+  type CommentResponderMarker,
   type OpenPrSummary,
+  type PeerReviewerMarker,
 } from '../src/pr-event-ingester.ts';
 
 // peerReviewer + commentResponder workflow id helpers — same
@@ -261,5 +263,114 @@ describe('decideAgentDispatches — peer-reviewer + comment-responder gating', (
     expect(d.dispatchCommentResponder).toBe(false);
     expect(d.reasons.skip_peer_reviewer).toBeDefined();
     expect(d.reasons.skip_comment_responder).toBeDefined();
+  });
+});
+
+
+describe('decideAgentDispatches — marker-based dedup against completed runs', () => {
+  // Closes the gap left by listRunningAgentWorkflows: once a peer-
+  // reviewer run completes for (PR, head_sha), the marker keeps the
+  // ingester from re-dispatching against that exact commit on the
+  // next tick.
+  const SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const peerMarker = (sha: string): PeerReviewerMarker => ({
+    head_sha: sha,
+    dispatched_at: '2026-05-04T12:00:00Z',
+    workflow_id: peerReviewerWorkflowIdForPr(207),
+  });
+  const responderMarker = (sha: string, count: number): CommentResponderMarker => ({
+    head_sha: sha,
+    comment_count: count,
+    dispatched_at: '2026-05-04T12:00:00Z',
+    workflow_id: commentResponderWorkflowIdForPr(207),
+  });
+  const basePr = (overrides: Partial<OpenPrSummary>): OpenPrSummary =>
+    pr({ number: 207, ...overrides });
+
+  it('skips peer-reviewer when marker.head_sha matches PR head_sha (completed run dedup)', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_A, copilotCommentCount: 0 }),
+      new Set<string>(), // nothing currently running
+      { peerReviewerMarker: peerMarker(SHA_A) },
+    );
+    expect(d.dispatchPeerReviewer).toBe(false);
+    expect(d.reasons.skip_peer_reviewer).toMatch(/already ran for head_sha/);
+  });
+
+  it('dispatches peer-reviewer when PR head_sha advances past marker (new commit)', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_B, copilotCommentCount: 0 }),
+      new Set<string>(),
+      { peerReviewerMarker: peerMarker(SHA_A) },
+    );
+    expect(d.dispatchPeerReviewer).toBe(true);
+    expect(d.reasons.skip_peer_reviewer).toBeUndefined();
+  });
+
+  it('dispatches peer-reviewer when no marker has been written yet', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_A, copilotCommentCount: 0 }),
+      new Set<string>(),
+      { peerReviewerMarker: undefined },
+    );
+    expect(d.dispatchPeerReviewer).toBe(true);
+  });
+
+  it('running-workflow check wins over marker — already-running message takes precedence', () => {
+    const running = new Set<string>([peerReviewerWorkflowIdForPr(207)]);
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_A }),
+      running,
+      { peerReviewerMarker: peerMarker(SHA_A) },
+    );
+    expect(d.dispatchPeerReviewer).toBe(false);
+    expect(d.reasons.skip_peer_reviewer).toMatch(/already running/);
+  });
+
+  it('skips comment-responder when marker matches both head_sha and comment_count is unchanged', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_A, copilotCommentCount: 5 }),
+      new Set<string>(),
+      {
+        commentResponderThreshold: 2,
+        commentResponderMarker: responderMarker(SHA_A, 5),
+      },
+    );
+    expect(d.dispatchCommentResponder).toBe(false);
+    expect(d.reasons.skip_comment_responder).toMatch(/already ran/);
+  });
+
+  it('dispatches comment-responder when PR head_sha advances past marker', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_B, copilotCommentCount: 5 }),
+      new Set<string>(),
+      {
+        commentResponderThreshold: 2,
+        commentResponderMarker: responderMarker(SHA_A, 5),
+      },
+    );
+    expect(d.dispatchCommentResponder).toBe(true);
+  });
+
+  it('dispatches comment-responder when comment_count grows beyond marker (new comments arrived)', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: SHA_A, copilotCommentCount: 10 }),
+      new Set<string>(),
+      {
+        commentResponderThreshold: 2,
+        commentResponderMarker: responderMarker(SHA_A, 5),
+      },
+    );
+    expect(d.dispatchCommentResponder).toBe(true);
+  });
+
+  it('marker dedup is bypassed when PR has no headRefOid (production safety: prefer dispatching over silent skip)', () => {
+    const d = decideAgentDispatches(
+      basePr({ headRefOid: undefined, copilotCommentCount: 0 }),
+      new Set<string>(),
+      { peerReviewerMarker: peerMarker(SHA_A) },
+    );
+    expect(d.dispatchPeerReviewer).toBe(true);
   });
 });

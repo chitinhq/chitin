@@ -27,6 +27,9 @@
 
 import { Connection, Client } from '@temporalio/client';
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { computeStartingTier, type PrMeta } from './review-graph.ts';
@@ -53,32 +56,131 @@ const EXECUTE_REQUEST_WORKFLOW_NAME = 'executeRequestWorkflow';
 
 const TASK_QUEUE = 'chitin-worker-q';
 
+// ── Per-PR dispatch markers ─────────────────────────────────────────
+//
+// listRunningAgentWorkflows only returns Running workflows. Once a
+// peer-reviewer run for PR #N completes, the next ingester tick (5 min
+// later) sees no running workflow with id `peer-review-pr-N` and
+// re-dispatches against the same unchanged PR — leaving duplicate
+// review comments on every tick.
+//
+// Fix: dedup against PR state, not workflow state. Each peer-reviewer
+// run is identified by (pr_number, head_sha). On dispatch the ingester
+// writes a marker file recording the head_sha it dispatched against.
+// On the next tick, if the marker's head_sha matches the PR's current
+// HEAD, skip — there's nothing new to review. A new commit pushed to
+// the PR rotates head_sha and the marker no longer matches, so the
+// next tick dispatches.
+//
+// Comment-responder uses a composite key (head_sha, comment_count): a
+// new commit OR new comments since last dispatch warrants another run.
+// Strictly this should be the unresolved-comment-set hash (see backlog
+// entry pr-event-ingester-comment-count-is-unresolved); comment_count
+// is a coarser proxy that still solves the every-5-minutes regression.
+//
+// Markers live under ~/.cache/chitin/, mirroring the dispatcher's
+// existing dispatched/<entry-id>.json convention.
+const PEER_REVIEWER_STATE_DIR = path.join(
+  os.homedir(),
+  '.cache/chitin/peer-reviewer-state',
+);
+const COMMENT_RESPONDER_STATE_DIR = path.join(
+  os.homedir(),
+  '.cache/chitin/comment-responder-state',
+);
+
+export interface PeerReviewerMarker {
+  head_sha: string;
+  dispatched_at: string;
+  workflow_id: string;
+}
+
+export interface CommentResponderMarker {
+  head_sha: string;
+  comment_count: number;
+  dispatched_at: string;
+  workflow_id: string;
+}
+
+export function readPeerReviewerMarker(
+  prNumber: number,
+  baseDir: string = PEER_REVIEWER_STATE_DIR,
+): PeerReviewerMarker | undefined {
+  return readMarker<PeerReviewerMarker>(baseDir, prNumber);
+}
+
+export function writePeerReviewerMarker(
+  prNumber: number,
+  marker: PeerReviewerMarker,
+  baseDir: string = PEER_REVIEWER_STATE_DIR,
+): void {
+  writeMarker(baseDir, prNumber, marker);
+}
+
+export function readCommentResponderMarker(
+  prNumber: number,
+  baseDir: string = COMMENT_RESPONDER_STATE_DIR,
+): CommentResponderMarker | undefined {
+  return readMarker<CommentResponderMarker>(baseDir, prNumber);
+}
+
+export function writeCommentResponderMarker(
+  prNumber: number,
+  marker: CommentResponderMarker,
+  baseDir: string = COMMENT_RESPONDER_STATE_DIR,
+): void {
+  writeMarker(baseDir, prNumber, marker);
+}
+
+function readMarker<T>(baseDir: string, prNumber: number): T | undefined {
+  const p = path.join(baseDir, `pr-${prNumber}.json`);
+  try {
+    const raw = fs.readFileSync(p, 'utf8');
+    return JSON.parse(raw) as T;
+  } catch {
+    // Missing file or malformed JSON → treat as no marker. Fail-open
+    // means we MIGHT re-dispatch once; the running-workflow check is
+    // the second layer of dedup so the worst case is bounded.
+    return undefined;
+  }
+}
+
+function writeMarker(baseDir: string, prNumber: number, marker: unknown): void {
+  fs.mkdirSync(baseDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(baseDir, `pr-${prNumber}.json`),
+    JSON.stringify(marker),
+  );
+}
+
 // ── Pure logic ──────────────────────────────────────────────────────
 
 /**
- * Pure: decide which agents to dispatch for a PR, given running agents and options.
- * Mirrors the per-PR agent dispatch logic in runIngesterTick.
+ * Pure: decide which agents to dispatch for a PR, given running agents,
+ * persisted dispatch markers, and options. Mirrors the per-PR agent
+ * dispatch logic in runIngesterTick.
  *
  * Two agents may be dispatched per PR:
  *
  *   - peer-reviewer: a higher-tier reviewer that re-evaluates the PR
- *     beyond what GitHub's Copilot bot already produced. Always
- *     dispatched on each tick UNLESS its workflow id is already in
- *     runningAgents (Temporal-side dedup; the workflow id is stable
- *     per PR number, so a re-tick won't double-dispatch).
+ *     beyond what GitHub's Copilot bot already produced. Skipped when:
+ *       1. its workflow id is already in runningAgents (Temporal-side
+ *          dedup against an in-flight run), OR
+ *       2. peerReviewerMarker.head_sha === pr.headRefOid (state-side
+ *          dedup against an already-completed run for this commit).
+ *     A new commit on the PR rotates headRefOid; the marker no longer
+ *     matches and the next tick dispatches.
  *
  *   - comment-responder: redrafts patches in response to inline
  *     review comments. Dispatched only when copilotCommentCount
- *     EXCEEDS the threshold (`>` not `>=`). Important caveat: today's
- *     `copilotCommentCount` is the TOTAL comment count, NOT the
- *     unresolved-only count. That means a PR that's already been
- *     iterated on (with resolved threads) can still trip the
- *     threshold and re-dispatch the responder, which then noops or
- *     applies a redundant patch. Filed as backlog entry
- *     `pr-event-ingester-comment-count-is-unresolved`. Until that
- *     lands, the dedup via runningAgents is the only thing keeping
- *     the responder from spinning on an already-handled PR — which
- *     is why the runningAgents check fires BEFORE the threshold check.
+ *     EXCEEDS the threshold (`>` not `>=`). Skipped when:
+ *       1. its workflow id is already in runningAgents, OR
+ *       2. commentResponderMarker matches both head_sha AND
+ *          comment_count is not strictly greater — i.e. nothing has
+ *          changed since the last dispatch.
+ *     The composite (head_sha, comment_count) key approximates the
+ *     ideal (PR#, unresolved-comment-set hash) until backlog entry
+ *     pr-event-ingester-comment-count-is-unresolved lands.
  *
  * Decisions are returned as bools + a reasons map so callers can
  * distinguish "skipped because of dedup" from "skipped because below
@@ -87,7 +189,11 @@ const TASK_QUEUE = 'chitin-worker-q';
 export function decideAgentDispatches(
   pr: OpenPrSummary,
   runningAgents: ReadonlySet<string>,
-  opts?: { commentResponderThreshold?: number }
+  opts?: {
+    commentResponderThreshold?: number;
+    peerReviewerMarker?: PeerReviewerMarker;
+    commentResponderMarker?: CommentResponderMarker;
+  }
 ): {
   dispatchPeerReviewer: boolean;
   dispatchCommentResponder: boolean;
@@ -106,6 +212,13 @@ export function decideAgentDispatches(
   if (runningAgents.has(peerWorkflowId)) {
     dispatchPeerReviewer = false;
     reasons.skip_peer_reviewer = 'peer-reviewer already running';
+  } else if (
+    opts?.peerReviewerMarker &&
+    pr.headRefOid &&
+    opts.peerReviewerMarker.head_sha === pr.headRefOid
+  ) {
+    dispatchPeerReviewer = false;
+    reasons.skip_peer_reviewer = `peer-reviewer already ran for head_sha ${pr.headRefOid.slice(0, 7)}`;
   }
 
   let dispatchCommentResponder = false;
@@ -113,7 +226,16 @@ export function decideAgentDispatches(
     dispatchCommentResponder = false;
     reasons.skip_comment_responder = 'comment-responder already running';
   } else if (commentCount > threshold) {
-    dispatchCommentResponder = true;
+    const marker = opts?.commentResponderMarker;
+    const headMatches =
+      !!marker && !!pr.headRefOid && marker.head_sha === pr.headRefOid;
+    const noNewComments = !!marker && commentCount <= marker.comment_count;
+    if (headMatches && noNewComments) {
+      dispatchCommentResponder = false;
+      reasons.skip_comment_responder = `comment-responder already ran for (head_sha=${pr.headRefOid!.slice(0, 7)}, comment_count<=${marker!.comment_count})`;
+    } else {
+      dispatchCommentResponder = true;
+    }
   } else {
     dispatchCommentResponder = false;
     reasons.skip_comment_responder = `comment count (${commentCount}) <= threshold (${threshold})`;
@@ -144,6 +266,12 @@ export interface OpenPrSummary {
   number: number;
   title: string;
   headRefName: string;
+  /** Current HEAD commit sha of the PR's head branch. Idempotency key
+   *  for per-PR agent dispatch (peer-reviewer, comment-responder): a
+   *  new commit pushed to the PR rotates this and earns a fresh run.
+   *  Optional because callers in tests synthesize summaries without
+   *  faking a sha; production listOpenPrs always populates it. */
+  headRefOid?: string;
   additions: number;
   deletions: number;
   changedFiles: number;
@@ -298,7 +426,7 @@ export function listOpenPrs(repo: string): OpenPrSummary[] {
       '--limit',
       '1000',
       '--json',
-      'number,title,headRefName,additions,deletions,changedFiles,isDraft,url',
+      'number,title,headRefName,headRefOid,additions,deletions,changedFiles,isDraft,url',
     ],
     { encoding: 'utf8' },
   );
@@ -558,11 +686,34 @@ export async function runIngesterTick(opts: {
   // Iterate the same enriched set so the dispatch decision sees the
   // up-to-date Copilot comment count and PR shape. Non-skip decisions
   // already qualify (non-draft, non-swarm/, non-already-running review-
-  // graph); we add per-agent dedup against runningAgents.
+  // graph); we add per-agent dedup against runningAgents AND against
+  // persisted markers so completed runs don't re-fire on every tick.
   for (const decision of decisions) {
     if (decision.kind === 'skip') continue;
     const pr = decision.pr;
-    const agentDecision = decideAgentDispatches(pr, runningAgents);
+    const peerMarker = readPeerReviewerMarker(pr.number);
+    const responderMarker = readCommentResponderMarker(pr.number);
+    const agentDecision = decideAgentDispatches(pr, runningAgents, {
+      peerReviewerMarker: peerMarker,
+      commentResponderMarker: responderMarker,
+    });
+
+    if (agentDecision.reasons.skip_peer_reviewer) {
+      log(JSON.stringify({
+        component: 'pr-event-ingester',
+        msg: 'skip-peer-reviewer',
+        pr: pr.number,
+        reason: agentDecision.reasons.skip_peer_reviewer,
+      }));
+    }
+    if (agentDecision.reasons.skip_comment_responder) {
+      log(JSON.stringify({
+        component: 'pr-event-ingester',
+        msg: 'skip-comment-responder',
+        pr: pr.number,
+        reason: agentDecision.reasons.skip_comment_responder,
+      }));
+    }
 
     // Peer-reviewer
     if (agentDecision.dispatchPeerReviewer) {
@@ -581,8 +732,23 @@ export async function runIngesterTick(opts: {
           repo: opts.repo,
           log,
         });
-        if (peerRes.enqueued) result.peer_reviewers_enqueued += 1;
-        else result.errors += 1;
+        if (peerRes.enqueued) {
+          result.peer_reviewers_enqueued += 1;
+          // Record the dispatch so subsequent ticks skip until either
+          // a new commit (head_sha rotates) or operator-initiated
+          // marker removal. Skipped if headRefOid isn't available —
+          // we'd rather re-dispatch than write a marker keyed on an
+          // empty sha.
+          if (pr.headRefOid) {
+            writePeerReviewerMarker(pr.number, {
+              head_sha: pr.headRefOid,
+              dispatched_at: new Date().toISOString(),
+              workflow_id: peerReviewerWorkflowIdForPr(pr.number),
+            });
+          }
+        } else {
+          result.errors += 1;
+        }
       }
     }
 
@@ -604,8 +770,19 @@ export async function runIngesterTick(opts: {
           repo: opts.repo,
           log,
         });
-        if (respRes.enqueued) result.comment_responders_enqueued += 1;
-        else result.errors += 1;
+        if (respRes.enqueued) {
+          result.comment_responders_enqueued += 1;
+          if (pr.headRefOid) {
+            writeCommentResponderMarker(pr.number, {
+              head_sha: pr.headRefOid,
+              comment_count: pr.copilotCommentCount ?? 0,
+              dispatched_at: new Date().toISOString(),
+              workflow_id: commentResponderWorkflowIdForPr(pr.number),
+            });
+          }
+        } else {
+          result.errors += 1;
+        }
       }
     }
   }
