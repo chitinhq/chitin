@@ -864,7 +864,7 @@ Add a test in `bridge.test.ts` covering empty-object case.
 ```yaml
 id: workflow-name-drift-test
 tier: T0
-status: ready
+status: partial
 estimated_loc: 8
 blocks: []
 file: apps/temporal-worker/test/activity.test.ts (new file or extend)
@@ -939,7 +939,7 @@ operator's call.
 ```yaml
 id: install-kernel-restart-worker-on-ts-change
 tier: T2
-status: ready
+status: partial
 estimated_loc: 50
 blocks: []
 file: scripts/install-kernel.sh
@@ -1005,7 +1005,7 @@ issue, not a chitin source issue, so the trigger differs.
 ```yaml
 id: apply-step-exclude-openclaw-bootstrap-files
 tier: T1
-status: ready
+status: partial
 estimated_loc: 30
 blocks: []
 file: apps/temporal-worker/src/grooming/apply-workflow-result.ts, apps/temporal-worker/src/activity.ts (writeWorktreeIndex pattern), apps/temporal-worker/test/grooming-list-real-untracked.test.ts (extend)
@@ -3684,7 +3684,7 @@ Steps:
 ```yaml
 id: skill-folder-dispatcher-stitcher
 tier: T2
-status: ready
+status: partial
 estimated_loc: 400
 blocks: [migrate-role-prompts-to-skill-folders]
 file: apps/temporal-worker/src/skill-loader/stitcher.ts (new), apps/temporal-worker/src/skill-loader/tests/stitcher.test.ts (new)
@@ -3735,7 +3735,7 @@ Steps:
 ```yaml
 id: migrate-role-prompts-to-skill-folders
 tier: T2
-status: ready
+status: partial
 estimated_loc: 600
 blocks: []
 file: apps/temporal-worker/skills/{programmer,researcher,analyst,comment-responder,peer-reviewer}/SKILL.md (new), apps/temporal-worker/src/role-prompts.ts (refactor)
@@ -4320,7 +4320,7 @@ above (entry blocks on `per-role-lessons-files`).
 ```yaml
 id: code-pattern-lessons
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: scripts/install-kernel.sh, infra/systemd/chitin-kernel-redeploy.service, infra/systemd/chitin-kernel-redeploy.timer
@@ -4883,7 +4883,7 @@ all acceptance criteria met."
 ```yaml
 id: formalize-no-github-issues-decision
 tier: T2
-status: ready
+status: partial
 estimated_loc: 100
 blocks: []
 file: docs/decisions/2026-05-03-no-github-issues.md, docs/superpowers/plans/2026-05-02-scheduler-design.md
@@ -5070,7 +5070,7 @@ stays paused and individual primitive entries get re-attempted.
 ```yaml
 id: router-heuristics-go-sdk
 tier: T3
-status: ready
+status: partial
 estimated_loc: 600
 blocks: []
 file: go/execution-kernel/internal/router/, go/execution-kernel/cmd/chitin-kernel/router.go
@@ -5349,7 +5349,7 @@ Filed after PRs #267 (gemini-cli governance), #268 (codex_mine), #269 (universal
 ```yaml
 id: gemini-usage-feed-producer
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: apps/temporal-worker/src/activity.ts, python/analysis/gemini_mine.py (new)
@@ -5370,7 +5370,7 @@ Activity-layer integration: when an activity spawns gemini, pipe stderr through 
 ```yaml
 id: ollama-cloud-usage-capture
 tier: T2
-status: ready
+status: partial
 estimated_loc: 250
 blocks: []
 file: apps/temporal-worker/src/activity.ts, libs/adapters/openclaw/ (existing)
@@ -5822,3 +5822,22 @@ chitin-governance.
       `runDriverSynchronously(req, opts)`
 - [ ] Tests cover: success, timeout, gov-denial, driver crash
 - [ ] At least 2 generators (the POC + 1 more) consume the helper
+
+### `investigate-systemd-unit-failure-chitin-envelope-rotate-service`
+
+```yaml
+id: investigate-systemd-unit-failure-chitin-envelope-rotate-service
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: chitin-swarm-rollup alarms
+role: analyst
+```
+
+Auto-filed by chitin-alarm-feeder.timer at 2026-05-05T03:45:24.792Z from a swarm-rollup alarm:
+
+> SYSTEMD UNIT FAILURE chitin-envelope-rotate.service: exited with status=203/EXEC at May 03 23:08:32
+
+Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
