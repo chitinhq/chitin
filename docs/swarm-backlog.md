@@ -864,7 +864,7 @@ Add a test in `bridge.test.ts` covering empty-object case.
 ```yaml
 id: workflow-name-drift-test
 tier: T0
-status: ready
+status: partial
 estimated_loc: 8
 blocks: []
 file: apps/temporal-worker/test/activity.test.ts (new file or extend)
@@ -3684,7 +3684,7 @@ Steps:
 ```yaml
 id: skill-folder-dispatcher-stitcher
 tier: T2
-status: ready
+status: partial
 estimated_loc: 400
 blocks: [migrate-role-prompts-to-skill-folders]
 file: apps/temporal-worker/src/skill-loader/stitcher.ts (new), apps/temporal-worker/src/skill-loader/tests/stitcher.test.ts (new)
@@ -3735,7 +3735,7 @@ Steps:
 ```yaml
 id: migrate-role-prompts-to-skill-folders
 tier: T2
-status: ready
+status: partial
 estimated_loc: 600
 blocks: []
 file: apps/temporal-worker/skills/{programmer,researcher,analyst,comment-responder,peer-reviewer}/SKILL.md (new), apps/temporal-worker/src/role-prompts.ts (refactor)
@@ -4320,7 +4320,7 @@ above (entry blocks on `per-role-lessons-files`).
 ```yaml
 id: code-pattern-lessons
 tier: T2
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: scripts/install-kernel.sh, infra/systemd/chitin-kernel-redeploy.service, infra/systemd/chitin-kernel-redeploy.timer
@@ -4883,7 +4883,7 @@ all acceptance criteria met."
 ```yaml
 id: formalize-no-github-issues-decision
 tier: T2
-status: ready
+status: partial
 estimated_loc: 100
 blocks: []
 file: docs/decisions/2026-05-03-no-github-issues.md, docs/superpowers/plans/2026-05-02-scheduler-design.md
@@ -5070,7 +5070,7 @@ stays paused and individual primitive entries get re-attempted.
 ```yaml
 id: router-heuristics-go-sdk
 tier: T3
-status: ready
+status: partial
 estimated_loc: 600
 blocks: []
 file: go/execution-kernel/internal/router/, go/execution-kernel/cmd/chitin-kernel/router.go
@@ -5822,3 +5822,22 @@ chitin-governance.
       `runDriverSynchronously(req, opts)`
 - [ ] Tests cover: success, timeout, gov-denial, driver crash
 - [ ] At least 2 generators (the POC + 1 more) consume the helper
+
+### `arxiv-2605-00179-investigate`
+
+```yaml
+id: arxiv-2605-00179-investigate
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: https://arxiv.org/abs/2605.00179
+role: programmer
+```
+
+Auto-promoted by chitin-groomer.timer at 2026-05-05T03:15:15.768Z from `docs/roadmap.md` candidate:
+
+> [arxiv] [2605.00179](https://arxiv.org/abs/2605.00179) — DEPTEX: Organization-First, Open Source Dependency Risk Monitoring
+
+Next step (groomer role): replace `tier: TBD`, `estimated_loc: TBD`, and `file: TBD` with concrete values; classify the work shape (programmer / researcher / refactorer); flip `status` to `ready` when the entry is dispatcher-shaped.
