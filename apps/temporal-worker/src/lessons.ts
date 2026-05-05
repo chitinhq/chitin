@@ -376,6 +376,73 @@ export async function fetchMergedSwarmPrs(limit: number): Promise<MergedPr[]> {
  * merged swarm PRs, dedups by pr_number, distills new ones, appends.
  * Idempotent: re-runs on the same input produce zero new entries.
  */
+// --- Fast-path cache and parallel distillation additions ---
+import { createHash } from 'node:crypto';
+import { cpus } from 'node:os';
+
+const LESSONS_CACHE_PATH = resolve(process.env.HOME || '', '.cache/chitin/lessons-cache.jsonl');
+const N_PARALLEL = 4;
+
+type LessonCacheEntry = {
+  pr_number: number;
+  head_sha: string;
+  lesson: string;
+};
+
+function loadLessonCache(): Record<string, string> {
+  try {
+    const text = readFileSync(LESSONS_CACHE_PATH, 'utf8');
+    const lines = text.split('\n').filter(Boolean);
+    const cache: Record<string, string> = {};
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as LessonCacheEntry;
+        cache[`${entry.pr_number}:${entry.head_sha}`] = entry.lesson;
+      } catch {}
+    }
+    return cache;
+  } catch {
+    return {};
+  }
+}
+
+function appendLessonCache(entries: LessonCacheEntry[]) {
+  if (!entries.length) return;
+  const fd = require('fs').openSync(LESSONS_CACHE_PATH, 'a');
+  for (const entry of entries) {
+    require('fs').writeSync(fd, JSON.stringify(entry) + '\n');
+  }
+  require('fs').closeSync(fd);
+}
+
+function is_distill_worthwhile(pr: MergedPr & { filesChanged?: number }): boolean {
+  const title = pr.title.toLowerCase();
+  if (/^(auto:|docs:|chore:|fix\(typo\)|bump:)/.test(title)) return false;
+  if ((pr.body || '').length < 20) return false;
+  if (pr.filesChanged !== undefined && pr.filesChanged <= 1) return false;
+  return true;
+}
+
+async function fetchPrHeadSha(prNumber: number): Promise<string> {
+  try {
+    const out = execFileSync('gh', ['pr', 'view', String(prNumber), '--json', 'headRefOid'], { encoding: 'utf8' });
+    const obj = JSON.parse(out);
+    return obj.headRefOid || '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchPrFilesChanged(prNumber: number): Promise<number> {
+  try {
+    const out = execFileSync('gh', ['pr', 'view', String(prNumber), '--json', 'files'], { encoding: 'utf8' });
+    const obj = JSON.parse(out);
+    return Array.isArray(obj.files) ? obj.files.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function runLessonsExtractor(
   opts: LessonsExtractorOptions,
 ): Promise<LessonsExtractorResult> {
@@ -387,21 +454,59 @@ export async function runLessonsExtractor(
 
   const merged = await opts.fetchMergedPrs(opts.scanLimit);
 
+  // --- Load cache ---
+  const cache = loadLessonCache();
   const newEntries: LessonEntry[] = [];
   let duplicates_skipped = 0;
-  for (const pr of merged) {
+  const cacheAppends: LessonCacheEntry[] = [];
+
+  // --- Prepare PRs with head_sha and filesChanged ---
+  const mergedWithMeta = await Promise.all(
+    merged.map(async (pr) => {
+      const head_sha = await fetchPrHeadSha(pr.number);
+      const filesChanged = await fetchPrFilesChanged(pr.number);
+      return { ...pr, head_sha, filesChanged };
+    })
+  );
+
+  // --- Parallel distillation ---
+  const distillTargets = mergedWithMeta.filter(pr => !knownPrs.has(pr.number));
+  const results: (LessonEntry | null)[] = [];
+  for (let i = 0; i < distillTargets.length; i += N_PARALLEL) {
+    const chunk = distillTargets.slice(i, i + N_PARALLEL);
+    const chunkResults = await Promise.all(chunk.map(async (pr) => {
+      const cacheKey = `${pr.number}:${pr.head_sha}`;
+      if (cache[cacheKey]) {
+        return {
+          pr_number: pr.number,
+          date: pr.mergedAt.slice(0, 10),
+          lesson: cache[cacheKey],
+        };
+      }
+      if (!is_distill_worthwhile(pr)) {
+        return null;
+      }
+      const distilled = await opts.distill(pr);
+      const lesson = distilled.trim();
+      if (!lesson) return null;
+      cacheAppends.push({ pr_number: pr.number, head_sha: pr.head_sha, lesson });
+      return {
+        pr_number: pr.number,
+        date: pr.mergedAt.slice(0, 10),
+        lesson,
+      };
+    }));
+    results.push(...chunkResults);
+  }
+
+  for (const pr of mergedWithMeta) {
     if (knownPrs.has(pr.number)) {
       duplicates_skipped++;
-      continue;
     }
-    const distilled = await opts.distill(pr);
-    const lesson = distilled.trim();
-    if (!lesson) continue;
-    newEntries.push({
-      pr_number: pr.number,
-      date: pr.mergedAt.slice(0, 10),
-      lesson,
-    });
+  }
+
+  for (const entry of results) {
+    if (entry) newEntries.push(entry);
   }
 
   if (newEntries.length > 0) {
@@ -409,6 +514,7 @@ export async function runLessonsExtractor(
     newEntries.sort((a, b) => b.pr_number - a.pr_number);
     const updated = appendLessons(text, newEntries);
     await writeFile(opts.lessonsPath, updated, 'utf8');
+    appendLessonCache(cacheAppends);
   }
 
   const result: LessonsExtractorResult = {
