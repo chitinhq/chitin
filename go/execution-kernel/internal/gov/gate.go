@@ -76,15 +76,52 @@ type FingerprintContext struct {
 // fingerprint-less rows even when the env was set (Copilot finding
 // on PR #294).
 //
-// Reads are best-effort — missing env vars produce empty strings,
-// which the JSON layer drops via omitempty.
+// Read precedence per dimension is:
+//
+//  1. CHITIN_<DIM> — the legacy name read by the kernel since P2.
+//  2. CHITIN_DISPATCH_<DIM> — the dispatch_meta-shaped name introduced
+//     by PR #344 so the dispatcher's (role, model, tier, driver) tuple
+//     can flow into the kernel without re-stamping the legacy vars.
+//
+// Default: when neither var is populated, Role falls back to
+// "external" so the chain-event/(decision-row) (untagged) bucket
+// shrinks to genuinely-external events (raw shell hooks, ad-hoc
+// operator CLI calls). Without this default, ~92% of rows landed in
+// the (untagged) × (none) bucket of `fingerprint-outcomes` simply
+// because no dispatch context was wired through. System-level
+// housekeeping (chain rotation, alarm-feeder) must set
+// CHITIN_ROLE=system explicitly so it stays separable from external.
+//
+// Model has no string-typed default: a missing dispatch context is
+// represented as an empty string, which the Decision JSON layer drops
+// via omitempty (downstream readers interpret a missing field as
+// null per the schema).
+//
+// Reads are best-effort — missing env vars produce empty strings.
 func FingerprintContextFromEnv() FingerprintContext {
+	role := firstNonEmpty(os.Getenv("CHITIN_ROLE"), os.Getenv("CHITIN_DISPATCH_ROLE"))
+	if role == "" {
+		role = "external"
+	}
 	return FingerprintContext{
-		Model:       os.Getenv("CHITIN_MODEL"),
-		Role:        os.Getenv("CHITIN_ROLE"),
+		Model:       firstNonEmpty(os.Getenv("CHITIN_MODEL"), os.Getenv("CHITIN_DISPATCH_MODEL")),
+		Role:        role,
 		WorkflowID:  os.Getenv("CHITIN_WORKFLOW_ID"),
 		Fingerprint: os.Getenv("CHITIN_FINGERPRINT"),
 	}
+}
+
+// firstNonEmpty returns the first argument that is not an empty string,
+// or "" if all are empty. Used by FingerprintContextFromEnv to express
+// the CHITIN_<DIM> → CHITIN_DISPATCH_<DIM> precedence in one line per
+// dimension without nested if-trees.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Evaluate is the single entry point: normalize-already-done Action →
