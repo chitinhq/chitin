@@ -2799,6 +2799,72 @@ audit log, not in the GitHub thread. That's intentional (cleaner
 thread) but worth calling out for operators expecting forensic
 history visible in the PR — point them at the chain.
 
+### `lessons-distill-fast-path` (filed 2026-05-05)
+
+```yaml
+id: lessons-distill-fast-path
+tier: T2
+status: ready
+estimated_loc: 200
+blocks: []
+file: apps/temporal-worker/src/lessons.ts (refactor distillation path)
+references_finding: 2026-05-04-lessons-service-timeout
+role: programmer
+```
+
+`chitin-lessons.service` calls `claude -p --model claude-haiku-4-5`
+sequentially, once per NEW merged swarm PR. The internal per-call
+timeout is 60s with heuristic fallback, so the wallclock ceiling is
+~60s × N_new_prs. PR #310 bumped TimeoutStartSec from 60s → 1800s as
+a defense-in-depth fix — but at high merge volume the daily run still
+takes 5+ minutes. The heuristic-only path is 1.2s for the same input,
+so there's a ~150x speedup available without losing the lesson quality
+that motivates the LLM call.
+
+Three layers of optimization, pick a combination:
+
+1. **Filter LLM to "interesting" PRs only.** Heuristic produces a
+   plausible one-sentence lesson from title + body for most PRs;
+   only escalate to claude when the heuristic is low-confidence
+   (very short body, generic title, no diff_shortstat, etc.). Most
+   swarm PRs are heuristic-friendly.
+2. **Parallelize.** `Promise.all` over `claude -p` spawns. Cap at N=4
+   concurrent so we don't hammer claude or the gh API. Cuts a 30-PR
+   day from ~30 min to ~7.5 min.
+3. **Cache by (pr_number, head_sha).** Store distilled lessons in
+   `~/.cache/chitin/lessons-cache.jsonl`; skip re-distillation when
+   the same head_sha is seen. Dispatcher already checks
+   `entryIdInRecentSubjects` — same dedup pattern.
+
+Approach (subject to design tightening — programmer should propose):
+
+- Add `is_distill_worthwhile(pr)` heuristic predicate; only call
+  claude when it returns true. Cheap signals: body_length, title
+  patterns ("auto:" / "fix(typo)" / "docs:" → skip), files_changed
+  count.
+- Replace the sequential for-loop in `runLessonsExtractor` with
+  `Promise.all` chunked at `N_PARALLEL = 4`.
+- Add a tiny JSONL cache + dedup at the load step. Cache invalidates
+  when entry sha changes.
+- Keep the per-call 60s claude timeout + heuristic fallback as the
+  inner safety net.
+
+**Acceptance:**
+- [ ] 30-PR live day completes in <5 min (currently ~5 min with the
+      1800s timeout headroom)
+- [ ] The same PRs produce the same lesson text on re-runs (cache
+      hit) without spawning claude
+- [ ] Lesson quality preserved on a hand-picked sample of 10 PRs
+      vs the LLM-only baseline (manual operator audit on the
+      docs/swarm-lessons.md diff)
+- [ ] TimeoutStartSec can drop back to 300s after the change ships
+
+**Caveat:** the chain of "PR title → backlog entry id → recent
+merged subjects" expects literal one-line lessons. The cache key
+must be stable; pr_number+head_sha is fine, but if a PR is force-
+pushed mid-review the cached lesson goes stale. Heuristic-only
+path is the fallback when cache invalidates and the LLM is busy.
+
 ### `swarm-implementor-pnpm-lock-discipline`
 
 ```yaml
