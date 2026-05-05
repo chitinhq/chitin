@@ -934,6 +934,72 @@ operator's call.
 
 ---
 
+### `install-kernel-restart-worker-on-ts-change` (filed 2026-05-05)
+
+```yaml
+id: install-kernel-restart-worker-on-ts-change
+tier: T2
+status: ready
+estimated_loc: 50
+blocks: []
+file: scripts/install-kernel.sh
+references_finding: 2026-05-05-worker-stale-code-after-merge
+role: programmer
+```
+
+`install-kernel.sh` (run every 15 min by chitin-kernel-redeploy.timer)
+already pulls main, rebuilds the Go kernel when `go/` changed, syncs
+systemd units (#313). It does NOT restart `chitin-worker.service` when
+TypeScript under `apps/temporal-worker/src/` changes — so a merged TS
+fix can sit unapplied for hours while the worker process runs the old
+in-memory code.
+
+Concrete instance from 2026-05-04:
+- 22:46 EDT: PR #318 merged (removes broken `--include-hook-events`
+  flag from openclaw invocation). Fixes T0/T1 dispatch.
+- 23:09 EDT: T0 dispatch still failed in 1.95s with the OLD bug —
+  worker hadn't been restarted, was running pre-#318 code from its
+  13:06 EDT launch.
+- 23:09 EDT (manual restart): T0 dispatch succeeded at 4 min, 1
+  commit, PR #326.
+
+Same shape we already address for Go: `install-kernel.sh` runs
+`go build` when `go/**` changed since last redeploy. Symmetric for TS.
+
+Approach (subject to design tightening — programmer should propose):
+
+1. Track last-applied SHA per-source-tree at
+   `~/.cache/chitin/install-kernel-state.json` (or extend the existing
+   chain log). Compare current main HEAD against last applied.
+2. If `git diff <last>..<HEAD> -- apps/temporal-worker/src/` is
+   non-empty: `systemctl --user restart chitin-worker.service` and
+   wait for `active (running)` (`systemctl --user is-active`).
+3. Emit a structured chain event `worker-restarted` with
+   `{old_sha, new_sha, restart_dur_ms, commits_in_diff}`.
+4. Idempotent: no-op when nothing in apps/temporal-worker/src/ changed.
+
+Boundary cases:
+- New checkout, no prior state → skip restart (worker is on whatever
+  main has, no drift to fix); record HEAD as baseline.
+- Pull fails / can't fetch → skip restart, leave a warn in the log.
+- Restart fails (service stuck) → emit fail-event, leave operator
+  to triage; don't loop-restart.
+
+**Acceptance:**
+- [ ] After landing a TS-only change to apps/temporal-worker/src/,
+      next `chitin-kernel-redeploy.timer` tick restarts the worker
+      automatically (verified via journalctl)
+- [ ] No-op when no TS changes since last redeploy
+- [ ] Chain event surfaced to alarm-feeder for ops visibility
+
+**Followup not in scope:** other long-running services (worker is the
+big one; openclaw-gateway is the other). When this proves itself,
+extend the same pattern to openclaw-gateway when its embedded JS
+changes — though that's a `nvm/.../node_modules/openclaw` install
+issue, not a chitin source issue, so the trigger differs.
+
+---
+
 ## Qwen-layer reliability (T0→copilot until these ship)
 
 These five entries together aim to flip `TIER_DRIVER[T0]` back from
