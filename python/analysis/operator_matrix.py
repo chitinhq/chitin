@@ -19,21 +19,26 @@ Per the design doc's auto-detection layer:
 This module produces the FIRST THREE bullet operands. Operator
 overrides land via chitin.yaml (separate concern).
 
-Probing strategy per CLI:
-  - claude:   `claude auth status` → JSON, definitive. Models = curated
-              Anthropic catalog (sonnet/opus/haiku families).
-  - copilot:  binary present + Copilot Pro sub assumed (no easy
-              programmatic auth probe). Models = curated GitHub
-              Copilot catalog.
-  - codex:    binary present + OpenAI sub assumed. Models = curated
-              OpenAI catalog (gpt-5.x family).
-  - gemini:   binary present + Google AI Pro sub assumed. Models =
-              curated Google catalog (2.0-flash, 2.5-pro, Gemma 2/3).
+Probing strategy per CLI (updated 2026-05-06 — all four cloud CLIs
+now use LIVE catalogs, not curated lists):
+  - claude:   `claude auth status` → JSON, definitive. Models from
+              api.anthropic.com/v1/models w/ OAuth bearer from
+              ~/.claude/.credentials.json.
+  - copilot:  Models from api.githubcopilot.com/models w/ `gh auth
+              token`. Same catalog the CLI uses internally; filtered
+              to picker-enabled chat models.
+  - codex:    Auth detected via `codex login status`. Models from
+              `codex debug models` (raw JSON catalog the CLI uses).
+  - gemini:   OAuth refreshed via the embedded gemini-cli client
+              creds; tier confirmed via cloudcode-pa loadCodeAssist.
+              Model list scoped by tier (the generativelanguage
+              listModels endpoint requires a scope this OAuth
+              doesn't carry — curated tier-scoped fallback).
   - hermes:   `hermes profile list` → enumerate profiles + their
               configured models.
-  - openclaw: binary present, agents enumerated by reading
-              ~/.openclaw/agents.json (when present) or fallback to
-              the chitin DriverIdSchema enum.
+  - openclaw: binary present, agents enumerated from chitin's
+              DriverIdSchema enum (no per-installation list-agents
+              command exposed).
   - ollama:   `ollama list` → 100% accurate local + cloud-sub model
               inventory.
 
@@ -71,47 +76,98 @@ class CLIStatus:
     notes: str = ""
 
 
-# ─── Curated provider catalogs (auto-detection seeds) ──────────────────────
+# ─── Provider model lists ──────────────────────────────────────────────────
 #
-# Hardcoded because no CLI exposes a programmatic `list models` command
-# (probed 2026-05-05: copilot/codex/gemini all need TTY for any list
-# subcommand). These match what each provider documents as available
-# under their respective standard subscriptions. Keep current as
-# providers ship new models; the seed-mining cron will surface gaps
-# (a new model on openrouter without a row here means we should add it).
+# Strategy by CLI (probed 2026-05-06):
+#   claude  → live via api.anthropic.com/v1/models w/ OAuth from
+#             ~/.claude/.credentials.json (works)
+#   copilot → live via api.githubcopilot.com/models w/ gh auth token
+#             (works — full catalog with per-model capabilities)
+#   codex   → live via `codex debug models` (works — JSON catalog from
+#             the CLI itself, definitive for the operator's plan)
+#   gemini  → CodeAssist OAuth confirms tier; the generativelanguage
+#             listModels endpoint requires a scope this OAuth doesn't
+#             carry. Fall back to a curated list scoped by the
+#             confirmed tier.
+#
+# Curated fallbacks (used only when the live probe fails):
 
-ANTHROPIC_CLAUDE_MODELS = [
-    "claude-haiku-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4-7",
+GEMINI_PRO_TIER_MODELS = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3",
 ]
 
-# Per github.com/github/copilot-cli docs + chitin's earlier research:
-COPILOT_MODELS = [
-    "gpt-4.1",
-    "gpt-5.0-mini",
-    "gpt-5.0",
-    "gpt-5.4",
-    "claude-haiku-4-5",      # via Copilot's Anthropic passthrough (0.33× rate)
-    "claude-sonnet-4-6",
-]
-
-# OpenAI gpt-5.x family per Codex CLI (subset; gpt-5.5 is the heavyweight):
-CODEX_MODELS = [
-    "gpt-5.0-mini",
-    "gpt-5.0",
-    "gpt-5.4",
-    "gpt-5.4-nano",
-    "gpt-5.5",
-]
-
-# Google AI Pro sub catalog (cloud); local Gemma routes through ollama:
-GEMINI_CLOUD_MODELS = [
+GEMINI_FREE_TIER_MODELS = [
     "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
-    "gemini-2.5-pro",
-    "gemini-3",              # if available; gemini CLI auto-routes
 ]
+
+
+def _http_get_json(url: str, headers: dict, timeout: int = 10) -> dict | None:
+    """Tiny stdlib JSON GET — no requests/httpx dependency."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+        return None
+
+
+def _http_post_json(url: str, headers: dict, body: dict, timeout: int = 10) -> dict | None:
+    import urllib.request
+    import urllib.error
+    payload = json.dumps(body).encode("utf-8")
+    h = {**headers, "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=payload, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+        return None
+
+
+def _gemini_refresh_token() -> str | None:
+    """Refresh the gemini-cli OAuth bearer using its embedded client
+    credentials. Returns None if no creds file or refresh fails."""
+    creds_path = Path(os.path.expanduser("~/.gemini/oauth_creds.json"))
+    if not creds_path.exists():
+        return None
+    try:
+        creds = json.loads(creds_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    refresh = creds.get("refresh_token")
+    expiry = creds.get("expiry_date") or 0
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    if expiry > now_ms + 60_000 and creds.get("access_token"):
+        return creds["access_token"]
+    if not refresh:
+        return None
+    # Public client credentials embedded in @google/gemini-cli source.
+    import urllib.request
+    import urllib.parse
+    body = urllib.parse.urlencode({
+        "client_id": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+        "client_secret": "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",
+        "refresh_token": refresh,
+        "grant_type": "refresh_token",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("access_token")
+    except Exception:
+        return None
 
 # OpenClaw maps each driver-id to a backing agent + model. Per
 # DriverIdSchema in libs/contracts:
@@ -159,8 +215,23 @@ def probe_claude() -> CLIStatus:
             }
         except json.JSONDecodeError:
             s.notes = "auth status returned non-JSON"
-    if s.authed:
-        s.models = list(ANTHROPIC_CLAUDE_MODELS)
+    # Live model list from Anthropic's API using the OAuth bearer.
+    creds = Path(os.path.expanduser("~/.claude/.credentials.json"))
+    if creds.exists():
+        try:
+            tok = json.loads(creds.read_text()).get("claudeAiOauth", {}).get("accessToken")
+        except (OSError, json.JSONDecodeError):
+            tok = None
+        if tok:
+            data = _http_get_json(
+                "https://api.anthropic.com/v1/models",
+                {"Authorization": f"Bearer {tok}", "anthropic-version": "2023-06-01"},
+            )
+            if data and isinstance(data.get("data"), list):
+                s.models = [m["id"] for m in data["data"] if m.get("id")]
+                s.notes = f"live catalog from api.anthropic.com ({len(s.models)} models)"
+                if s.authed is None:
+                    s.authed = True
     return s
 
 
@@ -172,11 +243,34 @@ def probe_copilot() -> CLIStatus:
         return s
     s.installed = True
     s.path = p
-    # No headless auth-status command; presence + Copilot Pro sub
-    # assumed. operator can override via env var.
-    s.authed = None
-    s.notes = "auth not programmatically detectable; Copilot Pro sub assumed"
-    s.models = list(COPILOT_MODELS)
+    # Copilot CLI uses the same auth as `gh` — pull a token, hit the
+    # models endpoint. This is the SAME catalog the CLI sees.
+    rc, tok, _ = _run(["gh", "auth", "token"], timeout=4)
+    tok = tok.strip() if rc == 0 else ""
+    if tok:
+        data = _http_get_json(
+            "https://api.githubcopilot.com/models",
+            {
+                "Authorization": f"Bearer {tok}",
+                "Editor-Version": "vscode/1.95.0",
+                "Copilot-Integration-Id": "vscode-chat",
+            },
+        )
+        if data and isinstance(data.get("data"), list):
+            s.authed = True
+            # Filter to chat-completion models the picker enables.
+            s.models = [
+                m["id"] for m in data["data"]
+                if m.get("model_picker_enabled")
+                and (m.get("capabilities") or {}).get("type") == "chat"
+            ]
+            s.auth_detail = {
+                "vendor_breakdown": _vendor_count(data["data"]),
+            }
+            s.notes = f"live catalog from api.githubcopilot.com ({len(s.models)} models, picker-enabled chat)"
+            return s
+    s.authed = False
+    s.notes = "no gh token (run `gh auth login`)"
     return s
 
 
@@ -187,9 +281,25 @@ def probe_codex() -> CLIStatus:
         return s
     s.installed = True
     s.path = p
-    s.authed = None
-    s.notes = "auth not programmatically detectable; OpenAI sub assumed"
-    s.models = list(CODEX_MODELS)
+    # codex writes "Logged in using ..." to stderr, not stdout.
+    rc, out, err = _run(["codex", "login", "status"], timeout=6)
+    combined = (out + "\n" + err).strip()
+    s.authed = (rc == 0 and "Logged in" in combined)
+    if s.authed and combined:
+        s.auth_detail = {"login_status": combined.splitlines()[0]}
+    # `codex debug models` renders the raw JSON catalog the CLI uses —
+    # this is the source of truth for the operator's plan.
+    rc, out, _ = _run(["codex", "debug", "models"], timeout=8)
+    if rc == 0 and out.strip().startswith("{"):
+        try:
+            data = json.loads(out)
+            s.models = [
+                m["slug"] for m in data.get("models", [])
+                if m.get("visibility") == "list" and m.get("slug")
+            ]
+            s.notes = f"live catalog from `codex debug models` ({len(s.models)} models)"
+        except json.JSONDecodeError:
+            s.notes = "codex debug models returned non-JSON"
     return s
 
 
@@ -200,10 +310,45 @@ def probe_gemini() -> CLIStatus:
         return s
     s.installed = True
     s.path = p
-    s.authed = None
-    s.notes = "auth not programmatically detectable; Google AI Pro sub assumed"
-    s.models = list(GEMINI_CLOUD_MODELS)
+    # Refresh OAuth + ask the Code Assist endpoint for the user's tier.
+    # Tier confirms the model set; the OAuth scope can't enumerate
+    # generativelanguage models so we use a tier-scoped curated list.
+    tok = _gemini_refresh_token()
+    if tok:
+        data = _http_post_json(
+            "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+            {"Authorization": f"Bearer {tok}"},
+            {"metadata": {"pluginType": "GEMINI", "ideType": "IDE_UNSPECIFIED"}},
+        )
+        if data:
+            s.authed = True
+            current_tier = (data.get("currentTier") or {}).get("id") or "unknown"
+            paid_tier_id = ((data.get("paidTier") or {}).get("id") or "").lower()
+            s.auth_detail = {
+                "current_tier": current_tier,
+                "paid_tier": paid_tier_id or None,
+                "project": data.get("cloudaicompanionProject"),
+            }
+            # paidTier id "g1-pro-tier" = Google One AI Pro.
+            if paid_tier_id == "g1-pro-tier" or current_tier in ("standard-tier", "pro-tier"):
+                s.models = list(GEMINI_PRO_TIER_MODELS)
+                s.notes = f"AI Pro tier confirmed via CodeAssist ({current_tier})"
+            else:
+                s.models = list(GEMINI_FREE_TIER_MODELS)
+                s.notes = f"free tier ({current_tier})"
+            return s
+    s.authed = False
+    s.notes = "no usable OAuth credentials (run `gemini` to log in / refresh)"
+    s.models = list(GEMINI_FREE_TIER_MODELS)
     return s
+
+
+def _vendor_count(models: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for m in models:
+        v = m.get("vendor") or "unknown"
+        counts[v] = counts.get(v, 0) + 1
+    return counts
 
 
 def probe_hermes() -> CLIStatus:
@@ -276,59 +421,109 @@ PROBES = [
 
 # ─── Cross-reference operator's models with seed db ────────────────────────
 
+# OpenClaw drivers wrap a backing model. The seed db doesn't have rows
+# for the chitin-specific 'openclaw-*' driver names; lookups must go
+# against the actual model names. Per chitin's DriverIdSchema comments.
+OPENCLAW_DRIVER_TO_MODEL = {
+    "openclaw-glm-flash": "glm-4.7-flash",
+    "openclaw-glm-cloud": "glm-5.1:cloud",
+    "openclaw-deepseek": "deepseek-coder",
+}
+
+# Minimum search-token length before broadening. "gpt" alone matches
+# every GPT submission ever made (including SOTA gpt-5 high at 88%
+# polyglot, which is NOT what gpt-5.0-mini scored). Refuse to broaden
+# below this threshold — better to show "no data" than misleading data
+# from a different model.
+MIN_TOKEN_CHARS = 6
+
+
+def _normalize_model_id(s: str) -> str:
+    """Strip operator-display cruft so the search-token expansion stays
+    on the actual model identifier:
+      - 'glm-4.7-flash:latest' → 'glm-4.7-flash' (drop ollama ':latest' tag)
+      - 'qwen3-coder:480b-cloud' → 'qwen3-coder-480b-cloud' (collapse ':' to '-')
+      - '◆default:qwen3-coder:30b' → 'qwen3-coder-30b' (drop hermes profile prefix)
+      - 'openai/gpt-4.1' → 'gpt-4.1' (drop provider prefix)
+    The expander then walks tokens of the normalized form.
+    """
+    s = s.lstrip("◆ ").strip()
+    if "/" in s:
+        s = s.split("/")[-1]
+    # Drop ':latest' tag (ollama default)
+    if s.endswith(":latest"):
+        s = s[: -len(":latest")]
+    # Hermes-style 'profile:model[:variant]' — strip leading profile name
+    # if it looks like a single-token identifier (no dashes/dots).
+    if ":" in s:
+        first, _, rest = s.partition(":")
+        if first and rest and first.replace("_", "").isalnum() and "-" not in first and "." not in first:
+            s = rest
+    # Collapse remaining colons to dashes so the dash-walking token
+    # expander treats `qwen3-coder-30b` and `qwen3-coder:30b` the same.
+    s = s.replace(":", "-")
+    return s
+
+
+def _resolve_lookup_token(model_token: str) -> str:
+    """Translate chitin-specific driver IDs to their backing model name,
+    then normalize for search.
+    """
+    bridged = OPENCLAW_DRIVER_TO_MODEL.get(model_token, model_token)
+    return _normalize_model_id(bridged)
+
+
 def _expand_search_tokens(model_token: str) -> list[str]:
     """Generate progressive search tokens, broadest last.
 
-    For 'claude-sonnet-4-6' → ['claude-sonnet-4-6', 'claude sonnet 4 6',
+    Refuses to emit tokens shorter than MIN_TOKEN_CHARS to avoid the
+    'gpt-5.0-mini matched gpt-5 (high)' false-family-match bug. For
+    `claude-sonnet-4-6` → ['claude-sonnet-4-6', 'claude sonnet 4 6',
     'claude-sonnet-4', 'claude sonnet 4', 'claude-sonnet', 'claude sonnet'].
-
-    Lets the cross-reference fall back to family-level matches when the
-    exact version isn't in the seed data yet (chitin tracks
-    claude-sonnet-4-6 but seeds may only have through 4-5; the broader
-    'claude-sonnet' match still surfaces useful scores from the family
-    line as a "best-known predecessor" signal).
+    For `gpt-5.0-mini` → ['gpt-5.0-mini', 'gpt 5.0 mini', 'gpt-5.0',
+    'gpt 5.0'] (stops before 'gpt' because 6-char floor).
     """
-    t = model_token.lower().split(":")[-1]   # strip provider prefix like 'qwen/qwen3-coder'
+    t = model_token.lower().split("/")[-1]  # strip provider prefix like 'qwen/qwen3-coder'
     parts = t.split("-")
     tokens: list[str] = []
     seen: set[str] = set()
     for n in range(len(parts), 0, -1):
-        s = "-".join(parts[:n])
-        if s and s not in seen:
-            tokens.append(s); seen.add(s)
-        s2 = " ".join(parts[:n])
-        if s2 and s2 not in seen:
-            tokens.append(s2); seen.add(s2)
+        for joiner in ("-", " "):
+            s = joiner.join(parts[:n])
+            if len(s) >= MIN_TOKEN_CHARS and s not in seen:
+                tokens.append(s); seen.add(s)
     return tokens
 
 
-def _model_seed_lookup(conn: sqlite3.Connection, model_token: str) -> tuple[dict[str, dict[str, float]], str | None]:
-    """For a given model name (or partial), pull matching seed rows.
+def _model_seed_lookup(
+    conn: sqlite3.Connection, model_token: str
+) -> tuple[dict[str, dict[str, tuple[float, str]]], str | None]:
+    """For a given model (or driver-id), pull matching seed rows.
 
-    Returns (scores_by_source, matched_token). matched_token is the
-    progressively-broadened search term that produced the first match
-    (None when nothing matched at any level). Use the matched_token to
-    flag in the report when scores come from a family-level fallback
-    rather than an exact model match.
+    Returns ({source: {metric: (value, source_model_name)}}, matched_token).
+    The source_model_name lets the report show WHICH leaderboard row each
+    score came from — critical for family-fallback transparency
+    ("aider-polyglot 88% (matched 'gpt-5 (high)')" tells the operator the
+    score is from a different sibling model, not their actual one).
     """
-    out: dict[str, dict[str, float]] = {}
+    resolved = _resolve_lookup_token(model_token)
+    out: dict[str, dict[str, tuple[float, str]]] = {}
     matched_token: str | None = None
-    for token in _expand_search_tokens(model_token):
+    for token in _expand_search_tokens(resolved):
         cur = conn.execute(
-            "SELECT source, metric, value FROM model_seeds "
+            "SELECT model, source, metric, value FROM model_seeds "
             "WHERE LOWER(model) LIKE ? "
-            "ORDER BY source, metric",
+            "ORDER BY source, metric, value DESC",
             (f"%{token}%",),
         )
         rows = cur.fetchall()
         if rows:
-            for src, metric, value in rows:
-                # Keep the BEST value per (source, metric) when multiple
-                # variants of the family match — surfaces the strongest
-                # known datum from the family line.
-                cur_val = out.get(src, {}).get(metric)
-                if cur_val is None or value > cur_val:
-                    out.setdefault(src, {})[metric] = value
+            for matched_model, src, metric, value in rows:
+                # Keep the BEST value per (source, metric); record which
+                # model row contributed it.
+                cur_entry = out.get(src, {}).get(metric)
+                if cur_entry is None or value > cur_entry[0]:
+                    out.setdefault(src, {})[metric] = (value, matched_model)
             matched_token = token
             break
     return out, matched_token
@@ -400,29 +595,35 @@ def cmd_report(_args) -> None:
                 conn, model.split(":")[-1] if ":" in model else model
             )
             scores: list[str] = []
-            cost_in = None
+            cost_in: float | None = None
+            cost_model: str | None = None
+            sources_used: set[str] = set()
             for src, metrics in seeds.items():
                 if src == "openrouter":
-                    cost_in = metrics.get("prompt_token_cost_usd")
+                    if "prompt_token_cost_usd" in metrics:
+                        cost_in, cost_model = metrics["prompt_token_cost_usd"]
                     continue
-                # Pick one headline metric per source (best-known of the family)
-                if src.startswith("aider"):
-                    v = metrics.get("pass_rate_2")
-                    if v is not None: scores.append(f"{src}:{v:.1f}%")
-                elif src.startswith("swebench"):
-                    v = metrics.get("resolved_rate")
-                    if v is not None: scores.append(f"{src}:{v:.1f}%")
-                elif src == "evalplus":
-                    v = metrics.get("pass@1_humaneval+")
-                    if v is not None: scores.append(f"evalplus(he+):{v:.1f}%")
-                elif src == "arena-hard":
-                    v = metrics.get("score")
-                    if v is not None: scores.append(f"arena:{v:.1f}")
-            cost_str = f"${cost_in:.7f}/in-tok" if cost_in is not None else "(no cost data)"
-            score_str = "  ".join(scores) if scores else "(no benchmark data — too new for any seed source)"
+                # Headline metric per source — surface value + which model row contributed it
+                metric_key = (
+                    "pass_rate_2" if src.startswith("aider")
+                    else "resolved_rate" if src.startswith("swebench")
+                    else "pass@1_humaneval+" if src == "evalplus"
+                    else "score" if src == "arena-hard"
+                    else None
+                )
+                if metric_key and metric_key in metrics:
+                    v, src_model = metrics[metric_key]
+                    label = f"{src}:{v:.1f}{'%' if src != 'arena-hard' else ''}"
+                    scores.append(f"{label} (`{src_model[:40]}`)")
+                    sources_used.add(src)
+            cost_str = (f"${cost_in:.7f}/in-tok" + (f" (`{cost_model[:30]}`)" if cost_model else "")
+                        ) if cost_in is not None else "(no cost data)"
+            score_str = "; ".join(scores) if scores else "(no benchmark data — too new for any seed source)"
+            target = (model.lower().split(":")[-1] if ":" in model else model.lower())
+            target = OPENCLAW_DRIVER_TO_MODEL.get(target, target)  # show resolved target for openclaw
             match_note = ""
-            if matched_token and matched_token.lower() != (model.lower().split(":")[-1] if ":" in model else model.lower()):
-                match_note = f"  _(family-level fallback: matched on `{matched_token}`)_"
+            if matched_token and matched_token != target:
+                match_note = f"  _(family fallback: matched `{matched_token}`)_"
             lines.append(f"- **{model}** — {cost_str}{match_note}")
             lines.append(f"  - {score_str}")
         lines.append("")
