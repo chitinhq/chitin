@@ -123,6 +123,71 @@ each layer needs eyes-on testing. Not safe to auto-dispatch.
 
 ---
 
+### `swarm-prompt-augmentation-esm-and-tests`
+
+```yaml
+id: swarm-prompt-augmentation-esm-and-tests
+tier: T2
+status: ready
+estimated_loc: 60
+blocks: []
+file: apps/runner/src/role-prompts.ts, apps/runner/src/grooming/parse-backlog.ts
+references_design: docs/swarm-backlog.md (this entry's why-section)
+role: programmer
+priority: high
+```
+
+**Why this is here:** 2026-05-06 /land batch found that swarm-produced
+TypeScript PRs systematically miss two things the operator catches in
+review:
+
+1. **ESM-vs-CJS pattern.** PR #361 (\`groomer-validate-paths\`) used
+   \`if (require.main === module)\` for its CLI entrypoint. apps/runner
+   is ESM (\`"type": "module"\`) — \`require\` is undefined, so importing
+   the module from anywhere else throws \`ReferenceError\` at load time.
+   Even the function the PR DEFINES becomes uncallable.
+
+2. **Test coverage scoped to entry's request.** Entry #360 explicitly
+   asked for "3 fixture entries (clean, missing-path, partially-missing)
+   + assertion that validate-entry-paths flags correctly". PR #361
+   delivered the function but ZERO tests. Entries that name specific
+   test scenarios should be treated as acceptance criteria.
+
+The fix is operator-side prompt augmentation, not agent-side
+behavior change:
+
+- Programmer prompts that touch \`.ts\` files in apps/runner/* (or any
+  \`"type": "module"\` package) get a prepended note: "This package is
+  ESM. Use \`if (process.argv[1] === fileURLToPath(import.meta.url))\`
+  for CLI entrypoints, never \`require.main === module\`. Use
+  \`import.meta.url\` instead of \`__dirname\`/\`__filename\`."
+
+- For entries whose body explicitly names test scenarios, the
+  prompt prepends "The entry's test plan is REQUIRED, not optional —
+  every named scenario must have a passing test in the PR. Treat as
+  acceptance criteria."
+
+**Fix scope:**
+
+1. \`role-prompts.ts\` — extend the prompt builder to:
+   - Detect ESM packages by reading the touched files' nearest
+     \`package.json\` for \`"type": "module"\`. Prepend the ESM-pattern
+     note when found.
+   - Parse the entry body for "Tests:" / "Test plan:" / similar; when
+     present, prepend the acceptance-criteria note.
+2. \`parse-backlog.ts\` — add an optional \`test_plan?: string[]\` field
+   to BacklogEntry so the prompt builder can address requirements
+   one-by-one.
+3. Tests: 2 fixture cases — ESM file produces ESM note; non-ESM file
+   doesn't; entry with Tests: produces acceptance-criteria note;
+   entry without doesn't.
+
+T2 because mechanical prompt-string composition; no model judgment
+involved. Pays for itself within a single dispatch (catches the
+class of bug PR #361 introduced).
+
+---
+
 ### `groomer-validate-paths-against-main`
 
 ```yaml
