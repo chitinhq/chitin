@@ -123,6 +123,95 @@ each layer needs eyes-on testing. Not safe to auto-dispatch.
 
 ---
 
+### `spawn-template-fix-copilot`
+
+```yaml
+id: spawn-template-fix-copilot
+tier: T2
+status: ready
+estimated_loc: 60
+blocks: []
+file: go/execution-kernel/internal/router/spawn_peer.go
+references_design: docs/design/2026-05-06-kernel-gate-escalation.md
+role: programmer
+priority: high
+```
+
+**Why this is here:** 2026-05-06 controlled in-gate test (the first
+end-to-end firing of the step-3+4 path) revealed the copilot spawn
+template uses `gh copilot suggest -t shell` — an INTERACTIVE Copilot
+CLI mode. Spawn returned exit=1 in the test. Fail-open kicked in
+correctly so no regression, but the peer-spawn path itself didn't
+deliver useful output to the worker.
+
+**Test trace (verbatim):**
+```
+heuristic floundering: score 1.0 (looping-tool-call x2) ✓
+advisor takeover: True with rich nudge ✓
+routeFor: matched floundering-loop → cheap_stable ✓
+spawnPeer: copilot/gpt-4.1 → exit=1 ✗
+fail-open → return advisor's deny+nudge ✓
+```
+
+**Fix scope:**
+
+1. Replace `gh copilot suggest -t shell` with a non-interactive
+   Copilot Chat API call. We already proved this works in
+   `python/analysis/operator_matrix.py` (`probe_copilot`) — POST to
+   `https://api.githubcopilot.com/chat/completions` with `gh auth
+   token` as the bearer.
+2. Spawn template needs to:
+   - Build a JSON request body from the prompt (model, messages)
+   - POST via curl OR shell out to `gh api` if it routes there
+   - Capture the response, extract `choices[0].message.content`
+   - Return as the peer's stdout
+3. Tests: stub the HTTP call, verify request shape (Authorization
+   header, model name in body, prompt in messages), verify response
+   parsing.
+
+T2 because mechanical — known-good API endpoint, single-purpose
+template, no design judgment.
+
+---
+
+### `spawn-template-validate-all-drivers`
+
+```yaml
+id: spawn-template-validate-all-drivers
+tier: T2
+status: ready
+estimated_loc: 120
+blocks: [spawn-template-fix-copilot]
+file: go/execution-kernel/internal/router/spawn_peer_test.go
+references_design: docs/design/2026-05-06-kernel-gate-escalation.md
+role: programmer
+priority: medium
+```
+
+**Why this is here:** the in-gate test on 2026-05-06 only exercised
+the copilot template (failed). The other 3 templates (claude, codex,
+gemini) are entirely UNTESTED for headless invocation. Same risk
+class — could fail in production the moment routing maps a rule to
+those drivers.
+
+**Fix scope per driver (claude / codex / gemini):**
+
+1. Per-driver smoke test in `spawn_peer_test.go`:
+   - Build SpawnConfig with that driver
+   - Run `SpawnPeer` with a real (but minimal) prompt like "echo ok"
+   - Assert non-error result with exit_code=0 + non-empty Content
+2. Tests skip if the driver's binary isn't on PATH (CI may not have
+   all four CLIs installed; that's fine — smoke runs locally during
+   operator validation).
+3. If a driver's template is broken, file an entry parallel to
+   `spawn-template-fix-copilot` for it.
+
+T2 because mechanical: 3 nearly-identical smoke tests + skip-if-
+missing-binary guard. Blocks on copilot fix because we want a
+working template to copy the pattern from.
+
+---
+
 ### `swarm-prompt-augmentation-esm-and-tests`
 
 ```yaml
