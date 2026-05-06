@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -215,6 +216,65 @@ func TestSpawnTemplate_KnownDrivers(t *testing.T) {
 func TestSpawnTemplate_UnknownDriver(t *testing.T) {
 	if _, ok := spawnTemplate("nonexistent"); ok {
 		t.Error("unknown driver should not return template")
+	}
+}
+
+func TestSpawnTemplate_CopilotUsesNonInteractiveHelper(t *testing.T) {
+	// Regression: 2026-05-06 in-gate test caught that the copilot
+	// template used `gh copilot suggest -t shell` (interactive — exits
+	// 1 in headless context, no output). Fix: route to scripts/peer-
+	// copilot-chat.sh which hits the Copilot Chat completions API
+	// directly. Lock the new shape so the regression can't return.
+	tmpl, ok := spawnTemplate("copilot")
+	if !ok {
+		t.Fatal("copilot template missing")
+	}
+	if !strings.HasSuffix(tmpl.Command, "/scripts/peer-copilot-chat.sh") {
+		t.Errorf("copilot Command should resolve to peer-copilot-chat.sh; got %q", tmpl.Command)
+	}
+	args := tmpl.ArgsFor("gpt-4.1")
+	if len(args) != 1 || args[0] != "gpt-4.1" {
+		t.Errorf("copilot args should be [model]; got %v", args)
+	}
+	for _, bad := range []string{"suggest", "-t", "shell"} {
+		for _, a := range args {
+			if a == bad {
+				t.Errorf("copilot args still contains interactive-form arg %q (regression)", bad)
+			}
+		}
+	}
+}
+
+func TestCopilotChatHelperPath_HonorsEnv(t *testing.T) {
+	orig, hadOrig := os.LookupEnv("CHITIN_REPO")
+	t.Cleanup(func() {
+		if hadOrig {
+			os.Setenv("CHITIN_REPO", orig)
+		} else {
+			os.Unsetenv("CHITIN_REPO")
+		}
+	})
+	os.Setenv("CHITIN_REPO", "/custom/path/to/chitin")
+	got := copilotChatHelperPath()
+	want := "/custom/path/to/chitin/scripts/peer-copilot-chat.sh"
+	if got != want {
+		t.Errorf("CHITIN_REPO override: got %q want %q", got, want)
+	}
+}
+
+func TestCopilotChatHelperPath_DefaultUnderHome(t *testing.T) {
+	orig, hadOrig := os.LookupEnv("CHITIN_REPO")
+	t.Cleanup(func() {
+		if hadOrig {
+			os.Setenv("CHITIN_REPO", orig)
+		} else {
+			os.Unsetenv("CHITIN_REPO")
+		}
+	})
+	os.Unsetenv("CHITIN_REPO")
+	got := copilotChatHelperPath()
+	if !strings.HasSuffix(got, "/workspace/chitin/scripts/peer-copilot-chat.sh") {
+		t.Errorf("default path should end with workspace/chitin/scripts/peer-copilot-chat.sh; got %q", got)
 	}
 }
 

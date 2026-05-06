@@ -32,8 +32,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -132,23 +134,14 @@ func (execSpawner) Run(ctx context.Context, name string, args []string, env []st
 }
 
 // newStringReader returns a stdin-shaped Reader for the given string.
-// Inlined to avoid pulling strings/bytes packages just for one call.
-type stringReader struct {
-	s string
-	i int
+// Just delegates to strings.Reader — earlier versions used a hand-
+// rolled implementation that returned a custom "EOF" error instead
+// of io.EOF, which made subprocesses (notably bash scripts reading
+// from stdin) see a non-standard error and bail with mangled exit
+// codes ("exit=0, EOF" telemetry from the 2026-05-06 in-gate test).
+func newStringReader(s string) io.Reader {
+	return strings.NewReader(s)
 }
-
-func newStringReader(s string) *stringReader { return &stringReader{s: s} }
-func (r *stringReader) Read(p []byte) (int, error) {
-	if r.i >= len(r.s) {
-		return 0, errIO_EOF
-	}
-	n := copy(p, r.s[r.i:])
-	r.i += n
-	return n, nil
-}
-
-var errIO_EOF = fmt.Errorf("EOF")
 
 // DefaultSpawner — real subprocess spawn. Use in production.
 func DefaultSpawner() Spawner { return execSpawner{} }
@@ -245,6 +238,24 @@ func newEscalationID() string {
 	return "esc-" + hex.EncodeToString(b)
 }
 
+// copilotChatHelperPath resolves to the operator's
+// scripts/peer-copilot-chat.sh. Honors CHITIN_REPO env override (used
+// by tests + operators with non-default install paths). Default is
+// $HOME/workspace/chitin/scripts/peer-copilot-chat.sh.
+//
+// Why a string instead of always-look-up: spawnTemplates is a package
+// var initialized at import time. Resolving the path then-once is
+// fine — operators don't move the chitin repo mid-run. If they
+// did, they'd restart the kernel anyway.
+func copilotChatHelperPath() string {
+	repo := os.Getenv("CHITIN_REPO")
+	if repo == "" {
+		home, _ := os.UserHomeDir()
+		repo = home + "/workspace/chitin"
+	}
+	return repo + "/scripts/peer-copilot-chat.sh"
+}
+
 // ─── Per-driver spawn templates ────────────────────────────────────────────
 //
 // Each template is the SHAPE of how to invoke that CLI for an
@@ -281,11 +292,22 @@ var spawnTemplates = map[string]SpawnTemplate{
 		},
 	},
 	"copilot": {
-		// gh CLI's copilot extension. Exact arg shape will be tuned
-		// when step 4 wires this against a real gate path.
-		Command: "gh",
+		// scripts/peer-copilot-chat.sh — non-interactive Copilot Chat
+		// API invocation. The previous template used `gh copilot
+		// suggest -t shell` which requires a TTY (verified 2026-05-06
+		// in-gate test: returned exit=1, fail-open kicked in
+		// correctly). This helper hits api.githubcopilot.com/chat/
+		// completions directly with `gh auth token` as the bearer —
+		// same pattern as python/analysis/operator_matrix.py
+		// probe_copilot, proven to work for Pro + Enterprise plans.
+		//
+		// The helper script is resolved via copilotChatHelperPath()
+		// which honors CHITIN_REPO env (default $HOME/workspace/chitin)
+		// so the script is found regardless of where the kernel binary
+		// is installed.
+		Command: copilotChatHelperPath(),
 		ArgsFor: func(model string) []string {
-			return []string{"copilot", "suggest", "-t", "shell"}
+			return []string{model}
 		},
 	},
 	"codex": {
