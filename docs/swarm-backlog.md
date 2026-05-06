@@ -1288,7 +1288,7 @@ fires the new kernel rule with a `rewrite` outcome before
 ```yaml
 id: kernel-chain-event-read-dispatch-meta-for-tagging
 tier: T3
-status: ready
+status: partial
 estimated_loc: 200
 blocks: []
 file: go/execution-kernel/internal/governance/, libs/chain/src/event.ts, python/analysis/fingerprint_outcomes.py
