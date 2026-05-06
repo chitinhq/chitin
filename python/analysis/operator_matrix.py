@@ -303,27 +303,48 @@ def operator_cost_band(
         mult = copilot_multiplier(model_id)
         if mult is None:
             return None
+        plan_label = {
+            "free":      "Copilot Free",
+            "pro":       "Copilot Pro ($10/mo)",
+            "pro-plus":  "Copilot Pro+ ($39/mo)",
+            "business":  "Copilot Business",
+            "enterprise": "Copilot Enterprise",
+        }.get(copilot_plan, f"Copilot {copilot_plan}")
         if mult == 0.0:
-            return f"**FREE on Copilot {copilot_plan.title()}**"
+            return f"**FREE on {plan_label}**"
         budget = COPILOT_MONTHLY_PREMIUM_REQUESTS.get(copilot_plan, 300)
         calls_per_month = budget / mult if mult else float("inf")
         if mult < 1.0:
-            return f"x{mult:g} (~{calls_per_month:.0f} calls/month on {copilot_plan.title()})"
+            return f"x{mult:g} (~{calls_per_month:.0f} calls/month on {plan_label})"
         if mult == 1.0:
-            return f"x1 ({calls_per_month:.0f} calls/month on {copilot_plan.title()})"
-        return f"**x{mult:g}** (~{calls_per_month:.0f} calls/month on {copilot_plan.title()}, premium)"
+            return f"x1 ({calls_per_month:.0f} calls/month on {plan_label})"
+        return f"**x{mult:g}** (~{calls_per_month:.0f} calls/month on {plan_label}, premium)"
 
     if driver == "codex":
+        # Plan label uses what the operator pays for, not OpenAI's internal id.
+        plan_label = {
+            "plus":     "ChatGPT Plus ($20/mo)",
+            "pro-5x":   "ChatGPT Pro $100",
+            "pro-20x":  "ChatGPT Pro $200",
+            "business": "ChatGPT Business",
+        }.get(codex_plan, f"ChatGPT {codex_plan}")
         limits = CODEX_5H_LIMITS.get(codex_plan, {}).get(model_id)
         if limits is None:
-            return f"ChatGPT {codex_plan.title()} — limit not published"
+            return f"{plan_label} — limit not published for {model_id}"
         lo, hi = limits
-        # Convert 5h → daily-ish for parity with other drivers
-        return f"{lo}–{hi}/5h on ChatGPT {codex_plan.title()} (~{lo*4.8:.0f}–{hi*4.8:.0f}/day)"
+        return f"{lo}–{hi}/5h on {plan_label} (~{lo*4.8:.0f}–{hi*4.8:.0f}/day)"
 
     if driver == "gemini":
+        # Display uses Google's marketing name (what the operator
+        # actually bought) instead of the loadCodeAssist internal id.
         n = GEMINI_DAILY_REQUESTS.get(gemini_tier, 1500)
-        return f"1/{n} of daily quota on {gemini_tier} (model-agnostic)"
+        plan_label = {
+            "free": "Google Free",
+            "standard-tier": "Google AI Pro ($20/mo)",
+            "g1-pro-tier": "Google AI Pro ($20/mo)",
+            "enterprise": "Google AI Enterprise",
+        }.get(gemini_tier, gemini_tier)
+        return f"1/{n} of daily quota on {plan_label} (model-agnostic)"
 
     if driver == "claude":
         # Claude Max absorbs per-token cost up to plan limits. The
