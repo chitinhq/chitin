@@ -437,6 +437,99 @@ def mine_openrouter(conn: sqlite3.Connection) -> int:
     return n
 
 
+# ─── EvalPlus (HumanEval+ / MBPP+) ─────────────────────────────────────────
+#
+# Source: github.com/evalplus/evalplus.github.io. results.json is a flat
+# dict keyed by model name; per-model `pass@1` carries scores for
+# humaneval, humaneval+, mbpp, mbpp+. Plus per-model `size` and `link`.
+#
+# These are the standard "code completion correctness" benchmarks. They
+# don't measure agent / tool-use behavior — that's SWE-bench's job —
+# but they're the cleanest measure of raw code generation capability.
+
+EVALPLUS_RESULTS_URL = "https://raw.githubusercontent.com/evalplus/evalplus.github.io/main/results.json"
+
+
+def mine_evalplus(conn: sqlite3.Connection) -> int:
+    blob = http_get(EVALPLUS_RESULTS_URL, timeout=30)
+    data = json.loads(blob)
+    n = 0
+    for model, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        scores = entry.get("pass@1") or {}
+        for bench, value in scores.items():
+            if not isinstance(value, (int, float)):
+                continue
+            upsert_seed(
+                conn,
+                model=model,
+                source="evalplus",
+                metric=f"pass@1_{bench}",     # → pass@1_humaneval, pass@1_humaneval+, pass@1_mbpp, pass@1_mbpp+
+                value=float(value),
+                scored_at=None,                # results.json doesn't carry a timestamp per model
+                raw_payload={"size": entry.get("size"), "link": entry.get("link")},
+            )
+            n += 1
+    conn.commit()
+    return n
+
+
+# ─── Arena Hard Auto (LMSYS-style head-to-head) ────────────────────────────
+#
+# Source: github.com/lmarena/arena-hard-auto/leaderboard/. CSV file
+# named arena_hard_leaderboard_<DATE>.csv (latest dated 2024-07-31).
+# Score is win-rate vs gpt-4-0314 baseline. Older than current models
+# but the methodology generalizes; serves as a head-to-head signal.
+
+ARENA_HARD_REPO_API = "https://api.github.com/repos/lmarena/arena-hard-auto/contents/leaderboard"
+ARENA_HARD_RAW_BASE = "https://raw.githubusercontent.com/lmarena/arena-hard-auto/main/leaderboard"
+
+
+def mine_arena_hard(conn: sqlite3.Connection) -> int:
+    import csv
+    import io as _io
+    # Find latest dated CSV in the leaderboard/ dir.
+    listing = json.loads(http_get(ARENA_HARD_REPO_API, timeout=30))
+    csv_names = sorted([
+        e["name"] for e in listing
+        if isinstance(e, dict) and e.get("name", "").endswith(".csv")
+    ], reverse=True)
+    if not csv_names:
+        print("[mine] arena-hard: no CSV files found in leaderboard/")
+        return 0
+    latest = csv_names[0]
+    blob = http_get(f"{ARENA_HARD_RAW_BASE}/{latest}", timeout=30).decode("utf-8")
+    # Use stdlib csv — arena-hard's CI column has embedded commas inside
+    # quotes ("(-1.88, +1.97)"); a naive split breaks every row. csv.DictReader
+    # handles quoted fields correctly.
+    reader = csv.DictReader(_io.StringIO(blob))
+    n = 0
+    for rec in reader:
+        model = rec.get("model") or rec.get("Model")
+        if not model:
+            continue
+        for k, v in rec.items():
+            if k is None or k.lower() == "model":
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            upsert_seed(
+                conn,
+                model=model,
+                source="arena-hard",
+                metric=k.replace(" ", "_").lower(),
+                value=fv,
+                scored_at=rec.get("date") or latest.replace("arena_hard_leaderboard_", "").replace(".csv", ""),
+                raw_payload=rec,
+            )
+            n += 1
+    conn.commit()
+    return n
+
+
 # ─── LMArena — defer ───────────────────────────────────────────────────────
 #
 # Public API at /api/leaderboard 301→/arena.ai/api/leaderboard which 403s
@@ -453,6 +546,31 @@ def mine_lmarena(conn: sqlite3.Connection) -> int:  # noqa: ARG001
     return 0
 
 
+# ─── LiveCodeBench / Terminal-Bench / OpenHands — defer ────────────────────
+#
+# LiveCodeBench: live-updated coding leaderboard at livecodebench.github.io
+#   but the source repo doesn't ship a static results.json. Site fetches
+#   from a backend; would need browser-rendering or a probe to find the
+#   data endpoint. Defer.
+# Terminal-Bench: github.com/laude-institute/terminal-bench has a
+#   dashboard.py + sqlite-backed runs DB but no public results JSON in
+#   the repo (the registry.json is a task-set catalog, not results).
+#   Defer until a public results dump exists.
+# OpenHands evaluation/benchmarks/: empty in their repo's contents API
+#   call; their published SWE-bench numbers ARE in the swebench-* sources
+#   above (they submit to SWE-bench under the OpenHands name). Don't
+#   double-count.
+
+def mine_livecodebench(conn: sqlite3.Connection) -> int:  # noqa: ARG001
+    print("[mine] livecodebench: TODO — site is dynamic; no static JSON in repo")
+    return 0
+
+
+def mine_terminal_bench(conn: sqlite3.Connection) -> int:  # noqa: ARG001
+    print("[mine] terminal-bench: TODO — repo has dashboard but no public results JSON")
+    return 0
+
+
 # ─── CLI ───────────────────────────────────────────────────────────────────
 
 SOURCES = {
@@ -460,7 +578,11 @@ SOURCES = {
     "aider-polyglot": mine_aider_polyglot,
     "swebench": mine_swebench,        # all 5 variants in one walk
     "openrouter": mine_openrouter,
+    "evalplus": mine_evalplus,        # HumanEval+ / MBPP+
+    "arena-hard": mine_arena_hard,    # LMSYS-style head-to-head (older corpus)
     "lmarena": mine_lmarena,           # stub (auth-gated)
+    "livecodebench": mine_livecodebench,  # stub (dynamic site)
+    "terminal-bench": mine_terminal_bench,  # stub (no public results dump)
 }
 
 
