@@ -25,18 +25,33 @@ const (
 // empty) + exit code. The Reason carries the model-visible block
 // message and includes Suggestion + CorrectedCommand if present so the
 // model can self-correct without operator intervention.
+//
+// Lockdown is special: a regular deny invites the model to try a
+// variant (the chain shows this as the loop driving total denials
+// toward the lockdown threshold). Once locked, every subsequent tool
+// call also returns RuleID="lockdown", and without a session-stop
+// signal the model keeps retrying until the operator intervenes —
+// observed as 26 lockdown fires from a single envelope over 7+ hours.
+// Setting `continue: false` is Claude Code's documented affordance for
+// the hook to stop the agent loop after honoring the block; we pair it
+// with a `stopReason` carrying the operator-recovery command so the
+// surfaced message matches the copilot driver's LockdownError.Error().
 func Format(d gov.Decision) ([]byte, int) {
 	if d.Allowed {
 		return nil, ExitAllow
 	}
 
-	out := map[string]string{
+	out := map[string]any{
 		"decision": "block",
 		"reason":   formatReason(d),
 	}
+	if d.RuleID == "lockdown" {
+		out["continue"] = false
+		out["stopReason"] = formatLockdownStopReason(d)
+	}
 	body, err := json.Marshal(out)
 	if err != nil {
-		// json.Marshal of map[string]string can't realistically fail,
+		// json.Marshal of the simple map above can't realistically fail,
 		// but if it ever does, fall back to a fixed string so the model
 		// still sees a denial it can react to.
 		return []byte(`{"decision":"block","reason":"chitin: governance denied (marshal error)"}`), ExitBlock
@@ -62,4 +77,19 @@ func formatReason(d gov.Decision) string {
 		parts = append(parts, "try: "+d.CorrectedCommand)
 	}
 	return strings.Join(parts, " | ")
+}
+
+// formatLockdownStopReason returns the operator-facing message Claude
+// Code surfaces when it stops the agent loop. Mirrors the copilot
+// driver's LockdownError.Error() so audit/operator tooling sees one
+// shape across drivers. Agent name is included verbatim in the reset
+// command — when empty (defensive: gate.go always stamps it on
+// lockdown), the recovery command degrades to a usage hint.
+func formatLockdownStopReason(d gov.Decision) string {
+	agent := d.Agent
+	if agent == "" {
+		agent = "<agent>"
+	}
+	return "chitin: agent in lockdown — session terminated. " +
+		"Reset with: chitin-kernel gate reset --agent=" + agent
 }
