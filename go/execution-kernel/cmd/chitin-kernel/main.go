@@ -807,6 +807,7 @@ func cmdGateEvaluate(args []string) {
 	hookStdin := fs.Bool("hook-stdin", false, "read Claude Code PreToolUse JSON from stdin (hook driver mode)")
 	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
 	requirePolicy := fs.Bool("require-policy", false, "fail closed when no chitin.yaml is found from cwd (default: fail open with stderr warning)")
+	policyFile := fs.String("policy-file", os.Getenv("CHITIN_POLICY_FILE"), "explicit chitin.yaml path; overrides the cwd-walk-upward lookup. Required for callers (like the hermes plugin) that run from arbitrary cwds and need policy enforcement to be cwd-independent.")
 	fs.Parse(args)
 
 	if *hookStdin {
@@ -833,7 +834,17 @@ func cmdGateEvaluate(args []string) {
 	action.Path = *cwd
 
 	absCwd, _ := filepath.Abs(*cwd)
-	policy, _, err := gov.LoadWithInheritance(absCwd)
+	// --policy-file (or $CHITIN_POLICY_FILE) bypasses the cwd-walk and loads
+	// an explicit policy. Use this when the caller cannot guarantee its cwd
+	// has chitin.yaml above it (e.g. hermes plugin invoked from a worktree
+	// of a non-chitin repo, or from /tmp). When unset, fall back to the
+	// inheritance walk so existing operator-CLI usage stays unchanged.
+	var policy gov.Policy
+	if *policyFile != "" {
+		policy, err = gov.LoadPolicyFile(*policyFile)
+	} else {
+		policy, _, err = gov.LoadWithInheritance(absCwd)
+	}
 	if err != nil {
 		// Distinguish "no policy found" (intentional deny, exit 1) from
 		// "policy invalid" (misconfiguration, exit 2) so the plugin's
