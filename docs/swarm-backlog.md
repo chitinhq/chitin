@@ -52,14 +52,26 @@ the swarm cannot quietly grant itself broader permissions.
 ```yaml
 id: kernel-protect-system-paths-like-hermes
 tier: T5
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: chitin.yaml, go/execution-kernel/internal/gov/
 references_design: docs/decisions/2026-05-06-execution-governance-runtime-positioning.md
+shipped_in: [PR-375, PR-376]
 role: programmer
 priority: critical
 ```
+
+**Status update (2026-05-06):** `protected-system-path-write`,
+`protected-credential-path-write`, and `protected-system-path-shell-write`
+rules merged in PR #375. Cwd-independence (so the rules actually fire
+when hermes runs from arbitrary worktrees) merged in PR #376 — adds
+`--policy-file` flag to `chitin-kernel gate evaluate` plus
+`CHITIN_REQUIRE_POLICY=1` fail-closed mode in the chitin-governance
+plugin, both wired through the runner spawn env. Remaining: item 4
+(operator override via `bounds.protected_paths`) — design polish, not
+safety. Also see new entry `hermes-oneshot-z-mode-bypasses-pretoolcall-
+hooks` below for the deeper finding that surfaced during this work.
 
 **Why this is here:** 2026-05-06 manual hermes test 3 discovered chitin's
 gate ALLOWS writes to `/etc/hostname`, `/etc/passwd`, etc. 3 attempts
@@ -111,6 +123,112 @@ User credential FILES (`$HOME/...`):
 
 T5 because: kernel rule change affecting every dispatch + cross-driver
 test surface + security implications + not safe to auto-dispatch.
+
+---
+
+### `hermes-oneshot-z-mode-bypasses-pretoolcall-hooks`
+
+```yaml
+id: hermes-oneshot-z-mode-bypasses-pretoolcall-hooks
+tier: T5
+status: ready
+estimated_loc: unknown   # could be a 1-line config flip (use --tui or non-z mode) OR an upstream hermes patch
+blocks: [hermes-as-T0-flip]
+file: ~/.hermes/hermes-agent/hermes_cli/oneshot.py, ~/.hermes/hermes-agent/run_agent.py, apps/runner/src/activity.ts
+role: programmer
+priority: critical
+```
+
+**Why this is here:** 2026-05-06 verification (after PR #376 shipped
+cwd-independent enforcement) discovered that `hermes -z <prompt>`
+runs do **NOT** fire any `pre_tool_call` plugin hooks — neither
+`chitin-governance` nor `chitin-sink`. The plugins load correctly
+(`hermes plugins list` reports both `enabled`); calling
+`get_pre_tool_call_block_message()` directly from python triggers
+the hooks correctly and writes to `~/.chitin/gov-decisions-*.jsonl`.
+But during actual `hermes -z` invocations, hermes successfully
+executes tool calls (e.g. `write_file result.txt`) and **zero**
+plugin entries get written. The hook chain is bypassed somewhere
+between `AIAgent.chat` → `run_conversation` → `_execute_tool_calls`.
+
+**Reproducer (verified 4 times):**
+
+```bash
+# Reset state so we have clean baselines
+chitin-kernel gate reset --agent=hermes
+rm -f ~/chitin-sink/events-$(date -u +%Y-%m-%d).jsonl
+NOW=$(date -u +%FT%T.%NZ)
+
+# Spawn hermes -z with the runner's exact env shape
+mkdir -p /tmp/hermes-test && cd /tmp/hermes-test
+CHITIN_POLICY_FILE=/home/red/workspace/chitin/chitin.yaml \
+CHITIN_REQUIRE_POLICY=1 \
+  hermes -p chitin-runner -m glm-4.7-flash --provider ollama-launch \
+    -z 'Use the write_file tool to create result.txt with content "ok"' \
+    --accept-hooks --yolo
+
+# Verify
+ls /tmp/hermes-test/result.txt        # exists with "ok" → tool DID fire
+jq -c "select(.ts >= \"$NOW\")" ~/.chitin/gov-decisions-*.jsonl | wc -l   # 0 ← bug
+jq -c "select(.ts >= \"$NOW\")" ~/chitin-sink/events-*.jsonl | wc -l       # 0 ← bug
+```
+
+**Why this matters:** the swarm runner spawns hermes via `-z` (see
+`apps/runner/src/activity.ts:359` — `'-z', req.prompt`). So routing
+T0 (or any tier) through hermes today routes work through a code
+path where chitin enforces nothing — defeats the entire purpose of
+PR #375's protected-paths rules and PR #376's cwd-independent
+enforcement. Originally planned to flip
+`CHITIN_TIER_DRIVER_T0=hermes` after #376 landed; deferred to T0 =
+existing default `openclaw-glm-flash` because openclaw uses the
+chitin-router-hook bash wrapper which DOES fire enforcement.
+
+**What's already established:**
+
+- Plugin syntax + load: ✅ both `chitin-governance` and `chitin-sink`
+  enabled per `hermes plugins list`
+- Plugin invocation when called via python directly: ✅ trace fires,
+  gov-decisions row written
+- During `hermes -z`: ❌ no trace, no gov-decisions, no chitin-sink
+  events — even when the LLM successfully calls `write_file`
+- Confirmed not a CHITIN_* env propagation issue (env vars reach the
+  spawned process; the gate works when invoked manually with same
+  args)
+
+**Two leading hypotheses:**
+
+1. `oneshot.py`'s tool execution path doesn't reach
+   `_execute_tool_calls_*` — maybe a text-based tool-call parser at
+   `run_agent.py:3074` (the `<tool_call>...</tool_call>` XML-style
+   fallback) is what glm-4.7-flash triggers for ollama-launch
+   provider responses, and that fallback skips the hook chain.
+2. `quiet_mode=True` (set unconditionally in `oneshot.py:294`) plus
+   `suppress_status_output=True` (line 313) plus `tool_gen_callback=None`
+   (line 315) somewhere short-circuits the hook chain. The
+   `try/except Exception: pass` wrapping every hook callsite in
+   `run_agent.py` would silently swallow any failure here.
+
+**Fix scope (pick one):**
+
+- **A. Fix the hook chain in oneshot mode.** Trace where `-z` mode's
+  tool execution diverges from the interactive chat path. May require
+  upstream hermes patch — `hermes-agent` lives in
+  `~/.hermes/hermes-agent/` and isn't owned by chitin. If upstream
+  fix is needed, file against the hermes-agent repo.
+- **B. Switch the runner away from `-z`.** Use `hermes chat` with
+  stdin piping or `hermes acp` so the agent loop goes through the
+  hook-firing code path. Higher coordination cost (requires session
+  management, exit detection) but doesn't depend on upstream
+  cooperation.
+- **C. Don't use hermes for spawned work.** Keep hermes as the
+  autonomous-tick planner only (where it works); use openclaw /
+  copilot / claude-code-headless for execution where the
+  chitin-router-hook bash wrapper provides enforcement. This is
+  effectively the current state — formalize it.
+
+T5 because: blocks the planned T0 routing flip + has security
+implications + may require upstream investigation + cross-cuts
+runner/plugin/hermes-internals.
 
 ---
 
