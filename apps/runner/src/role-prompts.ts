@@ -31,6 +31,40 @@ export type RolePromptBuilder = (entry: BacklogEntry) => string;
 // The pre-Phase-1 prompt template — what slice-7b's `buildPrompt`
 // produced. Wrapping it in a role registry lets future programmer-
 // prompt tweaks happen without touching the dispatcher.
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+function findNearestPackageJsonTypeModule(filePath: string): boolean {
+  let dir = dirname(resolve(filePath));
+  while (dir !== '/' && dir !== '.' && dir !== process.cwd()) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+        if (pkg.type === 'module') return true;
+      } catch {}
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
+
+function extractTestPlanNote(entry: BacklogEntry): string {
+  // Accepts 'Tests:', 'Test plan:', 'Test Plan:', etc. at start of line
+  const desc = entry.description || '';
+  const testPlanRegex = /^(Tests?:|Test plan:)/im;
+  if (testPlanRegex.test(desc)) {
+    return "The entry's test plan is REQUIRED, not optional — every named scenario must have a passing test in the PR. Treat as acceptance criteria.\n\n";
+  }
+  if (Array.isArray(entry.test_plan) && entry.test_plan.length > 0) {
+    return "The entry's test plan is REQUIRED, not optional — every named scenario must have a passing test in the PR. Treat as acceptance criteria.\n\n";
+  }
+  return '';
+}
+
 function buildProgrammerPrompt(entry: BacklogEntry): string {
   const rawFile = entry.file?.split(',')[0]?.trim();
   let targetFile: string;
