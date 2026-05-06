@@ -290,6 +290,8 @@ def operator_cost_band(
     copilot_plan: str = "pro",
     codex_plan: str = "plus",
     gemini_tier: str = "standard-tier",
+    copilot_remaining: int | None = None,
+    copilot_entitlement: int | None = None,
 ) -> str | None:
     """Return a short string describing the operator's marginal cost on
     this (driver, model) under their subscription. None when we have
@@ -312,13 +314,21 @@ def operator_cost_band(
         }.get(copilot_plan, f"Copilot {copilot_plan}")
         if mult == 0.0:
             return f"**FREE on {plan_label}**"
-        budget = COPILOT_MONTHLY_PREMIUM_REQUESTS.get(copilot_plan, 300)
+        # Prefer LIVE remaining quota over static plan default — live
+        # number reflects what the operator can ACTUALLY spend before
+        # next reset, accounting for what they've already burned.
+        budget = copilot_entitlement if copilot_entitlement else COPILOT_MONTHLY_PREMIUM_REQUESTS.get(copilot_plan, 300)
         calls_per_month = budget / mult if mult else float("inf")
+        # If we have live quota, also show calls remaining THIS cycle
+        remaining_str = ""
+        if copilot_remaining is not None and mult > 0:
+            calls_left = copilot_remaining / mult
+            remaining_str = f", **{calls_left:.0f} left this cycle**"
         if mult < 1.0:
-            return f"x{mult:g} (~{calls_per_month:.0f} calls/month on {plan_label})"
+            return f"x{mult:g} (~{calls_per_month:.0f} calls/month on {plan_label}{remaining_str})"
         if mult == 1.0:
-            return f"x1 ({calls_per_month:.0f} calls/month on {plan_label})"
-        return f"**x{mult:g}** (~{calls_per_month:.0f} calls/month on {plan_label}, premium)"
+            return f"x1 ({calls_per_month:.0f} calls/month on {plan_label}{remaining_str})"
+        return f"**x{mult:g}** (~{calls_per_month:.0f} calls/month on {plan_label}, premium{remaining_str})"
 
     if driver == "codex":
         # Plan label uses what the operator pays for, not OpenAI's internal id.
@@ -474,14 +484,41 @@ def probe_copilot() -> CLIStatus:
                 and (m.get("capabilities") or {}).get("type") == "chat"
             )
             n_other = len(s.models) - n_picker
+            # Probe copilot_internal/user for the operator's actual
+            # plan + live Premium-Interaction quota. Only programmatic
+            # way to differentiate Pro vs Pro+ vs Business vs Enterprise
+            # AND see remaining budget.
+            user = _http_get_json(
+                "https://api.github.com/copilot_internal/user",
+                {"Authorization": f"Bearer {tok}", "Editor-Version": "vscode/1.95.0"},
+            )
+            plan_detail: dict = {}
+            if user:
+                premium = (user.get("quota_snapshots") or {}).get("premium_interactions") or {}
+                plan_detail = {
+                    "plan": user.get("copilot_plan"),
+                    "sku": user.get("access_type_sku"),
+                    "quota_reset_date": user.get("quota_reset_date"),
+                    "premium_entitlement": premium.get("entitlement"),
+                    "premium_remaining": premium.get("remaining"),
+                    "premium_pct_remaining": premium.get("percent_remaining"),
+                    "overage_permitted": premium.get("overage_permitted"),
+                }
             s.auth_detail = {
                 "vendor_breakdown": _vendor_count(data["data"]),
                 "picker_enabled": n_picker,
                 "api_only": n_other,
+                **plan_detail,
             }
+            quota_str = ""
+            if plan_detail.get("premium_entitlement"):
+                rem = plan_detail.get("premium_remaining")
+                ent = plan_detail.get("premium_entitlement")
+                pct = plan_detail.get("premium_pct_remaining")
+                quota_str = f", plan={plan_detail.get('plan')}, premium_quota={rem}/{ent} ({pct}% remaining)"
             s.notes = (
                 f"live catalog from api.githubcopilot.com "
-                f"({len(s.models)} chat models: {n_picker} picker, {n_other} api-only/free)"
+                f"({len(s.models)} chat models: {n_picker} picker, {n_other} api-only/free){quota_str}"
             )
             return s
     s.authed = False
@@ -875,7 +912,16 @@ def cmd_report(_args) -> None:
             # actual subscription budget? Different drivers, different
             # shapes — copilot multipliers vs codex 5h ranges vs gemini
             # daily aggregate vs claude max windows vs free local.
-            op_cost = operator_cost_band(s["name"], model)
+            kw: dict = {}
+            if s["name"] == "copilot" and s.get("auth_detail"):
+                ad = s["auth_detail"]
+                if ad.get("plan"):
+                    kw["copilot_plan"] = ad["plan"]
+                if ad.get("premium_remaining") is not None:
+                    kw["copilot_remaining"] = ad["premium_remaining"]
+                if ad.get("premium_entitlement"):
+                    kw["copilot_entitlement"] = ad["premium_entitlement"]
+            op_cost = operator_cost_band(s["name"], model, **kw)
             if op_cost:
                 cost_str += f"  | {op_cost}"
             score_str = "; ".join(scores) if scores else "(no benchmark data — too new for any seed source)"
