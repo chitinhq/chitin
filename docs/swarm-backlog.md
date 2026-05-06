@@ -4850,7 +4850,7 @@ the agents read tomorrow, without operator transcription.
 ```yaml
 id: per-role-lessons-files
 tier: T2
-status: ready
+status: partial
 estimated_loc: 150
 blocks: []
 file: docs/swarm-lessons/, apps/runner/src/lessons.ts, apps/runner/src/role-prompts.ts, apps/runner/src/grooming/parse-backlog.ts (role label per PR)
