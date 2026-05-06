@@ -808,6 +808,7 @@ func cmdGateEvaluate(args []string) {
 	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
 	requirePolicy := fs.Bool("require-policy", false, "fail closed when no chitin.yaml is found from cwd (default: fail open with stderr warning)")
 	policyFile := fs.String("policy-file", os.Getenv("CHITIN_POLICY_FILE"), "explicit chitin.yaml path; overrides the cwd-walk-upward lookup. Required for callers (like the hermes plugin) that run from arbitrary cwds and need policy enforcement to be cwd-independent.")
+	noRecord := fs.Bool("no-record", false, "evaluate without persistent side effects: skip Counter.RecordDenial (no escalation toward lockdown), skip WriteLog chain append, skip OnDecision emission. Use for smoke-testing policy rules without polluting the production agent_state DB or daily chain rollups. The Decision is still printed to stdout exactly as a recording evaluation would print it.")
 	fs.Parse(args)
 
 	if *hookStdin {
@@ -885,6 +886,7 @@ func cmdGateEvaluate(args []string) {
 		// with gate_hook.go and the copilot driver. Pre-fix only the hook
 		// populated this; operator CLI calls wrote fingerprint-less rows.
 		Fingerprint: gov.FingerprintContextFromEnv(),
+		NoRecord:    *noRecord,
 	}
 	// F4 addendum: wire gov.Gate's OnDecision to emit a `decision` chain
 	// event via the canonical path (which fires OTEL projection if
@@ -893,12 +895,19 @@ func cmdGateEvaluate(args []string) {
 	// span via F4's "root event of root chain" parent-rule branch.
 	// Surface is the operator-CLI origin, not the agent identifier
 	// (agent flows separately into AgentInstanceID).
-	chainID := newChainID()
-	if chainID != "" {
-		de, deClose, err := newDecisionEmitter(chitinDir, chainID, "operator", func() string { return chainID })
-		if err == nil {
-			defer deClose()
-			gate.OnDecision = de.emitDecision
+	//
+	// Skip when --no-record is set: the decision emitter writes a chain
+	// event, which is the second persistence path NoRecord must mute.
+	// Without this, smoke tests still pollute the chain via OnDecision
+	// even though gate.go's WriteLog is suppressed.
+	if !*noRecord {
+		chainID := newChainID()
+		if chainID != "" {
+			de, deClose, err := newDecisionEmitter(chitinDir, chainID, "operator", func() string { return chainID })
+			if err == nil {
+				defer deClose()
+				gate.OnDecision = de.emitDecision
+			}
 		}
 	}
 	d := gate.Evaluate(action, *agent, nil)

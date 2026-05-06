@@ -54,6 +54,20 @@ type Gate struct {
 	// Decision); pre-fingerprint dispatches (manual operator runs, older
 	// swarm builds) keep writing the smaller schema with no breakage.
 	Fingerprint FingerprintContext
+
+	// NoRecord, when true, suppresses persistent side effects: no
+	// Counter.RecordDenial increment, no WriteLog chain-event append.
+	// Read-only state (Counter.IsLocked, Counter.Level) is still
+	// consulted so the returned Decision reflects current escalation
+	// without mutating it. Used by `gate evaluate --no-record` so an
+	// operator validating policy rules ad-hoc doesn't pollute the
+	// production agent_state DB and trip lockdown for the real agent
+	// of the same name (root cause of 2026-05-06's hermes-locked-by-
+	// smoke-tests incident: protected-system-path probes against
+	// --agent=hermes drove real hermes past the threshold). Production
+	// hooks (gate_hook.go) leave this false so audit + escalation work
+	// as designed.
+	NoRecord bool
 }
 
 // FingerprintContext carries the four routing dimensions the kernel
@@ -187,7 +201,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
 		stampFingerprint(&d, g.Fingerprint)
-		_ = WriteLog(d, g.LogDir)
+		if !g.NoRecord {
+			_ = WriteLog(d, g.LogDir)
+		}
 		final = d
 		return
 	}
@@ -271,7 +287,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		d.RuleID == "envelope-closed" ||
 		d.RuleID == "envelope-not-found"
 	if !d.Allowed && !envelopeDeny && g.Counter != nil {
-		g.Counter.RecordDenial(agent, a.Fingerprint(), weight)
+		if !g.NoRecord {
+			g.Counter.RecordDenial(agent, a.Fingerprint(), weight)
+		}
 		d.Escalation = g.Counter.Level(agent)
 	} else if g.Counter != nil {
 		d.Escalation = g.Counter.Level(agent)
@@ -286,8 +304,13 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// against PR/review outcomes downstream.
 	stampFingerprint(&d, g.Fingerprint)
 
-	// 8. Log.
-	_ = WriteLog(d, g.LogDir)
+	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
+	// daily chain rollups (fingerprint_outcomes, swarm_health) with
+	// synthetic deny rows. The Decision still flows back to the caller
+	// via the named return — what changes is durability.
+	if !g.NoRecord {
+		_ = WriteLog(d, g.LogDir)
+	}
 
 	// 9. F4 addendum: OnDecision callback fires from the deferred
 	// callsite at the top of Evaluate (single-source-of-truth so a

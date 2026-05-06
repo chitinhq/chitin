@@ -93,6 +93,87 @@ func TestGate_LockdownDeniesEverything(t *testing.T) {
 	}
 }
 
+func TestGate_NoRecordSkipsCounterAndLog(t *testing.T) {
+	// Regression for the 2026-05-06 hermes-locked-by-smoke-tests
+	// incident: an operator running protected-system-path probes via
+	// `gate evaluate --agent=hermes` pushed real hermes past the
+	// lockdown threshold. NoRecord lets the same probe run without
+	// touching the persistent agent_state DB or the chain log.
+	g, dir := newTestGate(t)
+	g.NoRecord = true
+
+	// 20 denials would normally lockdown twice over (threshold=10).
+	// Under NoRecord the counter must stay at 0, so Level remains normal.
+	for i := 0; i < 20; i++ {
+		d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+		if d.Allowed {
+			t.Fatalf("iter %d: rm -rf should be denied even under NoRecord", i)
+		}
+		if d.RuleID != "no-rm" {
+			t.Fatalf("iter %d: RuleID=%q want no-rm — NoRecord must not change rule evaluation", i, d.RuleID)
+		}
+	}
+	if lv := g.Counter.Level("agent1"); lv != "normal" {
+		t.Errorf("after 20 NoRecord denials, level=%q want normal (counter must not move)", lv)
+	}
+
+	// Chain log dir should not exist (or be empty) — the recorded
+	// counterpart test TestGate_DeniesRmRfAndLogs expects 1 file after
+	// a single deny, so 20 NoRecord denies must produce 0 files.
+	logDir := filepath.Join(dir, "decisions")
+	entries, _ := os.ReadDir(logDir)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 log files under NoRecord, got %d", len(entries))
+	}
+}
+
+func TestGate_NoRecordPreservesLockdownRead(t *testing.T) {
+	// NoRecord suppresses *writes*, not reads. If an agent is already
+	// in lockdown (set out-of-band by an operator), a NoRecord
+	// evaluation must still surface RuleID=lockdown so smoke-test
+	// output reflects the live gate state. This is what makes
+	// NoRecord safe to use against the production DB — operators see
+	// what the gate would do without changing what it will do next.
+	g, dir := newTestGate(t)
+	g.Counter.Lockdown("agent1")
+	g.NoRecord = true
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("locked agent must be denied even under NoRecord")
+	}
+	if d.RuleID != "lockdown" {
+		t.Fatalf("RuleID=%q want lockdown", d.RuleID)
+	}
+
+	// Lockdown branch also has its own WriteLog — must be suppressed.
+	logDir := filepath.Join(dir, "decisions")
+	entries, _ := os.ReadDir(logDir)
+	if len(entries) != 0 {
+		t.Errorf("lockdown WriteLog should be suppressed under NoRecord, got %d files", len(entries))
+	}
+}
+
+func TestGate_NoRecordAllowStillWorks(t *testing.T) {
+	// Allow path has no counter write either way, but verify the log
+	// suppression covers it for symmetry — the recording version
+	// (TestGate_DeniesRmRfAndLogs) writes the log on deny, but
+	// WriteLog runs on every evaluation including allows.
+	g, dir := newTestGate(t)
+	g.NoRecord = true
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if !d.Allowed {
+		t.Fatalf("file.read should be allowed under NoRecord, got %+v", d)
+	}
+
+	logDir := filepath.Join(dir, "decisions")
+	entries, _ := os.ReadDir(logDir)
+	if len(entries) != 0 {
+		t.Errorf("allow under NoRecord should not write log, got %d files", len(entries))
+	}
+}
+
 func TestGate_MonitorModeAllowsButLogs(t *testing.T) {
 	g, _ := newTestGate(t)
 	// Override policy to monitor mode
