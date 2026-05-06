@@ -86,7 +86,7 @@ If no result has a verifiable score for THIS exact model, return:
 # defers cross-referenced multi-query mode (--thorough flag) to a
 # later commit.
 SEARCH_QUERY_TEMPLATE = (
-    "{model} SWE-bench aider polyglot HumanEval LiveCodeBench benchmark score"
+    "{model} terminal-bench SWE-bench aider polyglot HumanEval LiveCodeBench benchmark score"
 )
 
 # Where the failure-cache stub rows land — same model_seeds table,

@@ -566,9 +566,111 @@ def mine_livecodebench(conn: sqlite3.Connection) -> int:  # noqa: ARG001
     return 0
 
 
-def mine_terminal_bench(conn: sqlite3.Connection) -> int:  # noqa: ARG001
-    print("[mine] terminal-bench: TODO — repo has dashboard but no public results JSON")
-    return 0
+def mine_terminal_bench(conn: sqlite3.Connection) -> int:
+    """Pull terminal-bench-2.0 leaderboard from tbench.ai (the canonical
+    leaderboard run by the bench's authors). The page is HTML — fetch
+    it then LLM-extract every (model, harness, score) row.
+
+    Each row in the leaderboard is one experimental setup (model under
+    a specific harness like 'Codex CLI', 'Terminus-2', 'Claude Code').
+    We store ONE row per (model, harness) and let the matrix display
+    surface the best harness per model — operators care about peak
+    capability, not floor.
+    """
+    url = "https://www.tbench.ai/leaderboard/terminal-bench/2.0"
+    try:
+        html = http_get(url, timeout=30).decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"[mine] terminal-bench: fetch failed — {e}", file=sys.stderr)
+        return 0
+
+    # Strip script/style + collapse whitespace before sending to LLM —
+    # the page is React-hydrated and most of the markup is bundle JS
+    # that has no benchmark data.
+    import re as _re
+    text = _re.sub(r"<script[^>]*>.*?</script>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
+    text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+    text = _re.sub(r"<[^>]+>", " ", text)
+    text = _re.sub(r"\s+", " ", text).strip()
+
+    if "terminal-bench" not in text.lower() and "tbench" not in text.lower():
+        print(f"[mine] terminal-bench: page didn't render leaderboard data (likely client-side React)", file=sys.stderr)
+        return 0
+
+    from analysis.refresh_stale import ExtractorError
+    import shutil, subprocess
+
+    if not shutil.which("claude"):
+        print("[mine] terminal-bench: claude CLI not on PATH for LLM extraction", file=sys.stderr)
+        return 0
+
+    prompt = (
+        "Extract every leaderboard row from this Terminal-Bench 2.0 page. "
+        "Return a JSON array (no prose, no fences). Each entry: "
+        '{"model": "<lowercase normalized model name like gpt-5.4 or claude-opus-4.6>", '
+        '"score": <percent number 0-100>, '
+        '"harness": "<scaffold name, e.g. Codex CLI, Terminus 2, Claude Code, ForgeCode>", '
+        '"organization": "<vendor org>"}. '
+        "Skip rows where model is 'Multiple' (those are aggregator harnesses). "
+        "Only include rows with a numeric score and a model name. "
+        f"Page content (truncated):\n---\n{text[:15000]}"
+    )
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "--output-format", "text"],
+            input=prompt, capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print("[mine] terminal-bench: claude timed out", file=sys.stderr)
+        return 0
+    if proc.returncode != 0:
+        print(f"[mine] terminal-bench: claude exit {proc.returncode}", file=sys.stderr)
+        return 0
+    out = proc.stdout.strip()
+    m = _re.search(r"\[.*\]", out, _re.DOTALL)
+    if not m:
+        print("[mine] terminal-bench: no JSON array in extraction output", file=sys.stderr)
+        return 0
+    try:
+        rows = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        print(f"[mine] terminal-bench: bad JSON — {e}", file=sys.stderr)
+        return 0
+
+    n = 0
+    for row in rows:
+        model = (row.get("model") or "").strip().lower()
+        score = row.get("score")
+        harness = (row.get("harness") or "").strip()
+        if not model or score is None or model == "multiple":
+            continue
+        try:
+            score_f = float(score)
+        except (TypeError, ValueError):
+            continue
+        # Normalize spaces / aliases
+        model = model.replace(" ", "-").replace(".", "-")
+        # Common aliases per the leaderboard's naming
+        model = model.replace("claude-4-6-opus", "claude-opus-4-6")
+        # Encode harness in metric so we keep all data points (different
+        # harnesses produce meaningfully different scores).
+        metric = f"score_{harness.lower().replace(' ', '_')}" if harness else "score"
+        upsert_seed(
+            conn=conn,
+            model=model,
+            source="terminal-bench-2.0",
+            metric=metric,
+            value=score_f,
+            raw_payload={
+                "harness": harness,
+                "organization": row.get("organization"),
+                "leaderboard_url": url,
+            },
+        )
+        n += 1
+    conn.commit()
+    print(f"[mine] terminal-bench: {n} (model, harness) rows from tbench.ai/leaderboard/terminal-bench/2.0")
+    return n
 
 
 # ─── HuggingFace model cards ───────────────────────────────────────────────

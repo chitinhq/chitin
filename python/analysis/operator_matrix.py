@@ -725,11 +725,16 @@ def _model_seed_lookup(
     out: dict[str, dict[str, tuple[float, str]]] = {}
     matched_token: str | None = None
     for token in _expand_search_tokens(resolved):
+        # Normalize dots to dashes on BOTH sides — different leaderboards
+        # publish the same model as "gpt-5.4" or "gpt-5-4". Without this,
+        # tbench.ai's `gpt-5-4` row never matches the operator's `gpt-5.4`
+        # display name.
+        token_norm = token.replace(".", "-")
         cur = conn.execute(
             "SELECT model, source, metric, value FROM model_seeds "
-            "WHERE LOWER(model) LIKE ? "
+            "WHERE LOWER(REPLACE(model, '.', '-')) LIKE ? "
             "ORDER BY source, metric, value DESC",
-            (f"%{token}%",),
+            (f"%{token_norm}%",),
         )
         rows = cur.fetchall()
         if rows:
@@ -832,6 +837,24 @@ def cmd_report(_args) -> None:
                             continue  # failure stub, don't render
                         label = f"{metric}:{v:.1f}"
                         scores.append(f"{label} (`{src_model[:40]}`, {tag})")
+                        sources_used.add(src)
+                    continue
+                # terminal-bench-2.0 has many score_<harness> metrics per
+                # model — surface the BEST harness's score (peak capability)
+                # since operators can pick the harness too.
+                if src == "terminal-bench-2.0":
+                    best_metric = None
+                    best_value = -1.0
+                    best_src_model = None
+                    for metric, (v, src_model) in metrics.items():
+                        if metric.startswith("score_") and v > best_value:
+                            best_value = v
+                            best_metric = metric
+                            best_src_model = src_model
+                    if best_metric is not None:
+                        harness = best_metric.removeprefix("score_").replace("_", " ")
+                        label = f"terminal-bench-2.0:{best_value:.1f}% (best harness: {harness})"
+                        scores.append(f"{label}")
                         sources_used.add(src)
                     continue
                 metric_key = (
