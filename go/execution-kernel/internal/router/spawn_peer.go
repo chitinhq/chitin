@@ -283,9 +283,16 @@ var spawnTemplates = map[string]SpawnTemplate{
 	"copilot": {
 		// gh CLI's copilot extension. Exact arg shape will be tuned
 		// when step 4 wires this against a real gate path.
-		Command: "gh",
+		Command: "curl",
 		ArgsFor: func(model string) []string {
-			return []string{"copilot", "suggest", "-t", "shell"}
+			return []string{
+				"-s",
+				"-X", "POST",
+				"-H", "Authorization: Bearer $(gh auth token)",
+				"-H", "Content-Type: application/json",
+				"--url", "https://api.githubcopilot.com/chat/completions",
+				"-d", fmt.Sprintf(`{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%%s\"}]}", model),
+			}
 		},
 	},
 	"codex": {
