@@ -2589,7 +2589,7 @@ Researcher role: read the alarm + the latest swarm-rollup JSON at `~/.cache/chit
 ```yaml
 id: nx-affected-in-ci
 tier: T1
-status: ready
+status: partial
 estimated_loc: 80
 blocks: []
 file: .github/workflows/ci.yml, nx.json
