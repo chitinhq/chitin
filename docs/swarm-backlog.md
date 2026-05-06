@@ -6243,3 +6243,41 @@ Auto-promoted by chitin-groomer.timer at 2026-05-05T03:15:15.768Z from `docs/roa
 > [arxiv] [2605.00179](https://arxiv.org/abs/2605.00179) — DEPTEX: Organization-First, Open Source Dependency Risk Monitoring
 
 Next step (groomer role): replace `tier: TBD`, `estimated_loc: TBD`, and `file: TBD` with concrete values; classify the work shape (programmer / researcher / refactorer); flip `status` to `ready` when the entry is dispatcher-shaped.
+
+### `arxiv-2605-00922-investigate`
+
+```yaml
+id: arxiv-2605-00922-investigate
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: https://arxiv.org/abs/2605.00922
+role: programmer
+```
+
+Auto-promoted by chitin-groomer.timer at 2026-05-06T03:15:16.223Z from `docs/roadmap.md` candidate:
+
+> [arxiv] [2605.00922](https://arxiv.org/abs/2605.00922) — To Vibe Research or Not to Vibe Research? Generative AI in Qualitative Research
+
+Next step (groomer role): replace `tier: TBD`, `estimated_loc: TBD`, and `file: TBD` with concrete values; classify the work shape (programmer / researcher / refactorer); flip `status` to `ready` when the entry is dispatcher-shaped.
+
+### `investigate-high-short-run`
+
+```yaml
+id: investigate-high-short-run
+tier: TBD
+status: in_design
+estimated_loc: TBD
+blocks: []
+file: TBD
+references_signal: chitin-swarm-rollup alarms
+role: analyst
+```
+
+Auto-filed by chitin-alarm-feeder.timer at 2026-05-06T03:45:29.726Z from a swarm-rollup alarm:
+
+> HIGH SHORT-RUN: driver=openclaw-glm-cloud 100% (1/1) — prompt template may not fit this driver
+
+Analyst role: use `python/analysis/` to read the latest swarm-rollup JSON at `~/.cache/chitin/swarm-rollups/<YYYY-MM-DD>.json` + the events-jsonl chain; identify the root cause (recent dispatch failures, driver regressions, governance edits, etc); write a markdown report to `python/analysis/out/<entry-id>.md` and emit a `<<<ANALYSIS>>>` JSON line with root_cause + recommended_action. Operator: groom this entry once it has a real `tier` / `file:` / `estimated_loc`.
