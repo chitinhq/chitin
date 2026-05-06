@@ -32,12 +32,12 @@ import (
 //
 // Cold-start target: ~10ms (heuristics are pure Go); only the
 // advisor call (when fired) takes seconds (LLM latency).
-func runRouterHookStdin(agent, envelopeFlag string, requirePolicy bool) {
-	code := evalRouterHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy)
+func runRouterHookStdin(agent, envelopeFlag string, requirePolicy, noRecord bool) {
+	code := evalRouterHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy, noRecord)
 	os.Exit(code)
 }
 
-func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy bool) int {
+func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy, noRecord bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -68,7 +68,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	// Step 1: kernel verdict via evalHookStdin's pure core
 	var kernelOut bytes.Buffer
-	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, requirePolicy)
+	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, requirePolicy, noRecord)
 
 	// Fast path: router policy disabled → emit kernel verdict directly
 	if !policy.Enabled {
@@ -341,6 +341,7 @@ func cmdRouterEvaluate(args []string) {
 	envelopeFlag := ""
 	requirePolicy := false
 	hookStdin := false
+	noRecord := false
 	for _, a := range args {
 		switch {
 		case a == "--hook-stdin":
@@ -351,10 +352,12 @@ func cmdRouterEvaluate(args []string) {
 			envelopeFlag = a[len("--envelope="):]
 		case a == "--require-policy":
 			requirePolicy = true
+		case a == "--no-record":
+			noRecord = true
 		}
 	}
 	if !hookStdin {
 		exitErr("router_evaluate_missing_args", "--hook-stdin required (other modes deferred)")
 	}
-	runRouterHookStdin(agent, envelopeFlag, requirePolicy)
+	runRouterHookStdin(agent, envelopeFlag, requirePolicy, noRecord)
 }

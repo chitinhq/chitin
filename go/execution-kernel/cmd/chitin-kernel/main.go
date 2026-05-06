@@ -815,7 +815,7 @@ func cmdGateEvaluate(args []string) {
 		if *agent == "" {
 			*agent = "claude-code"
 		}
-		runHookStdin(*agent, *envelopeID, *requirePolicy)
+		runHookStdin(*agent, *envelopeID, *requirePolicy, *noRecord)
 		return
 	}
 

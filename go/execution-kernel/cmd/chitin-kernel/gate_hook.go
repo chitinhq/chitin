@@ -54,8 +54,8 @@ func isChitinAdminCommand(a gov.Action) bool {
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
 // evalHookStdin core. The split keeps evalHookStdin testable in-process
 // while production gets the full os-level behavior.
-func runHookStdin(agent, envelopeFlag string, requirePolicy bool) {
-	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy)
+func runHookStdin(agent, envelopeFlag string, requirePolicy, noRecord bool) {
+	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy, noRecord)
 	os.Exit(code)
 }
 
@@ -83,7 +83,7 @@ func runHookStdin(agent, envelopeFlag string, requirePolicy bool) {
 // (Counter + BudgetStore). Sharing one *sql.DB would halve cold-start
 // open cost. Deferred until Milestone D's 8-shim stress test surfaces
 // real contention numbers — at 3ms p95 today the headroom is ample.
-func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy bool) int {
+func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy, noRecord bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -219,6 +219,11 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 		// them via env. FingerprintContextFromEnv centralizes the env
 		// read so all Gate constructors stay in sync.
 		Fingerprint: gov.FingerprintContextFromEnv(),
+		// noRecord=true suppresses Counter.RecordDenial + WriteLog inside
+		// gov.Gate. We additionally skip OnDecision wiring + envelope
+		// spend below so a smoke evaluation has zero persistent side
+		// effects regardless of which path it traverses.
+		NoRecord: noRecord,
 	}
 	// F4 addendum: wire OnDecision to emit a `decision` chain event via
 	// the canonical path. chain_id = HookInput.SessionID when available
@@ -227,23 +232,29 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	// Skip wiring if chain_id can't be resolved (rand failure) — agent name
 	// is preserved separately as AgentInstanceID; surface is the driver
 	// origin ("claude-code"), not the agent identifier.
-	hookChainID := payload.SessionID
-	if hookChainID == "" {
-		hookChainID = newChainID()
-	}
-	if hookChainID != "" {
-		// Surface label tracks the dispatched driver so chain
-		// telemetry doesn't mislabel codex/gemini events as
-		// claude-code. The agent flag drives this — claude-code
-		// is the default when the flag is empty.
-		surface := agent
-		if surface == "" {
-			surface = "claude-code"
+	//
+	// noRecord=true also skips this wiring: OnDecision writes a v2 chain
+	// event via the decision emitter, which is a second persistence
+	// path that NoRecord must mute. Mirrors cmdGateEvaluate's behavior.
+	if !noRecord {
+		hookChainID := payload.SessionID
+		if hookChainID == "" {
+			hookChainID = newChainID()
 		}
-		de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
-		if deErr == nil {
-			defer deClose()
-			gate.OnDecision = de.emitDecision
+		if hookChainID != "" {
+			// Surface label tracks the dispatched driver so chain
+			// telemetry doesn't mislabel codex/gemini events as
+			// claude-code. The agent flag drives this — claude-code
+			// is the default when the flag is empty.
+			surface := agent
+			if surface == "" {
+				surface = "claude-code"
+			}
+			de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
+			if deErr == nil {
+				defer deClose()
+				gate.OnDecision = de.emitDecision
+			}
 		}
 	}
 	// Operator-recovery commands (chitin-kernel envelope grant, use, etc.)
@@ -254,10 +265,16 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	// logged without envelope stamping (the call doesn't belong to any
 	// envelope's spend); a structured info line goes to errOut so
 	// operators auditing the hook see when an exemption fired.
+	//
+	// noRecord also forces nil envelope so smoke probes never consume
+	// budget — without this an operator validating policy via
+	// `--no-record --hook-stdin` would still debit the active envelope
+	// per probe, surprising the next legitimate caller with reduced
+	// remaining calls.
 	spendEnvelope := envelope
-	if isChitinAdminCommand(action) {
+	if noRecord || isChitinAdminCommand(action) {
 		spendEnvelope = nil
-		if envelope != nil {
+		if envelope != nil && !noRecord {
 			writeJSONLine(errOut, map[string]string{
 				"info":    "chitin_admin_exempt",
 				"command": action.Target,
