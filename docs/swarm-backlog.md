@@ -123,6 +123,70 @@ each layer needs eyes-on testing. Not safe to auto-dispatch.
 
 ---
 
+### `groomer-validate-paths-against-main`
+
+```yaml
+id: groomer-validate-paths-against-main
+tier: T2
+status: ready
+estimated_loc: 80
+blocks: []
+file: apps/runner/src/grooming/, libs/contracts/src/groom-pass.ts
+references_design: docs/swarm-backlog.md (this entry's why-section)
+role: programmer
+priority: high
+```
+
+**Why this is here:** 2026-05-06 batch /land found 3 of 4 swarm-opened
+PRs had stale or incorrect premises that should have been caught BEFORE
+the entry became `ready`:
+
+- **#329** (lessons-distill-fast-path) referenced `apps/temporal-worker/src/lessons.ts`,
+  a path REMOVED in the Temporal-removal monorepo migration weeks earlier.
+- **#339** (comment-responder-mutable-status) referenced `apps/temporal-worker/src/comment-responder/`,
+  same removed path.
+- **#355** (scheduler-lib-foundation) wanted to remove `libs/scheduler/package.json`
+  subpath exports that `apps/cli/src/commands/scheduler.ts:171,173`
+  actively imports — would break the cli build.
+
+The swarm dispatched, an agent spent real model time, opened a PR, CI
+ran, operator review caught the issue. Cost: ~10 mins of agent time +
+5 min of CI per stale entry, plus the operator review burden.
+
+A grooming pass that **statically validates entry premises against
+current `main`** catches all three before dispatch:
+
+1. **Path existence check.** For every entry with a `file:` field,
+   verify each path EXISTS in the current main worktree. If any path
+   is missing → flip status to `stale`, comment with the missing
+   path(s), exclude from `ready` list.
+
+2. **Public-API import check** (cheaper version of #1, optional). For
+   entries that propose REMOVING a public symbol or export, grep the
+   workspace for active consumers. If found → flip to `stale` with
+   the consumer locations.
+
+3. **Re-validation cadence.** Every entry in `ready` status gets
+   re-validated weekly (or on `main` HEAD change beyond N commits).
+   Catches drift introduced by other merges.
+
+**Fix scope:**
+
+1. Add `validate-entry-paths.ts` in `apps/runner/src/grooming/` that
+   parses each backlog entry's `file:` field, checks existence in
+   the current main worktree, returns missing paths.
+2. Wire it into the existing groomer pipeline — entry transition
+   `triage → ready` requires path-validation pass.
+3. Background re-validation cron flips already-ready entries to
+   `stale` if their files vanish later.
+4. Tests: 3 fixture entries (clean, missing-path, partially-missing)
+   + assertion that `validate-entry-paths` flags correctly.
+
+T2 because: mechanical static check, well-scoped, no model judgment
+involved. The grep is the entire algorithm.
+
+---
+
 ### `dispatcher-respect-blocks-field`
 
 ```yaml
