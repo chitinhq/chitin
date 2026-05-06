@@ -111,12 +111,13 @@ jobs:
 
       - name: Vitest (Nx affected)
         run: |
-          # nx affected exits 0 with no output when nothing's affected
-          # (e.g., docs-only PR). That's the goal: skip TS test work
-          # entirely when the diff doesn't touch any TS project.
+          # Use nx affected for test target. If affected detection is not worth the complexity,
+          # fallback to nx run-many (uncomment below and comment nx affected if needed).
           pnpm exec nx affected -t test \
             --base=${{ steps.nx-base.outputs.base }} \
             --parallel=3
+          # Fallback:
+          # pnpm exec nx run-many -t test --all --parallel=3
 
       - name: Layer-tag coverage lint
         run: |
