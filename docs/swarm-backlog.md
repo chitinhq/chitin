@@ -47,6 +47,82 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `swarm-multilayer-spawn-broken`
+
+```yaml
+id: swarm-multilayer-spawn-broken
+tier: T5
+status: ready
+estimated_loc: 100
+blocks: []
+file: apps/runner/src/activity.ts, ~/.hermes/profiles/, ~/.config/systemd/user/chitin.env
+references_design: docs/design/2026-05-06-kernel-gate-escalation.md
+role: programmer
+priority: critical
+```
+
+**Why this is here:** the operator woke up 2026-05-06 to **zero swarm
+PRs** despite chitin-dispatcher.timer firing every 5 min for 8h+. Root
+cause: spawn pipeline broken at multiple layers. None individually
+critical; together they prevent any swarm output.
+
+**Findings (2026-05-06 morning diagnosis):**
+
+1. **Hermes profile `chitin-t3` doesn't exist.** activity.ts'
+   openclaw-glm-cloud branch tries to spawn `hermes -p chitin-t3 ...`;
+   hermes errors instantly: "Profile 'chitin-t3' does not exist."
+   *Manual fix applied: `hermes profile create --clone-from chitin-t0
+   --no-alias chitin-t3` (still needs OLLAMA_API_KEY for the
+   ollama-cloud provider).*
+
+2. **`--provider ollama-launch` flag is invalid.** activity.ts passes
+   `--provider ollama-launch` for hermes spawns; hermes CLI errors
+   "Unknown provider 'ollama-launch'". The string IS the provider
+   name in `~/.hermes/config.yaml` but the CLI flag rejects it.
+   *Fix: drop the `--provider` flag from the hermes spawn args (let
+   the profile's preconfigured provider drive it), or use the right
+   value the CLI accepts.*
+
+3. **chitin-t0 profile has no inference provider configured.**
+   `hermes status` shows Provider: ollama-launch but the profile
+   itself isn't configured — `hermes -p chitin-t0` errors "No
+   inference provider configured." *Fix: `hermes model` interactive
+   setup OR document the env-var fallback.*
+
+4. **T2 copilot run produces zero commits in 62s.** Today (after
+   bypassing hermes via CHITIN_T0_VIA_OPENCLAW=1), dispatcher tried
+   T2 = copilot:claude-haiku-4-5; ran 62s, exit_code=1, no commits,
+   no execute-request log written. Distinct unknown failure mode.
+
+5. **T4 claude-code only edits `.claude/settings.json`.** The agent
+   runs (7s), modifies the bootstrap file we wrote, then apply step
+   reverts the change. Suggests prompt isn't reaching the agent OR
+   agent has no real task to act on.
+
+6. **82 stale dispatch markers from May 1-2.** Cleared down to 29
+   (matching actually-relevant entries) so dispatcher could even
+   pick fresh work. Without this clear, every entry was skipped as
+   "dispatch marker present, last run still in flight."
+
+7. **3 open PRs (#329, #339)** target `apps/temporal-worker/` —
+   that path was removed when Temporal was ripped out. PRs are
+   stale, can't merge, should be closed.
+
+**Fix scope:**
+
+1. activity.ts hermes spawn: drop `--provider`, verify profile-only
+   path works for chitin-t0 / chitin-t3
+2. Document hermes profile setup in operator README
+3. Diagnose T2 copilot 62s/exit-1 failure (likely tool-call flow
+   broken; check chain events for that workflow_id)
+4. Diagnose T4 prompt-not-reaching-agent
+5. Operator: close stale PRs #329 #339
+
+T5 because: spans operator config + multiple TS fixes + diagnosis;
+each layer needs eyes-on testing. Not safe to auto-dispatch.
+
+---
+
 ### `dispatcher-respect-blocks-field`
 
 ```yaml
