@@ -92,16 +92,29 @@ class CLIStatus:
 #
 # Curated fallbacks (used only when the live probe fails):
 
+# Gemini Code Assist's loadCodeAssist endpoint returns tier metadata
+# but no model catalog. The Gemini CLI itself ships with a hardcoded
+# list it routes against. Pro tier users can also call free-tier
+# models — the lists below are union, not exclusive.
+#
+# Source: gemini-cli's internal model list + Google AI Pro docs.
+# Update when Google ships new SKUs (no programmatic enumeration today).
 GEMINI_PRO_TIER_MODELS = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-3",
+    "gemini-3-pro",
+    "gemini-3-pro-image",
+    # Pro tier ALSO includes everything from free tier:
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
 ]
 
 GEMINI_FREE_TIER_MODELS = [
     "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
+    "gemini-2.5-flash-lite",
 ]
 
 
@@ -258,16 +271,36 @@ def probe_copilot() -> CLIStatus:
         )
         if data and isinstance(data.get("data"), list):
             s.authed = True
-            # Filter to chat-completion models the picker enables.
-            s.models = [
-                m["id"] for m in data["data"]
+            # Include EVERY chat-completion model the API exposes.
+            # picker_enabled=False just means "not in the Chat picker UI"
+            # — the model is still callable via the API. That includes
+            # free-tier / legacy models (gpt-4o-mini, gpt-3.5-turbo)
+            # operators want to route cheap-T0 work to.
+            seen: set[str] = set()
+            s.models = []
+            for m in data["data"]:
+                if (m.get("capabilities") or {}).get("type") != "chat":
+                    continue
+                mid = m["id"]
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                s.models.append(mid)
+            n_picker = sum(
+                1 for m in data["data"]
                 if m.get("model_picker_enabled")
                 and (m.get("capabilities") or {}).get("type") == "chat"
-            ]
+            )
+            n_other = len(s.models) - n_picker
             s.auth_detail = {
                 "vendor_breakdown": _vendor_count(data["data"]),
+                "picker_enabled": n_picker,
+                "api_only": n_other,
             }
-            s.notes = f"live catalog from api.githubcopilot.com ({len(s.models)} models, picker-enabled chat)"
+            s.notes = (
+                f"live catalog from api.githubcopilot.com "
+                f"({len(s.models)} chat models: {n_picker} picker, {n_other} api-only/free)"
+            )
             return s
     s.authed = False
     s.notes = "no gh token (run `gh auth login`)"
