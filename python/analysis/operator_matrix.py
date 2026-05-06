@@ -237,6 +237,112 @@ def copilot_multiplier(model_id: str) -> float | None:
     return COPILOT_MULTIPLIERS.get(model_id.lower())
 
 
+# Codex CLI per-model 5-hour message ranges by ChatGPT plan tier.
+# Source: developers.openai.com/codex/pricing (May 2026). Ranges are
+# (light task, heavy task) — task complexity determines actual count.
+# Plus quotas got a temporary 25× boost through May 31 2026 per the
+# OpenAI community thread; these are the published baseline numbers.
+CODEX_5H_LIMITS = {
+    "plus": {
+        "gpt-5.5":         (15, 80),
+        "gpt-5.4":         (20, 100),
+        "gpt-5.4-mini":    (60, 350),
+        "gpt-5.3-codex":   (30, 150),     # plus 10-60 cloud
+    },
+    "pro-5x": {
+        "gpt-5.5":         (80, 400),
+        "gpt-5.4":         (100, 500),
+        "gpt-5.4-mini":    (300, 1750),
+        "gpt-5.3-codex":   (150, 750),
+    },
+    "pro-20x": {
+        "gpt-5.5":         (300, 1600),
+        "gpt-5.4":         (400, 2000),
+        "gpt-5.4-mini":    (1200, 7000),
+        "gpt-5.3-codex":   (600, 3000),
+    },
+}
+
+# Gemini Code Assist daily aggregate (model-agnostic — quota burns
+# the same regardless of which Gemini variant the operator picks).
+GEMINI_DAILY_REQUESTS = {
+    "free":           1000,
+    "standard-tier":  1500,    # Google AI Pro
+    "g1-pro-tier":    1500,    # alias: same as standard-tier per CodeAssist
+    "enterprise":     2000,
+}
+
+# Copilot monthly Premium Request budget by plan. x0 models don't
+# touch this budget; x1+ models burn at multiplier rate.
+COPILOT_MONTHLY_PREMIUM_REQUESTS = {
+    "free":         50,
+    "pro":          300,
+    "pro-plus":     1500,
+    "business":     300,
+    "enterprise":   1000,
+}
+
+
+def operator_cost_band(
+    driver: str,
+    model_id: str,
+    *,
+    copilot_plan: str = "pro",
+    codex_plan: str = "plus",
+    gemini_tier: str = "standard-tier",
+) -> str | None:
+    """Return a short string describing the operator's marginal cost on
+    this (driver, model) under their subscription. None when we have
+    no data for the combination.
+
+    Output is meant for the matrix display — short, grok-able at a
+    glance, captures BOTH whether the call is free under sub AND what
+    quota slot it burns.
+    """
+    if driver == "copilot":
+        mult = copilot_multiplier(model_id)
+        if mult is None:
+            return None
+        if mult == 0.0:
+            return f"**FREE on Copilot {copilot_plan.title()}**"
+        budget = COPILOT_MONTHLY_PREMIUM_REQUESTS.get(copilot_plan, 300)
+        calls_per_month = budget / mult if mult else float("inf")
+        if mult < 1.0:
+            return f"x{mult:g} (~{calls_per_month:.0f} calls/month on {copilot_plan.title()})"
+        if mult == 1.0:
+            return f"x1 ({calls_per_month:.0f} calls/month on {copilot_plan.title()})"
+        return f"**x{mult:g}** (~{calls_per_month:.0f} calls/month on {copilot_plan.title()}, premium)"
+
+    if driver == "codex":
+        limits = CODEX_5H_LIMITS.get(codex_plan, {}).get(model_id)
+        if limits is None:
+            return f"ChatGPT {codex_plan.title()} — limit not published"
+        lo, hi = limits
+        # Convert 5h → daily-ish for parity with other drivers
+        return f"{lo}–{hi}/5h on ChatGPT {codex_plan.title()} (~{lo*4.8:.0f}–{hi*4.8:.0f}/day)"
+
+    if driver == "gemini":
+        n = GEMINI_DAILY_REQUESTS.get(gemini_tier, 1500)
+        return f"1/{n} of daily quota on {gemini_tier} (model-agnostic)"
+
+    if driver == "claude":
+        # Claude Max absorbs per-token cost up to plan limits. The
+        # plan documents a 5-hour message window similar to Codex but
+        # without per-model breakdown — treat as "Max sub absorbs"
+        # until the operator hits a budget warning.
+        return "Max sub absorbs (per-window limits, model-agnostic)"
+
+    if driver in ("hermes", "ollama", "openclaw"):
+        # `:cloud` tag (and openclaw-*-cloud aliases) route through
+        # Ollama Cloud sub, not the local 3090 — call it out.
+        m_lower = model_id.lower()
+        if ":cloud" in m_lower or m_lower.endswith("-cloud") or "-cloud" in m_lower.split(":")[0]:
+            return "FREE (Ollama Cloud sub absorbs)"
+        return "FREE (local hardware)"
+
+    return None
+
+
 # OpenClaw maps each driver-id to a backing agent + model. Per
 # DriverIdSchema in libs/contracts:
 OPENCLAW_AGENTS = {
@@ -721,21 +827,13 @@ def cmd_report(_args) -> None:
                     sources_used.add(src)
             cost_str = (f"${cost_in:.7f}/in-tok" + (f" (`{cost_model[:30]}`)" if cost_model else "")
                         ) if cost_in is not None else "(no cost data)"
-            # For Copilot, surface the request multiplier — that's the
-            # operator's REAL marginal cost on a Copilot Pro sub.
-            # Multiplier 0 means unmetered (free above the per-month
-            # request cap); >1 means burns budget at that rate.
-            if s["name"] == "copilot":
-                mult = copilot_multiplier(model)
-                if mult is not None:
-                    if mult == 0.0:
-                        cost_str += "  | **Copilot: x0 (free for Pro)**"
-                    elif mult < 1.0:
-                        cost_str += f"  | Copilot: x{mult:g} (cheap)"
-                    elif mult == 1.0:
-                        cost_str += f"  | Copilot: x1 (standard)"
-                    else:
-                        cost_str += f"  | Copilot: **x{mult:g}** (premium)"
+            # Operator-real cost: how does this call hit the operator's
+            # actual subscription budget? Different drivers, different
+            # shapes — copilot multipliers vs codex 5h ranges vs gemini
+            # daily aggregate vs claude max windows vs free local.
+            op_cost = operator_cost_band(s["name"], model)
+            if op_cost:
+                cost_str += f"  | {op_cost}"
             score_str = "; ".join(scores) if scores else "(no benchmark data — too new for any seed source)"
             target = (model.lower().split(":")[-1] if ":" in model else model.lower())
             target = OPENCLAW_DRIVER_TO_MODEL.get(target, target)  # show resolved target for openclaw
