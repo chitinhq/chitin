@@ -103,7 +103,7 @@ export const DriverIdSchema = z.enum([
   // The plugin gates each tool call before execution.
   'openclaw-glm-flash',  // 3090: glm-4.7-flash:latest (~30B)
   'openclaw-glm-cloud',  // Ollama Cloud sub: glm-5.1:cloud (opus-light)
-  'openclaw-deepseek',   // 3090: deepseek (kept for future use, not in defaults)
+  'openclaw-deepseek-cloud',   // Ollama Cloud: deepseek (cloud-resident, not in defaults)
 ]);
 
 export const NetworkPolicySchema = z.enum(['none', 'allowlist', 'open']);
