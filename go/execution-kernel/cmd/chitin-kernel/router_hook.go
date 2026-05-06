@@ -229,6 +229,20 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		if advice.Escalate {
 			composed["escalation_requested"] = true
 		}
+
+		// Per docs/design/2026-05-06-kernel-gate-escalation.md (step 4):
+		// when chitin-routes.yaml has escalation.enabled=true AND the
+		// gate would have escalated, ALSO synchronously spawn a peer
+		// CLI and return its output as the deny message body.
+		// CHITIN_NO_ESCALATE=1 in the spawned env prevents recursive
+		// peer-spawn (peer can be gated/denied/advised but cannot
+		// itself trigger another peer).
+		// Fail-open: ANY error in the spawn path falls back to today's
+		// deny+escalation_requested behavior. The kernel never bricks.
+		if advice.Escalate && os.Getenv("CHITIN_NO_ESCALATE") != "1" {
+			tryInGateSpawn(out, errOut, &composed, payload, advice, outcome, cwd)
+		}
+
 		body, _ := json.Marshal(composed)
 		_, _ = out.Write(body)
 		_, _ = out.Write([]byte{'\n'})
