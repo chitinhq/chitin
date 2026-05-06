@@ -588,8 +588,11 @@ def mine_terminal_bench(conn: sqlite3.Connection) -> int:
     # the page is React-hydrated and most of the markup is bundle JS
     # that has no benchmark data.
     import re as _re
-    text = _re.sub(r"<script[^>]*>.*?</script>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
-    text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+    # CodeQL-friendly closing tag: `</script` then any non-`<` chars
+    # until `>`. Matches well-formed `</script>` plus tolerated weird
+    # variants (`</script bar>`, `</script\t\n>`) some parsers accept.
+    text = _re.sub(r"<script\b[^>]*>.*?</script[^<]*>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
+    text = _re.sub(r"<style\b[^>]*>.*?</style[^<]*>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
     text = _re.sub(r"<[^>]+>", " ", text)
     text = _re.sub(r"\s+", " ", text).strip()
 
