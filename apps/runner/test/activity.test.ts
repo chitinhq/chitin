@@ -56,6 +56,64 @@ describe('planInvocation', () => {
     expect(plan.args).not.toContain('main');
   });
 
+  it('dispatches hermes via the `hermes` CLI with the chitin-runner profile + -z prompt', () => {
+    const plan = planInvocation({ ...baseReq, allowed_drivers: ['hermes'] });
+    expect(plan.command).toBe('hermes');
+    // Profile name must be passed via -p; default is chitin-runner.
+    const pIdx = plan.args.indexOf('-p');
+    expect(pIdx).toBeGreaterThan(-1);
+    expect(plan.args[pIdx + 1]).toBe('chitin-runner');
+    // -z carries the prompt
+    expect(plan.args).toContain('-z');
+    expect(plan.args).toContain(baseReq.prompt);
+    // Hooks + permission flags must be present so the chitin-governance
+    // plugin fires without TTY confirmation.
+    expect(plan.args).toContain('--accept-hooks');
+    expect(plan.args).toContain('--yolo');
+    // We deliberately do NOT pass --provider (hermes CLI rejects it
+    // even when the value matches a configured provider — verified
+    // 2026-05-06).
+    expect(plan.args).not.toContain('--provider');
+  });
+
+  it('hermes respects CHITIN_HERMES_PROFILE env override', () => {
+    const orig = process.env.CHITIN_HERMES_PROFILE;
+    try {
+      process.env.CHITIN_HERMES_PROFILE = 'chitin-t0';
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['hermes'] });
+      const pIdx = plan.args.indexOf('-p');
+      expect(plan.args[pIdx + 1]).toBe('chitin-t0');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_HERMES_PROFILE;
+      else process.env.CHITIN_HERMES_PROFILE = orig;
+    }
+  });
+
+  it('hermes respects CHITIN_MODEL_HERMES env override', () => {
+    const orig = process.env.CHITIN_MODEL_HERMES;
+    try {
+      process.env.CHITIN_MODEL_HERMES = 'glm-5.1:cloud';
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['hermes'] });
+      const mIdx = plan.args.indexOf('-m');
+      expect(mIdx).toBeGreaterThan(-1);
+      expect(plan.args[mIdx + 1]).toBe('glm-5.1:cloud');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_MODEL_HERMES;
+      else process.env.CHITIN_MODEL_HERMES = orig;
+    }
+  });
+
+  it('hermes does NOT emit -m when CHITIN_MODEL_HERMES is unset (profile default takes over)', () => {
+    const orig = process.env.CHITIN_MODEL_HERMES;
+    try {
+      delete process.env.CHITIN_MODEL_HERMES;
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['hermes'] });
+      expect(plan.args).not.toContain('-m');
+    } finally {
+      if (orig !== undefined) process.env.CHITIN_MODEL_HERMES = orig;
+    }
+  });
+
   it('dispatches gemini via the `gemini` CLI with -p prompt', () => {
     const plan = planInvocation({ ...baseReq, allowed_drivers: ['gemini'] });
     expect(plan.command).toBe('gemini');

@@ -104,6 +104,17 @@ export const DriverIdSchema = z.enum([
   'openclaw-glm-flash',  // 3090: glm-4.7-flash:latest (~30B)
   'openclaw-glm-cloud',  // Ollama Cloud sub: glm-5.1:cloud (opus-light)
   'openclaw-deepseek',   // 3090: deepseek (kept for future use, not in defaults)
+  // `hermes` = Hermes Agent (kanban dispatcher) running with the
+  // chitin-runner profile. Per docs/design/2026-05-06-kernel-gate-
+  // escalation.md core invariant: Hermes is the worker; chitin
+  // (kernel) handles in-tool-call escalation. Profile + provider +
+  // default model must be configured in ~/.hermes/config.yaml
+  // (`hermes model` interactive setup). Opt in by setting
+  // CHITIN_TIER_DRIVER_T0=hermes (or T1/T2 as appropriate). Default
+  // mapping does NOT route any tier here yet — the static map keeps
+  // openclaw/copilot/claude-code-headless until in-gate escalation
+  // (chitin-routes.yaml) is enabled.
+  'hermes',
 ]);
 
 export const NetworkPolicySchema = z.enum(['none', 'allowlist', 'open']);
