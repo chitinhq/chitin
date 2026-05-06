@@ -16,6 +16,21 @@ the kernel synchronously spawns the next-tier CLI (claude-code,
 copilot, etc.), captures its result, and returns that as the tool
 call's response. The agent never knows it was escalated.
 
+## Core invariant (operator decision, 2026-05-06)
+
+> Kanban chooses work.
+> Hermes attempts execution.
+> Chitin decides whether Hermes is allowed to continue or must be
+> replaced/escalated.
+> Peer execution is a kernel-mediated substitution, not a dispatcher
+> decision.
+
+This is cleaner than v1 because routing, enforcement, telemetry, and
+conformance all collapse into one authority boundary. Any future
+behavior that violates the invariant — hermes self-escalating,
+dispatcher picking peer CLIs, peer spawning peer — is a bug, not a
+feature.
+
 ## Why the existing architecture missed this
 
 `apps/runner/src/dispatcher.ts` has a static `TIER_DRIVER_DEFAULTS`
@@ -178,40 +193,110 @@ Per-driver spawn templates (kernel-side):
 - `claude-code-headless`: `claude -p --model <model> --print` with
   the tool call payload + chain tail piped via stdin as a structured
   prompt. Output captured from stdout.
-- `copilot`: `gh copilot suggest -t shell` for shell-shaped tools,
-  Copilot Chat API for code-shaped tools. Token from `gh auth token`.
+- `copilot`: Copilot Chat API for code-shaped tools, `gh copilot
+  suggest -t shell` for shell-shaped tools. Token from `gh auth token`.
 - `codex`: `codex exec --model <model> -p '<prompt>'`. Output captured.
 - `gemini`: `gemini -p '<prompt>' --model <model>`. Output captured.
 
+**Working directory** (operator decision, 2026-05-06): peer always
+runs in a **fresh worktree**, not the worker's dirty tree. Isolation
++ reproducibility + clear audit boundary. Snapshot-and-diff-apply
+deferred — adds complexity too early.
+
+**Recursive escalation guard** (operator decision, 2026-05-06): the
+spawn env always carries `CHITIN_NO_ESCALATE=1`. Peer can be gated,
+denied, logged, advised — but **cannot spawn another peer**. Without
+this guard, peer-spawns-peer creates recursive arbitration with
+unbounded cost and weird deadlocks.
+
 Spawn timeout = `escalation.spawn_timeout_seconds` (default 60s).
-Output truncated to fit tool-call response size limit. Telemetry
-chain event records: which CLI spawned, latency, exit code,
-quota-after-call.
 
-## Migration path
+## Peer output normalization — ToolCallResult, not raw stdout
 
-Incremental, reversible:
+(Operator design correction, 2026-05-06): "Peer's output IS the tool
+call result" was right but only AFTER normalization. The kernel wraps
+peer output as a structured `ToolCallResult` with full provenance, NOT
+raw CLI stdout. This preserves replay, audit, and future scoring
+(without it the conformance loop can't attribute outcomes back to the
+peer that produced them).
 
-1. **Schema lands** — add `escalation:` to chitin.yaml schema, no
-   behavior change yet. Operators can declare policies; nothing
-   reads them.
-2. **routeFor() lands** — Go kernel adds the function + policy
-   loader; reachable from tests but not wired into the gate.
-3. **In-gate spawn lands behind a flag** — `escalation.enabled: true`
-   in chitin.yaml turns it on; default off. Operator opt-in to test.
-4. **dispatcher.ts trims** — once in-gate is proven, remove the
-   tier-to-driver map from dispatcher (always spawn hermes). Tier
-   metadata stays on cards for telemetry/grouping but no longer
-   drives CLI selection.
-5. **Conformance substrate joins** — the routing-effectiveness
-   dimension (already shipped per `2026-05-05-conformance-substrate.md`)
-   gives routeFor() observed-vs-declared compatibility data per
-   (driver, model). Closes the loop: matrix data → routing → measure
-   → re-update matrix.
+```go
+type ToolCallResult struct {
+    // The actual content the worker (hermes) sees in place of its
+    // original tool result. Shape matches whatever the original tool
+    // call expected (string, JSON, file diff, etc.).
+    Content        any
 
-Each step is independently shippable. Steps 1-2 are pure additions.
-Step 3 is opt-in. Step 4 removes code. Step 5 is the conformance
-flywheel.
+    // Provenance — required, not optional. Every escalated result
+    // carries this so /mine + conformance extractors can join.
+    Provenance struct {
+        EscalationID    string         // unique per peer-spawn
+        WorkerWorkflowID string        // hermes' workflow_id
+        TriggerSignal   string         // "floundering" / "blast_radius" / "drift"
+        Severity        string         // human-readable
+        Route           string         // "patch_quality" etc.
+        Candidate       struct {
+            Driver string
+            Model  string
+        }
+        SpawnedAt       time.Time
+        DurationMs      int64
+        PeerExitCode    int
+        PeerQuotaImpact QuotaImpact    // what this cost on which sub
+    }
+
+    // Raw peer output for replay — never shown to the worker, but
+    // kept in the chain so audits can re-derive Content.
+    RawPeerStdout   string
+    RawPeerStderr   string
+}
+```
+
+Telemetry: every peer spawn writes ONE chain event of type
+`peer_escalation` carrying the full Provenance + RawPeer* fields.
+The worker's chain only sees the normalized Content. Two-layer audit
+trail: worker's view of "what happened in this tool call" + chain's
+view of "what really happened underneath."
+
+## Migration path (operator-approved sequence, 2026-05-06)
+
+Six incremental, reversible steps. Each independently shippable.
+
+1. **Schema only** — add `escalation:` block to chitin.yaml schema +
+   loader. No behavior change. Operators can declare policies;
+   nothing reads them yet.
+
+2. **routeFor(signal, severity, context) only** — Go kernel adds the
+   function + policy walker; reachable from tests but not wired into
+   the gate. Returns RouteDecision struct purely; no spawn yet.
+
+3. **spawnPeer(route) behind flag** — kernel function that ACTUALLY
+   spawns the peer CLI (fresh worktree, CHITIN_NO_ESCALATE=1 env,
+   per-driver template) and normalizes its output into ToolCallResult.
+   Reachable from tests but no gate path calls it. Default flag off.
+
+4. **Wire in-gate escalation path** — `escalation.enabled: true` in
+   chitin.yaml turns it on; default off. The gate's existing
+   "heuristic + advisor → escalation_requested" branch now also
+   calls `routeFor()` + `spawnPeer()` and returns the normalized
+   result. Operator opt-in to test.
+
+5. **Remove dispatcher CLI selection** — once in-gate is proven,
+   delete `TIER_DRIVER_DEFAULTS` + `pickTierDriver` + the
+   `CHITIN_TIER_DRIVER_T<N>` env overrides from
+   `apps/runner/src/dispatcher.ts`. Dispatcher trims to "always spawn
+   hermes." Tier stays as a card metadata field — kernel-side hint,
+   not CLI selector.
+
+6. **Conformance feedback loop** — the routing-effectiveness
+   dimension (shipped in `2026-05-05-conformance-substrate.md` §161)
+   gives routeFor() observed-vs-declared compatibility per (driver,
+   model). RouteDecision starts factoring observed data, not just
+   leaderboard scores. Closes the loop: matrix → routing → measure →
+   re-update matrix.
+
+Steps 1-3 are pure additions. Step 4 is opt-in. Step 5 removes code.
+Step 6 is the conformance flywheel.
 
 ## What the dispatcher.ts looks like after migration
 
@@ -232,28 +317,32 @@ env overrides — all removed. The `tier` field on backlog cards
 becomes a hint to the kernel ("this card is bulk T0 work, prefer
 cheaper escalation routes") not a driver-selection key.
 
-## Open questions
+## Decisions locked (operator, 2026-05-06)
 
-1. **Peer CLI working directory.** Does the spawned peer get a fresh
-   worktree (claude-code-headless requires one), the worker's
-   worktree, or a snapshot? Lean: snapshot the worker's worktree
-   into a sibling temp dir, peer mutates the temp dir, kernel
-   diff-applies the result back to the worker's worktree. Avoids
-   double-edit conflicts.
-2. **Cost attribution.** The peer CLI's quota burn happens during
-   the worker's session. Telemetry chain event must attribute it to
-   the worker's workflow_id, not a separate "escalation workflow."
-3. **Recursive escalation guard.** Peer CLI's tool calls also hit
-   chitin's gate. Should the gate's escalation logic short-circuit
-   when it detects "I'm already inside a peer-spawned context"?
-   Lean: yes, set CHITIN_NO_ESCALATE=1 in the spawned env so peer
-   gates allow/deny only.
-4. **Hermes' own internal advisor.** Hermes has its own
-   model-switching advisor (per its profile system). Does that fire
-   BEFORE chitin's kernel signal, or after, or both? Risk of
-   double-routing. Lean: disable hermes' internal advisor when
-   running under chitin (set hermes profile to fixed glm-flash, no
-   fallback) — chitin's kernel is the only escalation authority.
+These were the open questions from the first draft. All resolved
+before any code lands.
+
+1. **Peer working directory: fresh worktree.** Best default. Don't
+   run peer in worker's dirty tree. Snapshot+diff is elegant but adds
+   complexity too early. Fresh worktree gives isolation,
+   reproducibility, and clearer audit boundaries.
+
+2. **Cost attribution: worker workflow_id + child escalation_id.**
+   Parent workflow owns the burn; peer needs `escalation_id`,
+   `route`, `candidate`, `trigger_signal` for analysis. Without this
+   the conformance feedback gets muddy. Implemented as the
+   ToolCallResult.Provenance struct above.
+
+3. **Recursive escalation guard: CHITIN_NO_ESCALATE=1 mandatory.**
+   Peer can still be gated, denied, logged, advised — but cannot
+   spawn another peer. Otherwise: recursive agent arbitration with
+   unbounded cost and weird deadlocks.
+
+4. **Hermes advisor under chitin: disabled / non-authoritative.**
+   Chitin is the single escalation authority. Hermes can emit local
+   hints (telemetry, flagging) but cannot independently escalate,
+   reroute, or mutate policy decisions. Otherwise multi-authority
+   ambiguity reintroduced.
 
 ## Out of scope
 
