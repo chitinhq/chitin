@@ -111,9 +111,11 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 	claudecode.SetWarnSink(errOut)
 	codex.SetWarnSink(errOut)
 	gemini.SetWarnSink(errOut)
+	hermes.SetWarnSink(errOut)
 	defer claudecode.SetWarnSink(nil)
 	defer codex.SetWarnSink(nil)
 	defer gemini.SetWarnSink(nil)
+	defer hermes.SetWarnSink(nil)
 
 	// Dispatch by agent: codex + gemini use different tool names
 	// than Claude Code (apply_patch vs Edit/Write, run_shell_command

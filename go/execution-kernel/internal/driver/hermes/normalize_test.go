@@ -1,6 +1,8 @@
 package hermes
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -162,6 +164,47 @@ func TestNormalize_mcpToolName(t *testing.T) {
 	}
 	if a.Target != "github/list_issues" {
 		t.Errorf("Target: got %q, want %q", a.Target, "github/list_issues")
+	}
+}
+
+func TestNormalize_claudeCodeLeak_reNormalizesAndWarns(t *testing.T) {
+	// Regression: 2026-05-06 chain showed raw `Write` strings arriving
+	// at the hermes hook (envelope 01KQRF7D66GYXZ829G3QGRKWQB), which
+	// fell to ActUnknown → default-deny-unknown → counter accumulation
+	// → lockdown. Cross-driver leak detection catches the upstream
+	// wiring bug: re-normalize via claudecode so the deny gets correct
+	// rule attribution, and emit a warn so the dispatcher mis-route
+	// is findable.
+	buf := &bytes.Buffer{}
+	SetWarnSink(buf)
+	t.Cleanup(func() { SetWarnSink(nil) })
+
+	cases := []struct {
+		tool     string
+		input    map[string]any
+		wantType gov.ActionType
+	}{
+		{"Write", map[string]any{"file_path": "/etc/hostname", "content": "x"}, gov.ActFileWrite},
+		{"Edit", map[string]any{"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}, gov.ActFileWrite},
+		{"Read", map[string]any{"file_path": "/etc/passwd"}, gov.ActFileRead},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			buf.Reset()
+			a, err := Normalize(HookInput{ToolName: tc.tool, ToolInput: tc.input})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Errorf("Type=%q want %q (claude leak should re-normalize, not fall to ActUnknown)", a.Type, tc.wantType)
+			}
+			if !strings.Contains(buf.String(), `"warning":"cross_driver_tool_name"`) {
+				t.Errorf("expected cross_driver_tool_name warn, got: %q", buf.String())
+			}
+			if !strings.Contains(buf.String(), `"driver":"hermes"`) {
+				t.Errorf("warn missing driver=hermes: %q", buf.String())
+			}
+		})
 	}
 }
 

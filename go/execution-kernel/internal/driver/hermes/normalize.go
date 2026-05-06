@@ -54,6 +54,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
 
@@ -220,6 +221,20 @@ func Normalize(in HookInput) (gov.Action, error) {
 		}, nil
 	}
 
+	// Cross-driver leak detection: if a Claude-Code tool name reaches
+	// the hermes hook, the upstream dispatcher (swarm orchestrator)
+	// mis-routed the payload. Returning ActUnknown silently
+	// accumulates default-deny-unknown denials toward the lockdown
+	// threshold — root cause of 2026-05-06 hermes lockdown after
+	// raw `Write` calls leaked in via envelope 01KQRF7D66GYXZ829G3QGRKWQB.
+	// Re-normalize via claudecode.Normalize so the underlying action
+	// gets correct rule attribution (no-rm, protected-system-path-write,
+	// etc.) instead of accumulating as default-deny-unknown, and warn
+	// so the dispatcher misconfiguration surfaces in operator stderr.
+	if a, ok := normalizeClaudeLeak(in); ok {
+		return a, nil
+	}
+
 	// Forward-compat: unmapped hermes tools (image_generate, cronjob,
 	// clarify, etc.) fall through as ActUnknown. Policy default-deny
 	// rejects them unless an operator opts a specific tool in.
@@ -229,6 +244,35 @@ func Normalize(in HookInput) (gov.Action, error) {
 		Path:   in.Cwd,
 		Params: in.ToolInput,
 	}, nil
+}
+
+// normalizeClaudeLeak attempts to interpret in as a Claude-Code-shaped
+// payload that was mis-routed to the hermes hook. Returns (action,true)
+// when claudecode.Normalize maps the tool name to a known action; false
+// otherwise (caller falls through to ActUnknown). Emits a structured
+// warn line so the upstream wiring bug is findable — without it, the
+// only signal would be a chain row with rule_id=default-deny-unknown
+// and tool name "Write", which already conflated cross-driver leaks
+// with genuinely-unknown hermes tools.
+func normalizeClaudeLeak(in HookInput) (gov.Action, bool) {
+	cc := claudecode.HookInput{
+		SessionID:      in.SessionID,
+		TranscriptPath: in.TranscriptPath,
+		Cwd:            in.Cwd,
+		HookEventName:  in.HookEventName,
+		ToolName:       in.ToolName,
+		ToolInput:      in.ToolInput,
+	}
+	a, err := claudecode.Normalize(cc)
+	if err != nil || a.Type == gov.ActUnknown {
+		return gov.Action{}, false
+	}
+	if warnSink != nil {
+		fmt.Fprintf(warnSink,
+			"{\"warning\":\"cross_driver_tool_name\",\"driver\":\"hermes\",\"tool\":%q,\"hint\":\"upstream dispatcher routed a Claude-Code tool name to the hermes hook; re-normalized via claudecode.Normalize so policy attribution is correct, but the wiring should be fixed\"}\n",
+			in.ToolName)
+	}
+	return a, true
 }
 
 func stringField(m map[string]any, k string) string {

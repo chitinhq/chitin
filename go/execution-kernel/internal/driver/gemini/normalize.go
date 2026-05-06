@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
 
@@ -174,6 +175,16 @@ func Normalize(in HookInput) (gov.Action, error) {
 		}, nil
 	}
 
+	// Cross-driver leak detection: see hermes/normalize.go for the
+	// rationale (2026-05-06 lockdown incident). When a Claude-Code
+	// tool name leaks into the gemini hook, re-normalize via
+	// claudecode so policy attribution is correct (no-rm,
+	// protected-system-path-write, etc.) and warn so the upstream
+	// wiring bug is findable in operator stderr.
+	if a, ok := normalizeClaudeLeak(in); ok {
+		return a, nil
+	}
+
 	// Forward-compat: unknown tools fail-closed. Operator gets a
 	// clear "default-deny-unknown" verdict and can add a rule if
 	// the tool turns out to be benign.
@@ -183,6 +194,27 @@ func Normalize(in HookInput) (gov.Action, error) {
 		Path:   in.Cwd,
 		Params: in.ToolInput,
 	}, nil
+}
+
+func normalizeClaudeLeak(in HookInput) (gov.Action, bool) {
+	cc := claudecode.HookInput{
+		SessionID:      in.SessionID,
+		TranscriptPath: in.TranscriptPath,
+		Cwd:            in.Cwd,
+		HookEventName:  in.HookEventName,
+		ToolName:       in.ToolName,
+		ToolInput:      in.ToolInput,
+	}
+	a, err := claudecode.Normalize(cc)
+	if err != nil || a.Type == gov.ActUnknown {
+		return gov.Action{}, false
+	}
+	if warnSink != nil {
+		fmt.Fprintf(warnSink,
+			"{\"warning\":\"cross_driver_tool_name\",\"driver\":\"gemini\",\"tool\":%q,\"hint\":\"upstream dispatcher routed a Claude-Code tool name to the gemini hook; re-normalized via claudecode.Normalize so policy attribution is correct, but the wiring should be fixed\"}\n",
+			in.ToolName)
+	}
+	return a, true
 }
 
 // stringField extracts a string field. Same shape as

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -168,4 +169,61 @@ func TestFirstFilePathFromPatch_HandlesAllVariants(t *testing.T) {
 		t.Errorf("non-matching prefix should not match, got=%q", got)
 	}
 	_ = strings.TrimSpace // silence unused-import lint if I move helpers
+}
+
+func TestNormalize_claudeCodeLeak_reNormalizesAndWarns(t *testing.T) {
+	// Codex has only 3 native cases (Bash/apply_patch/read_file), so
+	// the cross-driver leak surface is wide. Mirrors the hermes test
+	// of the same name; same 2026-05-06 incident motivation.
+	buf := &bytes.Buffer{}
+	SetWarnSink(buf)
+	t.Cleanup(func() { SetWarnSink(nil) })
+
+	cases := []struct {
+		tool     string
+		input    map[string]any
+		wantType gov.ActionType
+	}{
+		{"Write", map[string]any{"file_path": "/etc/hostname", "content": "x"}, gov.ActFileWrite},
+		{"Edit", map[string]any{"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}, gov.ActFileWrite},
+		{"Read", map[string]any{"file_path": "/etc/passwd"}, gov.ActFileRead},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			buf.Reset()
+			a, err := Normalize(HookInput{ToolName: tc.tool, ToolInput: tc.input})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Errorf("Type=%q want %q", a.Type, tc.wantType)
+			}
+			if !strings.Contains(buf.String(), `"warning":"cross_driver_tool_name"`) {
+				t.Errorf("expected cross_driver_tool_name warn, got: %q", buf.String())
+			}
+			if !strings.Contains(buf.String(), `"driver":"codex"`) {
+				t.Errorf("warn missing driver=codex: %q", buf.String())
+			}
+		})
+	}
+}
+
+func TestNormalize_genuinelyUnknownStillFallsClosed(t *testing.T) {
+	// A name that's not in claudecode either must still fall to
+	// ActUnknown (default-deny behavior preserved). Without this
+	// guard, the leak detector could mask future Codex-specific tools
+	// that we genuinely haven't mapped yet.
+	buf := &bytes.Buffer{}
+	SetWarnSink(buf)
+	t.Cleanup(func() { SetWarnSink(nil) })
+	a, err := Normalize(HookInput{ToolName: "totally_made_up_tool", ToolInput: map[string]any{}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if a.Type != gov.ActUnknown {
+		t.Errorf("Type=%q want ActUnknown", a.Type)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no warn expected for genuinely-unknown name, got: %q", buf.String())
+	}
 }

@@ -1,6 +1,8 @@
 package gemini
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -142,5 +144,42 @@ func TestNormalize_MissingFieldYieldsEmptyTarget(t *testing.T) {
 	}
 	if a.Target != "" {
 		t.Errorf("target=%q want empty", a.Target)
+	}
+}
+
+func TestNormalize_claudeCodeLeak_reNormalizesAndWarns(t *testing.T) {
+	// Mirrors the hermes test of the same name; same 2026-05-06
+	// incident motivation. Gemini has more native cases than codex
+	// but still has the same cross-driver leak risk.
+	buf := &bytes.Buffer{}
+	SetWarnSink(buf)
+	t.Cleanup(func() { SetWarnSink(nil) })
+
+	cases := []struct {
+		tool     string
+		input    map[string]any
+		wantType gov.ActionType
+	}{
+		{"Write", map[string]any{"file_path": "/etc/hostname", "content": "x"}, gov.ActFileWrite},
+		{"Edit", map[string]any{"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}, gov.ActFileWrite},
+		{"Read", map[string]any{"file_path": "/etc/passwd"}, gov.ActFileRead},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			buf.Reset()
+			a, err := Normalize(HookInput{ToolName: tc.tool, ToolInput: tc.input})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Errorf("Type=%q want %q", a.Type, tc.wantType)
+			}
+			if !strings.Contains(buf.String(), `"warning":"cross_driver_tool_name"`) {
+				t.Errorf("expected cross_driver_tool_name warn, got: %q", buf.String())
+			}
+			if !strings.Contains(buf.String(), `"driver":"gemini"`) {
+				t.Errorf("warn missing driver=gemini: %q", buf.String())
+			}
+		})
 	}
 }
