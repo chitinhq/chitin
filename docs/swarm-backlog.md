@@ -47,6 +47,73 @@ the swarm cannot quietly grant itself broader permissions.
 
 ## Ready (claimable now)
 
+### `kernel-protect-system-paths-like-hermes`
+
+```yaml
+id: kernel-protect-system-paths-like-hermes
+tier: T5
+status: ready
+estimated_loc: 80
+blocks: []
+file: chitin.yaml, go/execution-kernel/internal/gov/
+references_design: docs/decisions/2026-05-06-execution-governance-runtime-positioning.md
+role: programmer
+priority: critical
+```
+
+**Why this is here:** 2026-05-06 manual hermes test 3 discovered chitin's
+gate ALLOWS writes to `/etc/hostname`, `/etc/passwd`, etc. 3 attempts
+(file.write, sudo tee, sudo -S tee) — all 3 cleared the kernel via
+default-allow-shell + default-allow-file-write rules. The "blocked by
+security policy" message came from hermes' OWN Write tool
+(`tools/file_tools.py:_check_sensitive_path`), NOT chitin's gate.
+
+If a future driver doesn't have hermes' internal Write check (claude-
+code, openclaw, codex, gemini), the same prompt would actually mutate
+/etc/hostname — and chitin would record it as "allowed."
+
+This violates the core invariant from the new positioning doc: **the
+kernel is the single side-effect authority**. Hermes' Python checks
+should be REDUNDANT to chitin's policy, not the LOAD-BEARING line of
+defense.
+
+**Hermes' lists (port these as chitin rules):**
+
+System path PREFIXES that should default-deny writes:
+  - `/etc/`, `/boot/`, `/usr/lib/systemd/`
+  - `/private/etc/`, `/private/var/` (macOS)
+  - `/etc/sudoers.d/`, `/etc/systemd/`
+
+System EXACT paths:
+  - `/etc/sudoers`, `/etc/passwd`, `/etc/shadow`
+  - `/var/run/docker.sock`, `/run/docker.sock`
+
+User credential DIRS (`$HOME/...`):
+  - `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, `.docker/`, `.azure/`, `.config/gh/`
+
+User credential FILES (`$HOME/...`):
+  - `.bashrc`, `.zshrc`, `.profile`, `.bash_profile`, `.zprofile`
+  - `.netrc`, `.pgpass`, `.npmrc`, `.pypirc`
+  - `.ssh/authorized_keys`, `.ssh/id_rsa`, `.ssh/id_ed25519`, `.ssh/config`
+
+**Fix scope:**
+
+1. Add a `protected-system-paths` rule to chitin.yaml. Mode: enforce.
+   Match action_type ∈ {file.write, file.edit, shell.exec} AND target
+   matches any prefix/exact path above.
+2. Apply to BOTH file-tool action_types AND shell.exec when the
+   command body matches a write to one of these paths (reuse
+   internal/normalize/normalize.go canonicalization).
+3. Tests: 5 fixture cases — write to /etc/hostname (deny), /etc/sudoers
+   (deny), ~/.ssh/id_rsa (deny), ~/.bashrc (deny), ~/code/foo.ts (allow).
+4. Operator override: chitin.yaml's `bounds.protected_paths` can add/
+   remove entries per-operator (the embedded defaults stay).
+
+T5 because: kernel rule change affecting every dispatch + cross-driver
+test surface + security implications + not safe to auto-dispatch.
+
+---
+
 ### `swarm-multilayer-spawn-broken`
 
 ```yaml
