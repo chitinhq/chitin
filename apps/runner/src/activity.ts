@@ -192,6 +192,12 @@ function resolveDispatchModel(driver: DriverId, tier: Tier | undefined): string 
       // chain rows from openclaw dispatches get role/workflow_id but no
       // model — better than guessing wrong.
       return null;
+    case 'hermes':
+      // hermes profile has a default model in ~/.hermes/config.yaml; we
+      // surface the env-var override if set, else null (chain rows get
+      // role/workflow_id but no model). Same trade as openclaw-* — better
+      // than guessing wrong.
+      return (process.env.CHITIN_MODEL_HERMES ?? '').trim() || null;
   }
 }
 
@@ -309,6 +315,52 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
           '--message', req.prompt,
         ],
       };
+    case 'hermes':
+      // Hermes Agent (the kanban dispatcher) running with the
+      // chitin-runner profile. Per docs/design/2026-05-06-kernel-gate-
+      // escalation.md core invariant: hermes IS the worker; chitin's
+      // kernel handles in-tool-call escalation via the gate (when
+      // chitin-routes.yaml's escalation.enabled = true).
+      //
+      // Profile + provider + default model live in ~/.hermes/config.yaml
+      // (operator runs `hermes model` once for interactive setup OR
+      // `hermes profile create chitin-runner --clone-from <existing>`).
+      // The chitin-governance plugin (already enabled at
+      // ~/.hermes/plugins/chitin-governance/) shells `chitin-kernel
+      // gate evaluate --hook-stdin --agent=hermes` on every
+      // pre_tool_call — same governance contract as the openclaw
+      // path, just via hermes's plugin hook system.
+      //
+      // We deliberately do NOT pass `--provider <name>` flags here:
+      // the hermes CLI rejects them as invalid even when the value
+      // matches a provider configured in hermes' config.yaml (verified
+      // 2026-05-06). The profile's preconfigured provider drives the
+      // call. `--accept-hooks` skips TTY confirmation for the
+      // chitin-governance plugin; `--yolo` skips per-tool-call
+      // permission prompts (chitin-kernel's gate is the policy
+      // boundary, not hermes' built-in prompt).
+      //
+      // Env overrides:
+      //   CHITIN_HERMES_PROFILE  → which profile (default chitin-runner)
+      //   CHITIN_MODEL_HERMES    → override model per-call (else profile default)
+      //
+      // Default driver mapping does NOT route any tier here yet — the
+      // static TIER_DRIVER_DEFAULTS map keeps openclaw/copilot/claude-
+      // code-headless until in-gate escalation is enabled. Operator
+      // opts in by setting CHITIN_TIER_DRIVER_T0=hermes (or similar)
+      // in their dispatcher env.
+      {
+        const profile = (process.env.CHITIN_HERMES_PROFILE ?? '').trim() || 'chitin-runner';
+        const args = ['-p', profile, '-z', req.prompt, '--accept-hooks', '--yolo'];
+        const model = (process.env.CHITIN_MODEL_HERMES ?? '').trim();
+        if (model) {
+          args.splice(2, 0, '-m', model);
+        }
+        return {
+          command: 'hermes',
+          args,
+        };
+      }
     default: {
       const exhaustive: never = driver;
       throw new Error(`unknown driver: ${exhaustive as string}`);
