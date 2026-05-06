@@ -216,30 +216,240 @@ def mine_aider_polyglot(conn: sqlite3.Connection) -> int:
     return mine_aider_source(conn, "aider-polyglot", AIDER_POLYGLOT_YAML)
 
 
-# ─── SWE-bench Verified — TODO ─────────────────────────────────────────────
+# ─── SWE-bench (verified, lite, multimodal, bash-only, multilingual) ───────
 #
-# Pattern that works without rate-limit pain: download the tarball of
-# github.com/SWE-bench/experiments, walk evaluation/verified/*/
-# {metadata.yaml, results/results.json}, aggregate.
+# Pattern: download github.com/SWE-bench/experiments as a tarball ONCE
+# (cached for 24h), walk evaluation/<variant>/<submission>/{metadata.yaml,
+# results/results.json}, compute per-submission resolved_rate +
+# attempts_count, write one model_seeds row per submission.
 #
-# Stub returns 0 for now; flag CHITIN_COMPAT_SOURCE_SWEBENCH=1 will
-# drive the implementation in the follow-up commit.
+# Tarball is the right primitive vs hitting the GitHub API per-file
+# (134+ submissions in `verified/` alone × 2 fetches = 268 API calls;
+# unauthenticated quota is 60/hr, so per-file walk hits the wall fast).
+# The tarball is ~12 MB, downloads in seconds.
 
-def mine_swebench_verified(conn: sqlite3.Connection) -> int:  # noqa: ARG001
-    print("[mine] swebench-verified: TODO — needs tarball walk; stub returns 0")
-    return 0
+import tarfile
+import io
+import re
+from urllib.error import HTTPError, URLError
+
+SWEBENCH_TARBALL_URL = (
+    "https://codeload.github.com/SWE-bench/experiments/tar.gz/refs/heads/main"
+)
+SWEBENCH_CACHE = CHITIN_HOME / "cache" / "swebench-experiments-main.tar.gz"
+SWEBENCH_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24h
+SWEBENCH_VARIANTS = ["verified", "lite", "multimodal", "bash-only", "multilingual"]
 
 
-# ─── LMArena — TODO ────────────────────────────────────────────────────────
+def _swebench_fetch_tarball() -> bytes:
+    """Return the experiments tarball; serves from cache when fresh."""
+    if SWEBENCH_CACHE.exists():
+        age = datetime.now(timezone.utc).timestamp() - SWEBENCH_CACHE.stat().st_mtime
+        if age < SWEBENCH_CACHE_TTL_SECONDS:
+            return SWEBENCH_CACHE.read_bytes()
+    print(f"[mine] fetching {SWEBENCH_TARBALL_URL} ...")
+    blob = http_get(SWEBENCH_TARBALL_URL, timeout=120)
+    SWEBENCH_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    SWEBENCH_CACHE.write_bytes(blob)
+    return blob
+
+
+# Tarball top-level dir name varies with branch hash; match anything.
+_SWEBENCH_PATH_RE = re.compile(
+    r"^[^/]+/evaluation/(?P<variant>[^/]+)/(?P<submission>[^/]+)/"
+    r"(?P<file>metadata\.yaml|results/results\.json)$"
+)
+
+
+def _swebench_walk(blob: bytes):
+    """Yield (variant, submission, filename, content_bytes) per matched file."""
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        for member in tf:
+            if not member.isfile():
+                continue
+            m = _SWEBENCH_PATH_RE.match(member.name)
+            if not m:
+                continue
+            variant = m["variant"]
+            if variant not in SWEBENCH_VARIANTS:
+                continue
+            f = tf.extractfile(member)
+            if f is None:
+                continue
+            yield variant, m["submission"], m["file"], f.read()
+
+
+def _swebench_parse_metadata(text: str) -> dict[str, Any]:
+    """Tiny YAML walker for the metadata.yaml shape we care about:
+    info.name, tags.model[0], tags.org. Avoids a yaml dep.
+    """
+    out: dict[str, Any] = {"name": None, "model": None, "org": None}
+    in_info = in_tags = False
+    in_model_list = False
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw.startswith("info:"):
+            in_info = True; in_tags = False; in_model_list = False
+            continue
+        if raw.startswith("tags:"):
+            in_info = False; in_tags = True; in_model_list = False
+            continue
+        if in_info and raw.startswith("  name:"):
+            out["name"] = raw.split(":", 1)[1].strip().strip('"').strip("'")
+        if in_tags and raw.startswith("  model:"):
+            in_model_list = True
+            tail = raw.split(":", 1)[1].strip()
+            if tail and tail != "":
+                out["model"] = tail.strip('"').strip("'")
+                in_model_list = False
+            continue
+        if in_model_list and raw.startswith("  - ") and out["model"] is None:
+            out["model"] = raw[4:].strip().strip('"').strip("'")
+            in_model_list = False
+        if in_tags and raw.startswith("  org:"):
+            out["org"] = raw.split(":", 1)[1].strip().strip('"').strip("'")
+    return out
+
+
+def _swebench_score_results(results: dict) -> dict[str, float]:
+    """Project the results.json buckets into normalized metrics.
+
+    SWE-bench results.json carries lists keyed by outcome:
+      - resolved          : tasks the agent fixed
+      - no_generation     : agent didn't produce a patch
+      - no_logs           : log capture failed (treat as no-result, not failure)
+      - failed_to_apply / failed_to_resolve / etc. (variant-dependent)
+
+    resolved_rate = len(resolved) / total. total = sum of all top-level lists
+    (those are mutually-exclusive task buckets per submission).
+    """
+    total = 0
+    for v in results.values():
+        if isinstance(v, list):
+            total += len(v)
+    if total == 0:
+        return {}
+    resolved = len(results.get("resolved", []) or [])
+    no_generation = len(results.get("no_generation", []) or [])
+    return {
+        "resolved_rate": (resolved / total) * 100.0,  # keep 0-100 like Aider
+        "no_generation_rate": (no_generation / total) * 100.0,
+        "total_tasks": float(total),
+    }
+
+
+def mine_swebench(conn: sqlite3.Connection) -> int:
+    blob = _swebench_fetch_tarball()
+    by_submission: dict[tuple[str, str], dict[str, Any]] = {}
+    for variant, submission, filename, content in _swebench_walk(blob):
+        key = (variant, submission)
+        s = by_submission.setdefault(key, {})
+        if filename == "metadata.yaml":
+            s["meta"] = _swebench_parse_metadata(content.decode("utf-8", errors="replace"))
+        elif filename == "results/results.json":
+            try:
+                s["results"] = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+
+    n = 0
+    for (variant, submission), s in by_submission.items():
+        meta = s.get("meta") or {}
+        results = s.get("results")
+        if not results:
+            continue
+        # Use the human-readable submission display name (info.name)
+        # as the model-row key — preserves tool+model combo when the
+        # same base model is submitted by multiple tools.
+        display = meta.get("name") or submission
+        scores = _swebench_score_results(results)
+        # Submission folder name encodes a date prefix: YYYYMMDD_*
+        scored_at = None
+        m = re.match(r"^(\d{4})(\d{2})(\d{2})_", submission)
+        if m:
+            scored_at = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        for metric, value in scores.items():
+            upsert_seed(
+                conn,
+                model=display,
+                source=f"swebench-{variant}",
+                metric=metric,
+                value=value,
+                scored_at=scored_at,
+                raw_payload={
+                    "submission": submission,
+                    "model": meta.get("model"),
+                    "org": meta.get("org"),
+                },
+            )
+            n += 1
+    conn.commit()
+    return n
+
+
+# ─── OpenRouter model catalog (pricing + context_length) ───────────────────
 #
-# Public ELO leaderboard. The /api/leaderboard URL 307-redirects; the
-# actual data shape lives behind a different endpoint that needs probing.
-# HuggingFace-hosted Space at
-# huggingface.co/spaces/lmarena-ai/chatbot-arena-leaderboard is a
-# fallback ingest path.
+# OpenRouter aggregates 369+ models from many providers. Free,
+# unauthenticated catalog API. Per-model: pricing.prompt (USD per
+# token in), pricing.completion (USD per token out), context_length
+# (max tokens). These let the routing layer answer "what does this
+# model cost per call?" without per-provider scraping.
+
+OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
+
+
+def mine_openrouter(conn: sqlite3.Connection) -> int:
+    blob = http_get(OPENROUTER_CATALOG_URL, timeout=30)
+    data = json.loads(blob)
+    models = data.get("data") or []
+    n = 0
+    for m in models:
+        model_id = m.get("id")
+        if not model_id:
+            continue
+        pricing = m.get("pricing") or {}
+        ctx = m.get("context_length")
+        rows = []
+        for k in ("prompt", "completion"):
+            v = pricing.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            rows.append((f"{k}_token_cost_usd", fv))
+        if isinstance(ctx, (int, float)):
+            rows.append(("context_length", float(ctx)))
+        for metric, value in rows:
+            upsert_seed(
+                conn,
+                model=model_id,
+                source="openrouter",
+                metric=metric,
+                value=value,
+                scored_at=None,
+                raw_payload={"id": model_id, "name": m.get("name")},
+            )
+            n += 1
+    conn.commit()
+    return n
+
+
+# ─── LMArena — defer ───────────────────────────────────────────────────────
+#
+# Public API at /api/leaderboard 301→/arena.ai/api/leaderboard which 403s
+# unauthenticated. The HF-hosted chatbot-arena-leaderboard Space renders
+# its data at runtime and doesn't expose a static CSV/JSON. Two paths
+# forward (deferred):
+#   (a) Find the HF Space's data file in its git repo (some Spaces ship
+#       leaderboard_table.csv but lmarena's didn't on first probe).
+#   (b) Pull from arena-hard-auto-v0.1 dataset on HF (different
+#       benchmark; auth-gated as of 2026-05-05).
 
 def mine_lmarena(conn: sqlite3.Connection) -> int:  # noqa: ARG001
-    print("[mine] lmarena: TODO — endpoint shape needs follow-up")
+    print("[mine] lmarena: TODO — public endpoints 403/auth; needs HF Space data path")
     return 0
 
 
@@ -248,8 +458,9 @@ def mine_lmarena(conn: sqlite3.Connection) -> int:  # noqa: ARG001
 SOURCES = {
     "aider-edit": mine_aider_edit,
     "aider-polyglot": mine_aider_polyglot,
-    "swebench-verified": mine_swebench_verified,
-    "lmarena": mine_lmarena,
+    "swebench": mine_swebench,        # all 5 variants in one walk
+    "openrouter": mine_openrouter,
+    "lmarena": mine_lmarena,           # stub (auth-gated)
 }
 
 
