@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPromptForEntry,
   buildProgrammerPrompt,
+  isEsmPackage,
   resolveEntryRole,
   __test__,
 } from '../src/role-prompts.ts';
@@ -131,5 +132,66 @@ describe('buildPromptForEntry', () => {
     const fallback = buildPromptForEntry(makeEntry({ file: 'x.ts', role: 'time-traveler' }));
     expect(fallback).toContain('TOOL DISPATCHES count');  // programmer template signature
     expect(fallback).toContain('TARGET FILE: ./x.ts');
+  });
+});
+
+// Prompt augmentations from swarm-prompt-augmentation-esm-and-tests
+// (2026-05-06): the programmer prompt should carry an ESM-pattern note
+// when the entry touches files inside a `"type": "module"` package,
+// and an acceptance-criteria note when the entry names explicit test
+// scenarios.
+describe('buildProgrammerPrompt — ESM detection', () => {
+  it('prepends the ESM note when the entry file lives in an ESM package', () => {
+    // apps/runner/package.json has "type": "module" — any file under
+    // it should trip the detector.
+    const out = buildProgrammerPrompt(
+      makeEntry({ file: 'apps/runner/src/role-prompts.ts' }),
+    );
+    expect(out).toContain('THIS PACKAGE IS ESM');
+    expect(out).toContain('fileURLToPath(import.meta.url)');
+    expect(out).toContain('NEVER use `if (require.main === module)`');
+  });
+
+  it('omits the ESM note when no file in the entry resolves to an ESM package', () => {
+    // A path that doesn't resolve under any package.json with
+    // "type": "module" — the kernel binary is Go, no package.json
+    // upstream of go/cmd/* claims ESM.
+    const out = buildProgrammerPrompt(makeEntry({ file: 'go/cmd/chitin/main.go' }));
+    expect(out).not.toContain('THIS PACKAGE IS ESM');
+  });
+
+  it('isEsmPackage returns true for a path inside apps/runner', () => {
+    expect(isEsmPackage('apps/runner/src/role-prompts.ts')).toBe(true);
+  });
+
+  it('isEsmPackage returns false for a path with no enclosing package.json or a non-module package', () => {
+    // Walking up from /tmp will reach the filesystem root without
+    // finding any package.json (or hit one that is not type: module).
+    expect(isEsmPackage('/tmp/definitely-does-not-exist-12345/foo.ts')).toBe(false);
+  });
+});
+
+describe('buildProgrammerPrompt — test plan acceptance criteria', () => {
+  it('prepends the acceptance-criteria note when entry has a non-empty test_plan', () => {
+    const out = buildProgrammerPrompt(
+      makeEntry({
+        file: 'go/cmd/chitin/main.go',  // non-ESM to isolate the test_plan effect
+        test_plan: ['clean fixture passes', 'missing-path fixture flagged'],
+      }),
+    );
+    expect(out).toContain("THIS ENTRY'S TEST PLAN IS REQUIRED");
+    expect(out).toContain('clean fixture passes');
+    expect(out).toContain('missing-path fixture flagged');
+    expect(out).toContain('acceptance criteria');
+  });
+
+  it('omits the acceptance-criteria note when test_plan is absent or empty', () => {
+    const noPlan = buildProgrammerPrompt(makeEntry({ file: 'go/cmd/chitin/main.go' }));
+    expect(noPlan).not.toContain("THIS ENTRY'S TEST PLAN IS REQUIRED");
+
+    const emptyPlan = buildProgrammerPrompt(
+      makeEntry({ file: 'go/cmd/chitin/main.go', test_plan: [] }),
+    );
+    expect(emptyPlan).not.toContain("THIS ENTRY'S TEST PLAN IS REQUIRED");
   });
 });

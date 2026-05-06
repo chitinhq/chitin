@@ -11,7 +11,8 @@
 // doesn't crash when they're picked, but the actual per-role prompt
 // engineering lands in follow-up entries (one per role).
 
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { Role } from '@chitin/contracts';
 import type { BacklogEntry } from './grooming/parse-backlog.ts';
 import { RESEARCHER_OUTPUT_INSTRUCTIONS } from './researcher-prompts.ts';
@@ -27,6 +28,62 @@ const LESSONS_PROMPT_HEAD = 12;
 const LESSONS_PATH = resolve(process.cwd(), 'docs/swarm-lessons.md');
 
 export type RolePromptBuilder = (entry: BacklogEntry) => string;
+
+// Walks up from `filePath` to find the nearest package.json and
+// returns true when its `"type"` is `"module"`. Driven by the
+// 2026-05-06 finding that PR #361 introduced
+// `if (require.main === module)` into apps/runner/* — an ESM package
+// where `require` is undefined, so the module throws ReferenceError
+// at import time and even unrelated callers break. When this returns
+// true, the prompt builder prepends an ESM-pattern note so the next
+// worker reaches for `import.meta.url` instead.
+//
+// Best-effort: missing files / unreadable JSON / paths that resolve
+// outside the workspace return false rather than throwing — a wrong
+// answer here just means the note is omitted, which is recoverable.
+export function isEsmPackage(filePath: string, cwd: string = process.cwd()): boolean {
+  const cleaned = filePath.replace(/^\.\//, '');
+  const abs = cleaned.startsWith('/') ? cleaned : resolve(cwd, cleaned);
+  let dir = dirname(abs);
+  // Bounded loop so a pathological input can't spin forever.
+  for (let depth = 0; depth < 64; depth++) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { type?: unknown };
+        return pkg.type === 'module';
+      } catch {
+        return false;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+  return false;
+}
+
+const ESM_PATTERN_NOTE = `THIS PACKAGE IS ESM (\`"type": "module"\` in the nearest package.json). For CLI entrypoints in this package:
+
+\`\`\`ts
+import { fileURLToPath } from 'node:url';
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // CLI body
+}
+\`\`\`
+
+NEVER use \`if (require.main === module)\` — \`require\` is undefined in ESM, so the file throws \`ReferenceError\` at import time and breaks every caller (not just the CLI path). Use \`import.meta.url\` in place of \`__dirname\` / \`__filename\` (\`fileURLToPath(import.meta.url)\` for the absolute path; \`dirname(fileURLToPath(import.meta.url))\` for the directory).
+
+`;
+
+function buildAcceptanceCriteriaNote(testPlan: readonly string[]): string {
+  const items = testPlan.map((t) => `  - ${t}`).join('\n');
+  return `THIS ENTRY'S TEST PLAN IS REQUIRED, NOT OPTIONAL — every named scenario must have a passing test in the PR. Treat as acceptance criteria:
+${items}
+A PR that ships the function/feature without these tests will be sent back by the reviewer chain.
+
+`;
+}
 
 // The pre-Phase-1 prompt template — what slice-7b's `buildPrompt`
 // produced. Wrapping it in a role registry lets future programmer-
@@ -69,7 +126,19 @@ ${lessonsBlock}
     /* graceful no-op */
   }
 
-  return `${lessonsHeader}${memoryContext}You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
+  // Prompt augmentations driven by the 2026-05-06 /land batch findings
+  // (see swarm-prompt-augmentation-esm-and-tests). When ANY touched
+  // file lives in an ESM package, prepend the ESM-pattern note so the
+  // worker doesn't reach for require.main. When the entry's
+  // description named explicit test scenarios, prepend the
+  // acceptance-criteria note so they don't get treated as commentary.
+  const esmNote = filePaths.some((p) => isEsmPackage(p)) ? ESM_PATTERN_NOTE : '';
+  const acceptanceNote =
+    entry.test_plan && entry.test_plan.length > 0
+      ? buildAcceptanceCriteriaNote(entry.test_plan)
+      : '';
+
+  return `${lessonsHeader}${memoryContext}${esmNote}${acceptanceNote}You are a swarm worker executing one backlog entry. Output text is ignored — only TOOL DISPATCHES count. If you finish without dispatching tools, the work is lost.
 
 ENTRY ID: ${entry.id}
 TARGET FILE: ${targetFile}

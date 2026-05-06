@@ -30,6 +30,13 @@ export interface BacklogEntry {
   // programmer (the slice-7b dispatcher's pre-Phase-1 default).
   // Vocabulary matches RoleSchema in @chitin/contracts.
   role?: string;
+  // Test scenarios extracted from the description's `Tests:` /
+  // `Test plan:` / `Test cases:` section, when present. The prompt
+  // builder treats a non-empty test_plan as acceptance criteria the
+  // PR must satisfy — driven by 2026-05-06 /land batch finding that
+  // entries naming explicit test scenarios were shipping with zero
+  // tests because the worker treated them as commentary.
+  test_plan?: string[];
   rawFrontmatter: string;  // the original ```yaml block, preserved verbatim
   description: string;     // prose below the frontmatter, before next ### or ##
   rawSection: string;      // entire ### section for in-place replacement
@@ -74,6 +81,7 @@ export function crossesDebtLedger(entry: BacklogEntry, debtFiles: string[]): boo
 
 export const __test__ = {
   crossesDebtLedger,
+  parseTestPlan,
 };
 
 // Splits at ### but keeps surrounding ## headings out — only ### sections
@@ -128,10 +136,64 @@ function parseSection(section: string): BacklogEntry | null {
     referencesFinding: fields.references_finding,
     referencesSpec: fields.references_spec,
     role: fields.role,
+    test_plan: parseTestPlan(description),
     rawFrontmatter,
     description,
     rawSection: section,
   };
+}
+
+// Pulls explicit test scenarios out of the description body. We look
+// for a line whose leading content is `Tests:`, `Test plan:`, or
+// `Test cases:` (case-insensitive, optionally indented or bulleted),
+// then collect the remainder of that line plus any subsequent bullet
+// items as individual scenarios. A blank line ends the block.
+//
+// Why look here at all: backlog entries have been shipping with named
+// test scenarios in prose ("Tests: 3 fixture entries (clean, missing,
+// partial)") that swarm workers were treating as commentary. Surfacing
+// them as a structured list lets the prompt builder echo them as
+// acceptance criteria.
+export function parseTestPlan(description: string): string[] | undefined {
+  const lines = description.split('\n');
+  let startIdx = -1;
+  let inlineRest = '';
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*(?:[-*]|\d+\.)?\s*(?:Tests|Test plan|Test cases)\s*:\s*(.*)$/i);
+    if (m) {
+      startIdx = i;
+      inlineRest = m[1];
+      break;
+    }
+  }
+  if (startIdx === -1) return undefined;
+
+  const items: string[] = [];
+  if (inlineRest.trim()) {
+    for (const part of inlineRest.split(/[;]/)) {
+      const t = part.trim().replace(/[.,]+$/, '');
+      if (t) items.push(t);
+    }
+  }
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const bm = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+    if (bm) {
+      items.push(bm[1].trim());
+      continue;
+    }
+    if (line.trim() === '') {
+      if (items.length > 0) break;
+      continue;
+    }
+    // Indented continuation of the previous bullet — fold in.
+    if (/^\s+\S/.test(line) && items.length > 0) {
+      items[items.length - 1] += ' ' + line.trim();
+      continue;
+    }
+    break;
+  }
+  return items.length > 0 ? items : undefined;
 }
 
 // Minimal YAML parser sufficient for our flat key:value-and-list frontmatter.
