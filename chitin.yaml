@@ -36,6 +36,9 @@ invariantModes:
   no-protected-push: guide
   no-env-file-write: enforce
   no-remote-code-exec: guide
+  protected-system-path-write: enforce
+  protected-credential-path-write: enforce
+  protected-system-path-shell-write: enforce
 
 rules:
   # Direct rm-recursive — closes #58 (whitespace, quoted-flag, split-flag,
@@ -90,6 +93,53 @@ rules:
     effect: deny
     target: ".env"
     reason: "Secrets files must not be modified by agents"
+
+  # Block direct writes/deletes targeting system paths. Mirrors hermes'
+  # _SENSITIVE_PATH_PREFIXES — ported here after 2026-05-05 manual test
+  # showed chitin's gate allowed `file.write /etc/hostname` because no
+  # rule covered system paths and default-allow-file-write let it through.
+  # path_under is a literal begins-with prefix match; over-deny in this
+  # direction is the correct failure mode for credential/system files.
+  - id: protected-system-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    path_under:
+      - "/etc/"
+      - "/boot/"
+      - "/usr/lib/systemd/"
+      - "/usr/lib/sudo/"
+      - "/private/etc/"
+      - "/private/var/"
+      - "/Library/LaunchDaemons/"
+      - "/System/"
+    reason: "System paths cannot be modified by agents — operator must intervene"
+    suggestion: "Use the operator's interactive shell for legitimate system mutations"
+    escalation_weight: 2
+
+  # Same intent for user credential and shell-init files, but written
+  # as a regex so it matches every operator's $HOME (/home/*, /Users/*, /root)
+  # without baking a specific username into the policy. Mirrors hermes'
+  # build_write_denied_paths/_prefixes lists.
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.kube/|\.docker/|\.azure/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.bash_profile|\.zprofile|\.netrc|\.pgpass|\.npmrc|\.pypirc)'
+    reason: "Credential or shell-init files cannot be modified by agents"
+    suggestion: "Operator manages credentials; agents must not write to ~/.ssh, ~/.aws, shell rc files, etc."
+    escalation_weight: 2
+
+  # Catches the shell-side bypass: `sudo tee /etc/hostname`, `dd of=/etc/...`,
+  # and bare redirect (`> /etc/foo`, `>> /etc/foo`). cp/mv/install have
+  # ambiguous arg ordering (source can be a system path on a legitimate
+  # read-then-copy) and are not matched here — file.write coverage above
+  # catches anything that lands as a tool-shaped write.
+  - id: protected-system-path-shell-write
+    action: shell.exec
+    effect: deny
+    target_regex: '(?:(?:^|[\s;&|`])(?:sudo\s+)?tee\b(?:\s+-\S+)*\s+|(?:^|[\s;&|`])(?:sudo\s+)?dd\s+(?:[a-zA-Z]+=\S+\s+)*of=|>>?\s*)(?:/etc/|/boot/|/usr/lib/systemd/|/usr/lib/sudo/|/private/etc/|/private/var/|/Library/LaunchDaemons/|/System/|(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.kube/|\.docker/|\.azure/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.bash_profile|\.zprofile|\.netrc|\.pgpass|\.npmrc|\.pypirc))'
+    reason: "Shell command writes to a protected system or credential path"
+    suggestion: "Use the operator's interactive shell for legitimate system mutations"
+    escalation_weight: 2
 
   - id: no-governance-self-modification
     action: file.write
