@@ -52,7 +52,7 @@ the swarm cannot quietly grant itself broader permissions.
 ```yaml
 id: kernel-protect-system-paths-like-hermes
 tier: T5
-status: partial   # rules + cwd-independent enforcement landed via #375 + #376; bounds.protected_paths operator-override knob from "Fix scope #4" not yet exposed
+status: partial
 estimated_loc: 80
 blocks: []
 file: chitin.yaml, go/execution-kernel/internal/gov/
