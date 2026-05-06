@@ -591,9 +591,12 @@ def cmd_report(_args) -> None:
         lines.append(f"### {s['name']}")
         lines.append("")
         for model in s["models"]:
-            seeds, matched_token = _model_seed_lookup(
-                conn, model.split(":")[-1] if ":" in model else model
-            )
+            # Pass the full operator-display name; _model_seed_lookup
+            # handles normalization (strip ':latest', collapse colons,
+            # bridge openclaw drivers, etc.) consistently. A previous
+            # pre-strip of `split(":")[-1]` turned 'gemma4:latest' into
+            # 'latest' and matched every chatgpt-4o-latest row.
+            seeds, matched_token = _model_seed_lookup(conn, model)
             scores: list[str] = []
             cost_in: float | None = None
             cost_model: str | None = None
@@ -604,14 +607,16 @@ def cmd_report(_args) -> None:
                         cost_in, cost_model = metrics["prompt_token_cost_usd"]
                     continue
                 # Headline metric per source — surface value + which model row contributed it.
-                # web-search source: the metric IS the benchmark name (LLM extraction
-                # populates it freely), so surface every metric in this source.
-                if src == "web-search":
+                # web-search and huggingface sources: the metric IS the benchmark
+                # name (LLM extraction populates it freely), so surface every metric
+                # in this source. The trailing tag distinguishes their provenance.
+                if src in ("web-search", "huggingface"):
+                    tag = "web" if src == "web-search" else "hf"
                     for metric, (v, src_model) in metrics.items():
                         if metric == "extraction_attempted":
                             continue  # failure stub, don't render
                         label = f"{metric}:{v:.1f}"
-                        scores.append(f"{label} (`{src_model[:40]}`, web)")
+                        scores.append(f"{label} (`{src_model[:40]}`, {tag})")
                         sources_used.add(src)
                     continue
                 metric_key = (

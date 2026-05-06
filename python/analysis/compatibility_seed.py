@@ -571,6 +571,321 @@ def mine_terminal_bench(conn: sqlite3.Connection) -> int:  # noqa: ARG001
     return 0
 
 
+# ─── HuggingFace model cards ───────────────────────────────────────────────
+#
+# Per docs/design/2026-05-06-stale-seed-refresh.md update: structured
+# sources before web-search. Vendors who write benchmarks in their HF
+# README (z-ai/GLM-5.1, alibaba/Qwen3-Coder, meta-llama, etc.) publish
+# rich rows here; vendors who defer to images (deepseek-ai) still produce
+# 0 rows but cost almost nothing to probe. The pipeline is:
+#
+#   1. HF search API → canonical org/model id for each operator-reachable model
+#   2. Fetch raw README from huggingface.co/<org>/<model>/raw/main/README.md
+#   3. LLM-extract benchmark JSON via the operator's `claude` CLI
+#   4. Upsert each (benchmark, score) into model_seeds with source='huggingface'
+#
+# Driven by operator_matrix.json — only mines models the operator can
+# actually invoke. Skip models that don't appear in HF (404 on search).
+
+HF_API_BASE = "https://huggingface.co/api"
+HF_RAW_BASE = "https://huggingface.co"
+
+# Locked extraction prompt — multi-benchmark variant of refresh_stale's
+# single-score prompt. The model card is mostly prose + occasional
+# tables; we want EVERY numeric benchmark mention, not the highest one.
+HF_EXTRACTION_PROMPT = """You are extracting all benchmark scores from a HuggingFace model card.
+
+Model under test: {model_id}
+
+Card content (truncated to 8000 chars):
+---
+{readme}
+---
+
+Return a JSON array (no prose, no code fences). Each entry is one
+benchmark score for THIS model:
+
+[
+  {{"benchmark":"<lowercase short-name like 'humaneval' or 'swe-bench-verified'>",
+    "score":<number>,
+    "score_unit":"percent"|"score"|"elo"|"dollars"|"points",
+    "variant":"<which variant of the model, or null if only one model>",
+    "metric_type":"pass@1"|"resolved"|"pass_rate"|null}}
+]
+
+Rules:
+  - One entry per (benchmark, variant) pair. If the card lists the same
+    benchmark on multiple variants (16B / 236B / etc.), include all.
+  - "verifiable score": numeric, attached to a benchmark name, in the
+    text. Inferred or projected scores are rejected.
+  - Skip rows that compare against OTHER models (e.g. "X scored Y on
+    HumanEval" where X is not {model_id}).
+  - If the card has no benchmarks (only prose / images), return [].
+"""
+
+
+# Vendor-org allowlist. HF search returns community distillations
+# ("Andycurrent/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored")
+# before canonical vendor cards because fork names contain the model
+# name verbatim. When a model query maps to a known vendor, scope the
+# search with `&author=<org>`. Add new prefixes here as new vendors emerge.
+HF_VENDOR_ORGS = {
+    "qwen":         "Qwen",
+    "glm":          "zai-org",
+    "deepseek":     "deepseek-ai",
+    "gemma":        "google",
+    "mistral":      "mistralai",
+    "llama":        "meta-llama",
+    "phi":          "microsoft",
+    "yi":           "01-ai",
+}
+
+# Deployment-form suffixes that aren't part of the model identity.
+# `glm-5.1-cloud` is the cloud-served form of `glm-5.1`; HF only knows
+# the latter. Strip these before searching.
+HF_DEPLOYMENT_SUFFIXES = ("-cloud", "-fp8", "-int8", "-int4", "-gguf", "-mlx")
+
+
+def _hf_search_query(model_query: str) -> tuple[str, str | None]:
+    """Return (search_term, vendor_org_filter). Vendor filter is None
+    if we don't recognize the family — broad search then."""
+    q = model_query.lower()
+    for suffix in HF_DEPLOYMENT_SUFFIXES:
+        if q.endswith(suffix):
+            q = q[: -len(suffix)]
+            break
+    vendor = None
+    for prefix, org in HF_VENDOR_ORGS.items():
+        if q.startswith(prefix):
+            vendor = org
+            break
+    return q, vendor
+
+
+def _hf_find_canonical(model_query: str) -> str | None:
+    """HF search → canonical modelId. Scopes by vendor org when the
+    family is known (Qwen, zai-org, etc.) — community distillations
+    cannot win against the vendor's own card. Returns None on 404 /
+    empty / no acceptable match."""
+    import urllib.parse
+    search_term, vendor = _hf_search_query(model_query)
+    q = urllib.parse.quote(search_term)
+    url = f"{HF_API_BASE}/models?search={q}&limit=10&sort=downloads&direction=-1"
+    if vendor:
+        url += f"&author={urllib.parse.quote(vendor)}"
+    try:
+        raw = http_get(url, timeout=15)
+    except Exception:
+        return None
+    try:
+        results = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not results:
+        # Vendor-scoped search returned nothing — try unscoped as a fallback
+        # so we don't lose models whose vendor we got wrong.
+        if vendor:
+            return _hf_find_canonical_unscoped(search_term, model_query)
+        return None
+    return _hf_pick_best(results, model_query)
+
+
+def _hf_find_canonical_unscoped(search_term: str, original: str) -> str | None:
+    import urllib.parse
+    q = urllib.parse.quote(search_term)
+    url = f"{HF_API_BASE}/models?search={q}&limit=10&sort=downloads&direction=-1"
+    try:
+        raw = http_get(url, timeout=15)
+        results = json.loads(raw)
+    except Exception:
+        return None
+    if not results:
+        return None
+    return _hf_pick_best(results, original)
+
+
+def _hf_pick_best(results: list[dict], model_query: str) -> str | None:
+    """Pick the best modelId from search results. Strict-match first
+    (modelId must contain all needles ≥ 2 chars from query); fallback
+    to first result. Vendor scoping already done upstream."""
+    needles = {p.lower() for p in model_query.replace("_", "-").split("-") if len(p) >= 2}
+    for r in results:
+        mid = r.get("modelId") or r.get("id") or ""
+        mid_lower = mid.lower().replace("_", "-")
+        if all(n in mid_lower for n in needles):
+            return mid
+    return results[0].get("modelId") or results[0].get("id")
+
+
+def _hf_fetch_readme(model_id: str) -> str | None:
+    """Fetch raw README. Returns None on 404 or empty body."""
+    url = f"{HF_RAW_BASE}/{model_id}/raw/main/README.md"
+    try:
+        return http_get(url, timeout=20).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _hf_extract_benchmarks(model_id: str, readme: str) -> list[dict]:
+    """Run the locked extraction prompt against the operator's `claude`
+    CLI. Returns the parsed JSON array (possibly empty); raises on
+    infrastructure failure."""
+    # Local import — refresh_stale already wraps subprocess+JSON for us.
+    from analysis.refresh_stale import extract_via_llm, ExtractorError
+    import re
+
+    prompt = HF_EXTRACTION_PROMPT.format(
+        model_id=model_id, readme=readme[:8000]
+    )
+    # extract_via_llm returns dict-or-None, but we want an array. Bypass
+    # its inner schema validation by replicating the subprocess call.
+    try:
+        # Reuse the LLM call pattern but parse as array
+        import shutil, subprocess
+        if not shutil.which("claude"):
+            raise ExtractorError("claude CLI not on PATH")
+        proc = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "--output-format", "text"],
+            input=prompt, capture_output=True, text=True, timeout=90,
+        )
+        if proc.returncode != 0:
+            raise ExtractorError(f"claude exit {proc.returncode}: {proc.stderr[:200]}")
+        out = proc.stdout.strip()
+    except subprocess.TimeoutExpired as e:
+        raise ExtractorError(f"claude timed out after 90s") from e
+    if not out:
+        return []
+    # Strip optional code fences; find first [ ... ]
+    m = re.search(r"\[.*\]", out, re.DOTALL)
+    if not m:
+        return []
+    try:
+        parsed = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return parsed
+
+
+def _hf_canonical_metric(benchmark: str, metric_type: str | None) -> str:
+    """Normalize the LLM-extracted benchmark name to a stable metric id.
+    The matrix display indexes on metric prefix patterns
+    ('aider*', 'swebench*'); keep names predictable."""
+    b = benchmark.lower().strip().replace(" ", "-")
+    # Common renames so similar benchmarks collapse on lookup
+    aliases = {
+        "humaneval+": "pass@1_humaneval+",
+        "humaneval": "pass@1_humaneval",
+        "mbpp+": "pass@1_mbpp+",
+        "mbpp": "pass@1_mbpp",
+        "swe-bench": "swebench-verified",
+        "swe-bench-verified": "swebench-verified",
+        "swe-bench-pro": "swebench-pro",
+        "terminal-bench": "terminal-bench",
+        "terminal-bench-2.0": "terminal-bench-2.0",
+    }
+    if b in aliases:
+        return aliases[b]
+    # Tag pass@1 / resolved variants when the LLM provided metric_type
+    if metric_type and not b.startswith(metric_type):
+        return f"{b}_{metric_type}"
+    return b
+
+
+# Closed-source vendors don't publish on HuggingFace. Their model names
+# (claude-*, gpt-*, gemini-*) match weird community distillations like
+# "Qwen3-27B-Claude-Opus-Distilled" that aren't actually those models.
+# Skip these prefixes entirely — they should get scores from leaderboards
+# (already mined) and refresh-stale (web-search) instead.
+HF_CLOSED_SOURCE_PREFIXES = ("claude-", "gpt-", "gemini-", "o1-", "o3-")
+
+
+def _hf_should_skip(model_query: str) -> bool:
+    return any(model_query.startswith(p) for p in HF_CLOSED_SOURCE_PREFIXES)
+
+
+def mine_huggingface(conn: sqlite3.Connection) -> int:
+    """Walk operator_matrix.json's reachable models. For each, try to
+    find a canonical HF id, fetch the README, LLM-extract benchmarks,
+    upsert. Returns total rows written."""
+    matrix_path = Path(os.path.expanduser("~/.chitin/operator_matrix.json"))
+    if not matrix_path.exists():
+        print(
+            "[mine] huggingface: no operator_matrix.json — "
+            "run `python -m analysis.operator_matrix detect` first",
+            file=sys.stderr,
+        )
+        return 0
+
+    matrix = json.loads(matrix_path.read_text())
+    seen_queries: set[str] = set()
+    total = 0
+    for cli in matrix.get("clis", []):
+        for raw_model in cli.get("models", []):
+            # Same normalization the matrix lookup uses, so we mine
+            # the SAME identifier the report later searches for.
+            from analysis.operator_matrix import _resolve_lookup_token
+            search_query = _resolve_lookup_token(raw_model)
+            if not search_query or search_query in seen_queries:
+                continue
+            seen_queries.add(search_query)
+
+            if _hf_should_skip(search_query):
+                print(f"[mine] huggingface: {search_query:40} → skip (closed-source vendor; HF will only have community forks)")
+                continue
+
+            canonical = _hf_find_canonical(search_query)
+            if not canonical:
+                print(f"[mine] huggingface: {search_query:40} → no HF match")
+                continue
+            readme = _hf_fetch_readme(canonical)
+            if not readme:
+                print(f"[mine] huggingface: {search_query:40} → {canonical} (no README)")
+                continue
+
+            try:
+                benchmarks = _hf_extract_benchmarks(canonical, readme)
+            except Exception as e:
+                print(f"[mine] huggingface: {search_query:40} → {canonical} (extractor failed: {e})")
+                continue
+
+            if not benchmarks:
+                print(f"[mine] huggingface: {search_query:40} → {canonical} (no benchmarks in card)")
+                continue
+
+            # Write each benchmark as a separate seed row.
+            n_this = 0
+            for entry in benchmarks:
+                bench = entry.get("benchmark")
+                score = entry.get("score")
+                if not bench or score is None:
+                    continue
+                try:
+                    score_f = float(score)
+                except (TypeError, ValueError):
+                    continue
+                metric = _hf_canonical_metric(bench, entry.get("metric_type"))
+                upsert_seed(
+                    conn=conn,
+                    model=search_query,            # store under resolved name
+                    source="huggingface",
+                    metric=metric,
+                    value=score_f,
+                    raw_payload={
+                        "hf_canonical": canonical,
+                        "operator_alias": raw_model if raw_model != search_query else None,
+                        "score_unit": entry.get("score_unit"),
+                        "variant": entry.get("variant"),
+                    },
+                )
+                n_this += 1
+            print(f"[mine] huggingface: {search_query:40} → {canonical} ({n_this} benchmarks)")
+            total += n_this
+            conn.commit()
+    return total
+
+
 # ─── CLI ───────────────────────────────────────────────────────────────────
 
 SOURCES = {
@@ -580,6 +895,7 @@ SOURCES = {
     "openrouter": mine_openrouter,
     "evalplus": mine_evalplus,        # HumanEval+ / MBPP+
     "arena-hard": mine_arena_hard,    # LMSYS-style head-to-head (older corpus)
+    "huggingface": mine_huggingface,  # vendor-published model cards
     "lmarena": mine_lmarena,           # stub (auth-gated)
     "livecodebench": mine_livecodebench,  # stub (dynamic site)
     "terminal-bench": mine_terminal_bench,  # stub (no public results dump)
