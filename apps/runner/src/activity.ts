@@ -331,18 +331,22 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       // pre_tool_call — same governance contract as the openclaw
       // path, just via hermes's plugin hook system.
       //
-      // We deliberately do NOT pass `--provider <name>` flags here:
-      // the hermes CLI rejects them as invalid even when the value
-      // matches a provider configured in hermes' config.yaml (verified
-      // 2026-05-06). The profile's preconfigured provider drives the
-      // call. `--accept-hooks` skips TTY confirmation for the
-      // chitin-governance plugin; `--yolo` skips per-tool-call
-      // permission prompts (chitin-kernel's gate is the policy
-      // boundary, not hermes' built-in prompt).
+      // `--accept-hooks` skips TTY confirmation for the chitin-
+      // governance plugin; `--yolo` skips per-tool-call permission
+      // prompts (chitin-kernel's gate is the policy boundary, not
+      // hermes' built-in prompt).
+      //
+      // We pass `--provider <name>` because the per-profile config
+      // does NOT inherit the global model.provider — hermes' resolve_
+      // provider() errors "No inference provider configured" if both
+      // the profile and the CLI invocation omit it. Default
+      // ollama-launch matches the global config; operator overrides
+      // via CHITIN_PROVIDER_HERMES env.
       //
       // Env overrides:
       //   CHITIN_HERMES_PROFILE  → which profile (default chitin-runner)
       //   CHITIN_MODEL_HERMES    → override model per-call (else profile default)
+      //   CHITIN_PROVIDER_HERMES → override provider (default ollama-launch)
       //
       // Default driver mapping does NOT route any tier here yet — the
       // static TIER_DRIVER_DEFAULTS map keeps openclaw/copilot/claude-
@@ -351,7 +355,8 @@ function planInvocation(req: ExecutionRequest): DriverInvocation {
       // in their dispatcher env.
       {
         const profile = (process.env.CHITIN_HERMES_PROFILE ?? '').trim() || 'chitin-runner';
-        const args = ['-p', profile, '-z', req.prompt, '--accept-hooks', '--yolo'];
+        const provider = (process.env.CHITIN_PROVIDER_HERMES ?? '').trim() || 'ollama-launch';
+        const args = ['-p', profile, '--provider', provider, '-z', req.prompt, '--accept-hooks', '--yolo'];
         const model = (process.env.CHITIN_MODEL_HERMES ?? '').trim();
         if (model) {
           args.splice(2, 0, '-m', model);

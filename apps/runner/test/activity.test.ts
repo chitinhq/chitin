@@ -70,10 +70,25 @@ describe('planInvocation', () => {
     // plugin fires without TTY confirmation.
     expect(plan.args).toContain('--accept-hooks');
     expect(plan.args).toContain('--yolo');
-    // We deliberately do NOT pass --provider (hermes CLI rejects it
-    // even when the value matches a configured provider — verified
-    // 2026-05-06).
-    expect(plan.args).not.toContain('--provider');
+    // --provider IS required — per-profile config doesn't inherit
+    // model.provider from global config, hermes errors "No inference
+    // provider configured" without it. Default ollama-launch.
+    const provIdx = plan.args.indexOf('--provider');
+    expect(provIdx).toBeGreaterThan(-1);
+    expect(plan.args[provIdx + 1]).toBe('ollama-launch');
+  });
+
+  it('hermes respects CHITIN_PROVIDER_HERMES env override', () => {
+    const orig = process.env.CHITIN_PROVIDER_HERMES;
+    try {
+      process.env.CHITIN_PROVIDER_HERMES = 'openrouter';
+      const plan = planInvocation({ ...baseReq, allowed_drivers: ['hermes'] });
+      const provIdx = plan.args.indexOf('--provider');
+      expect(plan.args[provIdx + 1]).toBe('openrouter');
+    } finally {
+      if (orig === undefined) delete process.env.CHITIN_PROVIDER_HERMES;
+      else process.env.CHITIN_PROVIDER_HERMES = orig;
+    }
   });
 
   it('hermes respects CHITIN_HERMES_PROFILE env override', () => {
