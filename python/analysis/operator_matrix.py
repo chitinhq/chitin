@@ -182,6 +182,61 @@ def _gemini_refresh_token() -> str | None:
     except Exception:
         return None
 
+# Copilot request multipliers per model. From
+# docs.github.com/en/copilot/concepts/billing/copilot-requests (May 2026).
+# Multiplier 0 = unmetered for paid Copilot plans; multipliers >0 burn
+# the operator's monthly Premium-Request budget at that rate. The
+# OpenRouter raw $/token still applies if the operator routes the same
+# model OUTSIDE Copilot — these two costs answer different questions.
+#
+# Keys match Copilot's API model id (lowercased). Update as GitHub
+# ships new SKUs / renames; the page is the source of truth.
+COPILOT_MULTIPLIERS: dict[str, float] = {
+    # Free for Copilot Pro
+    "gpt-4.1": 0.0,
+    "gpt-4.1-2025-04-14": 0.0,
+    "gpt-4o": 0.0,
+    "gpt-4o-2024-05-13": 0.0,
+    "gpt-4o-2024-08-06": 0.0,
+    "gpt-4o-2024-11-20": 0.0,
+    "gpt-4o-mini": 0.0,
+    "gpt-4o-mini-2024-07-18": 0.0,
+    # Cheap (≤0.33)
+    "gpt-5.4-nano": 0.25,
+    "claude-haiku-4.5": 0.33,
+    "gpt-5.4-mini": 0.33,
+    "gemini-3-flash": 0.33,
+    # Standard (x1)
+    "gpt-5.2": 1.0,
+    "gpt-5.2-codex": 1.0,
+    "gpt-5.3-codex": 1.0,
+    "gpt-5.4": 1.0,
+    "claude-sonnet-4.5": 1.0,
+    "claude-sonnet-4.6": 1.0,
+    "gemini-2.5-pro": 1.0,
+    "gemini-3.1-pro": 1.0,
+    # Premium
+    "claude-opus-4.5": 3.0,
+    "claude-opus-4.6": 3.0,
+    "claude-opus-4.7": 15.0,
+    "claude-opus-4.6-1m": 30.0,    # "fast mode" SKU
+    "gpt-5.5": 7.5,
+    # Legacy / deprecated — billed at host rate; unspecified means assume 0
+    "gpt-3.5-turbo": 0.0,
+    "gpt-3.5-turbo-0613": 0.0,
+    "gpt-4": 0.0,
+    "gpt-4-0613": 0.0,
+    "gpt-4-o-preview": 0.0,
+}
+
+
+def copilot_multiplier(model_id: str) -> float | None:
+    """Return Copilot's per-request multiplier (0 = free, 1 = standard,
+    higher = premium). Returns None if we don't have a published
+    multiplier for this model."""
+    return COPILOT_MULTIPLIERS.get(model_id.lower())
+
+
 # OpenClaw maps each driver-id to a backing agent + model. Per
 # DriverIdSchema in libs/contracts:
 OPENCLAW_AGENTS = {
@@ -666,6 +721,21 @@ def cmd_report(_args) -> None:
                     sources_used.add(src)
             cost_str = (f"${cost_in:.7f}/in-tok" + (f" (`{cost_model[:30]}`)" if cost_model else "")
                         ) if cost_in is not None else "(no cost data)"
+            # For Copilot, surface the request multiplier — that's the
+            # operator's REAL marginal cost on a Copilot Pro sub.
+            # Multiplier 0 means unmetered (free above the per-month
+            # request cap); >1 means burns budget at that rate.
+            if s["name"] == "copilot":
+                mult = copilot_multiplier(model)
+                if mult is not None:
+                    if mult == 0.0:
+                        cost_str += "  | **Copilot: x0 (free for Pro)**"
+                    elif mult < 1.0:
+                        cost_str += f"  | Copilot: x{mult:g} (cheap)"
+                    elif mult == 1.0:
+                        cost_str += f"  | Copilot: x1 (standard)"
+                    else:
+                        cost_str += f"  | Copilot: **x{mult:g}** (premium)"
             score_str = "; ".join(scores) if scores else "(no benchmark data — too new for any seed source)"
             target = (model.lower().split(":")[-1] if ":" in model else model.lower())
             target = OPENCLAW_DRIVER_TO_MODEL.get(target, target)  # show resolved target for openclaw
