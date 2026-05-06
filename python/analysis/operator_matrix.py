@@ -603,7 +603,17 @@ def cmd_report(_args) -> None:
                     if "prompt_token_cost_usd" in metrics:
                         cost_in, cost_model = metrics["prompt_token_cost_usd"]
                     continue
-                # Headline metric per source — surface value + which model row contributed it
+                # Headline metric per source — surface value + which model row contributed it.
+                # web-search source: the metric IS the benchmark name (LLM extraction
+                # populates it freely), so surface every metric in this source.
+                if src == "web-search":
+                    for metric, (v, src_model) in metrics.items():
+                        if metric == "extraction_attempted":
+                            continue  # failure stub, don't render
+                        label = f"{metric}:{v:.1f}"
+                        scores.append(f"{label} (`{src_model[:40]}`, web)")
+                        sources_used.add(src)
+                    continue
                 metric_key = (
                     "pass_rate_2" if src.startswith("aider")
                     else "resolved_rate" if src.startswith("swebench")

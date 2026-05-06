@@ -67,8 +67,10 @@ Return JSON ONLY (no prose, no code fences):
 }}
 
 Rules:
-  - "exact model": {model_id} is NOT the same as a sibling family
-    member. Family-level matches are rejected.
+  - "exact model": case-insensitive same identity is OK
+    ("GLM-4.7-Flash" == "glm-4.7-flash"). But sibling family members
+    are NOT — "claude-opus-4-7" ≠ "claude-opus-4-5", and "gpt-5.4"
+    ≠ "gpt-5.4-mini". When in doubt, return null.
   - "verifiable score": numeric, attached to a benchmark name, in the
     snippet text. Inferred or projected scores are rejected.
   - "score": a single number, never a range. If the source gives a
@@ -78,13 +80,13 @@ If no result has a verifiable score for THIS exact model, return:
 {{"benchmark": null, "score": null, "score_unit": null, "source_url": null, "scored_at": null}}
 """
 
-# Search query template per stale model. Kept simple — the design doc
+# Search query template per stale model. Tavily (and most managed
+# search backends) ignore Google-style `site:` filters and downweight
+# `OR` operators; keep the query natural-language. The design doc
 # defers cross-referenced multi-query mode (--thorough flag) to a
 # later commit.
 SEARCH_QUERY_TEMPLATE = (
-    "{model} benchmark score (SWE-bench OR aider-polyglot OR HumanEval "
-    "OR LiveCodeBench OR MMLU) site:github.com OR site:arxiv.org OR "
-    "site:openai.com OR site:anthropic.com OR site:deepmind.google"
+    "{model} SWE-bench aider polyglot HumanEval LiveCodeBench benchmark score"
 )
 
 # Where the failure-cache stub rows land — same model_seeds table,
@@ -223,7 +225,11 @@ def refresh_one(
 ) -> dict:
     """Refresh ONE model. Returns {status: 'refreshed'|'no-data'|'error',
     detail: str}. Never raises."""
-    q = SEARCH_QUERY_TEMPLATE.format(model=model)
+    # Search on the RESOLVED name, not the operator-display alias. The
+    # web has benchmarks for `glm-4.7-flash`, not chitin's internal
+    # `openclaw-glm-flash` driver alias.
+    search_name = _resolve_lookup_token(model)
+    q = SEARCH_QUERY_TEMPLATE.format(model=search_name)
     try:
         results = backend.query(q, n=n_results)
     except BackendError as e:
@@ -238,8 +244,12 @@ def refresh_one(
         f"[{i + 1}] {r['title']}\n    {r['url']}\n    {r['snippet'][:500]}"
         for i, r in enumerate(results)
     )
+    # Use the RESOLVED name in the prompt too — the LLM is matching
+    # the snippets against this id, and the snippets describe the
+    # backing model ('glm-4.7-flash'), not chitin's driver alias
+    # ('openclaw-glm-flash').
     prompt = EXTRACTION_PROMPT.format(
-        model_id=model, numbered_snippets=snippets
+        model_id=search_name, numbered_snippets=snippets
     )
 
     if dry_run:
@@ -257,9 +267,13 @@ def refresh_one(
     # Write the seed row. source='web-search' (per design §"failure
     # cache" — same source used for both successes and stub failures,
     # discriminated by metric).
+    # Store the seed under the RESOLVED model name so future lookups
+    # (which also resolve before searching) find it. For non-aliased
+    # models this is a no-op; for openclaw drivers it stores under
+    # 'glm-4.7-flash' instead of 'openclaw-glm-flash'.
     upsert_seed(
         conn=conn,
-        model=model,
+        model=search_name,
         source=FAILURE_SOURCE,
         metric=parsed["benchmark"],
         value=float(parsed["score"]),
@@ -267,6 +281,7 @@ def refresh_one(
         raw_payload={
             "source_url": parsed.get("source_url"),
             "score_unit": parsed.get("score_unit"),
+            "operator_alias": model if model != search_name else None,
             "extracted_from": [r["url"] for r in results],
         },
     )
