@@ -1,0 +1,5 @@
+name: chitin-governance
+version: 1.0.0
+description: "Enforces per-repo chitin.yaml policy on every pre_tool_call by shelling out to chitin-kernel gate."
+hooks:
+  - pre_tool_call

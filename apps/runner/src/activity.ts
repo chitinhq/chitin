@@ -815,6 +815,26 @@ export async function runAgentTurn(req: ExecutionRequest): Promise<ActivityResul
           // tuple. Until then, the kernel sees an empty fingerprint
           // and chain rows omit the field via omitempty.
           CHITIN_FINGERPRINT: process.env.CHITIN_FINGERPRINT ?? '',
+          // Policy file + fail-closed mode for any agent that calls
+          // chitin-kernel's gate from inside the spawned process.
+          // Necessary because the spawn cwd is a per-task worktree
+          // (e.g. ~/swarm/worktrees/<workflow_id>/) which is a
+          // checkout of the TARGET repo — most of which don't have
+          // chitin.yaml at root. Without these, the kernel's
+          // cwd-walk-upward returns no_policy_found and the hermes
+          // plugin's lenient default lets every tool call through —
+          // the gap that PR #N (this PR) closes.
+          //
+          // CHITIN_POLICY_FILE is the operator's authoritative
+          // chitin.yaml; the kernel's gate evaluate honors --policy-file
+          // (or this env fallback) and skips the inheritance walk.
+          //
+          // CHITIN_REQUIRE_POLICY=1 makes the chitin-governance hermes
+          // plugin treat no_policy_found as a hard deny instead of
+          // silently allowing — defense-in-depth for the case where
+          // CHITIN_POLICY_FILE is unset or points to a missing file.
+          CHITIN_POLICY_FILE: resolvePolicySrc(),
+          CHITIN_REQUIRE_POLICY: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
