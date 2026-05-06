@@ -1,0 +1,71 @@
+# chitin-routes.yaml — peer-escalation routing policy
+#
+# Sidecar to chitin.yaml. Loaded by chitin-kernel router on every gate
+# evaluation (when `enabled: true`). Operator declares:
+#   - Rules: which signal+severity triggers a peer-escalation
+#   - Routes: which (driver, model) candidates serve each named route
+#
+# Per docs/design/2026-05-06-kernel-gate-escalation.md.
+#
+# Copy this file to `chitin-routes.yaml` (no `.example` suffix) at the
+# same level as chitin.yaml to enable. The kernel walks parent dirs
+# from cwd to find it, identical to chitin.yaml lookup.
+
+version: 1
+
+# Default off. Until set true, the kernel loads + validates this file
+# but does NOT spawn peer CLIs from inside the gate — falls back to
+# today's "set escalation_requested=true and let the runner handle it"
+# behavior.
+enabled: false
+
+# Per-spawn safety knobs.
+spawn_timeout_seconds: 60
+max_concurrent_peers: 1
+
+# Rules — when this signal at this severity fires, look up `route` in
+# the Routes section and spawn its first quota-affording candidate.
+rules:
+  - name: floundering-loop
+    signal: floundering
+    severity: ">= 2 loops"
+    route: patch_quality
+    max_per_hour: 10
+
+  - name: blast-radius-large
+    signal: blast_radius
+    severity: "> 25 files"
+    route: reasoning_depth
+    max_per_hour: 5
+
+  - name: drift-takeover
+    signal: drift
+    severity: "advisor.verdict=takeover"
+    route: reasoning_depth
+    max_per_hour: 3
+
+# Routes — named optimization category → ordered candidate list.
+# routeFor() walks candidates in order; first one with quota wins.
+# Names align with the conformance-substrate doc's optimization
+# targets (cheap+stable, patch_quality, reasoning_depth, recovery,
+# latency).
+routes:
+  cheap+stable:
+    - { driver: copilot, model: gpt-4.1 }            # x0 (free on Pro/Enterprise)
+    - { driver: gemini, model: gemini-2.5-flash }    # 1/1500 daily on AI Pro
+
+  patch_quality:
+    - { driver: copilot, model: gpt-5.4 }            # terminal-bench-2.0 81.8%
+    - { driver: claude, model: claude-opus-4-6 }     # Max sub absorbs
+
+  reasoning_depth:
+    - { driver: claude, model: claude-opus-4-7 }     # Max sub absorbs
+    - { driver: copilot, model: gpt-5.5 }            # x7.5 — last resort
+
+  recovery:
+    - { driver: copilot, model: claude-haiku-4.5 }   # x0.33
+    - { driver: copilot, model: gpt-5.4-mini }       # x0.33
+
+  latency:
+    - { driver: copilot, model: gpt-4o-mini }        # x0 + fast
+    - { driver: gemini, model: gemini-2.5-flash-lite }
