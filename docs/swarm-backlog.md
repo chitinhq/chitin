@@ -246,7 +246,7 @@ template, no design judgment.
 ```yaml
 id: spawn-template-validate-all-drivers
 tier: T2
-status: ready
+status: partial
 estimated_loc: 120
 blocks: [spawn-template-fix-copilot]
 file: go/execution-kernel/internal/router/spawn_peer_test.go
