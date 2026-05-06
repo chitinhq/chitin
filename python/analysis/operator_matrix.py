@@ -160,12 +160,26 @@ def _gemini_refresh_token() -> str | None:
         return creds["access_token"]
     if not refresh:
         return None
-    # Public client credentials embedded in @google/gemini-cli source.
+    # Read gemini-cli's OAuth client credentials from env. The values
+    # ARE public (embedded in @google/gemini-cli's npm package source)
+    # but GitHub secret-scanning flags the GOCSPX- format regardless,
+    # blocking pushes when they're inline. Operator who wants gemini
+    # OAuth refresh exports them once:
+    #
+    #   export GEMINI_CLI_CLIENT_ID="$(cat /path/to/gemini-cli/.../client_id)"
+    #   export GEMINI_CLI_CLIENT_SECRET="$(cat /path/to/gemini-cli/.../client_secret)"
+    #
+    # When unset, this code path returns None and the gemini probe
+    # falls back to its expired-token state.
+    client_id = os.environ.get("GEMINI_CLI_CLIENT_ID")
+    client_secret = os.environ.get("GEMINI_CLI_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
     import urllib.request
     import urllib.parse
     body = urllib.parse.urlencode({
-        "client_id": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-        "client_secret": "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",
+        "client_id": client_id,
+        "client_secret": client_secret,
         "refresh_token": refresh,
         "grant_type": "refresh_token",
     }).encode("utf-8")
