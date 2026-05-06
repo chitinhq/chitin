@@ -1,0 +1,17 @@
+[Unit]
+Description=Detect runaway lockdown loops in chitin gov-decisions chain
+
+[Service]
+Type=oneshot
+ExecStart=%h/workspace/chitin/scripts/chitin-chain-watch.sh
+
+# Caps — one jq scan over today's JSONL; no network, no build, no DB write.
+MemoryMax=128M
+CPUQuota=50%
+TimeoutStartSec=30
+
+# Don't auto-restart — failures want operator attention via the log.
+Restart=no
+
+[Install]
+WantedBy=default.target
