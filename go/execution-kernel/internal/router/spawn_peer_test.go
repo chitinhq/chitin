@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -299,4 +300,63 @@ func TestSpawnPeer_DefaultTimeoutApplied(t *testing.T) {
 	if err != nil {
 		t.Errorf("default timeout should be generous; got %v", err)
 	}
+}
+
+// ─── Per-driver headless smoke tests ───────────────────────────────────────
+//
+// These exercise real binaries via DefaultSpawner. They skip when the
+// binary isn't on PATH so CI without all four CLIs installed stays
+// green; operator validation runs them locally.
+//
+// Each test mirrors the in-gate path: the only thing varying between
+// them is the driver/model in the SpawnConfig — anything that fails
+// here is a template bug, not a wiring bug.
+
+func smokeConfig(driver, model string) SpawnConfig {
+	return SpawnConfig{
+		Decision: RouteDecision{
+			Rule:      RoutingRule{Name: "smoke", Signal: "smoke", Route: "smoke"},
+			Candidate: Candidate{Driver: driver, Model: model},
+			Rationale: "headless smoke test",
+		},
+		Request: RouteRequest{
+			Signal:           "smoke",
+			Severity:         "smoke",
+			WorkerWorkflowID: "smoke-" + driver,
+		},
+		PromptText:          "Reply with the single word: ok",
+		SpawnTimeoutSeconds: 30,
+	}
+}
+
+func runSmoke(t *testing.T, binary, driver, model string) {
+	t.Helper()
+	if _, err := exec.LookPath(binary); err != nil {
+		t.Skipf("%s binary not on PATH; smoke test skipped", binary)
+	}
+	cfg := smokeConfig(driver, model)
+	res, err := SpawnPeer(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("%s smoke spawn failed: %v", driver, err)
+	}
+	if res.Provenance.PeerExitCode != 0 {
+		t.Errorf("%s exit_code: got %d want 0 (stderr=%q)",
+			driver, res.Provenance.PeerExitCode, res.RawPeerStderr)
+	}
+	content, _ := res.Content.(string)
+	if strings.TrimSpace(content) == "" {
+		t.Errorf("%s Content empty — template likely produced no output", driver)
+	}
+}
+
+func TestSpawnPeer_ClaudeSmoke(t *testing.T) {
+	runSmoke(t, "claude", "claude", "claude-haiku-4-5-20251001")
+}
+
+func TestSpawnPeer_CodexSmoke(t *testing.T) {
+	runSmoke(t, "codex", "codex", "gpt-5")
+}
+
+func TestSpawnPeer_GeminiSmoke(t *testing.T) {
+	runSmoke(t, "gemini", "gemini", "gemini-2.5-flash")
 }
