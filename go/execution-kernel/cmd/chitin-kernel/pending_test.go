@@ -140,3 +140,32 @@ func TestPendingAuth_RejectsWrongUID(t *testing.T) {
 		t.Errorf("err = %v, want substring pending_unauthorized", err)
 	}
 }
+
+// TestCLI_PendingWatchHermes_GracefulNoopWhenOperatorConfigMissing pins
+// the fix for the chitin-pending-watch.timer failure observed
+// 2026-05-07: with no rule using channel: hermes, ~/.chitin/operator.yaml
+// doesn't exist (the cli-only escalate flow doesn't need it), and the
+// timer was failing every 30s with "operator_config_missing" — burying
+// real signals under hours of noise. Now the watch-hermes command
+// returns a structured noop instead, so the timer stays green and the
+// log line names what's missing.
+func TestCLI_PendingWatchHermes_GracefulNoopWhenOperatorConfigMissing(t *testing.T) {
+	stdout, stderr, code := runCLIWithEnv(t, t.TempDir(), nil, "pending", "watch-hermes")
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr=%q stdout=%q)", code, stderr, stdout)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
+	}
+	if ok, _ := out["ok"].(bool); !ok {
+		t.Errorf(`stdout missing "ok":true: %q`, stdout)
+	}
+	if skipped, _ := out["skipped"].(string); skipped != "operator_config_missing" {
+		t.Errorf(`expected "skipped":"operator_config_missing", got %q`, skipped)
+	}
+	// resolved must be 0 — nothing to do.
+	if resolved, _ := out["resolved"].(float64); resolved != 0 {
+		t.Errorf("resolved = %v, want 0", resolved)
+	}
+}

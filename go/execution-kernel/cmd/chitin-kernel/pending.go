@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -187,6 +188,19 @@ func cmdPending(args []string) {
 	case "watch-hermes":
 		cfg, err := loadOperatorConfig()
 		if err != nil {
+			// Missing operator.yaml is the steady state until the
+			// operator wires up channel: hermes for at least one rule.
+			// Don't fail the systemd timer over it — every 30s of
+			// "no operator.yaml" log noise crowds out real signals,
+			// and the timer's only job is polling for hermes-channel
+			// approvals (none exist if no rule uses that channel).
+			// Surfaced 2026-05-07 in PR #382's wrap-up: timer was
+			// failed for hours because the cli-only escalate flow
+			// didn't need operator.yaml at all.
+			if errors.Is(err, os.ErrNotExist) {
+				fmt.Println(`{"ok":true,"action":"watch-hermes","skipped":"operator_config_missing","resolved":0}`)
+				return
+			}
 			exitErr("operator_config_missing", err.Error())
 		}
 		store, err := gov.OpenEscalateStore(dbPath)
