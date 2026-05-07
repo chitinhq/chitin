@@ -39,7 +39,8 @@ func OpenEscalateStore(dbPath string) (*EscalateStore, error) {
 			remember_window_seconds INTEGER NOT NULL,
 			created_ts      INTEGER NOT NULL,
 			notified_ts     INTEGER,
-			notify_msg_id   TEXT,
+			hermes_task_id  TEXT,
+			last_event_seq  INTEGER,
 			notify_failed_reason TEXT,
 			resolved_ts     INTEGER,
 			resolution      TEXT,
@@ -78,7 +79,8 @@ type PendingApproval struct {
 	RememberWindowSeconds int
 	CreatedTs             int64
 	NotifiedTs            *int64
-	NotifyMsgID           string
+	HermesTaskID          string
+	LastEventSeq          *int64
 	NotifyFailedReason    string
 	ResolvedTs            *int64
 	Resolution            string // "approved" | "denied" | "timeout"
@@ -105,11 +107,13 @@ func (s *EscalateStore) GetPending(id string) (PendingApproval, error) {
 	var notifiedTs sql.NullInt64
 	var resolvedTs sql.NullInt64
 	var rememberGrant sql.NullInt64
+	var lastEventSeq sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT id, agent, rule_id, action_type, action_target,
 		       COALESCE(action_params, ''), cwd, reason, channel,
 		       timeout_seconds, remember_window_seconds, created_ts,
-		       notified_ts, COALESCE(notify_msg_id, ''),
+		       notified_ts, COALESCE(hermes_task_id, ''),
+		       last_event_seq,
 		       COALESCE(notify_failed_reason, ''), resolved_ts,
 		       COALESCE(resolution, ''), COALESCE(resolution_by, ''),
 		       COALESCE(resolution_reason, ''), remember_grant_seconds
@@ -118,7 +122,7 @@ func (s *EscalateStore) GetPending(id string) (PendingApproval, error) {
 		&p.ID, &p.Agent, &p.RuleID, &p.ActionType, &p.ActionTarget,
 		&p.ActionParams, &p.Cwd, &p.Reason, &p.Channel,
 		&p.TimeoutSeconds, &p.RememberWindowSeconds, &p.CreatedTs,
-		&notifiedTs, &p.NotifyMsgID, &p.NotifyFailedReason,
+		&notifiedTs, &p.HermesTaskID, &lastEventSeq, &p.NotifyFailedReason,
 		&resolvedTs, &p.Resolution, &p.ResolutionBy,
 		&p.ResolutionReason, &rememberGrant,
 	)
@@ -128,6 +132,10 @@ func (s *EscalateStore) GetPending(id string) (PendingApproval, error) {
 	if notifiedTs.Valid {
 		v := notifiedTs.Int64
 		p.NotifiedTs = &v
+	}
+	if lastEventSeq.Valid {
+		v := lastEventSeq.Int64
+		p.LastEventSeq = &v
 	}
 	if resolvedTs.Valid {
 		v := resolvedTs.Int64

@@ -2,9 +2,37 @@ package gov
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestEscalateStore_SchemaHasHermesTaskIdAndLastEventSeq locks in the
+// kanban-shaped naming for the outbound notify path. The original
+// `notify_msg_id` was named for a fictional `hermes message send`
+// surface (see Task 16 observation 2026-05-07): the real shape is
+// `hermes kanban create` returning a task_id, plus a per-row event
+// cursor for watch-hermes (Task 19) per-task polls.
+func TestEscalateStore_SchemaHasHermesTaskIdAndLastEventSeq(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	// Verify the renamed/new columns exist by introspecting sqlite_master.
+	var schema string
+	if err := store.db.QueryRow(
+		"SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_approvals'",
+	).Scan(&schema); err != nil {
+		t.Fatalf("query schema: %v", err)
+	}
+	for _, want := range []string{"hermes_task_id", "last_event_seq"} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("schema missing %q: %s", want, schema)
+		}
+	}
+	if strings.Contains(schema, "notify_msg_id") {
+		t.Errorf("schema still references old name notify_msg_id: %s", schema)
+	}
+}
 
 // TestOpenEscalateStore_CreatesTablesAndIndexes verifies the store
 // initializes its sqlite schema (pending_approvals + remember_grants
