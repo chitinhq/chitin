@@ -336,8 +336,8 @@ func TestRememberGrants(t *testing.T) {
 	defer store.Close()
 
 	now := int64(1700000000)
-	timeNow = func() time.Time { return time.Unix(now, 0) }
-	defer func() { timeNow = time.Now }()
+	setTimeNow(func() time.Time { return time.Unix(now, 0) })
+	defer setTimeNow(time.Now)
 
 	// Empty store: HasUnexpired returns false.
 	if store.HasUnexpiredGrant("rule-x", "agent-a") {
@@ -390,8 +390,8 @@ func TestSweepStaleEscalations_ResolvesPastDeadline(t *testing.T) {
 	defer store.Close()
 
 	now := int64(1700000000)
-	timeNow = func() time.Time { return time.Unix(now, 0) }
-	defer func() { timeNow = time.Now }()
+	setTimeNow(func() time.Time { return time.Unix(now, 0) })
+	defer setTimeNow(time.Now)
 
 	// Two rows: one fresh, one stale.
 	mkRow := func(id string, createdTs int64, timeout int) {

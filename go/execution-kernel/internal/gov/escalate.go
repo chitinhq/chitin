@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -186,8 +187,23 @@ func (s *EscalateStore) resolve(id, resolution, by, reason string, grantSeconds 
 // nowUnix is a hook for tests to override time.Now().Unix().
 var nowUnix = func() int64 { return timeNow().Unix() }
 
-// timeNow is a hook for tests to override time.Now().
-var timeNow = time.Now
+// timeNowPtr holds the current time-source function. Stored via
+// atomic.Pointer so cross-goroutine override (used by integration
+// tests in cmd/chitin-kernel/) doesn't race with Wait's poll loop.
+// Production never overrides; the atomic load is a single mov.
+var timeNowPtr atomic.Pointer[func() time.Time]
+
+func init() {
+	f := func() time.Time { return time.Now() }
+	timeNowPtr.Store(&f)
+}
+
+// timeNow returns the current time using the configured source.
+func timeNow() time.Time { return (*timeNowPtr.Load())() }
+
+// setTimeNow replaces the time source. Tests in this package use this
+// directly; tests in other packages go through SetTimeNowForTest.
+func setTimeNow(f func() time.Time) { timeNowPtr.Store(&f) }
 
 func nullableInt(p *int) any {
 	if p == nil {
@@ -405,6 +421,15 @@ func (s *EscalateStore) ListUnresolvedPastDeadline(nowSec int64) ([]PendingAppro
 // custom queries (e.g., test helpers stamping hermes_task_id post-
 // notifyHermes). Production code should prefer the typed methods.
 func (s *EscalateStore) DB() *sql.DB { return s.db }
+
+// TimeNowForTest / SetTimeNowForTest / RestoreTimeNow expose the
+// internal timeNow hook for tests in OTHER packages (cmd/chitin-kernel
+// integration tests). Backed by atomic.Pointer so concurrent
+// override-vs-read across goroutines is race-free under -race.
+// Production callers use timeNow directly.
+func TimeNowForTest() func() time.Time     { return *timeNowPtr.Load() }
+func SetTimeNowForTest(at time.Time)       { setTimeNow(func() time.Time { return at }) }
+func RestoreTimeNow(prev func() time.Time) { setTimeNow(prev) }
 
 // SweepStale resolves all unresolved rows whose deadline has passed.
 // Called at gate startup (recovers orphaned rows from a crashed
