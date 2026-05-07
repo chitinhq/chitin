@@ -41,7 +41,7 @@ func runHookCall(t *testing.T, env *hookTestEnv, payload map[string]any, envelop
 	}
 	in := bytes.NewReader(body)
 	var out, errOut bytes.Buffer
-	exitCode = evalHookStdin(in, &out, &errOut, "claude-code", envelopeFlag, false, false)
+	exitCode = evalHookStdin(in, &out, &errOut, "claude-code", envelopeFlag, "", false, false)
 	return out.String(), errOut.String(), exitCode
 }
 
@@ -136,7 +136,7 @@ func TestEvalHookStdin_NoPolicyInCwdAllowsWithWarning(t *testing.T) {
 		"cwd":        cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
 	if code != 0 {
 		t.Fatalf("exit=%d want 0 (fail-open)", code)
 	}
@@ -169,7 +169,7 @@ func TestEvalHookStdin_NoPolicyInCwd_RequirePolicy_Blocks(t *testing.T) {
 		"cwd":        cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", true, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", true, false)
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (--require-policy → block)", code)
 	}
@@ -196,7 +196,7 @@ func TestEvalHookStdin_WrongTypeField_WarnsAndProceeds(t *testing.T) {
 		"cwd":        env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", false, false)
+	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
 	if !strings.Contains(errOut.String(), "tool_input_wrong_type") {
 		t.Fatalf("stderr missing wrong-type warning: %q", errOut.String())
 	}
@@ -206,7 +206,7 @@ func TestEvalHookStdin_MalformedJSONIsExit1(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	in := bytes.NewReader([]byte("not json"))
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(in, &out, &errOut, "claude-code", "", false, false)
+	code := evalHookStdin(in, &out, &errOut, "claude-code", "", "", false, false)
 	_ = env
 	if code != 1 {
 		t.Fatalf("exit=%d want 1 (non-blocking error)", code)
@@ -510,7 +510,7 @@ func TestEvalHookStdin_ChitinAdmin_ChainedRmRfStillBlocked(t *testing.T) {
 		"cwd": env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false)
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (rm-rf rule should still apply); stdout=%q", code, out.String())
 	}
@@ -553,7 +553,7 @@ func TestEvalHookStdin_ChitinAdmin_ExemptInfoLogged(t *testing.T) {
 		"cwd":        env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false)
 	if code != 0 {
 		t.Fatalf("exit=%d want 0", code)
 	}
@@ -605,7 +605,7 @@ func TestEvalHookStdin_NoRecordSuppressesAllPersistence(t *testing.T) {
 	// state-mutating side effects fire.
 	for i := 0; i < 15; i++ {
 		var out, errOut bytes.Buffer
-		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "norecord-hook", "", false, true)
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "norecord-hook", "", "", false, true)
 		if code != 2 {
 			t.Fatalf("iter %d: code=%d want 2 (block); stdout=%q", i, code, out.String())
 		}
@@ -664,8 +664,70 @@ func TestEvalHookStdin_NoRecordSkipsEnvelopeSpend(t *testing.T) {
 		"tool_input": map[string]any{"file_path": "/x"},
 		"cwd":        env.cwd,
 	})
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", false, true)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, true)
 	if code != 0 {
 		t.Fatalf("allow under NoRecord should exit 0, got %d (stdout=%q errOut=%q)", code, out.String(), errOut.String())
+	}
+}
+
+func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
+	// Regression for 2026-05-07: the --policy-file flag was parsed in
+	// main.go cmdGateEvaluate but never threaded to runHookStdin →
+	// evalHookStdin in --hook-stdin mode. Effect: any caller passing
+	// --policy-file with --hook-stdin got it silently dropped, and the
+	// gate fell back to the cwd-walk inheritance lookup. Found while
+	// replaying the 17-day Curie capture dataset against a pinned
+	// policy and seeing per-cwd policies apply instead.
+	//
+	// Two assertions:
+	//   1. policyFile="" → behaves as before (cwd walk applies)
+	//   2. policyFile=<explicit> with no cwd policy → explicit wins
+	//      (without the fix, this returned no_policy_found + allow)
+	tmpHome := t.TempDir()
+	prev := os.Getenv("CHITIN_HOME")
+	_ = os.Setenv("CHITIN_HOME", tmpHome)
+	t.Cleanup(func() { _ = os.Setenv("CHITIN_HOME", prev) })
+
+	// Stage a policy in a temp dir; cwd will be a SEPARATE temp dir
+	// with no chitin.yaml in its inheritance chain.
+	policyDir := t.TempDir()
+	policyPath := filepath.Join(policyDir, "chitin.yaml")
+	if err := os.WriteFile(policyPath, []byte(baselinePolicy), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cwd := t.TempDir() // empty; no chitin.yaml here or above
+
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "echo hello"},
+		"cwd":        cwd,
+		"session_id": "policy-file-test",
+	})
+
+	// Without --policy-file: hook fires no_policy_found warning, allows.
+	{
+		var out, errOut bytes.Buffer
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+		if code != 0 {
+			t.Fatalf("no-policy path: code=%d want 0 (fail-open allow)", code)
+		}
+		if !strings.Contains(errOut.String(), "no_policy_found") {
+			t.Errorf("no-policy path: expected no_policy_found warn on stderr, got %q", errOut.String())
+		}
+	}
+
+	// With --policy-file: explicit policy wins; no warn, gate allows
+	// based on the policy's allow-shell rule (not the no_policy_found
+	// fail-open path).
+	{
+		var out, errOut bytes.Buffer
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", policyPath, false, false)
+		if code != 0 {
+			t.Fatalf("policy-file path: code=%d want 0 (allow), stdout=%q errOut=%q", code, out.String(), errOut.String())
+		}
+		if strings.Contains(errOut.String(), "no_policy_found") {
+			t.Errorf("policy-file path: should NOT see no_policy_found (means flag was ignored), got: %q", errOut.String())
+		}
 	}
 }

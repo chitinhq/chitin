@@ -32,12 +32,12 @@ import (
 //
 // Cold-start target: ~10ms (heuristics are pure Go); only the
 // advisor call (when fired) takes seconds (LLM latency).
-func runRouterHookStdin(agent, envelopeFlag string, requirePolicy, noRecord bool) {
-	code := evalRouterHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy, noRecord)
+func runRouterHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) {
+	code := evalRouterHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
 	os.Exit(code)
 }
 
-func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy, noRecord bool) int {
+func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -68,7 +68,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	// Step 1: kernel verdict via evalHookStdin's pure core
 	var kernelOut bytes.Buffer
-	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, requirePolicy, noRecord)
+	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
 
 	// Fast path: router policy disabled → emit kernel verdict directly
 	if !policy.Enabled {
@@ -339,6 +339,7 @@ func cmdRouterEvaluate(args []string) {
 	// Minimal flag set — mirrors the gate evaluate hook flags
 	agent := "claude-code"
 	envelopeFlag := ""
+	policyFile := ""
 	requirePolicy := false
 	hookStdin := false
 	noRecord := false
@@ -350,6 +351,8 @@ func cmdRouterEvaluate(args []string) {
 			agent = a[len("--agent="):]
 		case strings.HasPrefix(a, "--envelope="):
 			envelopeFlag = a[len("--envelope="):]
+		case strings.HasPrefix(a, "--policy-file="):
+			policyFile = a[len("--policy-file="):]
 		case a == "--require-policy":
 			requirePolicy = true
 		case a == "--no-record":
@@ -359,5 +362,5 @@ func cmdRouterEvaluate(args []string) {
 	if !hookStdin {
 		exitErr("router_evaluate_missing_args", "--hook-stdin required (other modes deferred)")
 	}
-	runRouterHookStdin(agent, envelopeFlag, requirePolicy, noRecord)
+	runRouterHookStdin(agent, envelopeFlag, policyFile, requirePolicy, noRecord)
 }

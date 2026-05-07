@@ -54,8 +54,8 @@ func isChitinAdminCommand(a gov.Action) bool {
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
 // evalHookStdin core. The split keeps evalHookStdin testable in-process
 // while production gets the full os-level behavior.
-func runHookStdin(agent, envelopeFlag string, requirePolicy, noRecord bool) {
-	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, requirePolicy, noRecord)
+func runHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) {
+	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
 	os.Exit(code)
 }
 
@@ -83,7 +83,7 @@ func runHookStdin(agent, envelopeFlag string, requirePolicy, noRecord bool) {
 // (Counter + BudgetStore). Sharing one *sql.DB would halve cold-start
 // open cost. Deferred until Milestone D's 8-shim stress test surfaces
 // real contention numbers — at 3ms p95 today the headroom is ample.
-func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag string, requirePolicy, noRecord bool) int {
+func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -162,7 +162,21 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag strin
 		return claudecode.ExitNonBlockError
 	}
 
-	policy, _, err := gov.LoadWithInheritance(absCwd)
+	// --policy-file (or $CHITIN_POLICY_FILE, both passed as policyFile by
+	// main.go cmdGateEvaluate) bypasses the cwd-walk inheritance lookup
+	// and loads an explicit policy. Mirrors the non-hook gate-evaluate
+	// path's behavior (main.go:843-847). Without this thread-through, an
+	// operator running `gate evaluate --hook-stdin --policy-file X` got
+	// X silently ignored — this caused 2026-05-06's hook-capture replay
+	// to apply per-cwd inherited policy instead of chitin's policy,
+	// muddying the counterfactual analysis. Found while replaying the
+	// 17-day Curie capture dataset.
+	var policy gov.Policy
+	if policyFile != "" {
+		policy, err = gov.LoadPolicyFile(policyFile)
+	} else {
+		policy, _, err = gov.LoadWithInheritance(absCwd)
+	}
 	if err != nil {
 		errMsg := err.Error()
 		if !strings.HasPrefix(errMsg, "no_policy_found") {
