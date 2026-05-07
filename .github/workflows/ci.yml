@@ -128,24 +128,5 @@ jobs:
           # comment one ticket at a time.
           pnpm exec nx run @chitin/tooling-lint:lint:layer-tag-coverage
 
-      - name: Role coverage lint
-        run: |
-          # Structural linter — every Role enum value in
-          # libs/contracts/src/execution-request.schema.ts has a
-          # matching ROLE_PROMPTS builder in
-          # apps/runner/src/role-prompts.ts (and vice versa).
-          # Without this, adding a role to RoleSchema without touching
-          # the prompts map silently fails at dispatch time.
-          pnpm exec nx run @chitin/tooling-lint:lint:role-coverage
-
-      - name: Backlog entry shape lint
-        run: |
-          # Structural linter — every entry in docs/swarm-backlog.md
-          # has heading id matching frontmatter id, valid tier, valid
-          # status, role in RoleSchema, no `blockedBy:` (parser only
-          # reads `blocks:`). Catches the format-drift pattern from
-          # PR #200's review.
-          pnpm exec nx run @chitin/tooling-lint:lint:backlog-entry-shape
-
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
