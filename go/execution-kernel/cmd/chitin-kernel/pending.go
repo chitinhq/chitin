@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -94,4 +95,96 @@ func authPendingFile(dbPath string) error {
 		return fmt.Errorf("pending_unauthorized: file owned by uid %d, current uid %d", owner, self)
 	}
 	return nil
+}
+
+// cmdPending is the top-level dispatcher for `chitin-kernel pending <sub>`.
+// Sub: list | approve | deny.
+func cmdPending(args []string) {
+	if len(args) < 1 {
+		exitErr("pending_no_subcommand", "usage: chitin-kernel pending {list|approve|deny}")
+	}
+	sub, rest := args[0], args[1:]
+	dbPath := filepath.Join(chitinDir(), "pending_approvals.sqlite")
+
+	switch sub {
+	case "list":
+		asJSON := false
+		for _, a := range rest {
+			if a == "--json" {
+				asJSON = true
+			}
+		}
+		store, err := gov.OpenEscalateStore(dbPath)
+		if err != nil {
+			// File not existing yet is OK — list is just empty.
+			if !os.IsNotExist(err) {
+				exitErr("pending_open", err.Error())
+			}
+			if asJSON {
+				fmt.Println("[]")
+			}
+			return
+		}
+		defer store.Close()
+		if err := pendingList(store, os.Stdout, asJSON); err != nil {
+			exitErr("pending_list", err.Error())
+		}
+
+	case "approve":
+		if len(rest) < 1 {
+			exitErr("pending_approve_missing_id", "usage: chitin-kernel pending approve <id> [--window <duration>]")
+		}
+		id := rest[0]
+		windowSec := 0
+		for i, a := range rest {
+			if a == "--window" && i+1 < len(rest) {
+				d, err := time.ParseDuration(rest[i+1])
+				if err != nil {
+					exitErr("pending_bad_window", err.Error())
+				}
+				windowSec = int(d.Seconds())
+			}
+		}
+		if err := authPendingFile(dbPath); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(2)
+		}
+		store, err := gov.OpenEscalateStore(dbPath)
+		if err != nil {
+			exitErr("pending_open", err.Error())
+		}
+		defer store.Close()
+		if err := pendingApprove(store, id, windowSec); err != nil {
+			exitErr("pending_approve", err.Error())
+		}
+		fmt.Printf(`{"ok":true,"action":"approve","id":%q,"window_seconds":%d}`+"\n", id, windowSec)
+
+	case "deny":
+		if len(rest) < 1 {
+			exitErr("pending_deny_missing_id", "usage: chitin-kernel pending deny <id> [--reason <text>]")
+		}
+		id := rest[0]
+		reason := ""
+		for i, a := range rest {
+			if a == "--reason" && i+1 < len(rest) {
+				reason = rest[i+1]
+			}
+		}
+		if err := authPendingFile(dbPath); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(2)
+		}
+		store, err := gov.OpenEscalateStore(dbPath)
+		if err != nil {
+			exitErr("pending_open", err.Error())
+		}
+		defer store.Close()
+		if err := pendingDeny(store, id, reason); err != nil {
+			exitErr("pending_deny", err.Error())
+		}
+		fmt.Printf(`{"ok":true,"action":"deny","id":%q,"reason":%q}`+"\n", id, reason)
+
+	default:
+		exitErr("pending_unknown_subcommand", sub)
+	}
 }
