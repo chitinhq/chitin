@@ -63,8 +63,10 @@ const (
 	// a canonical action_type instead of falling through to ActUnknown.
 	// Without this, every long-running hermes worker accumulates 10+
 	// `default-deny-unknown` denials on plumbing alone and trips
-	// lockdown (root cause of the 2026-05-07 chitin-runner smoke
-	// stalling at deny-everything).
+	// lockdown (root cause of the 2026-05-07 chitin-worker smoke
+	// stalling at deny-everything; profile renamed from chitin-runner
+	// to chitin-worker the same day to disambiguate from the deleted
+	// apps/runner TypeScript orchestration runner).
 	ActKanbanCall        ActionType = "kanban.call"
 	// ActHermesProcess: Hermes Agent's `process` tool — a runtime helper
 	// for managing background processes inside the agent's own session.

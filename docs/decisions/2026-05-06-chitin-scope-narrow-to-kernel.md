@@ -136,7 +136,7 @@ Justification:
 
 - **Work tracking + dispatch:** hermes kanban + `hermes kanban
   daemon`. Operator (or a hermes-side promotion job) keeps the
-  spawnable lanes (`chitin-runner`, `default`) populated with ready
+  spawnable lanes (`chitin-worker`, `default`) populated with ready
   tasks. Chitin doesn't see this surface at all.
 - **Status reflection:** hermes ingests PR-merged events and updates
   its own kanban. If chitin's chain is the source of "PR merged,"
