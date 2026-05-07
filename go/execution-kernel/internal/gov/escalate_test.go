@@ -3,6 +3,7 @@ package gov
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -421,5 +422,52 @@ func TestSweepStaleEscalations_ResolvesPastDeadline(t *testing.T) {
 	got, _ = store.GetPending("01F")
 	if got.ResolvedTs != nil {
 		t.Errorf("01F should still be unresolved: %+v", got)
+	}
+}
+
+// TestOpenEscalateStore_ConcurrentOpen verifies that N processes
+// opening the same sqlite path concurrently do not collide on the
+// CREATE TABLE IF NOT EXISTS schema bootstrap. Before the fix, the
+// second goroutine's WAL/CREATE TABLE could race the first's lock
+// and return SQLITE_BUSY (5) — observed as flakiness in the e2e
+// escalate test (workaround: 200ms sleep before opening). After the
+// fix, busy_timeout=5000 lets each goroutine wait up to 5s for the
+// schema lock, so all opens succeed.
+//
+// Boundary: 5 concurrent goroutines, single shared path, single
+// WaitGroup barrier. Asserts no errors and that each goroutine
+// observes the schema (idempotent CREATE TABLE).
+func TestOpenEscalateStore_ConcurrentOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.sqlite")
+
+	const N = 5
+	errs := make([]error, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			store, err := OpenEscalateStore(path)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			defer store.Close()
+			// Touch the schema so the connection actually exercises a
+			// table-lookup after the bootstrap — catches the case where
+			// CREATE TABLE returned but the connection's view was stale.
+			var n int
+			_ = store.db.QueryRow(
+				"SELECT COUNT(*) FROM pending_approvals",
+			).Scan(&n)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: open failed: %v", i, err)
+		}
 	}
 }

@@ -87,6 +87,27 @@ func mergePolicies(parent, child Policy) Policy {
 	if child.Bounds.MaxLinesChanged > 0 {
 		out.Bounds.MaxLinesChanged = child.Bounds.MaxLinesChanged
 	}
+	// Bounds.PerAction merges additively — child entries override parent
+	// entries on key collision, parent entries survive when child has no
+	// entry for that action_type. Without this merge step, a child policy
+	// that sets only the global bounds (or a parent that contributes a
+	// PerAction map) silently drops the per_action overrides at the merge
+	// boundary: in the workspace-root inheritance case, the workspace
+	// chitin.yaml has no bounds, the inner repo's chitin.yaml has both
+	// global and per_action, mergePolicies(workspace, inner) used to
+	// copy global but lose PerAction — so a 7000-line git push got hit
+	// with the 500-line global ceiling instead of the 5000-line git.push
+	// override. This also fixes the symptom that looked like a
+	// chitin-router-hook bug ("ceiling of 500 firing without sentinel"):
+	// it was downstream from CheckBounds, fixed here in the merge.
+	if len(child.Bounds.PerAction) > 0 {
+		if out.Bounds.PerAction == nil {
+			out.Bounds.PerAction = make(map[string]ActionBounds, len(child.Bounds.PerAction))
+		}
+		for k, v := range child.Bounds.PerAction {
+			out.Bounds.PerAction[k] = v
+		}
+	}
 	// (MaxRuntimeSeconds removed from v1 — see Bounds doc.)
 	// Escalation config: child overrides parent per field (only if child
 	// explicitly set the value — zero means "use parent/default").

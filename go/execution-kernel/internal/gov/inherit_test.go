@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,129 @@ rules: []
 	_, _, err := LoadWithInheritance(child)
 	if err == nil {
 		t.Fatal("child:monitor under parent:enforce should fail strictness check")
+	}
+}
+
+// TestMergePolicies_PerActionMergedAdditively pins the fix for the
+// silent-drop bug observed in the workspace-root inheritance case
+// (operator-side `git push` from /home/red/workspace/chitin/ hit
+// "exceeds ceiling of 500" instead of the per_action git.push:5000
+// override). Pre-fix, mergePolicies copied the global Bounds fields
+// but never copied child.Bounds.PerAction into out.Bounds.PerAction —
+// so when the parent (workspace-root chitin.yaml) had no bounds at
+// all, the merge produced out.Bounds with the child's globals but
+// PerAction=nil, and effectiveBounds("git.push") fell back to the
+// 500-line global instead of the 5000-line override.
+//
+// Boundaries:
+//   1. parent has no PerAction, child has one — child's PerAction wins.
+//   2. parent has PerAction, child has none — parent survives.
+//   3. both have PerAction with overlapping keys — child overrides on
+//      collision, parent-only keys survive.
+func TestMergePolicies_PerActionMergedAdditively(t *testing.T) {
+	t.Run("parent_empty_child_has_perAction", func(t *testing.T) {
+		parent := Policy{}
+		child := Policy{Bounds: Bounds{
+			MaxLinesChanged: 500,
+			PerAction: map[string]ActionBounds{
+				"git.push": {MaxLinesChanged: 5000},
+			},
+		}}
+		out := mergePolicies(parent, child)
+		eff := out.Bounds.effectiveBounds("git.push")
+		if eff.MaxLinesChanged != 5000 {
+			t.Errorf("expected per_action override to survive merge, got effective MaxLinesChanged=%d", eff.MaxLinesChanged)
+		}
+	})
+	t.Run("parent_has_perAction_child_empty", func(t *testing.T) {
+		parent := Policy{Bounds: Bounds{
+			MaxLinesChanged: 500,
+			PerAction: map[string]ActionBounds{
+				"git.push": {MaxLinesChanged: 5000},
+			},
+		}}
+		child := Policy{}
+		out := mergePolicies(parent, child)
+		eff := out.Bounds.effectiveBounds("git.push")
+		if eff.MaxLinesChanged != 5000 {
+			t.Errorf("parent per_action should survive when child has none, got %d", eff.MaxLinesChanged)
+		}
+	})
+	t.Run("both_have_perAction_child_wins_on_collision", func(t *testing.T) {
+		parent := Policy{Bounds: Bounds{
+			MaxLinesChanged: 500,
+			PerAction: map[string]ActionBounds{
+				"git.push":         {MaxLinesChanged: 1000},
+				"github.pr.create": {MaxLinesChanged: 2000},
+			},
+		}}
+		child := Policy{Bounds: Bounds{
+			PerAction: map[string]ActionBounds{
+				"git.push": {MaxLinesChanged: 5000},
+			},
+		}}
+		out := mergePolicies(parent, child)
+		// Child wins on collision.
+		if effPush := out.Bounds.effectiveBounds("git.push"); effPush.MaxLinesChanged != 5000 {
+			t.Errorf("child should override parent on git.push, got %d", effPush.MaxLinesChanged)
+		}
+		// Parent-only key survives.
+		if effPR := out.Bounds.effectiveBounds("github.pr.create"); effPR.MaxLinesChanged != 2000 {
+			t.Errorf("parent-only github.pr.create should survive merge, got %d", effPR.MaxLinesChanged)
+		}
+	})
+}
+
+// TestLoadWithInheritance_PerActionSurvivesWorkspaceMerge is the e2e
+// version of the merge fix: a parent chitin.yaml with no bounds, and
+// a child chitin.yaml with both a global ceiling AND a per_action
+// override. After the fix, effectiveBounds(git.push) honors the
+// child's per_action override.
+func TestLoadWithInheritance_PerActionSurvivesWorkspaceMerge(t *testing.T) {
+	root := t.TempDir()
+	// Workspace-root: no bounds (mirrors /home/red/workspace/chitin.yaml).
+	writeFile(t, filepath.Join(root, "chitin.yaml"), `
+id: workspace-root
+mode: enforce
+rules: []
+`)
+	// Inner repo: global 500 + per_action git.push:5000.
+	inner := filepath.Join(root, "inner")
+	writeFile(t, filepath.Join(inner, "chitin.yaml"), `
+id: inner-repo
+mode: enforce
+rules: []
+bounds:
+  max_lines_changed: 500
+  per_action:
+    git.push:
+      max_lines_changed: 5000
+`)
+	p, _, err := LoadWithInheritance(inner)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+	eff := p.Bounds.effectiveBounds("git.push")
+	if eff.MaxLinesChanged != 5000 {
+		t.Errorf("per_action git.push override should survive workspace merge, got effective MaxLinesChanged=%d (PerAction=%+v)",
+			eff.MaxLinesChanged, p.Bounds.PerAction)
+	}
+	// A 600-line push: over the 500 global default, under the 5000
+	// per_action override. Pre-fix this would fail with "exceeds
+	// ceiling of 500" (the symptom from operator's git push); post-
+	// fix it must pass because the override is honored.
+	a := Action{Type: ActGitPush, Target: "fix"}
+	d := evaluateBoundsFromStats(a, p, eff, 5, 300, 300)
+	if !d.Allowed {
+		t.Errorf("600-line push should pass under 5000-line per_action override (was hitting 500-line global), got %+v", d)
+	}
+	// A 6000-line push: over the 5000 override. Confirms the override
+	// is the active ceiling — not silently raised to infinity.
+	d2 := evaluateBoundsFromStats(a, p, eff, 50, 3000, 3000)
+	if d2.Allowed {
+		t.Errorf("6000-line push should fail under 5000-line override, got %+v", d2)
+	}
+	if d2.Reason == "" || !strings.Contains(d2.Reason, "5000") {
+		t.Errorf("denial reason should reference the 5000 ceiling (proves override took effect, not the 500 default), got reason=%q", d2.Reason)
 	}
 }

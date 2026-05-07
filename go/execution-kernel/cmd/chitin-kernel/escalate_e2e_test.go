@@ -68,13 +68,10 @@ rules:
 		resCh <- result{out.String(), code}
 	}()
 
-	// Wait for evalHookStdin to open the store + insert the pending row.
-	// We give the kernel a head start before the test thread also opens
-	// the sqlite file — concurrent OpenEscalateStore calls can collide
-	// on the CREATE TABLE IF NOT EXISTS schema bootstrap (SQLITE_BUSY).
-	// Once the kernel has owned the schema for a moment, the test's
-	// reader connection coexists fine with the kernel's reader.
-	time.Sleep(200 * time.Millisecond)
+	// Poll for the pending row. OpenEscalateStore now sets a 5s
+	// busy_timeout before WAL/CREATE TABLE so the test thread's open
+	// no longer races the kernel's schema bootstrap (replaced the
+	// 200ms warmup that used to live here).
 	dbPath := filepath.Join(chitin, "pending_approvals.sqlite")
 	var pid string
 	deadline := time.Now().Add(3 * time.Second)

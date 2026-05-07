@@ -22,6 +22,19 @@ func OpenEscalateStore(dbPath string) (*EscalateStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
+	// busy_timeout BEFORE journal_mode=WAL and BEFORE CREATE TABLE: when
+	// two processes call OpenEscalateStore concurrently against the same
+	// path, the second's WAL transition or CREATE TABLE IF NOT EXISTS
+	// races for the schema lock and gets SQLITE_BUSY (5) immediately
+	// unless the connection has busy_timeout configured. Setting it
+	// first lets sqlite spin up to 5s waiting for the lock — long
+	// enough for any realistic concurrent open to complete. Mirrors
+	// the pattern in OpenBudgetStore (budget.go) which fixed the same
+	// class of race for envelope_use. Replaces Task 23's 200ms test-
+	// side warmup with a durable fix inside the store itself.
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return nil, fmt.Errorf("WAL: %w", err)
 	}
