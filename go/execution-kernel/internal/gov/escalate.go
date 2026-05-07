@@ -61,3 +61,79 @@ func OpenEscalateStore(dbPath string) (*EscalateStore, error) {
 }
 
 func (s *EscalateStore) Close() error { return s.db.Close() }
+
+type PendingApproval struct {
+	ID                    string
+	Agent                 string
+	RuleID                string
+	ActionType            string
+	ActionTarget          string
+	ActionParams          string // JSON-encoded; "" when none
+	Cwd                   string
+	Reason                string
+	Channel               string // "hermes" | "cli-only"
+	TimeoutSeconds        int
+	RememberWindowSeconds int
+	CreatedTs             int64
+	NotifiedTs            *int64
+	NotifyMsgID           string
+	NotifyFailedReason    string
+	ResolvedTs            *int64
+	Resolution            string // "approved" | "denied" | "timeout"
+	ResolutionBy          string // "operator-cli" | "hermes-reply" | "timeout-watcher"
+	ResolutionReason      string
+	RememberGrantSeconds  *int
+}
+
+func (s *EscalateStore) InsertPending(p PendingApproval) error {
+	_, err := s.db.Exec(`
+		INSERT INTO pending_approvals (
+			id, agent, rule_id, action_type, action_target, action_params,
+			cwd, reason, channel, timeout_seconds, remember_window_seconds,
+			created_ts
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+	`, p.ID, p.Agent, p.RuleID, p.ActionType, p.ActionTarget, p.ActionParams,
+		p.Cwd, p.Reason, p.Channel, p.TimeoutSeconds, p.RememberWindowSeconds,
+		p.CreatedTs)
+	return err
+}
+
+func (s *EscalateStore) GetPending(id string) (PendingApproval, error) {
+	var p PendingApproval
+	var notifiedTs sql.NullInt64
+	var resolvedTs sql.NullInt64
+	var rememberGrant sql.NullInt64
+	err := s.db.QueryRow(`
+		SELECT id, agent, rule_id, action_type, action_target,
+		       COALESCE(action_params, ''), cwd, reason, channel,
+		       timeout_seconds, remember_window_seconds, created_ts,
+		       notified_ts, COALESCE(notify_msg_id, ''),
+		       COALESCE(notify_failed_reason, ''), resolved_ts,
+		       COALESCE(resolution, ''), COALESCE(resolution_by, ''),
+		       COALESCE(resolution_reason, ''), remember_grant_seconds
+		FROM pending_approvals WHERE id = ?
+	`, id).Scan(
+		&p.ID, &p.Agent, &p.RuleID, &p.ActionType, &p.ActionTarget,
+		&p.ActionParams, &p.Cwd, &p.Reason, &p.Channel,
+		&p.TimeoutSeconds, &p.RememberWindowSeconds, &p.CreatedTs,
+		&notifiedTs, &p.NotifyMsgID, &p.NotifyFailedReason,
+		&resolvedTs, &p.Resolution, &p.ResolutionBy,
+		&p.ResolutionReason, &rememberGrant,
+	)
+	if err != nil {
+		return p, err
+	}
+	if notifiedTs.Valid {
+		v := notifiedTs.Int64
+		p.NotifiedTs = &v
+	}
+	if resolvedTs.Valid {
+		v := resolvedTs.Int64
+		p.ResolvedTs = &v
+	}
+	if rememberGrant.Valid {
+		v := int(rememberGrant.Int64)
+		p.RememberGrantSeconds = &v
+	}
+	return p, nil
+}

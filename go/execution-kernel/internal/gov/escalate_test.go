@@ -48,3 +48,40 @@ func TestOpenEscalateStore_CreatesTablesAndIndexes(t *testing.T) {
 	}
 	store2.Close()
 }
+
+func TestPendingApprovals_InsertAndGet(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	row := PendingApproval{
+		ID: "01TEST00000000000000000001", Agent: "claude-code",
+		RuleID: "test-rule", ActionType: "shell.exec",
+		ActionTarget: "echo hi", Cwd: "/tmp", Reason: "test reason",
+		Channel: "hermes", TimeoutSeconds: 600, RememberWindowSeconds: 300,
+		CreatedTs: 1700000000,
+	}
+	if err := store.InsertPending(row); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := store.GetPending(row.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ID != row.ID || got.Agent != row.Agent || got.ActionTarget != row.ActionTarget {
+		t.Errorf("got %+v, want %+v", got, row)
+	}
+	if got.ResolvedTs != nil {
+		t.Errorf("freshly-inserted row should have ResolvedTs=nil, got %v", got.ResolvedTs)
+	}
+}
+
+// mustOpenStore is a tiny test helper used across escalate_test.go.
+func mustOpenStore(t *testing.T) *EscalateStore {
+	t.Helper()
+	store, err := OpenEscalateStore(filepath.Join(t.TempDir(), "p.sqlite"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	return store
+}
