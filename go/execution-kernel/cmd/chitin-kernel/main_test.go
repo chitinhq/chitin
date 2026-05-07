@@ -41,10 +41,21 @@ func TestMain(m *testing.M) {
 
 // runCLI invokes the built chitin-kernel binary with the given args, inside
 // the given working directory. Returns stdout, stderr, exit code.
+//
+// Test isolation: CHITIN_HOME is injected as a per-test temp dir so the
+// kernel subprocess uses a fresh ~/.chitin/gov.db rather than the
+// operator's real one. Without this, test-agent escalation-counter rows
+// from prior runs can persist into ~/.chitin/gov.db and trip lockdown
+// in subsequent tests (observed 2026-05-07: `TestCLI_GateEvaluate_*`
+// failed with rule_id=lockdown until the operator manually cleared the
+// agent row). All runCLI-invoking tests get isolation for free; tests
+// that need to share state across calls within a single test should
+// pre-set t-scoped state via runCLIWithEnv with an explicit CHITIN_HOME.
 func runCLI(t *testing.T, wd string, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(testBinary, args...)
 	cmd.Dir = wd
+	cmd.Env = append(os.Environ(), "CHITIN_HOME="+t.TempDir())
 	stdout, err := cmd.Output()
 	var stderr []byte
 	if ee, ok := err.(*exec.ExitError); ok {
