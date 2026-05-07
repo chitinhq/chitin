@@ -54,3 +54,11 @@ func pendingList(store *gov.EscalateStore, out io.Writer, asJSON bool) error {
 	}
 	return tw.Flush()
 }
+
+func pendingApprove(store *gov.EscalateStore, id string, windowSeconds int) error {
+	return store.ResolveApprove(id, "operator-cli", windowSeconds)
+}
+
+func pendingDeny(store *gov.EscalateStore, id string, reason string) error {
+	return store.ResolveDeny(id, "operator-cli", reason)
+}

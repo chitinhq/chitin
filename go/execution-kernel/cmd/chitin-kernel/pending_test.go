@@ -45,3 +45,72 @@ func TestPendingList_OrdersOldestFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingApprove_WritesResolution(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01X", Agent: "a", RuleID: "r", ActionType: "shell.exec",
+		ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+		Channel: "cli-only", TimeoutSeconds: 60, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+
+	if err := pendingApprove(store, "01X", 300); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	got, _ := store.GetPending("01X")
+	if got.Resolution != "approved" {
+		t.Errorf("resolution = %q, want approved", got.Resolution)
+	}
+	if got.ResolutionBy != "operator-cli" {
+		t.Errorf("resolution_by = %q, want operator-cli", got.ResolutionBy)
+	}
+	if got.RememberGrantSeconds == nil || *got.RememberGrantSeconds != 300 {
+		t.Errorf("remember_grant_seconds = %v, want 300", got.RememberGrantSeconds)
+	}
+}
+
+func TestPendingDeny_WritesReason(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01Y", Agent: "a", RuleID: "r", ActionType: "shell.exec",
+		ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+		Channel: "cli-only", TimeoutSeconds: 60, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+
+	if err := pendingDeny(store, "01Y", "no thank you"); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+
+	got, _ := store.GetPending("01Y")
+	if got.Resolution != "denied" {
+		t.Errorf("resolution = %q, want denied", got.Resolution)
+	}
+	if got.ResolutionReason != "no thank you" {
+		t.Errorf("reason = %q", got.ResolutionReason)
+	}
+}
+
+func TestPendingApprove_RefusesAlreadyResolved(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01Z", Agent: "a", RuleID: "r", ActionType: "shell.exec",
+		ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+		Channel: "cli-only", TimeoutSeconds: 60, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+	_ = pendingApprove(store, "01Z", 0)
+	err := pendingApprove(store, "01Z", 0)
+	if err == nil {
+		t.Error("expected error on re-approve, got nil")
+	}
+}
