@@ -186,3 +186,58 @@ func nullableInt(p *int) any {
 	}
 	return *p
 }
+
+// ListUnresolved returns all pending_approvals rows where resolved_ts
+// IS NULL, ordered by created_ts ASC. Used by the CLI's `pending list`.
+func (s *EscalateStore) ListUnresolved() ([]PendingApproval, error) {
+	rows, err := s.db.Query(`
+		SELECT id FROM pending_approvals
+		WHERE resolved_ts IS NULL
+		ORDER BY created_ts ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingApproval
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		p, err := s.GetPending(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// ListUnresolvedPastDeadline returns rows whose
+// (created_ts + timeout_seconds) < nowSec. Used by the sweeper.
+func (s *EscalateStore) ListUnresolvedPastDeadline(nowSec int64) ([]PendingApproval, error) {
+	rows, err := s.db.Query(`
+		SELECT id FROM pending_approvals
+		WHERE resolved_ts IS NULL
+		AND (created_ts + timeout_seconds) < ?
+		ORDER BY created_ts ASC
+	`, nowSec)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingApproval
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		p, err := s.GetPending(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}

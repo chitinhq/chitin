@@ -141,3 +141,45 @@ func TestPendingApprovals_Resolve(t *testing.T) {
 		t.Error("expected re-resolve to error, got nil")
 	}
 }
+
+func TestPendingApprovals_ListUnresolved(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	// Three rows: one resolved, one unresolved-fresh, one unresolved-stale.
+	now := int64(1700000000)
+	mkRow := func(id string, createdTs int64, timeout int, resolved bool) {
+		t.Helper()
+		err := store.InsertPending(PendingApproval{
+			ID: id, Agent: "a", RuleID: "r", ActionType: "shell.exec",
+			ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+			Channel: "cli-only", TimeoutSeconds: timeout,
+			RememberWindowSeconds: 0, CreatedTs: createdTs,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved {
+			_ = store.ResolveApprove(id, "operator-cli", 0)
+		}
+	}
+	mkRow("01R", now-1000, 600, true)         // resolved
+	mkRow("01F", now-30, 600, false)          // unresolved, fresh (deadline +570s)
+	mkRow("01S", now-1000, 60, false)         // unresolved, stale (deadline -940s)
+
+	all, err := store.ListUnresolved()
+	if err != nil {
+		t.Fatalf("list unresolved: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("ListUnresolved: got %d rows, want 2 (skip resolved)", len(all))
+	}
+
+	stale, err := store.ListUnresolvedPastDeadline(now)
+	if err != nil {
+		t.Fatalf("list past deadline: %v", err)
+	}
+	if len(stale) != 1 || stale[0].ID != "01S" {
+		t.Errorf("ListUnresolvedPastDeadline: got %d rows, want 1 (01S)", len(stale))
+	}
+}
