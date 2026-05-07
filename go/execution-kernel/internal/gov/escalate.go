@@ -6,6 +6,7 @@ package gov
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -136,4 +137,52 @@ func (s *EscalateStore) GetPending(id string) (PendingApproval, error) {
 		p.RememberGrantSeconds = &v
 	}
 	return p, nil
+}
+
+// ErrAlreadyResolved is returned when a Resolve* call targets a row
+// whose resolved_ts is already set. Caller (CLI / hermes-reply parser)
+// surfaces this as "pending_already_resolved" to the operator.
+var ErrAlreadyResolved = fmt.Errorf("pending_already_resolved")
+
+func (s *EscalateStore) ResolveApprove(id, by string, grantSeconds int) error {
+	return s.resolve(id, "approved", by, "", &grantSeconds)
+}
+
+func (s *EscalateStore) ResolveDeny(id, by, reason string) error {
+	return s.resolve(id, "denied", by, reason, nil)
+}
+
+func (s *EscalateStore) ResolveTimeout(id string) error {
+	return s.resolve(id, "timeout", "timeout-watcher", "", nil)
+}
+
+func (s *EscalateStore) resolve(id, resolution, by, reason string, grantSeconds *int) error {
+	now := nowUnix()
+	res, err := s.db.Exec(`
+		UPDATE pending_approvals
+		SET resolved_ts = ?, resolution = ?, resolution_by = ?,
+		    resolution_reason = ?, remember_grant_seconds = ?
+		WHERE id = ? AND resolved_ts IS NULL
+	`, now, resolution, by, reason, nullableInt(grantSeconds), id)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return ErrAlreadyResolved
+	}
+	return nil
+}
+
+// nowUnix is a hook for tests to override time.Now().Unix().
+var nowUnix = func() int64 { return timeNow().Unix() }
+
+// timeNow is a hook for tests to override time.Now().
+var timeNow = time.Now
+
+func nullableInt(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
