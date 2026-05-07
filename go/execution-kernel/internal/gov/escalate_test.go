@@ -356,3 +356,42 @@ func TestRememberGrants(t *testing.T) {
 		t.Error("reinserted grant should be unexpired")
 	}
 }
+
+func TestSweepStaleEscalations_ResolvesPastDeadline(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	now := int64(1700000000)
+	timeNow = func() time.Time { return time.Unix(now, 0) }
+	defer func() { timeNow = time.Now }()
+
+	// Two rows: one fresh, one stale.
+	mkRow := func(id string, createdTs int64, timeout int) {
+		t.Helper()
+		_ = store.InsertPending(PendingApproval{
+			ID: id, Agent: "a", RuleID: "r", ActionType: "shell.exec",
+			ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+			Channel: "cli-only", TimeoutSeconds: timeout,
+			RememberWindowSeconds: 0, CreatedTs: createdTs,
+		})
+	}
+	mkRow("01F", now-30, 600)  // fresh: deadline now+570
+	mkRow("01S", now-1000, 60) // stale: deadline now-940
+
+	resolved, err := store.SweepStale()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if resolved != 1 {
+		t.Errorf("sweep resolved %d, want 1", resolved)
+	}
+
+	got, _ := store.GetPending("01S")
+	if got.Resolution != "timeout" || got.ResolutionBy != "timeout-watcher" {
+		t.Errorf("01S not resolved as timeout: %+v", got)
+	}
+	got, _ = store.GetPending("01F")
+	if got.ResolvedTs != nil {
+		t.Errorf("01F should still be unresolved: %+v", got)
+	}
+}

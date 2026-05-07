@@ -392,3 +392,21 @@ func (s *EscalateStore) ListUnresolvedPastDeadline(nowSec int64) ([]PendingAppro
 	}
 	return out, nil
 }
+
+// SweepStale resolves all unresolved rows whose deadline has passed.
+// Called at gate startup (recovers orphaned rows from a crashed
+// kernel) and optionally on a timer. Returns count resolved.
+func (s *EscalateStore) SweepStale() (int, error) {
+	now := nowUnix()
+	stale, err := s.ListUnresolvedPastDeadline(now)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, p := range stale {
+		if err := s.ResolveTimeout(p.ID); err == nil {
+			count++
+		}
+	}
+	return count, nil
+}
