@@ -3,6 +3,7 @@ package gov
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestOpenEscalateStore_CreatesTablesAndIndexes verifies the store
@@ -181,5 +182,59 @@ func TestPendingApprovals_ListUnresolved(t *testing.T) {
 	}
 	if len(stale) != 1 || stale[0].ID != "01S" {
 		t.Errorf("ListUnresolvedPastDeadline: got %d rows, want 1 (01S)", len(stale))
+	}
+}
+
+func TestRememberGrants(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	now := int64(1700000000)
+	timeNow = func() time.Time { return time.Unix(now, 0) }
+	defer func() { timeNow = time.Now }()
+
+	// Empty store: HasUnexpired returns false.
+	if store.HasUnexpiredGrant("rule-x", "agent-a") {
+		t.Error("empty store should return false")
+	}
+
+	// Insert a 300s grant; HasUnexpired returns true while now is within window.
+	if err := store.InsertGrant("rule-x", "agent-a", 300); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if !store.HasUnexpiredGrant("rule-x", "agent-a") {
+		t.Error("inserted grant should be unexpired")
+	}
+
+	// Different (rule, agent) is independent.
+	if store.HasUnexpiredGrant("rule-x", "agent-b") {
+		t.Error("agent-b should have no grant")
+	}
+	if store.HasUnexpiredGrant("rule-y", "agent-a") {
+		t.Error("rule-y should have no grant")
+	}
+
+	// Advance time past the window — grant expired.
+	now += 301
+	if store.HasUnexpiredGrant("rule-x", "agent-a") {
+		t.Error("expired grant should return false")
+	}
+
+	// Sweep removes expired rows.
+	removed, err := store.SweepExpiredGrants()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("sweep removed %d, want 1", removed)
+	}
+
+	// Re-insert with same (rule, agent) replaces.
+	now += 100
+	if err := store.InsertGrant("rule-x", "agent-a", 600); err != nil {
+		t.Fatalf("reinsert: %v", err)
+	}
+	if !store.HasUnexpiredGrant("rule-x", "agent-a") {
+		t.Error("reinserted grant should be unexpired")
 	}
 }

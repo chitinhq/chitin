@@ -214,6 +214,45 @@ func (s *EscalateStore) ListUnresolved() ([]PendingApproval, error) {
 	return out, nil
 }
 
+// HasUnexpiredGrant returns true if there's a row in remember_grants
+// for (rule_id, agent) whose expires_ts > now.
+func (s *EscalateStore) HasUnexpiredGrant(ruleID, agent string) bool {
+	now := nowUnix()
+	var count int
+	_ = s.db.QueryRow(`
+		SELECT COUNT(*) FROM remember_grants
+		WHERE rule_id = ? AND agent = ? AND expires_ts > ?
+	`, ruleID, agent, now).Scan(&count)
+	return count > 0
+}
+
+// InsertGrant writes a new grant row. ON CONFLICT replaces — so re-
+// approving the same (rule, agent) extends the window from now,
+// not from the original grant_ts.
+func (s *EscalateStore) InsertGrant(ruleID, agent string, windowSeconds int) error {
+	now := nowUnix()
+	_, err := s.db.Exec(`
+		INSERT INTO remember_grants (rule_id, agent, granted_ts, expires_ts)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (rule_id, agent) DO UPDATE SET
+			granted_ts = excluded.granted_ts,
+			expires_ts = excluded.expires_ts
+	`, ruleID, agent, now, now+int64(windowSeconds))
+	return err
+}
+
+// SweepExpiredGrants deletes all rows whose expires_ts <= now.
+// Returns the count removed.
+func (s *EscalateStore) SweepExpiredGrants() (int, error) {
+	now := nowUnix()
+	res, err := s.db.Exec(`DELETE FROM remember_grants WHERE expires_ts <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // ListUnresolvedPastDeadline returns rows whose
 // (created_ts + timeout_seconds) < nowSec. Used by the sweeper.
 func (s *EscalateStore) ListUnresolvedPastDeadline(nowSec int64) ([]PendingApproval, error) {
