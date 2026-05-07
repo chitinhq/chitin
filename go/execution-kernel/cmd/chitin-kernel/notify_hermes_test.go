@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -341,5 +342,117 @@ func TestWatchHermesOnce_UnparsedCommentsIgnored(t *testing.T) {
 	got, _ := store.GetPending("01U")
 	if got.ResolvedTs != nil {
 		t.Errorf("should not be resolved")
+	}
+}
+
+func TestLoadOperatorConfigFrom_FullConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "operator.yaml")
+	contents := `hermes_bin: /usr/local/bin/hermes
+notify_platform: whatsapp
+notify_chat_id: "+15555550100"
+assignee_profile: operator
+channel: ops-approvals
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadOperatorConfigFrom(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.HermesBin != "/usr/local/bin/hermes" {
+		t.Errorf("HermesBin = %q", cfg.HermesBin)
+	}
+	if cfg.NotifyPlatform != "whatsapp" {
+		t.Errorf("NotifyPlatform = %q", cfg.NotifyPlatform)
+	}
+	if cfg.NotifyChatID != "+15555550100" {
+		t.Errorf("NotifyChatID = %q", cfg.NotifyChatID)
+	}
+	if cfg.AssigneeProfile != "operator" {
+		t.Errorf("AssigneeProfile = %q", cfg.AssigneeProfile)
+	}
+	if cfg.Channel != "ops-approvals" {
+		t.Errorf("Channel = %q", cfg.Channel)
+	}
+}
+
+func TestLoadOperatorConfigFrom_DefaultsAppliedForOptional(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "operator.yaml")
+	// Minimal config: only required fields.
+	contents := `notify_platform: whatsapp
+notify_chat_id: "+1"
+assignee_profile: operator
+`
+	_ = os.WriteFile(path, []byte(contents), 0o600)
+
+	cfg, err := loadOperatorConfigFrom(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.HermesBin != "hermes" {
+		t.Errorf("HermesBin default = %q, want \"hermes\"", cfg.HermesBin)
+	}
+	// Channel is optional and may be empty for v1.
+	if cfg.Channel != "" {
+		t.Errorf("Channel = %q, want empty (optional)", cfg.Channel)
+	}
+}
+
+func TestLoadOperatorConfigFrom_RejectsMissingRequired(t *testing.T) {
+	cases := []struct {
+		name      string
+		yaml      string
+		wantSubst string
+	}{
+		{
+			name:      "missing notify_platform",
+			yaml:      "notify_chat_id: x\nassignee_profile: o\n",
+			wantSubst: "notify_platform",
+		},
+		{
+			name:      "missing notify_chat_id",
+			yaml:      "notify_platform: whatsapp\nassignee_profile: o\n",
+			wantSubst: "notify_chat_id",
+		},
+		{
+			name:      "missing assignee_profile",
+			yaml:      "notify_platform: whatsapp\nnotify_chat_id: x\n",
+			wantSubst: "assignee_profile",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "operator.yaml")
+			_ = os.WriteFile(path, []byte(tc.yaml), 0o600)
+			_, err := loadOperatorConfigFrom(path)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubst) {
+				t.Errorf("err = %v, want substring %q", err, tc.wantSubst)
+			}
+		})
+	}
+}
+
+func TestLoadOperatorConfigFrom_MissingFile(t *testing.T) {
+	_, err := loadOperatorConfigFrom("/nonexistent/path/operator.yaml")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestLoadOperatorConfigFrom_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "operator.yaml")
+	_ = os.WriteFile(path, []byte("not: valid: yaml: at: all"), 0o600)
+	_, err := loadOperatorConfigFrom(path)
+	if err == nil {
+		t.Error("expected parse error, got nil")
 	}
 }

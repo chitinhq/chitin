@@ -22,12 +22,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
+	"gopkg.in/yaml.v3"
 )
 
 // execHermes is a mockable hook around the hermes CLI shell-out. Tests
@@ -295,10 +298,71 @@ func watchHermesOnce(store *gov.EscalateStore, cfg operatorConfig) (int, error) 
 	return resolved, nil
 }
 
-// loadOperatorConfig is a placeholder for Task 20's real implementation.
-// Returns a minimal config sufficient for tests + manual invocation.
-// Task 20 replaces this with a yaml-loaded version reading
-// ~/.chitin/operator.yaml.
+// loadOperatorConfig loads the operator config from the conventional
+// location (~/.chitin/operator.yaml) using chitinDir() to resolve
+// $CHITIN_HOME. Returns a populated operatorConfig with defaults
+// applied, or an error if required fields are missing.
 func loadOperatorConfig() (operatorConfig, error) {
-	return operatorConfig{HermesBin: "hermes"}, nil
+	return loadOperatorConfigFrom(filepath.Join(chitinDir(), "operator.yaml"))
+}
+
+// loadOperatorConfigFrom is the testable form. Reads the YAML at
+// path, validates required fields, applies defaults, returns the
+// populated operatorConfig.
+//
+// Required fields (no default — error if absent):
+//   - notify_platform: hermes-side platform identifier (e.g. "whatsapp")
+//   - notify_chat_id:  hermes-side chat id on that platform
+//   - assignee_profile: hermes profile to assign the kanban task to
+//
+// Optional fields:
+//   - hermes_bin: defaults to "hermes" (assumes on PATH)
+//   - channel: vestigial; reserved for future flat-channel support
+//
+// Spec: docs/superpowers/specs/2026-05-07-operator-approval-escalation-design.md
+// (operator config section), updated post-Task-17 to match the
+// kanban-create + notify-subscribe transport.
+func loadOperatorConfigFrom(path string) (operatorConfig, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return operatorConfig{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var raw struct {
+		HermesBin       string `yaml:"hermes_bin"`
+		NotifyPlatform  string `yaml:"notify_platform"`
+		NotifyChatID    string `yaml:"notify_chat_id"`
+		AssigneeProfile string `yaml:"assignee_profile"`
+		Channel         string `yaml:"channel"`
+	}
+	if err := yaml.Unmarshal(b, &raw); err != nil {
+		return operatorConfig{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	// Required-field validation.
+	var missing []string
+	if raw.NotifyPlatform == "" {
+		missing = append(missing, "notify_platform")
+	}
+	if raw.NotifyChatID == "" {
+		missing = append(missing, "notify_chat_id")
+	}
+	if raw.AssigneeProfile == "" {
+		missing = append(missing, "assignee_profile")
+	}
+	if len(missing) > 0 {
+		return operatorConfig{}, fmt.Errorf("%s: missing required fields: %v", path, missing)
+	}
+
+	// Default-fill.
+	if raw.HermesBin == "" {
+		raw.HermesBin = "hermes"
+	}
+
+	return operatorConfig{
+		HermesBin:       raw.HermesBin,
+		NotifyPlatform:  raw.NotifyPlatform,
+		NotifyChatID:    raw.NotifyChatID,
+		AssigneeProfile: raw.AssigneeProfile,
+		Channel:         raw.Channel, // optional; empty OK
+	}, nil
 }
