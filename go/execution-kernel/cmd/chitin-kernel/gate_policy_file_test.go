@@ -13,11 +13,17 @@ import (
 // runCLIWithEnv mirrors runCLI from main_test.go but appends the given
 // env entries (KEY=value strings) to os.Environ() before exec — so we
 // can validate env-var-driven flag defaults like --policy-file.
+//
+// Test isolation: CHITIN_HOME defaults to a per-test temp dir so the
+// kernel uses a fresh gov.db (mirrors runCLI's isolation contract). If
+// the caller passes their own CHITIN_HOME via env, it overrides the
+// default — the last KEY=VALUE in cmd.Env wins, per Go's exec docs.
 func runCLIWithEnv(t *testing.T, wd string, env []string, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), testBinary, args...)
 	cmd.Dir = wd
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(os.Environ(), "CHITIN_HOME="+t.TempDir())
+	cmd.Env = append(cmd.Env, env...)
 	stdout, err := cmd.Output()
 	var stderr []byte
 	if ee, ok := err.(*exec.ExitError); ok {
