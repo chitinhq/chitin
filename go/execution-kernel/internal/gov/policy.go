@@ -27,7 +27,7 @@ type Policy struct {
 type Rule struct {
 	ID               string        `yaml:"id"`
 	Action           ActionMatcher `yaml:"action"` // single type OR list of types
-	Effect           string        `yaml:"effect"` // deny | allow
+	Effect           Effect        `yaml:"effect"` // deny | allow | guide | monitor | escalate
 	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
@@ -36,6 +36,23 @@ type Rule struct {
 	Suggestion       string        `yaml:"suggestion,omitempty"`
 	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
 	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
+
+	// Escalate-effect raw fields. Unmarshaled directly off the rule's YAML
+	// when effect == escalate; consumers should read Escalation (built by
+	// the parser with defaults applied) rather than these. Kept on Rule so
+	// the unmarshal target remains a single struct (no intermediate
+	// yamlRule indirection).
+	Channel               string `yaml:"channel,omitempty"`
+	TimeoutSeconds        int    `yaml:"timeout_seconds,omitempty"`
+	RememberWindowSeconds *int   `yaml:"remember_window_seconds,omitempty"` // pointer so "unset" is distinguishable from "explicit 0"
+	NotifyTemplate        string `yaml:"notify_template,omitempty"`
+
+	// Escalation is non-nil only when Effect == EffectEscalate. Built by
+	// the parser from the rule's optional escalate fields (channel,
+	// timeout_seconds, remember_window_seconds, notify_template); all
+	// defaults applied at parse time so consumers see a fully-populated
+	// config.
+	Escalation *EscalateConfig `yaml:"-" json:"-"`
 
 	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
 	// validate patterns at load time (fail-closed on bad regex) rather than
@@ -159,6 +176,19 @@ type Decision struct {
 	Role        string `json:"role,omitempty"`
 	WorkflowID  string `json:"workflow_id,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// EscalationID is the ULID of the pending_approvals row when
+	// this decision came from an operator-approval flow. Lets
+	// auditors join chain rows back to pending_approvals for the
+	// full provenance (notification time, operator reply, etc.).
+	// Empty for non-escalate decisions.
+	EscalationID string `json:"escalation_id,omitempty"`
+
+	// Effect is the rule's effect value as parsed from chitin.yaml
+	// (allow|deny|guide|monitor|escalate). Internal to the gate's
+	// flow control; not serialized to the chain (the chain only
+	// cares about the resolved Allowed + RuleID).
+	Effect Effect `json:"-"`
 }
 
 // ActionMatcher is a yaml.Unmarshaler that accepts either a single
@@ -200,14 +230,78 @@ func LoadPolicyFile(path string) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("read policy: %w", err)
 	}
-	var p Policy
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return Policy{}, fmt.Errorf("parse policy %s: %w", path, err)
-	}
-	if err := p.ApplyDefaults(); err != nil {
-		return Policy{}, fmt.Errorf("validate policy %s: %w", path, err)
+	p, err := parsePolicyYAML(data)
+	if err != nil {
+		return Policy{}, fmt.Errorf("policy %s: %w", path, err)
 	}
 	return p, nil
+}
+
+// parsePolicyYAML is the single entry point for turning chitin.yaml bytes
+// into a validated Policy. Unmarshal → ApplyDefaults → per-rule escalate
+// build. Used by LoadPolicyFile and by tests that want to exercise the
+// parser directly without writing testdata files.
+func parsePolicyYAML(data []byte) (Policy, error) {
+	var p Policy
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return Policy{}, fmt.Errorf("parse: %w", err)
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		return Policy{}, fmt.Errorf("validate: %w", err)
+	}
+	for i := range p.Rules {
+		r := &p.Rules[i]
+		if r.Effect != EffectEscalate {
+			continue
+		}
+		cfg, err := buildEscalateConfig(*r)
+		if err != nil {
+			return Policy{}, fmt.Errorf("rule %s: %w", r.ID, err)
+		}
+		r.Escalation = cfg
+	}
+	return p, nil
+}
+
+// buildEscalateConfig validates and defaults the per-rule escalate fields.
+// Invariant: returns a non-nil config only when every field is in range —
+// channel ∈ {hermes, cli-only}, timeout ∈ [30, 86400], remember_window ≥ 0,
+// action ≠ "unknown" (use deny instead). Defaults: channel=hermes,
+// timeout=600, remember_window=300, notify_template="" (caller supplies
+// built-in default at notify time).
+func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
+	for _, a := range r.Action {
+		if a == string(ActUnknown) {
+			return nil, fmt.Errorf("effect: escalate not allowed on action: unknown — use deny instead")
+		}
+	}
+	channel := r.Channel
+	if channel == "" {
+		channel = "hermes"
+	}
+	if channel != "hermes" && channel != "cli-only" {
+		return nil, fmt.Errorf("channel: %q invalid (allowed: hermes, cli-only)", channel)
+	}
+	timeout := r.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 600
+	}
+	if timeout < 30 || timeout > 86400 {
+		return nil, fmt.Errorf("timeout_seconds: %d out of range [30, 86400]", timeout)
+	}
+	window := 300
+	if r.RememberWindowSeconds != nil {
+		window = *r.RememberWindowSeconds
+		if window < 0 {
+			return nil, fmt.Errorf("remember_window_seconds: %d (must be >= 0)", window)
+		}
+	}
+	return &EscalateConfig{
+		Channel:               channel,
+		TimeoutSeconds:        timeout,
+		RememberWindowSeconds: window,
+		NotifyTemplate:        r.NotifyTemplate,
+	}, nil
 }
 
 // ApplyDefaults fills in unset fields with their baseline values,
@@ -250,24 +344,40 @@ func (p *Policy) ApplyDefaults() error {
 	return nil
 }
 
-// Evaluate walks the rule list in two passes so deny precedence is
+// Evaluate walks the rule list in three passes so deny precedence is
 // rule-order-independent: first pass checks all deny rules (first match
-// wins), second pass checks all allow rules (first match wins). If no
-// rule matches, fail-closed default-deny.
+// wins), second pass checks all escalate rules (first match wins; the
+// gate's step 4.5 turns this into Wait-or-grant), third pass checks all
+// allow rules (first match wins). If no rule matches, fail-closed
+// default-deny.
 //
 // This matters because a leading allow-* rule like default-allow-shell
 // must NOT override a later deny rule like no-destructive-rm. With
 // single-pass order-dependent evaluation, a permissive allow rule
 // placed early silently re-permits everything below it.
+//
+// Escalate rules sit between deny and allow: a hard deny still wins
+// (e.g. rm -rf must remain unconditionally denied even if a broader
+// shell.exec rule says escalate), but an escalate rule must beat a
+// later allow rule for the same action so the operator sees the call.
 func (p Policy) Evaluate(a Action) Decision {
 	for _, r := range p.Rules {
-		if r.Effect != "deny" || !r.matches(a) {
+		if r.Effect != EffectDeny || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, false, a)
 	}
 	for _, r := range p.Rules {
-		if r.Effect != "allow" || !r.matches(a) {
+		if r.Effect != EffectEscalate || !r.matches(a) {
+			continue
+		}
+		// Escalate rules surface as deny from policy alone; the gate's
+		// step 4.5 reads d.Effect and either short-circuits via
+		// remember_grants or blocks in Wait until operator resolution.
+		return p.decisionFromRule(r, false, a)
+	}
+	for _, r := range p.Rules {
+		if r.Effect != EffectAllow || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, true, a)
@@ -295,6 +405,7 @@ func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
 		Suggestion:       r.Suggestion,
 		CorrectedCommand: r.CorrectedCommand,
 		Action:           a,
+		Effect:           r.Effect,
 	}
 }
 

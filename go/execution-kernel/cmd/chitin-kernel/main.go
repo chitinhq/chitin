@@ -58,6 +58,8 @@ func main() {
 		cmdHealth(args)
 	case "gate":
 		cmdGate(args)
+	case "pending":
+		cmdPending(args)
 	case "envelope":
 		cmdEnvelope(args)
 	case "router":

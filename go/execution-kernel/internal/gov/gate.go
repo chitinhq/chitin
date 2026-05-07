@@ -68,6 +68,16 @@ type Gate struct {
 	// hooks (gate_hook.go) leave this false so audit + escalation work
 	// as designed.
 	NoRecord bool
+
+	// EscalateStore is the sqlite-backed pending-approval store used
+	// when a rule's effect is EffectEscalate. nil-safe: if unset, an
+	// escalate-effect rule degrades to deny (with a warning logged).
+	EscalateStore *EscalateStore
+
+	// NotifyHermes is invoked by Wait when channel=hermes. nil-safe:
+	// if unset, the escalation queues but no notification fires
+	// (operator must use the CLI fallback).
+	NotifyHermes func(id string, p PendingApproval) error
 }
 
 // FingerprintContext carries the four routing dimensions the kernel
@@ -233,6 +243,34 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		d.Allowed = true
 	}
 
+	// 4.5: escalate-effect resolution.
+	// If the matched rule's Effect is EffectEscalate and the policy
+	// said deny, check remember_grants first (short-circuit to allow
+	// if found), otherwise block in Wait until operator resolves.
+	if d.Effect == EffectEscalate && !d.Allowed && g.EscalateStore != nil {
+		if g.EscalateStore.HasUnexpiredGrant(d.RuleID, agent) {
+			d.Allowed = true
+			d.RuleID = "escalate-remember-grant"
+		} else {
+			originalRuleID := d.RuleID
+			ruleConfig := findRuleEscalation(g.Policy.Rules, originalRuleID)
+			if ruleConfig != nil {
+				resolution, _ := g.EscalateStore.Wait(WaitArgs{
+					RuleID: originalRuleID, Agent: agent, Action: a,
+					Reason: d.Reason, Config: *ruleConfig,
+					NotifyFn: g.NotifyHermes,
+				})
+				d.Allowed = resolution.Approved
+				d.RuleID = resolution.OutcomeRuleID()
+				d.Reason = resolution.OperatorReason
+				d.EscalationID = resolution.EscalationID
+				if resolution.Approved && resolution.GrantedWindowSeconds > 0 {
+					_ = g.EscalateStore.InsertGrant(originalRuleID, agent, resolution.GrantedWindowSeconds)
+				}
+			}
+		}
+	}
+
 	// 5. Envelope spend on allow. Compute delta via callbacks even when
 	// the policy denies — so the audit row records what would have been
 	// spent for telemetry. But only call Spend when allowed.
@@ -370,4 +408,16 @@ func stampFingerprint(d *Decision, ctx FingerprintContext) {
 	d.Role = ctx.Role
 	d.WorkflowID = ctx.WorkflowID
 	d.Fingerprint = ctx.Fingerprint
+}
+
+// findRuleEscalation returns the EscalateConfig for the rule with
+// the given id, or nil if no such rule (or the rule has no escalate
+// config — shouldn't happen if parser invariants hold).
+func findRuleEscalation(rules []Rule, ruleID string) *EscalateConfig {
+	for _, r := range rules {
+		if r.ID == ruleID {
+			return r.Escalation
+		}
+	}
+	return nil
 }

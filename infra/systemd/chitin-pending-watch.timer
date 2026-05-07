@@ -1,0 +1,12 @@
+[Unit]
+Description=Trigger chitin-pending-watch every 30s
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+Persistent=true
+
+Unit=chitin-pending-watch.service
+
+[Install]
+WantedBy=timers.target

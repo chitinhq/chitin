@@ -239,6 +239,68 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		// effects regardless of which path it traverses.
 		NoRecord: noRecord,
 	}
+	// Operator-approval escalation. Open the pending_approvals store
+	// + wire the hermes notify hook so rules with effect=escalate can
+	// trigger real-time operator approval. Both nil-safe — if Open
+	// fails or operator config is missing, escalate-effect rules
+	// degrade to deny (with a stderr warning).
+	if escalStore, eerr := gov.OpenEscalateStore(filepath.Join(cdir, "pending_approvals.sqlite")); eerr == nil {
+		// One-shot sweep of orphaned rows from previous crashes (Task 11).
+		_, _ = escalStore.SweepStale()
+		gate.EscalateStore = escalStore
+		defer escalStore.Close()
+		// Notify hook: only wire if operator.yaml loads cleanly.
+		// If it doesn't load, escalate-effect rules still queue rows
+		// in pending_approvals — the operator can resolve via the
+		// CLI fallback (`chitin-kernel pending approve <id>`); they
+		// just won't get a hermes notification.
+		if cfg, cerr := loadOperatorConfig(); cerr == nil {
+			gate.NotifyHermes = func(id string, p gov.PendingApproval) error {
+				taskID, err := notifyHermes(id, p, cfg)
+				if err != nil {
+					writeJSONLine(errOut, map[string]string{
+						"warning":       "notify_hermes_failed",
+						"escalation_id": id,
+						"error":         err.Error(),
+					})
+					return err
+				}
+				// Stamp the kanban task_id back onto the row so Task 19's
+				// watch loop knows where to poll for replies. Use DB()
+				// accessor (Task 19) since there's no public setter.
+				if _, uerr := escalStore.DB().Exec(
+					`UPDATE pending_approvals SET hermes_task_id = ? WHERE id = ?`,
+					taskID, id,
+				); uerr != nil {
+					writeJSONLine(errOut, map[string]string{
+						"warning":        "notify_hermes_taskid_stamp_failed",
+						"escalation_id":  id,
+						"hermes_task_id": taskID,
+						"error":          uerr.Error(),
+					})
+					// Non-fatal: notify already succeeded, the operator
+					// will see the kanban task; only the watch loop's
+					// auto-resolve path is degraded.
+				}
+				return nil
+			}
+		} else {
+			// operator.yaml not loadable. Log a warning so operator can fix.
+			writeJSONLine(errOut, map[string]string{
+				"warning":    "operator_config_missing",
+				"escalation": "queued_only",
+				"error":      cerr.Error(),
+				"recovery":   "create ~/.chitin/operator.yaml; pending escalations resolve via chitin-kernel pending approve <id>",
+			})
+		}
+	} else {
+		// EscalateStore failed to open. Escalate-effect rules will
+		// degrade to deny via the gate's nil-safety.
+		writeJSONLine(errOut, map[string]string{
+			"warning": "escalate_store_open_failed",
+			"error":   eerr.Error(),
+		})
+	}
 	// F4 addendum: wire OnDecision to emit a `decision` chain event via
 	// the canonical path. chain_id = HookInput.SessionID when available
 	// (Claude Code provides one); otherwise a fresh UUID. F4 OTEL
