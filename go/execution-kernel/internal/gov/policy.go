@@ -344,24 +344,40 @@ func (p *Policy) ApplyDefaults() error {
 	return nil
 }
 
-// Evaluate walks the rule list in two passes so deny precedence is
+// Evaluate walks the rule list in three passes so deny precedence is
 // rule-order-independent: first pass checks all deny rules (first match
-// wins), second pass checks all allow rules (first match wins). If no
-// rule matches, fail-closed default-deny.
+// wins), second pass checks all escalate rules (first match wins; the
+// gate's step 4.5 turns this into Wait-or-grant), third pass checks all
+// allow rules (first match wins). If no rule matches, fail-closed
+// default-deny.
 //
 // This matters because a leading allow-* rule like default-allow-shell
 // must NOT override a later deny rule like no-destructive-rm. With
 // single-pass order-dependent evaluation, a permissive allow rule
 // placed early silently re-permits everything below it.
+//
+// Escalate rules sit between deny and allow: a hard deny still wins
+// (e.g. rm -rf must remain unconditionally denied even if a broader
+// shell.exec rule says escalate), but an escalate rule must beat a
+// later allow rule for the same action so the operator sees the call.
 func (p Policy) Evaluate(a Action) Decision {
 	for _, r := range p.Rules {
-		if r.Effect != "deny" || !r.matches(a) {
+		if r.Effect != EffectDeny || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, false, a)
 	}
 	for _, r := range p.Rules {
-		if r.Effect != "allow" || !r.matches(a) {
+		if r.Effect != EffectEscalate || !r.matches(a) {
+			continue
+		}
+		// Escalate rules surface as deny from policy alone; the gate's
+		// step 4.5 reads d.Effect and either short-circuits via
+		// remember_grants or blocks in Wait until operator resolution.
+		return p.decisionFromRule(r, false, a)
+	}
+	for _, r := range p.Rules {
+		if r.Effect != EffectAllow || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, true, a)
@@ -389,6 +405,7 @@ func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
 		Suggestion:       r.Suggestion,
 		CorrectedCommand: r.CorrectedCommand,
 		Action:           a,
+		Effect:           r.Effect,
 	}
 }
 
