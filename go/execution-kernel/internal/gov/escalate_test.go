@@ -185,6 +185,124 @@ func TestPendingApprovals_ListUnresolved(t *testing.T) {
 	}
 }
 
+func TestWait_ApprovalUnblocks(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+
+	// Override the poll interval for fast tests.
+	prev := WaitPollInterval
+	WaitPollInterval = 50 * time.Millisecond
+	defer func() { WaitPollInterval = prev }()
+
+	cfg := EscalateConfig{
+		Channel: "cli-only", TimeoutSeconds: 5, RememberWindowSeconds: 0,
+	}
+	a := Action{Type: ActShellExec, Target: "echo hi", Path: "/tmp"}
+
+	// Spawn the Wait in a goroutine; resolve from the test thread.
+	type result struct {
+		res Resolution
+		err error
+	}
+	resCh := make(chan result, 1)
+	idCh := make(chan string, 1)
+	go func() {
+		res, err := store.Wait(WaitArgs{
+			RuleID: "test-rule", Agent: "agent-1", Action: a,
+			Reason: "test reason", Config: cfg,
+			NotifyFn: func(string, PendingApproval) error { return nil },
+			OnInsert: func(id string) { idCh <- id },
+		})
+		resCh <- result{res, err}
+	}()
+
+	// Wait for the row to land, then approve.
+	var insertedID string
+	select {
+	case insertedID = <-idCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not insert a row within 2s")
+	}
+	if err := store.ResolveApprove(insertedID, "operator-cli", 0); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			t.Fatalf("wait: %v", r.err)
+		}
+		if !r.res.Approved {
+			t.Errorf("Approved = false, want true")
+		}
+		if r.res.OutcomeRuleID() != "escalate-approved" {
+			t.Errorf("OutcomeRuleID = %q", r.res.OutcomeRuleID())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within 2s of resolution")
+	}
+}
+
+func TestWait_TimeoutDenies(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+	prev := WaitPollInterval
+	WaitPollInterval = 50 * time.Millisecond
+	defer func() { WaitPollInterval = prev }()
+
+	cfg := EscalateConfig{Channel: "cli-only", TimeoutSeconds: 1, RememberWindowSeconds: 0}
+	a := Action{Type: ActShellExec, Target: "x", Path: "/tmp"}
+
+	res, err := store.Wait(WaitArgs{
+		RuleID: "r", Agent: "a", Action: a, Reason: "x", Config: cfg,
+		NotifyFn: func(string, PendingApproval) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if res.Approved {
+		t.Error("Approved = true, want false (timeout)")
+	}
+	if res.OutcomeRuleID() != "escalate-timeout" {
+		t.Errorf("OutcomeRuleID = %q, want escalate-timeout", res.OutcomeRuleID())
+	}
+}
+
+func TestWait_RememberGrantSetOnApproveWithWindow(t *testing.T) {
+	store := mustOpenStore(t)
+	defer store.Close()
+	prev := WaitPollInterval
+	WaitPollInterval = 50 * time.Millisecond
+	defer func() { WaitPollInterval = prev }()
+
+	cfg := EscalateConfig{Channel: "cli-only", TimeoutSeconds: 5, RememberWindowSeconds: 300}
+	a := Action{Type: ActShellExec, Target: "x", Path: "/tmp"}
+
+	resCh := make(chan Resolution, 1)
+	idCh := make(chan string, 1)
+	go func() {
+		r, _ := store.Wait(WaitArgs{
+			RuleID: "r", Agent: "a", Action: a, Reason: "x", Config: cfg,
+			NotifyFn: func(string, PendingApproval) error { return nil },
+			OnInsert: func(id string) { idCh <- id },
+		})
+		resCh <- r
+	}()
+
+	var insertedID string
+	select {
+	case insertedID = <-idCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not insert a row within 2s")
+	}
+	_ = store.ResolveApprove(insertedID, "operator-cli", 300)
+	r := <-resCh
+
+	if r.GrantedWindowSeconds != 300 {
+		t.Errorf("GrantedWindowSeconds = %d, want 300", r.GrantedWindowSeconds)
+	}
+}
+
 func TestRememberGrants(t *testing.T) {
 	store := mustOpenStore(t)
 	defer store.Close()

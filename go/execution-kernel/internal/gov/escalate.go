@@ -5,6 +5,7 @@ package gov
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -251,6 +252,117 @@ func (s *EscalateStore) SweepExpiredGrants() (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// WaitPollInterval is how often Wait checks the row for resolution.
+// Exported as a var so tests can override (default: 2s).
+var WaitPollInterval = 2 * time.Second
+
+// Resolution is what Wait returns: the outcome of a single escalation
+// from row insertion through resolution-or-timeout. The gate uses
+// OutcomeRuleID to stamp the chain decision.
+type Resolution struct {
+	EscalationID         string
+	Approved             bool
+	OperatorReason       string
+	GrantedWindowSeconds int
+}
+
+// OutcomeRuleID returns the chain rule_id that the gate should stamp
+// on the resolved Decision: "escalate-approved" on approve,
+// "escalate-timeout" when no operator reason is recorded (the watcher
+// path), or "escalate-denied" otherwise.
+func (r Resolution) OutcomeRuleID() string {
+	if r.Approved {
+		return "escalate-approved"
+	}
+	if r.OperatorReason == "" {
+		return "escalate-timeout"
+	}
+	return "escalate-denied"
+}
+
+// WaitArgs bundles the inputs Wait needs. NotifyFn is mockable so
+// tests don't depend on a live hermes-gateway; OnInsert is an optional
+// hook fired (synchronously) after the row lands so a test thread can
+// safely call Resolve* without polling for the generated ID.
+type WaitArgs struct {
+	RuleID   string
+	Agent    string
+	Action   Action
+	Reason   string
+	Config   EscalateConfig
+	NotifyFn func(id string, p PendingApproval) error // pass real notifyHermes from caller
+	OnInsert func(id string)                          // optional test hook
+}
+
+// Wait inserts a pending_approvals row, fires notify in the
+// background (when channel is "hermes"), then polls every
+// WaitPollInterval until the row is resolved or its deadline passes.
+// On deadline, Wait stamps the row with ResolveTimeout and returns a
+// non-Approved Resolution. Caller blocks for the full duration.
+func (s *EscalateStore) Wait(args WaitArgs) (Resolution, error) {
+	id, err := newULID()
+	if err != nil {
+		return Resolution{}, fmt.Errorf("ulid: %w", err)
+	}
+	now := nowUnix()
+
+	paramsJSON := ""
+	if args.Action.Params != nil {
+		if b, err := json.Marshal(args.Action.Params); err == nil {
+			paramsJSON = string(b)
+		}
+	}
+
+	row := PendingApproval{
+		ID: id, Agent: args.Agent, RuleID: args.RuleID,
+		ActionType: string(args.Action.Type), ActionTarget: args.Action.Target,
+		ActionParams: paramsJSON, Cwd: args.Action.Path, Reason: args.Reason,
+		Channel: args.Config.Channel, TimeoutSeconds: args.Config.TimeoutSeconds,
+		RememberWindowSeconds: args.Config.RememberWindowSeconds,
+		CreatedTs:             now,
+	}
+	if err := s.InsertPending(row); err != nil {
+		return Resolution{EscalationID: id}, err
+	}
+	if args.OnInsert != nil {
+		args.OnInsert(id)
+	}
+
+	// Fire notify in the background; failures get stamped on the row
+	// (future task) but don't fail the Wait — the CLI fallback still
+	// works while operator catches up out-of-band.
+	if args.Config.Channel == "hermes" && args.NotifyFn != nil {
+		go func() { _ = args.NotifyFn(id, row) }()
+	}
+
+	deadline := time.Unix(now, 0).Add(time.Duration(args.Config.TimeoutSeconds) * time.Second)
+	ticker := time.NewTicker(WaitPollInterval)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		got, err := s.GetPending(id)
+		if err != nil {
+			return Resolution{EscalationID: id}, err
+		}
+		if got.ResolvedTs != nil {
+			grant := 0
+			if got.RememberGrantSeconds != nil {
+				grant = *got.RememberGrantSeconds
+			}
+			return Resolution{
+				EscalationID:         id,
+				Approved:             got.Resolution == "approved",
+				OperatorReason:       got.ResolutionReason,
+				GrantedWindowSeconds: grant,
+			}, nil
+		}
+		if timeNow().After(deadline) {
+			_ = s.ResolveTimeout(id)
+			return Resolution{EscalationID: id, Approved: false}, nil
+		}
+	}
 }
 
 // ListUnresolvedPastDeadline returns rows whose
