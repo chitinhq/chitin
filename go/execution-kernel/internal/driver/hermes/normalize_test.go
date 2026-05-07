@@ -212,10 +212,12 @@ func TestNormalize_unmappedTools_fallToUnknown(t *testing.T) {
 	// image_generate, cronjob, clarify, etc. have no clean gov-action
 	// peer; they fall through to ActUnknown which the policy
 	// default-deny rejects unless an operator opts a specific tool in.
-	for _, tool := range []string{"image_generate", "text_to_speech", "vision_analyze", "cronjob", "clarify", "process"} {
+	// Note: `process` was previously in this list; it now maps to
+	// ActHermesProcess (see TestNormalize_hermesInternalTools below).
+	for _, tool := range []string{"image_generate", "text_to_speech", "vision_analyze", "cronjob", "clarify"} {
 		t.Run(tool, func(t *testing.T) {
 			a, err := Normalize(HookInput{
-				ToolName: tool,
+				ToolName:  tool,
 				ToolInput: map[string]any{},
 			})
 			if err != nil {
@@ -229,4 +231,56 @@ func TestNormalize_unmappedTools_fallToUnknown(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNormalize_hermesInternalTools pins the kanban_* + process mapping
+// added to plug the lockdown loop observed on 2026-05-07: hermes worker
+// plumbing calls were hitting ActUnknown → default-deny-unknown and
+// crossing the lockdown threshold in <10 calls. Each kanban verb maps
+// to ActKanbanCall with target = the verb (prefix stripped); the hermes
+// `process` tool maps to ActHermesProcess with target = the action
+// sub-verb passed in tool_input.
+func TestNormalize_hermesInternalTools(t *testing.T) {
+	t.Run("kanban_show_maps_to_ActKanbanCall_with_verb_target", func(t *testing.T) {
+		a, err := Normalize(HookInput{
+			ToolName:  "kanban_show",
+			ToolInput: map[string]any{"task_id": "01ABC"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Type != gov.ActKanbanCall {
+			t.Errorf("Type: got %q, want %q", a.Type, gov.ActKanbanCall)
+		}
+		if a.Target != "show" {
+			t.Errorf("Target: got %q, want %q (verb prefix stripped)", a.Target, "show")
+		}
+	})
+	t.Run("kanban_complete_maps_to_ActKanbanCall_with_verb_target", func(t *testing.T) {
+		a, err := Normalize(HookInput{
+			ToolName:  "kanban_complete",
+			ToolInput: map[string]any{"summary": "done"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Type != gov.ActKanbanCall {
+			t.Errorf("Type: got %q, want %q", a.Type, gov.ActKanbanCall)
+		}
+		if a.Target != "complete" {
+			t.Errorf("Target: got %q, want %q", a.Target, "complete")
+		}
+	})
+	t.Run("process_maps_to_ActHermesProcess", func(t *testing.T) {
+		a, err := Normalize(HookInput{
+			ToolName:  "process",
+			ToolInput: map[string]any{"action": "list"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Type != gov.ActHermesProcess {
+			t.Errorf("Type: got %q, want %q", a.Type, gov.ActHermesProcess)
+		}
+	})
 }
