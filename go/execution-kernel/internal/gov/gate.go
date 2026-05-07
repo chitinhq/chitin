@@ -247,6 +247,22 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// If the matched rule's Effect is EffectEscalate and the policy
 	// said deny, check remember_grants first (short-circuit to allow
 	// if found), otherwise block in Wait until operator resolves.
+	//
+	// Audit-gap defense (PR #382 dogfood, 2026-05-07): write a
+	// transient "escalate-pending" row to the audit log BEFORE entering
+	// Wait. Without it, when the harness kills the kernel subprocess
+	// mid-Wait (Bug C interaction — Claude Code's PreToolUse hook
+	// timeout is ~60s, the old default Wait was 600s), there is no
+	// trace of the attempt: Wait never returns, step 8's WriteLog
+	// never runs, and audit silently loses the escalate event. The
+	// pending row guarantees audit captures the attempt regardless of
+	// process death; the final step-8 row (escalate-approved /
+	// -denied / -timeout) is still written when Wait does return,
+	// so log readers see both a "we tried to escalate" row and a
+	// "this was the outcome" row, which is the correct shape for
+	// downstream analytics anyway. The remember-grant short-circuit
+	// also gets a pending row written followed by the step-8 outcome
+	// row — consistent with the Wait path.
 	if d.Effect == EffectEscalate && !d.Allowed && g.EscalateStore != nil {
 		if g.EscalateStore.HasUnexpiredGrant(d.RuleID, agent) {
 			d.Allowed = true
@@ -255,6 +271,16 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			originalRuleID := d.RuleID
 			ruleConfig := findRuleEscalation(g.Policy.Rules, originalRuleID)
 			if ruleConfig != nil {
+				// Write the pending-attempt audit row before blocking
+				// in Wait. We synthesize a separate Decision so the
+				// step-8 outcome row stays untouched.
+				if !g.NoRecord {
+					pending := d
+					pending.RuleID = "escalate-pending"
+					pending.Reason = "escalate attempt opened; awaiting operator resolution"
+					stampFingerprint(&pending, g.Fingerprint)
+					_ = WriteLog(pending, g.LogDir)
+				}
 				resolution, _ := g.EscalateStore.Wait(WaitArgs{
 					RuleID: originalRuleID, Agent: agent, Action: a,
 					Reason: d.Reason, Config: *ruleConfig,
