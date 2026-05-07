@@ -198,6 +198,7 @@ fi
 # captured so failure mode is actually inspectable in the
 # structured log.
 for installer in \
+  "$REPO/scripts/install-claude-code-hook.sh" \
   "$REPO/scripts/install-gemini-hook.sh" \
   "$REPO/scripts/install-codex-hook.sh" \
   "$REPO/scripts/install-hermes-hook.sh"; do
