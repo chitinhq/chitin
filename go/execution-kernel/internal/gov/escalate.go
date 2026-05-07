@@ -74,7 +74,65 @@ func OpenEscalateStore(dbPath string) (*EscalateStore, error) {
 	`); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	// Schema migration for older pending_approvals tables. CREATE TABLE
+	// IF NOT EXISTS does NOT alter columns on a pre-existing table, so a
+	// db file from an older binary version (with notify_msg_id /
+	// notify_failed_reason but no hermes_task_id / last_event_seq) would
+	// silently fail every INSERT/SELECT in the new code with "no such
+	// column" errors — which the gate's escalate path swallows and
+	// degrades to deny. Discovered 2026-05-07 in PR #382's dogfood:
+	// stale ~/.chitin/pending_approvals.sqlite from a pre-Task 16 build
+	// caused every escalate to time out. ALTER TABLE ADD COLUMN is a
+	// metadata-only change in sqlite (no data rewrite), so it's safe to
+	// run on every open.
+	if err := migratePendingApprovals(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	return &EscalateStore{db: db}, nil
+}
+
+// migratePendingApprovals adds any columns that the current schema
+// expects but a pre-existing pending_approvals table is missing. Idempotent:
+// running it on a freshly-created table is a no-op. Only ADD COLUMN is
+// used — never DROP — so old columns from prior schema (notify_msg_id)
+// stay untouched and ignored by the current code.
+func migratePendingApprovals(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(pending_approvals)`)
+	if err != nil {
+		return fmt.Errorf("table_info: %w", err)
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		existing[name] = true
+	}
+	rows.Close()
+
+	// Columns the current code requires. Order doesn't matter for ALTER.
+	required := []struct {
+		name string
+		ddl  string
+	}{
+		{"hermes_task_id", "ALTER TABLE pending_approvals ADD COLUMN hermes_task_id TEXT"},
+		{"last_event_seq", "ALTER TABLE pending_approvals ADD COLUMN last_event_seq INTEGER"},
+	}
+	for _, c := range required {
+		if existing[c.name] {
+			continue
+		}
+		if _, err := db.Exec(c.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", c.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *EscalateStore) Close() error { return s.db.Close() }

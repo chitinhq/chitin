@@ -284,7 +284,25 @@ func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
 	}
 	timeout := r.TimeoutSeconds
 	if timeout == 0 {
-		timeout = 600
+		// Default lowered from 600 → 45 (PR #382 dogfood, 2026-05-07):
+		// Claude Code's PreToolUse hook timeout is ~60s by default, so a
+		// 600s Wait deadline guarantees the harness kills the kernel
+		// subprocess long before any operator can approve. 45s leaves a
+		// 15s margin under typical harness budgets while still giving the
+		// operator a usable approval window. Per-rule config can override
+		// up to the [30, 86400] range when the agent-side hook timeout
+		// is known to be longer (codex / gemini / hermes drivers may set
+		// a longer harness timeout, in which case the rule's
+		// timeout_seconds can be raised explicitly).
+		//
+		// TODO: the durable fix is non-blocking escalate (insert pending
+		// row, return deny immediately with escalation_id stamped on the
+		// Decision; on the agent's next attempt, an unresolved-approved
+		// row short-circuits to allow). That requires the agent to retry
+		// the action — Claude Code doesn't auto-retry on hook denial, so
+		// it needs harness changes too. Until then, lowering the default
+		// keeps the synchronous flow within the harness budget.
+		timeout = 45
 	}
 	if timeout < 30 || timeout > 86400 {
 		return nil, fmt.Errorf("timeout_seconds: %d out of range [30, 86400]", timeout)

@@ -63,8 +63,12 @@ rules:
 	if r.Escalation.Channel != "hermes" {
 		t.Errorf("default Channel: %q want hermes", r.Escalation.Channel)
 	}
-	if r.Escalation.TimeoutSeconds != 600 {
-		t.Errorf("default TimeoutSeconds: %d want 600", r.Escalation.TimeoutSeconds)
+	// Default lowered from 600 → 45 (PR #382 dogfood, 2026-05-07): the
+	// Claude Code PreToolUse hook timeout is ~60s by default, so 600s
+	// guarantees the harness kills the kernel before any operator can
+	// approve. 45s leaves a 15s margin. Per-rule config can override.
+	if r.Escalation.TimeoutSeconds != 45 {
+		t.Errorf("default TimeoutSeconds: %d want 45", r.Escalation.TimeoutSeconds)
 	}
 	if r.Escalation.RememberWindowSeconds != 300 {
 		t.Errorf("default RememberWindowSeconds: %d want 300", r.Escalation.RememberWindowSeconds)

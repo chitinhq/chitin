@@ -1,6 +1,7 @@
 package gov
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -470,4 +471,112 @@ func TestOpenEscalateStore_ConcurrentOpen(t *testing.T) {
 			t.Errorf("goroutine %d: open failed: %v", i, err)
 		}
 	}
+}
+
+// TestOpenEscalateStore_MigratesOlderSchema covers the dogfood scenario
+// from PR #382 (2026-05-07): a pre-existing pending_approvals.sqlite
+// from an older binary has columns notify_msg_id / notify_failed_reason
+// instead of the current hermes_task_id / last_event_seq. CREATE TABLE
+// IF NOT EXISTS is a no-op on a pre-existing table, so the new code's
+// INSERT/SELECT queries fail with "no such column" and every escalate
+// degrades to deny. After fix: OpenEscalateStore detects the missing
+// columns via PRAGMA table_info and runs ALTER TABLE ADD COLUMN
+// (metadata-only in sqlite, no data rewrite).
+func TestOpenEscalateStore_MigratesOlderSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.sqlite")
+
+	// Build the OLD schema (no hermes_task_id, no last_event_seq;
+	// has notify_msg_id like the original Task 16 design).
+	{
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatalf("open raw db: %v", err)
+		}
+		_, err = db.Exec(`
+			CREATE TABLE pending_approvals (
+				id              TEXT PRIMARY KEY,
+				agent           TEXT NOT NULL,
+				rule_id         TEXT NOT NULL,
+				action_type     TEXT NOT NULL,
+				action_target   TEXT NOT NULL,
+				action_params   TEXT,
+				cwd             TEXT NOT NULL,
+				reason          TEXT NOT NULL,
+				channel         TEXT NOT NULL,
+				timeout_seconds INTEGER NOT NULL,
+				remember_window_seconds INTEGER NOT NULL,
+				created_ts      INTEGER NOT NULL,
+				notified_ts     INTEGER,
+				notify_msg_id   TEXT,
+				notify_failed_reason TEXT,
+				resolved_ts     INTEGER,
+				resolution      TEXT,
+				resolution_by   TEXT,
+				resolution_reason TEXT,
+				remember_grant_seconds INTEGER
+			);
+		`)
+		if err != nil {
+			t.Fatalf("create old schema: %v", err)
+		}
+		db.Close()
+	}
+
+	// Open via the production path — must migrate, not error.
+	store, err := OpenEscalateStore(path)
+	if err != nil {
+		t.Fatalf("OpenEscalateStore on legacy db: %v", err)
+	}
+	defer store.Close()
+
+	// Verify the new columns exist.
+	checkCol := func(name string) {
+		t.Helper()
+		var n int
+		if err := store.db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('pending_approvals') WHERE name = ?`,
+			name,
+		).Scan(&n); err != nil {
+			t.Fatalf("query column %s: %v", name, err)
+		}
+		if n != 1 {
+			t.Errorf("column %q not present after migration", name)
+		}
+	}
+	checkCol("hermes_task_id")
+	checkCol("last_event_seq")
+	// Old column survives — we never DROP, just ADD.
+	checkCol("notify_msg_id")
+
+	// InsertPending must succeed under the migrated schema (this is the
+	// failure mode that surfaced in PR #382: the new INSERT references
+	// columns that didn't exist, so every escalate threw a SQL error
+	// and ran out the Wait clock).
+	row := PendingApproval{
+		ID: "01MIGRATED0000000000000001", Agent: "claude-code",
+		RuleID: "test-rule", ActionType: "file.write",
+		ActionTarget: "/tmp/x", Cwd: "/tmp", Reason: "smoke",
+		Channel: "cli-only", TimeoutSeconds: 60, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	}
+	if err := store.InsertPending(row); err != nil {
+		t.Fatalf("InsertPending after migration: %v", err)
+	}
+	got, err := store.GetPending(row.ID)
+	if err != nil {
+		t.Fatalf("GetPending after migration: %v", err)
+	}
+	if got.ID != row.ID {
+		t.Errorf("round-trip id: got %q, want %q", got.ID, row.ID)
+	}
+
+	// Re-opening the migrated db must be idempotent (no error on
+	// second call to migratePendingApprovals).
+	store.Close()
+	store2, err := OpenEscalateStore(path)
+	if err != nil {
+		t.Fatalf("re-open migrated db: %v", err)
+	}
+	store2.Close()
 }
