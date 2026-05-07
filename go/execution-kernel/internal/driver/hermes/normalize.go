@@ -203,6 +203,45 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Target: stringField(in.ToolInput, "name"),
 			Path:   in.Cwd,
 		}, nil
+
+	// Kanban runtime calls — the hermes worker reading/writing its own
+	// card lifecycle (`kanban_show`, `kanban_complete`, `kanban_block`,
+	// `kanban_comment`, `kanban_heartbeat`, `kanban_create`, etc.).
+	// Plumbing-shaped: not the agent doing things in the world, just
+	// the worker managing its own status. Routed to ActKanbanCall so
+	// they're auditable + governable but distinguished from real
+	// host-effect actions. Without this case, every long-running
+	// hermes worker hits ActUnknown → default-deny-unknown → lockdown
+	// in <10 plumbing calls (root cause of 2026-05-07 smoke stalls).
+	// Target = the kanban verb (`show`, `complete`, etc.) so policy
+	// rules can allow/deny per-verb if desired.
+	case "kanban_show", "kanban_list", "kanban_create", "kanban_assign",
+		"kanban_reassign", "kanban_link", "kanban_unlink", "kanban_claim",
+		"kanban_comment", "kanban_complete", "kanban_block", "kanban_unblock",
+		"kanban_archive", "kanban_tail", "kanban_dispatch", "kanban_watch",
+		"kanban_stats", "kanban_log", "kanban_runs", "kanban_heartbeat",
+		"kanban_assignees", "kanban_context", "kanban_gc", "kanban_edit",
+		"kanban_reclaim", "kanban_init", "kanban_boards":
+		// Strip the "kanban_" prefix for a clean target verb.
+		verb := in.ToolName[len("kanban_"):]
+		return gov.Action{
+			Type:   gov.ActKanbanCall,
+			Target: verb,
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
+
+	// Hermes process tool — runtime helper for background process
+	// management inside the agent's session. Same plumbing class as
+	// kanban_*; explicit ActHermesProcess so it doesn't accumulate
+	// as default-deny-unknown.
+	case "process":
+		return gov.Action{
+			Type:   gov.ActHermesProcess,
+			Target: stringField(in.ToolInput, "action"),
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
 	}
 
 	// MCP tool calls — `mcp__<server>__<tool>`. Same shape as the

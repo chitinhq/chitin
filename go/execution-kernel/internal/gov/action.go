@@ -54,6 +54,23 @@ const (
 	ActNPMRun            ActionType = "npm.script.run"
 	ActTestRun           ActionType = "test.run"
 	ActMCPCall           ActionType = "mcp.call"
+	// ActKanbanCall: Hermes Agent's per-tool kanban API calls
+	// (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_comment`,
+	// `kanban_heartbeat`, `kanban_create`, `kanban_link`, `kanban_unlink`,
+	// `kanban_archive`, `kanban_assign`). These are runtime plumbing —
+	// the worker reading/writing its own card lifecycle — but they ARE
+	// tool calls per chitin's universal-interception rule, so they get
+	// a canonical action_type instead of falling through to ActUnknown.
+	// Without this, every long-running hermes worker accumulates 10+
+	// `default-deny-unknown` denials on plumbing alone and trips
+	// lockdown (root cause of the 2026-05-07 chitin-runner smoke
+	// stalling at deny-everything).
+	ActKanbanCall        ActionType = "kanban.call"
+	// ActHermesProcess: Hermes Agent's `process` tool — a runtime helper
+	// for managing background processes inside the agent's own session.
+	// Like ActKanbanCall, plumbing-shaped but classified explicitly so
+	// it doesn't accumulate as default-deny-unknown.
+	ActHermesProcess     ActionType = "hermes.process"
 	ActInfraDestroy      ActionType = "infra.destroy"
 	ActUnknown           ActionType = "unknown"
 )
