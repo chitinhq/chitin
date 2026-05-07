@@ -159,6 +159,19 @@ type Decision struct {
 	Role        string `json:"role,omitempty"`
 	WorkflowID  string `json:"workflow_id,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// EscalationID is the ULID of the pending_approvals row when
+	// this decision came from an operator-approval flow. Lets
+	// auditors join chain rows back to pending_approvals for the
+	// full provenance (notification time, operator reply, etc.).
+	// Empty for non-escalate decisions.
+	EscalationID string `json:"escalation_id,omitempty"`
+
+	// Effect is the rule's effect value as parsed from chitin.yaml
+	// (allow|deny|guide|monitor|escalate). Internal to the gate's
+	// flow control; not serialized to the chain (the chain only
+	// cares about the resolved Allowed + RuleID).
+	Effect Effect `json:"-"`
 }
 
 // ActionMatcher is a yaml.Unmarshaler that accepts either a single
