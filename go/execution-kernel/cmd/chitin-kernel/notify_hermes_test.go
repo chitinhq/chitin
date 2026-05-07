@@ -128,3 +128,49 @@ func TestRenderNotifyTemplate_Override(t *testing.T) {
 		t.Errorf("got %q, want %q", buf.String(), want)
 	}
 }
+
+func TestParseHermesReply(t *testing.T) {
+	cases := []struct {
+		in            string
+		wantApproved  bool
+		wantWindowSec int
+		wantDenied    bool
+		wantReason    string
+		wantUnparsed  bool
+	}{
+		{in: "approve", wantApproved: true},
+		{in: "  Approve  ", wantApproved: true}, // case-insensitive, trim
+		{in: "approve 30m", wantApproved: true, wantWindowSec: 1800},
+		{in: "approve 1h", wantApproved: true, wantWindowSec: 3600},
+		{in: "deny", wantDenied: true},
+		{in: "deny no thank you", wantDenied: true, wantReason: "no thank you"},
+		{in: "lol what", wantUnparsed: true},
+		{in: "", wantUnparsed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseHermesReply(tc.in)
+			if tc.wantUnparsed {
+				if err == nil {
+					t.Errorf("expected unparsed error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if got.Approved != tc.wantApproved {
+				t.Errorf("Approved = %v, want %v", got.Approved, tc.wantApproved)
+			}
+			if got.Denied != tc.wantDenied {
+				t.Errorf("Denied = %v, want %v", got.Denied, tc.wantDenied)
+			}
+			if got.WindowSeconds != tc.wantWindowSec {
+				t.Errorf("WindowSeconds = %d, want %d", got.WindowSeconds, tc.wantWindowSec)
+			}
+			if got.Reason != tc.wantReason {
+				t.Errorf("Reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+		})
+	}
+}

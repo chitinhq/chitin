@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"text/template"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
@@ -168,4 +170,54 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 		return created.TaskID, fmt.Errorf("hermes kanban notify-subscribe: %w (task_id %s created OK)", subErr, created.TaskID)
 	}
 	return created.TaskID, nil
+}
+
+// HermesReplyParse is what parseHermesReply returns on a successful parse.
+//
+// Invariant: on a non-error return, exactly one of Approved or Denied is
+// true; the other two fields (WindowSeconds, Reason) are optional metadata
+// pulled from the suffix. WindowSeconds==0 means "use rule default" (the
+// caller — Task 19 watch-hermes — applies grant.window from the rule).
+type HermesReplyParse struct {
+	Approved      bool
+	Denied        bool
+	WindowSeconds int    // optional; 0 means "use rule default"
+	Reason        string // optional; only set on deny
+}
+
+// parseHermesReply turns a chat reply body into a structured parse.
+// Returns an error for unparseable input (caller ignores those —
+// the operator may have replied with prose unrelated to approval).
+//
+// Grammar (case-insensitive verb, outer whitespace trimmed):
+//   - "approve"             -> Approved
+//   - "approve <duration>"  -> Approved + WindowSeconds (Go time.ParseDuration)
+//   - "deny"                -> Denied
+//   - "deny <reason>"       -> Denied + Reason (free text after the verb)
+//
+// Anything else (including empty after trim) returns an error so the
+// watcher can skip the message without acting on it.
+func parseHermesReply(body string) (HermesReplyParse, error) {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return HermesReplyParse{}, fmt.Errorf("empty reply")
+	}
+	lower := strings.ToLower(trimmed)
+	switch {
+	case lower == "approve":
+		return HermesReplyParse{Approved: true}, nil
+	case strings.HasPrefix(lower, "approve "):
+		rest := strings.TrimSpace(trimmed[len("approve "):])
+		dur, err := time.ParseDuration(rest)
+		if err != nil {
+			return HermesReplyParse{}, fmt.Errorf("approve <duration>: %w", err)
+		}
+		return HermesReplyParse{Approved: true, WindowSeconds: int(dur.Seconds())}, nil
+	case lower == "deny":
+		return HermesReplyParse{Denied: true}, nil
+	case strings.HasPrefix(lower, "deny "):
+		reason := strings.TrimSpace(trimmed[len("deny "):])
+		return HermesReplyParse{Denied: true, Reason: reason}, nil
+	}
+	return HermesReplyParse{}, fmt.Errorf("unparsed reply: %q", trimmed)
 }
