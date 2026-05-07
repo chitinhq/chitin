@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -112,5 +113,30 @@ func TestPendingApprove_RefusesAlreadyResolved(t *testing.T) {
 	err := pendingApprove(store, "01Z", 0)
 	if err == nil {
 		t.Error("expected error on re-approve, got nil")
+	}
+}
+
+func TestPendingAuth_RejectsWrongUID(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "p.sqlite")
+	store, _ := gov.OpenEscalateStore(dbPath)
+	store.Close()
+
+	// chmod the file to root-owned (or another uid). On macOS/linux
+	// CI we can't actually chown to a different uid without root; this
+	// test relies on the auth function being called and using a hook
+	// for the stat call.
+	prev := statOwnerUID
+	statOwnerUID = func(string) (uint32, error) { return 999, nil }
+	defer func() { statOwnerUID = prev }()
+
+	prevSelf := selfUID
+	selfUID = func() uint32 { return 1000 }
+	defer func() { selfUID = prevSelf }()
+
+	if err := authPendingFile(dbPath); err == nil {
+		t.Error("expected pending_unauthorized error, got nil")
+	} else if !strings.Contains(err.Error(), "pending_unauthorized") {
+		t.Errorf("err = %v, want substring pending_unauthorized", err)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -61,4 +63,35 @@ func pendingApprove(store *gov.EscalateStore, id string, windowSeconds int) erro
 
 func pendingDeny(store *gov.EscalateStore, id string, reason string) error {
 	return store.ResolveDeny(id, "operator-cli", reason)
+}
+
+// statOwnerUID + selfUID are mockable hooks. Production uses os.Stat
+// and os.Geteuid; tests inject fakes.
+var statOwnerUID = func(path string) (uint32, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("stat sys: not a Stat_t")
+	}
+	return sys.Uid, nil
+}
+
+var selfUID = func() uint32 { return uint32(os.Geteuid()) }
+
+// authPendingFile returns nil if the current process's effective uid
+// owns the pending_approvals.sqlite file. Otherwise returns
+// "pending_unauthorized: ..." — caller should exit 2.
+func authPendingFile(dbPath string) error {
+	owner, err := statOwnerUID(dbPath)
+	if err != nil {
+		return fmt.Errorf("pending_unauthorized: stat %s: %w", dbPath, err)
+	}
+	self := selfUID()
+	if owner != self {
+		return fmt.Errorf("pending_unauthorized: file owned by uid %d, current uid %d", owner, self)
+	}
+	return nil
 }
