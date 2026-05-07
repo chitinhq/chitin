@@ -221,3 +221,84 @@ func parseHermesReply(body string) (HermesReplyParse, error) {
 	}
 	return HermesReplyParse{}, fmt.Errorf("unparsed reply: %q", trimmed)
 }
+
+// watchHermesOnce iterates unresolved pending_approvals rows that have
+// a hermes_task_id, queries `hermes kanban show --json` per row, and
+// scans ALL comments via parseHermesReply. The first parseable
+// approve/deny wins; the resolve operation is idempotent (silent no-
+// op on already-resolved rows), so re-parsing the same comment on
+// subsequent ticks is harmless.
+//
+// No cursor is tracked. The previous design used last_event_seq but
+// hermes comments have no monotonic per-comment seq (Task 19
+// investigation). With 1-5 comments per task and 30s tick intervals,
+// the redundant work is trivial.
+//
+// Returns the count of rows resolved on this tick.
+func watchHermesOnce(store *gov.EscalateStore, cfg operatorConfig) (int, error) {
+	rows, err := store.ListUnresolved()
+	if err != nil {
+		return 0, err
+	}
+
+	resolved := 0
+	for _, row := range rows {
+		if row.HermesTaskID == "" {
+			continue // no kanban task to poll
+		}
+
+		out, err := execHermes(cfg.HermesBin, []string{
+			"kanban", "show", "--json", row.HermesTaskID,
+		})
+		if err != nil {
+			// Hermes failed (network, missing task, etc.). Skip; next
+			// tick retries. Don't fail the whole watch loop.
+			continue
+		}
+
+		var task struct {
+			Task struct {
+				ID string `json:"id"`
+			} `json:"task"`
+			Comments []struct {
+				Author    string `json:"author"`
+				Body      string `json:"body"`
+				CreatedAt int64  `json:"created_at"`
+			} `json:"comments"`
+		}
+		if err := json.Unmarshal(out, &task); err != nil {
+			continue // malformed response; skip
+		}
+
+		// First parseable approve/deny in the comments wins.
+		for _, c := range task.Comments {
+			parsed, perr := parseHermesReply(c.Body)
+			if perr != nil {
+				continue // not an approval reply
+			}
+			if parsed.Approved {
+				if err := store.ResolveApprove(row.ID, "hermes-reply", parsed.WindowSeconds); err == nil {
+					resolved++
+				}
+				// If err != nil (likely ErrAlreadyResolved), silently absorb.
+				break // row is decided; skip remaining comments
+			}
+			if parsed.Denied {
+				if err := store.ResolveDeny(row.ID, "hermes-reply", parsed.Reason); err == nil {
+					resolved++
+				}
+				break
+			}
+		}
+	}
+
+	return resolved, nil
+}
+
+// loadOperatorConfig is a placeholder for Task 20's real implementation.
+// Returns a minimal config sufficient for tests + manual invocation.
+// Task 20 replaces this with a yaml-loaded version reading
+// ~/.chitin/operator.yaml.
+func loadOperatorConfig() (operatorConfig, error) {
+	return operatorConfig{HermesBin: "hermes"}, nil
+}

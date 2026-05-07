@@ -401,6 +401,11 @@ func (s *EscalateStore) ListUnresolvedPastDeadline(nowSec int64) ([]PendingAppro
 	return out, nil
 }
 
+// DB returns the underlying *sql.DB for callers that need to issue
+// custom queries (e.g., test helpers stamping hermes_task_id post-
+// notifyHermes). Production code should prefer the typed methods.
+func (s *EscalateStore) DB() *sql.DB { return s.db }
+
 // SweepStale resolves all unresolved rows whose deadline has passed.
 // Called at gate startup (recovers orphaned rows from a crashed
 // kernel) and optionally on a timer. Returns count resolved.

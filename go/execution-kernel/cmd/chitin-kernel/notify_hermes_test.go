@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -172,5 +173,173 @@ func TestParseHermesReply(t *testing.T) {
 				t.Errorf("Reason = %q, want %q", got.Reason, tc.wantReason)
 			}
 		})
+	}
+}
+
+func TestWatchHermesOnce_ApprovesOnApproveComment(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+
+	// Seed an unresolved row with a hermes_task_id.
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01ESC", Agent: "claude-code", RuleID: "r", ActionType: "file.write",
+		ActionTarget: "/etc/hostname", Cwd: "/tmp", Reason: "test",
+		Channel: "hermes", TimeoutSeconds: 600, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+	_, _ = store.DB().Exec(`UPDATE pending_approvals SET hermes_task_id = ? WHERE id = ?`, "t_FAKE001", "01ESC")
+
+	prev := execHermes
+	execHermes = func(bin string, args []string) ([]byte, error) {
+		// Must be a `kanban show --json <task_id>` invocation.
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "kanban show") {
+			t.Fatalf("expected kanban show, got %q", joined)
+		}
+		if !strings.Contains(joined, "t_FAKE001") {
+			t.Fatalf("expected task id in args, got %q", joined)
+		}
+		return []byte(`{
+			"task": {"id": "t_FAKE001", "title": "test"},
+			"comments": [
+				{"author": "system", "body": "task created", "created_at": 1700000010},
+				{"author": "operator", "body": "approve 30m", "created_at": 1700000020}
+			],
+			"events": []
+		}`), nil
+	}
+	defer func() { execHermes = prev }()
+
+	cfg := operatorConfig{HermesBin: "hermes"}
+	count, err := watchHermesOnce(store, cfg)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+
+	got, _ := store.GetPending("01ESC")
+	if got.Resolution != "approved" {
+		t.Errorf("resolution = %q, want approved", got.Resolution)
+	}
+	if got.RememberGrantSeconds == nil || *got.RememberGrantSeconds != 1800 {
+		t.Errorf("granted = %v, want 1800 (30m)", got.RememberGrantSeconds)
+	}
+}
+
+func TestWatchHermesOnce_SkipsResolvedAndRowsWithoutTaskID(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+
+	// Three rows: resolved, no-task-id, watchable. Only watchable should be queried.
+	mk := func(id string, withTaskID bool, resolved bool) {
+		_ = store.InsertPending(gov.PendingApproval{
+			ID: id, Agent: "a", RuleID: "r", ActionType: "shell.exec",
+			ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+			Channel: "hermes", TimeoutSeconds: 60, RememberWindowSeconds: 0,
+			CreatedTs: 1700000000,
+		})
+		if withTaskID {
+			_, _ = store.DB().Exec(`UPDATE pending_approvals SET hermes_task_id = ? WHERE id = ?`, "t_"+id, id)
+		}
+		if resolved {
+			_ = store.ResolveApprove(id, "operator-cli", 0)
+		}
+	}
+	mk("01R", true, true)   // resolved (skip)
+	mk("01N", false, false) // no task id (skip)
+	mk("01W", true, false)  // watchable (query)
+
+	var queriedTaskIDs []string
+	prev := execHermes
+	execHermes = func(bin string, args []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		for _, id := range []string{"t_01R", "t_01W"} {
+			if strings.Contains(joined, id) {
+				queriedTaskIDs = append(queriedTaskIDs, id)
+			}
+		}
+		return []byte(`{"task":{"id":"x"},"comments":[]}`), nil
+	}
+	defer func() { execHermes = prev }()
+
+	cfg := operatorConfig{HermesBin: "hermes"}
+	_, _ = watchHermesOnce(store, cfg)
+
+	if len(queriedTaskIDs) != 1 || queriedTaskIDs[0] != "t_01W" {
+		t.Errorf("queried = %v, want [t_01W] only", queriedTaskIDs)
+	}
+}
+
+func TestWatchHermesOnce_IdempotentOnAlreadyResolved(t *testing.T) {
+	// If a row is resolved between when ListUnresolved() runs and when
+	// the watch loop tries to ResolveApprove, the resolve fails silently
+	// (ErrAlreadyResolved). The watch loop must not crash or count it.
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01I", Agent: "a", RuleID: "r", ActionType: "shell.exec",
+		ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+		Channel: "hermes", TimeoutSeconds: 600, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+	_, _ = store.DB().Exec(`UPDATE pending_approvals SET hermes_task_id = ? WHERE id = ?`, "t_01I", "01I")
+
+	prev := execHermes
+	execHermes = func(bin string, args []string) ([]byte, error) {
+		return []byte(`{"task":{"id":"t_01I"},"comments":[{"author":"o","body":"approve","created_at":1700000010}]}`), nil
+	}
+	defer func() { execHermes = prev }()
+
+	cfg := operatorConfig{HermesBin: "hermes"}
+
+	// First tick: resolves.
+	count1, _ := watchHermesOnce(store, cfg)
+	if count1 != 1 {
+		t.Errorf("first tick count = %d, want 1", count1)
+	}
+
+	// Second tick: re-fetches the same comment. Should not crash, should
+	// return count=0 (resolve was a silent no-op).
+	count2, err := watchHermesOnce(store, cfg)
+	if err != nil {
+		t.Fatalf("second tick err: %v", err)
+	}
+	if count2 != 0 {
+		t.Errorf("second tick count = %d, want 0 (already resolved)", count2)
+	}
+}
+
+func TestWatchHermesOnce_UnparsedCommentsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := gov.OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	defer store.Close()
+	_ = store.InsertPending(gov.PendingApproval{
+		ID: "01U", Agent: "a", RuleID: "r", ActionType: "shell.exec",
+		ActionTarget: "x", Cwd: "/tmp", Reason: "x",
+		Channel: "hermes", TimeoutSeconds: 600, RememberWindowSeconds: 0,
+		CreatedTs: 1700000000,
+	})
+	_, _ = store.DB().Exec(`UPDATE pending_approvals SET hermes_task_id = ? WHERE id = ?`, "t_01U", "01U")
+
+	prev := execHermes
+	execHermes = func(bin string, args []string) ([]byte, error) {
+		return []byte(`{"task":{"id":"t_01U"},"comments":[{"author":"o","body":"lol whatever","created_at":1700000010}]}`), nil
+	}
+	defer func() { execHermes = prev }()
+
+	cfg := operatorConfig{HermesBin: "hermes"}
+	count, _ := watchHermesOnce(store, cfg)
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (unparsed)", count)
+	}
+
+	got, _ := store.GetPending("01U")
+	if got.ResolvedTs != nil {
+		t.Errorf("should not be resolved")
 	}
 }

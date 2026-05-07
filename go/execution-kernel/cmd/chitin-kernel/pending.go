@@ -184,6 +184,22 @@ func cmdPending(args []string) {
 		}
 		fmt.Printf(`{"ok":true,"action":"deny","id":%q,"reason":%q}`+"\n", id, reason)
 
+	case "watch-hermes":
+		cfg, err := loadOperatorConfig()
+		if err != nil {
+			exitErr("operator_config_missing", err.Error())
+		}
+		store, err := gov.OpenEscalateStore(dbPath)
+		if err != nil {
+			exitErr("pending_open", err.Error())
+		}
+		defer store.Close()
+		count, err := watchHermesOnce(store, cfg)
+		if err != nil {
+			exitErr("watch_hermes", err.Error())
+		}
+		fmt.Printf(`{"ok":true,"action":"watch-hermes","resolved":%d}`+"\n", count)
+
 	default:
 		exitErr("pending_unknown_subcommand", sub)
 	}
