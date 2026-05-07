@@ -248,6 +248,30 @@ rules:
     effect: allow
     reason: "Single-file deletes allowed (mass recursive delete via rm -rf denied above)"
 
+  # Hermes worker plumbing: kanban_* tools used by chitin-runner (and
+  # any other hermes-spawned worker profile) to manage its own card
+  # lifecycle — show, complete, block, comment, heartbeat, etc. These
+  # are the worker reading/writing its own status, not actions on the
+  # world. Without an explicit allow, ActKanbanCall (added 2026-05-07
+  # in internal/driver/hermes/normalize.go) falls through to no-
+  # matching-allow → deny → counter accumulation → lockdown loop. Add
+  # specific kanban-verb deny rules ABOVE this if a particular verb
+  # ever needs to be restricted; this rule is a default allow.
+  - id: default-allow-kanban-call
+    action: kanban.call
+    effect: allow
+    reason: "Hermes kanban runtime call — worker plumbing on its own card lifecycle"
+
+  # Hermes process tool: runtime helper for background process
+  # management inside the agent's session. Same plumbing class as
+  # kanban_*; allowed by default. Specific dangerous sub-verbs (kill,
+  # signal-with-arbitrary-pid) can be intercepted at gov.Normalize
+  # before they ever reach this rule.
+  - id: default-allow-hermes-process
+    action: hermes.process
+    effect: allow
+    reason: "Hermes process tool — runtime worker plumbing"
+
   - id: default-deny-unknown
     action: unknown
     effect: deny
