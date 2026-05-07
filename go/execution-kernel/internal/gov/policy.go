@@ -27,7 +27,7 @@ type Policy struct {
 type Rule struct {
 	ID               string        `yaml:"id"`
 	Action           ActionMatcher `yaml:"action"` // single type OR list of types
-	Effect           string        `yaml:"effect"` // deny | allow
+	Effect           Effect        `yaml:"effect"` // deny | allow | guide | monitor | escalate
 	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
@@ -36,6 +36,23 @@ type Rule struct {
 	Suggestion       string        `yaml:"suggestion,omitempty"`
 	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
 	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
+
+	// Escalate-effect raw fields. Unmarshaled directly off the rule's YAML
+	// when effect == escalate; consumers should read Escalation (built by
+	// the parser with defaults applied) rather than these. Kept on Rule so
+	// the unmarshal target remains a single struct (no intermediate
+	// yamlRule indirection).
+	Channel               string `yaml:"channel,omitempty"`
+	TimeoutSeconds        int    `yaml:"timeout_seconds,omitempty"`
+	RememberWindowSeconds *int   `yaml:"remember_window_seconds,omitempty"` // pointer so "unset" is distinguishable from "explicit 0"
+	NotifyTemplate        string `yaml:"notify_template,omitempty"`
+
+	// Escalation is non-nil only when Effect == EffectEscalate. Built by
+	// the parser from the rule's optional escalate fields (channel,
+	// timeout_seconds, remember_window_seconds, notify_template); all
+	// defaults applied at parse time so consumers see a fully-populated
+	// config.
+	Escalation *EscalateConfig `yaml:"-" json:"-"`
 
 	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
 	// validate patterns at load time (fail-closed on bad regex) rather than
@@ -213,14 +230,78 @@ func LoadPolicyFile(path string) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("read policy: %w", err)
 	}
-	var p Policy
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return Policy{}, fmt.Errorf("parse policy %s: %w", path, err)
-	}
-	if err := p.ApplyDefaults(); err != nil {
-		return Policy{}, fmt.Errorf("validate policy %s: %w", path, err)
+	p, err := parsePolicyYAML(data)
+	if err != nil {
+		return Policy{}, fmt.Errorf("policy %s: %w", path, err)
 	}
 	return p, nil
+}
+
+// parsePolicyYAML is the single entry point for turning chitin.yaml bytes
+// into a validated Policy. Unmarshal → ApplyDefaults → per-rule escalate
+// build. Used by LoadPolicyFile and by tests that want to exercise the
+// parser directly without writing testdata files.
+func parsePolicyYAML(data []byte) (Policy, error) {
+	var p Policy
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return Policy{}, fmt.Errorf("parse: %w", err)
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		return Policy{}, fmt.Errorf("validate: %w", err)
+	}
+	for i := range p.Rules {
+		r := &p.Rules[i]
+		if r.Effect != EffectEscalate {
+			continue
+		}
+		cfg, err := buildEscalateConfig(*r)
+		if err != nil {
+			return Policy{}, fmt.Errorf("rule %s: %w", r.ID, err)
+		}
+		r.Escalation = cfg
+	}
+	return p, nil
+}
+
+// buildEscalateConfig validates and defaults the per-rule escalate fields.
+// Invariant: returns a non-nil config only when every field is in range —
+// channel ∈ {hermes, cli-only}, timeout ∈ [30, 86400], remember_window ≥ 0,
+// action ≠ "unknown" (use deny instead). Defaults: channel=hermes,
+// timeout=600, remember_window=300, notify_template="" (caller supplies
+// built-in default at notify time).
+func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
+	for _, a := range r.Action {
+		if a == string(ActUnknown) {
+			return nil, fmt.Errorf("effect: escalate not allowed on action: unknown — use deny instead")
+		}
+	}
+	channel := r.Channel
+	if channel == "" {
+		channel = "hermes"
+	}
+	if channel != "hermes" && channel != "cli-only" {
+		return nil, fmt.Errorf("channel: %q invalid (allowed: hermes, cli-only)", channel)
+	}
+	timeout := r.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 600
+	}
+	if timeout < 30 || timeout > 86400 {
+		return nil, fmt.Errorf("timeout_seconds: %d out of range [30, 86400]", timeout)
+	}
+	window := 300
+	if r.RememberWindowSeconds != nil {
+		window = *r.RememberWindowSeconds
+		if window < 0 {
+			return nil, fmt.Errorf("remember_window_seconds: %d (must be >= 0)", window)
+		}
+	}
+	return &EscalateConfig{
+		Channel:               channel,
+		TimeoutSeconds:        timeout,
+		RememberWindowSeconds: window,
+		NotifyTemplate:        r.NotifyTemplate,
+	}, nil
 }
 
 // ApplyDefaults fills in unset fields with their baseline values,
