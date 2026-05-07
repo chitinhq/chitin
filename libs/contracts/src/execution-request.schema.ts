@@ -105,7 +105,9 @@ export const DriverIdSchema = z.enum([
   'openclaw-glm-cloud',  // Ollama Cloud sub: glm-5.1:cloud (opus-light)
   'openclaw-deepseek',   // 3090: deepseek (kept for future use, not in defaults)
   // `hermes` = Hermes Agent (kanban dispatcher) running with the
-  // chitin-runner profile. Per docs/design/2026-05-06-kernel-gate-
+  // chitin-worker profile (renamed from chitin-runner on 2026-05-07
+  // to disambiguate from the deleted apps/runner orchestration
+  // runner). Per docs/design/2026-05-06-kernel-gate-
   // escalation.md core invariant: Hermes is the worker; chitin
   // (kernel) handles in-tool-call escalation. Profile + provider +
   // default model must be configured in ~/.hermes/config.yaml
