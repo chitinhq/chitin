@@ -45,8 +45,9 @@ func TestNotifyHermes_TwoCallSequence(t *testing.T) {
 	defer func() { execHermes = prev }()
 
 	row := gov.PendingApproval{
-		ID: "01TEST", Agent: "claude-code", ActionType: "file.write",
-		ActionTarget: "/etc/hostname", Reason: "system path write",
+		ID: "01TEST", Agent: "claude-code", RuleID: "no-protected-write",
+		ActionType: "file.write", ActionTarget: "/etc/hostname",
+		Reason:  "system path write",
 		Channel: "hermes", TimeoutSeconds: 600,
 	}
 	cfg := operatorConfig{
@@ -78,6 +79,16 @@ func TestNotifyHermes_TwoCallSequence(t *testing.T) {
 	}
 	if !strings.Contains(create, "--idempotency-key") {
 		t.Errorf("call 1 missing --idempotency-key: %q", create)
+	}
+	// Title is REQUIRED positional arg for hermes kanban create — absence
+	// causes hermes to exit status 2 with usage error and no task is
+	// created (Bug surfaced 2026-05-08, root cause of all chitin.yaml
+	// escalates failing silently with notify_hermes_failed).
+	if !strings.Contains(create, "Approval needed") {
+		t.Errorf("call 1 missing positional title with 'Approval needed' prefix: %q", create)
+	}
+	if !strings.Contains(create, "no-protected-write") {
+		t.Errorf("call 1 title missing rule id: %q", create)
 	}
 
 	// Validate second call shape: hermes kanban notify-subscribe with platform + chat-id + task_id.

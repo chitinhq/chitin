@@ -133,14 +133,23 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 	}
 
 	// Call 1: create the kanban task. --idempotency-key gives us
-	// crash-safe retries; --json gives us the task_id back; --assignee
-	// routes to the operator's view.
+	// crash-safe retries; --json gives us the task id back; --assignee
+	// routes to the operator's view. The positional title arg is
+	// REQUIRED by hermes kanban create — without it, hermes exits
+	// status 2 with a usage error and no task is created. Surfaced
+	// 2026-05-08 in PR #391's wrap-up dogfood (the original spec was
+	// modeled on a hermes CLI draft that didn't require a title).
+	// Title is short for whatsapp legibility; the body has the full
+	// context.
+	title := fmt.Sprintf("Approval needed: %s on %s by %s",
+		row.RuleID, row.ActionType, row.Agent)
 	createArgs := []string{
 		"kanban", "create",
 		"--idempotency-key", id,
 		"--body", buf.String(),
 		"--assignee", cfg.AssigneeProfile,
 		"--json",
+		title,
 	}
 	out, err := execHermes(cfg.HermesBin, createArgs)
 	if err != nil {
