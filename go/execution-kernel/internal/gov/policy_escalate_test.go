@@ -153,3 +153,85 @@ rules:
 		})
 	}
 }
+
+// TestParseEscalateRule_NestedBlockShape pins the chitin.yaml-canonical
+// nested form for escalate config:
+//
+//   - id: foo
+//     effect: escalate
+//     escalation:
+//       channel: cli-only
+//       timeout_seconds: 600
+//
+// Bug G (PR #382 dogfood, 2026-05-07): this nested form was silently
+// dropped because Rule had no yaml tag for the `escalation:` key —
+// every chitin.yaml escalate rule ran with parser defaults instead of
+// operator-configured values. After fix, nested form takes priority
+// over the legacy top-level shape.
+func TestParseEscalateRule_NestedBlockShape(t *testing.T) {
+	yaml := `
+id: parse-test
+mode: enforce
+rules:
+  - id: foo
+    action: shell.exec
+    effect: escalate
+    escalation:
+      channel: cli-only
+      timeout_seconds: 1200
+      remember_window_seconds: 0
+      notify_template: "nested template body"
+`
+	p, err := parsePolicyYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := p.Rules[0]
+	if r.Escalation == nil {
+		t.Fatal("Escalation: got nil")
+	}
+	if r.Escalation.Channel != "cli-only" {
+		t.Errorf("Channel: got %q, want cli-only", r.Escalation.Channel)
+	}
+	if r.Escalation.TimeoutSeconds != 1200 {
+		t.Errorf("TimeoutSeconds: got %d, want 1200", r.Escalation.TimeoutSeconds)
+	}
+	if r.Escalation.RememberWindowSeconds != 0 {
+		t.Errorf("RememberWindowSeconds: got %d, want 0", r.Escalation.RememberWindowSeconds)
+	}
+	if r.Escalation.NotifyTemplate != "nested template body" {
+		t.Errorf("NotifyTemplate: got %q, want %q", r.Escalation.NotifyTemplate, "nested template body")
+	}
+}
+
+// TestParseEscalateRule_NestedOverridesTopLevel verifies precedence: when
+// a rule has BOTH legacy top-level fields AND the nested escalation:
+// block (e.g. mid-migration), nested takes priority. Top-level fields
+// are kept for backward compat with PR #380's test fixtures but should
+// not be relied on for new policies.
+func TestParseEscalateRule_NestedOverridesTopLevel(t *testing.T) {
+	yaml := `
+id: parse-test
+mode: enforce
+rules:
+  - id: foo
+    action: shell.exec
+    effect: escalate
+    channel: hermes
+    timeout_seconds: 100
+    escalation:
+      channel: cli-only
+      timeout_seconds: 800
+`
+	p, err := parsePolicyYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := p.Rules[0]
+	if r.Escalation.Channel != "cli-only" {
+		t.Errorf("Channel: got %q, want cli-only (nested wins)", r.Escalation.Channel)
+	}
+	if r.Escalation.TimeoutSeconds != 800 {
+		t.Errorf("TimeoutSeconds: got %d, want 800 (nested wins)", r.Escalation.TimeoutSeconds)
+	}
+}

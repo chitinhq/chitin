@@ -37,15 +37,39 @@ type Rule struct {
 	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
 	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
 
-	// Escalate-effect raw fields. Unmarshaled directly off the rule's YAML
-	// when effect == escalate; consumers should read Escalation (built by
-	// the parser with defaults applied) rather than these. Kept on Rule so
-	// the unmarshal target remains a single struct (no intermediate
-	// yamlRule indirection).
+	// Escalate-effect raw fields. Two YAML shapes are accepted:
+	//
+	//  1. Nested (canonical, used in chitin.yaml — matches the bounds:
+	//     and escalation: convention used elsewhere):
+	//
+	//         - id: foo
+	//           effect: escalate
+	//           escalation:
+	//             channel: cli-only
+	//             timeout_seconds: 600
+	//
+	//  2. Top-level (legacy, kept for backward compat with PR #380's
+	//     test fixtures):
+	//
+	//         - id: foo
+	//           effect: escalate
+	//           channel: cli-only
+	//           timeout_seconds: 600
+	//
+	// buildEscalateConfig prefers nested when both are present. Bug G
+	// (PR #382 dogfood, 2026-05-07): the nested shape was silently
+	// dropped because Rule had no `escalation:` yaml tag — the operator
+	// got hermes-default channel + 45s default timeout instead of the
+	// rule's explicit cli-only + 600s.
 	Channel               string `yaml:"channel,omitempty"`
 	TimeoutSeconds        int    `yaml:"timeout_seconds,omitempty"`
 	RememberWindowSeconds *int   `yaml:"remember_window_seconds,omitempty"` // pointer so "unset" is distinguishable from "explicit 0"
 	NotifyTemplate        string `yaml:"notify_template,omitempty"`
+
+	// EscalationYAML is the nested-form raw YAML block. Distinct from
+	// the built Escalation (next field) so the parser can detect "user
+	// supplied a nested block" vs "user used legacy top-level fields".
+	EscalationYAML *ruleEscalationYAML `yaml:"escalation,omitempty" json:"-"`
 
 	// Escalation is non-nil only when Effect == EffectEscalate. Built by
 	// the parser from the rule's optional escalate fields (channel,
@@ -58,6 +82,18 @@ type Rule struct {
 	// validate patterns at load time (fail-closed on bad regex) rather than
 	// silently-return-false at each eval.
 	compiledRegex *regexp.Regexp `yaml:"-"`
+}
+
+// ruleEscalationYAML is the nested `escalation:` block in a chitin.yaml
+// rule. Distinct from EscalateConfig (the built/validated form) so the
+// parser can detect "user supplied a nested block" vs "user used legacy
+// top-level fields". RememberWindowSeconds is a pointer so explicit 0
+// is distinguishable from unset (matches Rule.RememberWindowSeconds).
+type ruleEscalationYAML struct {
+	Channel               string `yaml:"channel,omitempty"`
+	TimeoutSeconds        int    `yaml:"timeout_seconds,omitempty"`
+	RememberWindowSeconds *int   `yaml:"remember_window_seconds,omitempty"`
+	NotifyTemplate        string `yaml:"notify_template,omitempty"`
 }
 
 // Bounds are the blast-radius ceilings checked for push-shaped actions.
@@ -275,14 +311,36 @@ func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
 			return nil, fmt.Errorf("effect: escalate not allowed on action: unknown — use deny instead")
 		}
 	}
+	// Source preference: nested `escalation:` block (chitin.yaml's
+	// canonical shape) > top-level fields (legacy). Bug G fix:
+	// previously the nested block was dropped silently because Rule
+	// had no yaml tag for it, leaving every chitin.yaml escalate rule
+	// running with the parser defaults instead of the operator's
+	// configured values.
 	channel := r.Channel
+	timeout := r.TimeoutSeconds
+	rememberPtr := r.RememberWindowSeconds
+	notifyTemplate := r.NotifyTemplate
+	if r.EscalationYAML != nil {
+		if r.EscalationYAML.Channel != "" {
+			channel = r.EscalationYAML.Channel
+		}
+		if r.EscalationYAML.TimeoutSeconds != 0 {
+			timeout = r.EscalationYAML.TimeoutSeconds
+		}
+		if r.EscalationYAML.RememberWindowSeconds != nil {
+			rememberPtr = r.EscalationYAML.RememberWindowSeconds
+		}
+		if r.EscalationYAML.NotifyTemplate != "" {
+			notifyTemplate = r.EscalationYAML.NotifyTemplate
+		}
+	}
 	if channel == "" {
 		channel = "hermes"
 	}
 	if channel != "hermes" && channel != "cli-only" {
 		return nil, fmt.Errorf("channel: %q invalid (allowed: hermes, cli-only)", channel)
 	}
-	timeout := r.TimeoutSeconds
 	if timeout == 0 {
 		// Default lowered from 600 → 45 (PR #382 dogfood, 2026-05-07):
 		// Claude Code's PreToolUse hook timeout is ~60s by default, so a
@@ -308,8 +366,8 @@ func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
 		return nil, fmt.Errorf("timeout_seconds: %d out of range [30, 86400]", timeout)
 	}
 	window := 300
-	if r.RememberWindowSeconds != nil {
-		window = *r.RememberWindowSeconds
+	if rememberPtr != nil {
+		window = *rememberPtr
 		if window < 0 {
 			return nil, fmt.Errorf("remember_window_seconds: %d (must be >= 0)", window)
 		}
@@ -318,7 +376,7 @@ func buildEscalateConfig(r Rule) (*EscalateConfig, error) {
 		Channel:               channel,
 		TimeoutSeconds:        timeout,
 		RememberWindowSeconds: window,
-		NotifyTemplate:        r.NotifyTemplate,
+		NotifyTemplate:        notifyTemplate,
 	}, nil
 }
 
