@@ -157,7 +157,13 @@ rules:
     # so a multi-edit session needs one approval, not N.
     # Spec: docs/superpowers/specs/2026-05-07-operator-approval-escalation-design.md
     escalation:
-      channel: cli-only
+      # Channel flipped to hermes so escalations notify the operator via
+      # whatsapp (see ~/.chitin/operator.yaml: notify_platform=whatsapp,
+      # notify_chat_id=<jid>). chitin-pending-watch.timer polls
+      # `chitin-kernel pending watch-hermes` every 30s to consume the
+      # operator's reply and resolve the row. cli-only fallback still
+      # works (chitin-kernel pending approve <id>) if hermes is down.
+      channel: hermes
       timeout_seconds: 600
       remember_window_seconds: 300
     escalation_weight: 2
