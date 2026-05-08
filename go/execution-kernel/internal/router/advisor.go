@@ -9,6 +9,39 @@ import (
 	"time"
 )
 
+// Why an advisor here at all, given that Hermes ships a "smart mode"
+// approval gate (`approvals.mode: smart` in Hermes' `config.yaml`)?
+// The two systems answer different questions and live at different
+// layers of the stack. Hermes' smart mode is a per-tool-call,
+// per-Hermes-driver gate that decides whether to surface an approval
+// prompt to the operator on dangerous patterns; it is a routing
+// decision local to one driver's loop and authoritative only inside
+// Hermes' own runtime.
+//
+// chitin's advisor is upstream of any specific driver. It sits behind
+// `chitin-kernel router evaluate --hook-stdin`, which is wired into
+// every driver chitin gates (Claude Code, Codex, Gemini, Hermes
+// itself). It runs only when a kernel-level heuristic (blast radius,
+// floundering chain, plugin signal) crosses a threshold the policy
+// declared as advisor-worthy, and its output is a structured
+// continue/takeover verdict plus a nudge — not an operator prompt.
+// The verdict feeds the chain envelope and gov-decisions audit log
+// the same way any other gate decision does.
+//
+// The asymmetry is deliberate. Hermes' smart mode is the right home
+// for "ask the human now" because Hermes owns the chat surface where
+// the human already is. chitin's advisor is the right home for
+// "ask another model whether this looks off" because chitin owns the
+// cross-driver canonical-action vocabulary the heuristics score
+// against. Neither subsumes the other; collapsing them would either
+// force chitin to re-implement Hermes' gateway (the mistake culled
+// on 2026-05-08, see
+// docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md) or
+// force Hermes' approval gate to understand chitin's chain-replay
+// semantics. The advisor justifies itself by being the only LLM
+// second-opinion that runs across all drivers from one canonical
+// action vocabulary; smart mode justifies itself by owning the chat.
+
 // CallAdvisor spawns `claude -p` (sub-billed Claude Code Pro plan)
 // with a structured advisor prompt and parses the
 // <<<ROUTER_ADVISOR>>>{...} marker from stdout. Returns

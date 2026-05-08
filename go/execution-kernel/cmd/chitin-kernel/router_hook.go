@@ -221,26 +221,17 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 	if advice.Verdict == "takeover" {
 		// Force a deny with the advisor's nudge as the reason. If
 		// the advisor also flipped Escalate, attach an
-		// `escalation_requested: true` marker so downstream
-		// consumers (the Temporal activity, the dispatcher's tier
-		// ladder) can spawn a higher-tier driver instead of
-		// surfacing the deny to a human.
+		// `escalation_requested: true` marker as informational chain
+		// metadata. advice.Escalate is now informational chain
+		// metadata, not a spawn-trigger — the in-gate peer-spawn
+		// pathway was removed alongside the rest of the operator-
+		// approval escalate effect (see
+		// docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md).
+		// Operator-tier takeover, if needed at all, runs through
+		// Hermes' native approval flow downstream of this deny.
 		composed := map[string]interface{}{"decision": "block", "reason": advice.Nudge}
 		if advice.Escalate {
 			composed["escalation_requested"] = true
-		}
-
-		// Per docs/design/2026-05-06-kernel-gate-escalation.md (step 4):
-		// when chitin-routes.yaml has escalation.enabled=true AND the
-		// gate would have escalated, ALSO synchronously spawn a peer
-		// CLI and return its output as the deny message body.
-		// CHITIN_NO_ESCALATE=1 in the spawned env prevents recursive
-		// peer-spawn (peer can be gated/denied/advised but cannot
-		// itself trigger another peer).
-		// Fail-open: ANY error in the spawn path falls back to today's
-		// deny+escalation_requested behavior. The kernel never bricks.
-		if advice.Escalate && os.Getenv("CHITIN_NO_ESCALATE") != "1" {
-			tryInGateSpawn(out, errOut, &composed, payload, advice, outcome, cwd)
 		}
 
 		body, _ := json.Marshal(composed)
