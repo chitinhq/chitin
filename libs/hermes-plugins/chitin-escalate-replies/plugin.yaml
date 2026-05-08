@@ -1,5 +1,0 @@
-name: chitin-escalate-replies
-version: 1.0.0
-description: "Intercepts whatsapp/messaging-platform replies matching approve/deny patterns and resolves the corresponding chitin pending_approvals row. Closes the inbound-side gap of chitin's operator-approval escalate flow."
-hooks:
-  - pre_gateway_dispatch

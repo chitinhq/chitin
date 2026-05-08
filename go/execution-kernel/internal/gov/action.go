@@ -100,33 +100,9 @@ func (a Action) String() string {
 	return fmt.Sprintf("Action{%s target=%q path=%q}", a.Type, a.Target, a.Path)
 }
 
-// Effect constants — match the YAML `effect:` field values.
-type Effect string
-
-const (
-	EffectAllow   Effect = "allow"
-	EffectDeny    Effect = "deny"
-	EffectGuide   Effect = "guide"
-	EffectMonitor Effect = "monitor"
-	// EffectEscalate pauses the agent's tool call and asks the operator
-	// to approve via the configured channel. Resolution comes through
-	// the pending_approvals sqlite table; the gate's Wait helper polls
-	// for it. Spec: docs/superpowers/specs/2026-05-07-operator-approval-escalation-design.md
-	EffectEscalate Effect = "escalate"
-)
-
-// EscalateConfig is the per-rule configuration for effect:escalate.
-// Distinct from the existing gov.EscalationConfig (which configures
-// the severity-tier ladder for the lockdown counter). All fields
-// have sensible defaults applied at policy parse time; only non-
-// default values need to be set in chitin.yaml.
-type EscalateConfig struct {
-	// Channel: "hermes" (notify via hermes-gateway) | "cli-only" (no notify, queue for `chitin-kernel approve`)
-	Channel string
-	// TimeoutSeconds: deny resolution if no operator response within this window. Range [30, 86400].
-	TimeoutSeconds int
-	// RememberWindowSeconds: on approve, grant subsequent (rule_id, agent) calls for this window. 0 = single-call only.
-	RememberWindowSeconds int
-	// NotifyTemplate: optional Go text/template for the notification body. Empty = use built-in default.
-	NotifyTemplate string
-}
+// Effect type and EscalateConfig were removed in cull Phase 3 (2026-05-08).
+// The escalate effect from PR #380 reinvented hermes' built-in approval
+// system (tools/approval.py). Rules now use plain string literals
+// "allow" | "deny" | "guide" | "monitor" for Rule.Effect; "escalate"
+// is rejected at policy parse time so a stale chitin.yaml fails loud
+// instead of silently mis-routing.
