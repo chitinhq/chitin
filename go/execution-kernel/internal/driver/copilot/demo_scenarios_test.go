@@ -185,7 +185,9 @@ func TestDemoScenario_EscalationLockdown(t *testing.T) {
 	fp := "shell.exec|rm-rf-pattern"
 
 	for i := 0; i < 10; i++ {
-		counter.RecordDenial(agent, fp, 1)
+		if err := counter.RecordDenial(agent, fp, 1); err != nil {
+			t.Fatalf("RecordDenial: %v", err)
+		}
 	}
 	if !counter.IsLocked(agent) {
 		t.Fatalf("agent should be locked after 10 denials")

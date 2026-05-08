@@ -275,6 +275,27 @@ func (p *Policy) ApplyDefaults() error {
 			}
 			p.Rules[i].compiledRegex = re
 		}
+		// Reject empty entries in list-typed rule fields. An empty
+		// path_under entry would match every Action.Target (every
+		// string begins with ""); an empty branches or action entry
+		// is a config typo from an editor leaving a stray blank list
+		// item. Surface these at load time rather than letting the
+		// rule silently widen its apparent surface at eval.
+		for j, pu := range p.Rules[i].PathUnder {
+			if pu == "" {
+				return fmt.Errorf("rule %q: path_under[%d] is empty (would match every path); remove the entry or fill it in", p.Rules[i].ID, j)
+			}
+		}
+		for j, b := range p.Rules[i].Branches {
+			if b == "" {
+				return fmt.Errorf("rule %q: branches[%d] is empty; remove the entry or fill it in", p.Rules[i].ID, j)
+			}
+		}
+		for j, a := range p.Rules[i].Action {
+			if a == "" {
+				return fmt.Errorf("rule %q: action[%d] is empty; remove the entry or fill it in", p.Rules[i].ID, j)
+			}
+		}
 	}
 	return nil
 }

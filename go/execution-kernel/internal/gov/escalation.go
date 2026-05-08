@@ -55,7 +55,11 @@ func (c *Counter) Close() error {
 
 // RecordDenial increments counters for (agent, fp) by weight. If total
 // denials reach the lockdown threshold (10), marks the agent locked.
-func (c *Counter) RecordDenial(agent, fp string, weight int) {
+// Returns a non-nil error if the underlying SQLite transaction fails so
+// callers can surface (or at minimum log) the failure rather than
+// silently dropping the escalation count — a silent drop would let an
+// agent past the lockdown threshold without ever locking.
+func (c *Counter) RecordDenial(agent, fp string, weight int) error {
 	if weight <= 0 {
 		weight = 1
 	}
@@ -63,31 +67,42 @@ func (c *Counter) RecordDenial(agent, fp string, weight int) {
 
 	tx, err := c.db.Begin()
 	if err != nil {
-		return
+		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	_, _ = tx.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO denials (agent, action_fp, count, first_ts, last_ts)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(agent, action_fp) DO UPDATE SET
 			count = count + excluded.count,
 			last_ts = excluded.last_ts
-	`, agent, fp, weight, now, now)
+	`, agent, fp, weight, now, now); err != nil {
+		return fmt.Errorf("upsert denial: %w", err)
+	}
 
-	_, _ = tx.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO agent_state (agent, total, locked)
 		VALUES (?, ?, 0)
 		ON CONFLICT(agent) DO UPDATE SET total = total + excluded.total
-	`, agent, weight)
-
-	var total int
-	_ = tx.QueryRow(`SELECT total FROM agent_state WHERE agent = ?`, agent).Scan(&total)
-	if total >= 10 {
-		_, _ = tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ? WHERE agent = ?`, now, agent)
+	`, agent, weight); err != nil {
+		return fmt.Errorf("upsert agent_state: %w", err)
 	}
 
-	_ = tx.Commit()
+	var total int
+	if err := tx.QueryRow(`SELECT total FROM agent_state WHERE agent = ?`, agent).Scan(&total); err != nil {
+		return fmt.Errorf("read agent_state.total: %w", err)
+	}
+	if total >= 10 {
+		if _, err := tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ? WHERE agent = ?`, now, agent); err != nil {
+			return fmt.Errorf("set locked: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 // Level returns the escalation level for an agent: normal | elevated |

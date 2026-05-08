@@ -57,7 +57,16 @@ func LoadWithInheritance(cwd string) (Policy, []string, error) {
 		merged = mergePolicies(merged, loaded)
 	}
 
-	merged.ApplyDefaults()
+	// Validate the merged result. Pre-fix this discarded the error,
+	// letting any validation failure introduced by the merge survive
+	// into the live Policy. The per-file LoadPolicyFile already runs
+	// ApplyDefaults on each file in isolation, but propagating the
+	// post-merge error closes the contract: load returns a non-nil
+	// error iff the resulting Policy would not have validated had it
+	// been authored as a single file.
+	if err := merged.ApplyDefaults(); err != nil {
+		return Policy{}, paths, fmt.Errorf("validate merged policy: %w", err)
+	}
 	return merged, paths, nil
 }
 

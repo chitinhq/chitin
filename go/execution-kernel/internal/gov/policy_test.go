@@ -3,6 +3,7 @@ package gov
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -393,5 +394,78 @@ rules: []
 	_, _, err := LoadWithInheritance(root)
 	if err == nil {
 		t.Fatal("LoadWithInheritance must reject unknown mode")
+	}
+}
+
+// TestPolicy_RejectsEmptyListEntries pins the contract that a stray
+// blank entry in a list-typed rule field (path_under, branches,
+// action) is a load-time error, not a silent surface-widening at
+// eval. An empty path_under entry would match every Action.Target
+// (the prefix "" is contained in every string); an empty branches or
+// action entry is a config typo that should surface to the operator
+// at load, not eval.
+func TestPolicy_RejectsEmptyListEntries(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantSub string // substring the error must contain (rule_id)
+	}{
+		{
+			name: "empty path_under entry",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-path-under
+    action: file.write
+    effect: deny
+    path_under: ["/etc/", ""]
+    reason: "x"
+`,
+			wantSub: "bad-path-under",
+		},
+		{
+			name: "empty branches entry",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-branches
+    action: git.push
+    effect: deny
+    branches: ["main", ""]
+    reason: "x"
+`,
+			wantSub: "bad-branches",
+		},
+		{
+			name: "empty action entry",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-action
+    action: ["shell.exec", ""]
+    effect: deny
+    reason: "x"
+`,
+			wantSub: "bad-action",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "chitin.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadPolicyFile(path)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error should name the offending rule %q, got: %v", tc.wantSub, err)
+			}
+		})
 	}
 }

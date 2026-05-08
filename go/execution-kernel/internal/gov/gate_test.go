@@ -384,7 +384,9 @@ func TestGate_FingerprintStampedOnLockdown(t *testing.T) {
 		WorkflowID: "swarm-locked-1",
 	}
 	for i := 0; i < 11; i++ {
-		g.Counter.RecordDenial("agent1", "fp", 1)
+		if err := g.Counter.RecordDenial("agent1", "fp", 1); err != nil {
+			t.Fatalf("RecordDenial: %v", err)
+		}
 	}
 	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if d.RuleID != "lockdown" {
