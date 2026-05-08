@@ -142,7 +142,7 @@ declare -A timers
 for unit in chitin-dispatcher.timer chitin-worker.service \
             chitin-shipped-entry-flipper.timer \
             chitin-kernel-redeploy.timer \
-            chitin-swarm-rollup.timer chitin-alarm-feeder.timer \
+            chitin-alarm-feeder.timer \
             chitin-debt-curator.timer chitin-lessons.timer; do
   timers[$unit]=$(timer_state "$unit")
 done
@@ -218,7 +218,7 @@ echo ""
 echo "  systemd timers (user):"
 for unit in chitin-dispatcher.timer chitin-worker.service \
             chitin-shipped-entry-flipper.timer chitin-kernel-redeploy.timer \
-            chitin-swarm-rollup.timer chitin-alarm-feeder.timer \
+            chitin-alarm-feeder.timer \
             chitin-debt-curator.timer chitin-lessons.timer; do
   state=${timers[$unit]:-?}
   marker=" "

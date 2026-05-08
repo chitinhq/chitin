@@ -64,7 +64,7 @@ type AdvisorRequest struct {
 type AdvisorResponse struct {
 	Nudge    string `json:"nudge"`
 	Verdict  string `json:"verdict"`  // "continue" | "takeover"
-	Escalate bool   `json:"escalate"` // true → request mid-task tier escalation; consumed by the Temporal activity to bump tier on the next agent turn (see docs/design/2026-05-03-mid-task-continuation.md)
+	Escalate bool   `json:"escalate"` // true → request mid-task tier escalation; consumed by the in-gate router-hook escalate composition logic to bump tier on the next agent turn (see docs/design/2026-05-03-mid-task-continuation.md)
 }
 
 // HeuristicConfig — per-heuristic policy from chitin.yaml.
