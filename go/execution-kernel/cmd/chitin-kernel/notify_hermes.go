@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +68,18 @@ type operatorConfig struct {
 	// Routes the task into the operator's view (e.g., "operator",
 	// "default").
 	AssigneeProfile string
+
+	// BridgeURL is the whatsapp-bridge HTTP send endpoint, used to
+	// deliver a one-shot creation ping to the operator. Default:
+	// http://127.0.0.1:3000/send. Hermes's gateway-side notifier only
+	// dispatches TERMINAL kanban events (completed / blocked / etc) to
+	// whatsapp — the `created` event needed for operator approval is
+	// not in that set, so notify-subscribe alone won't ping the
+	// operator at task-creation time. Posting directly to the bridge
+	// closes that gap. Failure is non-fatal: the kanban task still
+	// exists and the operator can resolve via CLI fallback. Surfaced
+	// 2026-05-08 in PR #392's wrap-up dogfood.
+	BridgeURL string
 }
 
 // builtinNotifyTemplate is the default kanban-task body when the rule
@@ -191,7 +204,66 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 	if _, subErr := execHermes(cfg.HermesBin, subArgs); subErr != nil {
 		return created.ID, fmt.Errorf("hermes kanban notify-subscribe: %w (id %s created OK)", subErr, created.ID)
 	}
+
+	// Call 3: direct bridge ping for the creation event. Hermes's
+	// gateway-side _kanban_notifier_watcher only dispatches TERMINAL
+	// kanban events to whatsapp (completed, blocked, gave_up, crashed,
+	// timed_out). The `created` event isn't in that set, so the
+	// operator never gets pinged at task-creation time — exactly the
+	// moment they need to see the approval prompt. Posting directly
+	// to the whatsapp bridge HTTP endpoint closes that gap.
+	//
+	// Failure is non-fatal: the kanban task still exists and the
+	// operator can resolve via CLI fallback (`chitin-kernel pending
+	// approve <id>`). Return the id with a wrapped error so the
+	// caller can stamp notify_failed_reason but still attach the
+	// task_id to the pending row.
+	bridgeURL := cfg.BridgeURL
+	if bridgeURL == "" {
+		bridgeURL = "http://127.0.0.1:3000/send"
+	}
+	if cfg.NotifyPlatform == "whatsapp" {
+		if pErr := pingBridge(bridgeURL, cfg.NotifyChatID, buf.String()); pErr != nil {
+			return created.ID, fmt.Errorf("bridge ping: %w (id %s created + subscribed OK)", pErr, created.ID)
+		}
+	}
 	return created.ID, nil
+}
+
+// pingBridge POSTs a single message to the whatsapp bridge HTTP send
+// endpoint. Mirrors the bridge's documented contract:
+//
+//	POST /send
+//	{"chatId":"<jid>","message":"<text>"}
+//	-> {"success":true, "messageId":"..."} | {"error":"..."}
+//
+// Mockable via httpPostJSON for unit tests.
+func pingBridge(url, chatID, message string) error {
+	body := map[string]string{"chatId": chatID, "message": message}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return httpPostJSON(url, b)
+}
+
+// httpPostJSON is mockable so tests don't depend on a live bridge.
+var httpPostJSON = func(url string, body []byte) error {
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("bridge returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // HermesReplyParse is what parseHermesReply returns on a successful parse.

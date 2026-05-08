@@ -44,6 +44,17 @@ func TestNotifyHermes_TwoCallSequence(t *testing.T) {
 	}
 	defer func() { execHermes = prev }()
 
+	// Mock the bridge POST too — without this the test would hit the
+	// real whatsapp bridge on localhost (flaky / fails on CI without
+	// a bridge running). Asserted below.
+	var bridgeCalls []string
+	prevHTTP := httpPostJSON
+	httpPostJSON = func(url string, body []byte) error {
+		bridgeCalls = append(bridgeCalls, url+"|"+string(body))
+		return nil
+	}
+	defer func() { httpPostJSON = prevHTTP }()
+
 	row := gov.PendingApproval{
 		ID: "01TEST", Agent: "claude-code", RuleID: "no-protected-write",
 		ActionType: "file.write", ActionTarget: "/etc/hostname",
@@ -104,6 +115,25 @@ func TestNotifyHermes_TwoCallSequence(t *testing.T) {
 	}
 	if !strings.Contains(sub, "t_FAKE001") {
 		t.Errorf("call 2 missing task_id from call 1: %q", sub)
+	}
+
+	// Validate third call: direct POST to whatsapp bridge so the
+	// operator gets pinged at task-creation time (hermes gateway only
+	// dispatches TERMINAL kanban events to whatsapp; `created` is not
+	// in that set, so notify-subscribe alone never pings the operator
+	// at the moment they need to approve).
+	if len(bridgeCalls) != 1 {
+		t.Fatalf("expected 1 bridge POST, got %d", len(bridgeCalls))
+	}
+	bc := bridgeCalls[0]
+	if !strings.Contains(bc, "127.0.0.1:3000/send") {
+		t.Errorf("bridge call URL not localhost:3000/send: %q", bc)
+	}
+	if !strings.Contains(bc, `"chatId":"1234567890"`) {
+		t.Errorf("bridge call missing chatId: %q", bc)
+	}
+	if !strings.Contains(bc, "Operator approval needed") {
+		t.Errorf("bridge call body missing approval template: %q", bc)
 	}
 }
 
