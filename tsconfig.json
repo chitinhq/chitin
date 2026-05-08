@@ -19,13 +19,7 @@
       "path": "./libs/adapters/openclaw"
     },
     {
-      "path": "./libs/mcp-chitin"
-    },
-    {
       "path": "./apps/cli"
-    },
-    {
-      "path": "./apps/mcp-server"
     },
     {
       "path": "./tools/lint"
