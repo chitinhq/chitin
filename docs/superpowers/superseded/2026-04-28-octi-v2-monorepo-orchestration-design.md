@@ -1,3 +1,22 @@
+---
+status: superseded
+superseded_on: 2026-05-08
+superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
+reason: |
+  Orchestration is no longer chitin's concern. The 2026-05-06
+  scope-narrow decision moves dispatch + scheduling to hermes + future
+  external orchestrators; chitin is governor + plugins + chain data
+  only. An octi-v2-style dispatcher inside this monorepo is off the
+  table.
+---
+
+> **SUPERSEDED 2026-05-08.** Per
+> `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`,
+> chitin does not own dispatch / scheduling / orchestration. An
+> in-monorepo orchestrator (octi v2) is not being built. Retained as
+> historical framing of the two-driver pattern; the dispatcher
+> component is out of scope.
+
 # Octi v2 — Monorepo Orchestration Layer Design
 
 **Date:** 2026-04-28

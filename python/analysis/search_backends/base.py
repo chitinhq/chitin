@@ -1,7 +1,6 @@
 """SearchBackend contract.
 
-Read by both compatibility_seed (refresh-stale) and any future caller
-that needs operator-credential web search.
+Read by any future caller that needs operator-credential web search.
 """
 from __future__ import annotations
 

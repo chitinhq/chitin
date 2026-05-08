@@ -22,12 +22,6 @@
       "path": "./libs/mcp-chitin"
     },
     {
-      "path": "./libs/scheduler"
-    },
-    {
-      "path": "./apps/runner"
-    },
-    {
       "path": "./apps/cli"
     },
     {
@@ -35,9 +29,6 @@
     },
     {
       "path": "./apps/mcp-server"
-    },
-    {
-      "path": "./apps/slack-app"
     },
     {
       "path": "./tools/lint"

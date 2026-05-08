@@ -1,14 +1,29 @@
 ---
 date: 2026-05-02
-status: design
+status: superseded
+superseded_on: 2026-05-08
+superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
 audience: operator + future agents picking up swarm-shape work
 purpose: Crystallize the shape of the chitin swarm beyond a single dispatcher
   loop — the role taxonomy, the review-tier escalation policy, the hand-off
   contract, and the phased path from "the loop runs" to "an instrumented
   factory we leave running."
-supersedes: nothing yet — this is the first pass; future revisions live
-  alongside as `2026-MM-DD-swarm-as-software-factory-vN.md`.
+reason: |
+  The dispatch-side analyst loop framed here (swarm_runs / swarm_health /
+  fingerprint_outcomes / routing_elo / investigate) lives outside chitin
+  per the 2026-05-06 scope-narrow decision. Chitin keeps kernel + plugins
+  + chain data; the analyst-role rollups and the dispatcher-fed analyzers
+  move to the orchestrator. Retained as historical framing.
 ---
+
+> **SUPERSEDED 2026-05-08.** Per
+> `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`,
+> chitin owns kernel + plugins + chain data only. The swarm-as-factory
+> framing — analyst role, dispatch-side analyzers (swarm_runs,
+> swarm_health, fingerprint_outcomes, routing_elo, investigate), role
+> taxonomy — moves to the orchestrator (hermes + future). The
+> referenced `python/analysis/*` dispatch-side modules have been deleted
+> from chitin. Retained as historical context.
 
 # Swarm as software factory
 
