@@ -143,29 +143,22 @@ rules:
 
   - id: no-governance-self-modification
     action: file.write
-    effect: escalate
+    effect: deny
     # Match whether the path is relative to a chitin repo root OR absolute.
     # Previously anchored on ^ only, which missed absolute paths like
     # "/home/red/workspace/chitin/chitin.yaml" — a bypass the agent could
     # exploit by writing with the full path instead of a repo-relative one.
     target_regex: '(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)'
-    reason: "Agents may not modify their own governance policy or plugin without operator approval"
-    # Operator-tier carve-out (closes the dogfood paradox): queue an
-    # escalation that the operator approves via `chitin-kernel pending
-    # approve <id>` instead of blanket deny. Channel cli-only (no
-    # hermes infra needed); 10min decision window; 5min remember-grant
-    # so a multi-edit session needs one approval, not N.
-    # Spec: docs/superpowers/specs/2026-05-07-operator-approval-escalation-design.md
-    escalation:
-      # Channel flipped to hermes so escalations notify the operator via
-      # whatsapp (see ~/.chitin/operator.yaml: notify_platform=whatsapp,
-      # notify_chat_id=<jid>). chitin-pending-watch.timer polls
-      # `chitin-kernel pending watch-hermes` every 30s to consume the
-      # operator's reply and resolve the row. cli-only fallback still
-      # works (chitin-kernel pending approve <id>) if hermes is down.
-      channel: hermes
-      timeout_seconds: 600
-      remember_window_seconds: 300
+    reason: "Agents may not modify their own governance policy or plugin"
+    # Reverted from effect: escalate -> deny on 2026-05-08 (Phase 1 of
+    # cull plan). The escalate flow added in PR #380 + #382 was a
+    # parallel implementation of hermes' built-in approval system
+    # (tools/approval.py). Hermes already provides operator-prompt /
+    # reply-parse / persistent-allowlist; chitin doesn't need its own
+    # pending_approvals + bridge POST + watcher + plugin to do the
+    # same thing. Operator does manual gov edits via vim/sed from a
+    # non-Claude-Code shell — same workflow we've been using all
+    # session anyway. See docs/decisions/ when Phase 6 lands.
     escalation_weight: 2
 
   - id: no-terraform-destroy
