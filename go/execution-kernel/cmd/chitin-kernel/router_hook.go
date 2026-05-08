@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
 )
 
@@ -19,19 +19,25 @@ import (
 // router-augmented PreToolUse hook. Wires real stdin/stdout/os.Exit
 // around evalRouterHookStdin (the pure core).
 //
-// The pipeline:
-//   1. Capture the kernel verdict (calls evalHookStdin internally
-//      with a buffered stdout so we can re-process the result)
-//   2. Load the router policy from chitin.yaml
-//   3. If policy disabled OR kernel denied + advisor not configured
-//      for kernel_denied → emit kernel verdict directly (fast path)
-//   4. Run heuristics (blast-radius + floundering) per policy
-//   5. If any heuristic fired (or kernel denied + advisor wants it)
-//      → call advisor via `claude -p`
-//   6. Compose final response: kernel verdict + advisor nudge if any
+// Pipeline (post-cull, audit Tier 6 — 2026-05-08):
+//  1. Run kernel verdict via evalHookStdin (unchanged).
+//  2. Run pure-Go heuristics (blast-radius, floundering, drift) and
+//     operator-declared plugins.
+//  3. Pre-action plugin block short-circuits with a deny when a
+//     plugin fired with block=true (still authoritative — pre-action
+//     checks are deterministic, not judgment calls).
+//  4. Stamp the heuristic-signal scores onto a gov.Decision row in
+//     ~/.chitin/gov-decisions-<utc-date>.jsonl when at least one
+//     signal is non-zero, so chain consumers can pick them up.
+//  5. Emit the kernel verdict + heuristic telemetry. The kernel
+//     never spawns an LLM in-line.
 //
-// Cold-start target: ~10ms (heuristics are pure Go); only the
-// advisor call (when fired) takes seconds (LLM latency).
+// The in-gate `claude -p` advisor was removed: chitin's moat is
+// signal computation + the gate, not LLM-running. Hermes ships
+// `approvals.mode: smart` for that already; operator-wired chain
+// consumers handle the same role for non-hermes drivers. Chitin
+// emits; chitin does not consult. See
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
 func runRouterHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) {
 	code := evalRouterHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
 	os.Exit(code)
@@ -87,6 +93,8 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		SessionID:     payload.SessionID,
 	}
 	outcome := router.HeuristicOutcome{}
+	var chainEvents []router.ChainEvent
+	chainEventsLoaded := false
 	if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Enabled {
 		score := router.ScoreBlastRadius(hookInput, cfg.Threshold)
 		outcome.BlastRadius = &score
@@ -95,8 +103,9 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	}
 	if cfg, ok := policy.Heuristics["floundering"]; ok && cfg.Enabled {
-		events := router.ReadChainEvents(payload.SessionID)
-		score := router.DetectFloundering(events, router.FlounderingThresholds{
+		chainEvents = router.ReadChainEvents(payload.SessionID)
+		chainEventsLoaded = true
+		score := router.DetectFloundering(chainEvents, router.FlounderingThresholds{
 			MaxLoopCount:    cfg.MaxLoopCount,
 			MaxStallSeconds: cfg.MaxStallSeconds,
 		}, time.Now())
@@ -104,6 +113,20 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		if score.Fired {
 			outcome.AnyFired = true
 		}
+	}
+	// Drift score — pure function over (input, chain). Threshold
+	// reuses blast_radius's when configured (drift's "high-blast
+	// out-of-scope" branch references it); falls back to 0.5.
+	driftThreshold := 0.5
+	if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Threshold > 0 {
+		driftThreshold = cfg.Threshold
+	}
+	if !chainEventsLoaded {
+		chainEvents = router.ReadChainEvents(payload.SessionID)
+	}
+	driftScore := router.DetectDrift(hookInput, chainEvents, driftThreshold)
+	if driftScore.Fired {
+		outcome.AnyFired = true
 	}
 
 	// Run plugins (operator-declared, in any runtime). Each plugin
@@ -120,11 +143,13 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	}
 
+	kernelDeny := kernelCode == claudecode.ExitBlock
+
 	// Pre-action analysis short-circuit: if any plugin fired with
-	// block=true, deny immediately with the plugin's reason. The
-	// advisor is NOT consulted — pre-action plugins have
-	// authoritative verdict (e.g., "no commit until tests pass" is
-	// a deterministic check, not a judgment call).
+	// block=true, deny immediately with the plugin's reason. Pre-
+	// action plugins have authoritative verdict (e.g., "no commit
+	// until tests pass" is a deterministic check, not a judgment
+	// call).
 	for _, r := range pluginResults {
 		if r.Score.Fired && r.Block {
 			composed := map[string]string{
@@ -134,156 +159,123 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			body, _ := json.Marshal(composed)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
-			writeRouterTelemetry(errOut, "pre-action-block", outcome, false, false)
+			stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, true, "pre-action-block:"+r.Name, noRecord)
+			writeRouterTelemetry(errOut, "pre-action-block", outcome, false)
 			return claudecode.ExitBlock
 		}
 	}
 
-	// Decide whether to invoke the advisor
-	kernelDeny := kernelCode == claudecode.ExitBlock
-	wantAdvisor := false
-	if policy.Advisor.Enabled {
-		for _, trigger := range policy.Advisor.When {
-			switch trigger {
-			case "blast_radius_above_threshold":
-				if outcome.BlastRadius != nil && outcome.BlastRadius.Fired {
-					wantAdvisor = true
-				}
-			case "floundering_detected":
-				if outcome.Floundering != nil && outcome.Floundering.Fired {
-					wantAdvisor = true
-				}
-			case "kernel_denied":
-				if kernelDeny {
-					wantAdvisor = true
-				}
-			case "plugin_fired":
-				for _, r := range pluginResults {
-					if r.Score.Fired {
-						wantAdvisor = true
-						break
-					}
-				}
-			}
-			if wantAdvisor {
-				break
-			}
-		}
+	// Stamp the heuristic-signal metadata onto the chain so consumers
+	// (hermes' approvals.mode: smart, operator-written cron, custom
+	// kanban-dispatched profile, etc.) can read it without spawning
+	// any LLM in the gate. Only stamp when at least one signal is
+	// non-zero — read-only tools whose scores are trivially zero
+	// don't need a stamping row.
+	if hasNonZeroSignal(outcome, driftScore) {
+		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, kernelDeny, kernelDecisionLabel(kernelDeny), noRecord)
 	}
 
-	if !wantAdvisor {
-		// No advisor needed → emit kernel verdict (fast)
-		if kernelOut.Len() > 0 {
-			_, _ = out.Write(kernelOut.Bytes())
-		}
-		// Log heuristic outcome to stderr for telemetry even if advisor skipped
-		if outcome.AnyFired {
-			writeRouterTelemetry(errOut, "heuristic-fired-no-advisor", outcome, kernelDeny, false)
-		}
-		return kernelCode
-	}
-
-	// Step 3: call advisor
-	question := "Heuristic flagged this action. Is the agent on track, or should it pause/escalate?"
-	if kernelDeny {
-		var krDecision struct {
-			Reason string `json:"reason"`
-		}
-		_ = json.Unmarshal(kernelOut.Bytes(), &krDecision)
-		question = fmt.Sprintf(
-			"The kernel denied this action: %s. Should the agent be re-routed or is this denial correct?",
-			krDecision.Reason,
-		)
-	}
-	advisorReq := router.AdvisorRequest{
-		Question:         question,
-		Context:          fmt.Sprintf("Session: %s. Heuristic outcome attached.", payload.SessionID),
-		ProposedAction:   hookInput,
-		HeuristicOutcome: outcome,
-		ChainDepth:       0,
-	}
-	ctx := context.Background()
-	advice, advErr := router.CallAdvisor(ctx, advisorReq, "", 60*time.Second)
-	if advErr != nil || advice == nil {
-		writeJSONLine(errOut, map[string]string{
-			"warning":         "router_advisor_failed",
-			"err":             errStringFor(advErr),
-			"kernel_decision": kernelDecisionLabel(kernelDeny),
-		})
-		// Fall through to kernel verdict
-		if kernelOut.Len() > 0 {
-			_, _ = out.Write(kernelOut.Bytes())
-		}
-		return kernelCode
-	}
-
-	// Step 4: compose
-	if advice.Verdict == "takeover" {
-		// Force a deny with the advisor's nudge as the reason. If
-		// the advisor also flipped Escalate, attach an
-		// `escalation_requested: true` marker as informational chain
-		// metadata. advice.Escalate is now informational chain
-		// metadata, not a spawn-trigger — the in-gate peer-spawn
-		// pathway was removed alongside the rest of the operator-
-		// approval escalate effect (see
-		// docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md).
-		// Operator-tier takeover, if needed at all, runs through
-		// Hermes' native approval flow downstream of this deny.
-		composed := map[string]interface{}{"decision": "block", "reason": advice.Nudge}
-		if advice.Escalate {
-			composed["escalation_requested"] = true
-		}
-
-		body, _ := json.Marshal(composed)
-		_, _ = out.Write(body)
-		_, _ = out.Write([]byte{'\n'})
-		writeRouterTelemetry(errOut, "advisor-takeover", outcome, kernelDeny, advice.Escalate)
-		return claudecode.ExitBlock
-	}
-
-	// continue: append nudge to the kernel output's reason field
+	// Emit kernel verdict (deny or allow) — never altered by
+	// heuristics. Heuristic signals are advisory; the kernel + plugin
+	// pre-block are the only authoritative verdicts.
 	if kernelOut.Len() > 0 {
-		var kernelObj map[string]interface{}
-		if err := json.Unmarshal(kernelOut.Bytes(), &kernelObj); err == nil {
-			existing, _ := kernelObj["reason"].(string)
-			if existing != "" {
-				kernelObj["reason"] = advice.Nudge + "\n\nKernel: " + existing
-			} else {
-				kernelObj["reason"] = advice.Nudge
-			}
-			if advice.Escalate {
-				kernelObj["escalation_requested"] = true
-			}
-			body, _ := json.Marshal(kernelObj)
-			_, _ = out.Write(body)
-			_, _ = out.Write([]byte{'\n'})
-		} else {
-			// Kernel output not JSON — emit as-is
-			_, _ = out.Write(kernelOut.Bytes())
-		}
-	} else if kernelCode == claudecode.ExitAllow {
-		// Kernel was silent (allow). Emit the advisor's nudge as a hint
-		// via the documented hookSpecificOutput channel. Note: the
-		// escalation_requested marker is intentionally NOT emitted
-		// here — the only consumer (Temporal activity) reads it from
-		// the deny-path chain envelope, and adding it to the allow
-		// stdout risks polluting Claude Code's tool response with a
-		// field it doesn't expect. Telemetry still records the flag
-		// in stderr below.
-		composed := map[string]interface{}{"hookSpecificOutput": advice.Nudge}
-		body, _ := json.Marshal(composed)
-		_, _ = out.Write(body)
-		_, _ = out.Write([]byte{'\n'})
+		_, _ = out.Write(kernelOut.Bytes())
 	}
-	writeRouterTelemetry(errOut, "advisor-allow", outcome, kernelDeny, advice.Escalate)
+	if outcome.AnyFired {
+		writeRouterTelemetry(errOut, "heuristic-fired", outcome, kernelDeny)
+	}
 	return kernelCode
 }
 
+// hasNonZeroSignal returns true if any heuristic produced a non-zero
+// score (even sub-threshold) so the router stamps the signal on the
+// chain. Sub-threshold scores are still useful: they're the training
+// signal for tuning thresholds in the next analysis pass.
+func hasNonZeroSignal(o router.HeuristicOutcome, drift router.HeuristicScore) bool {
+	if o.BlastRadius != nil && o.BlastRadius.Score > 0 {
+		return true
+	}
+	if o.Floundering != nil && o.Floundering.Score > 0 {
+		return true
+	}
+	if drift.Score > 0 {
+		return true
+	}
+	return false
+}
+
+// stampHeuristicSignals writes a router-stamped gov.Decision row to
+// the audit log carrying the heuristic-signal scores. This is a
+// SECOND row per tool call (the kernel's own row was already written
+// by gate.Evaluate inside evalHookStdin); chain consumers join the
+// two via (ts, action_target). Suppressed under noRecord so smoke
+// probes don't pollute the log.
+//
+// Mode is "monitor" because the row is advisory: the kernel + plugin
+// pre-block produced the authoritative verdict already on the
+// preceding row; this row is signal metadata, not enforcement.
+func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.HookInput, outcome router.HeuristicOutcome, drift router.HeuristicScore, kernelDeny bool, ruleID string, noRecord bool) {
+	if noRecord {
+		return
+	}
+	d := gov.Decision{
+		Allowed: !kernelDeny,
+		Mode:    "monitor",
+		RuleID:  "router-heuristic:" + ruleID,
+		Agent:   agent,
+		Ts:      time.Now().UTC().Format(time.RFC3339),
+		Action: gov.Action{
+			Type:   gov.ActionType("router.signal"),
+			Target: hookInput.ToolName + ":" + targetForSignal(hookInput),
+		},
+	}
+	if outcome.BlastRadius != nil {
+		d.PredictedBlast = outcome.BlastRadius.Score
+	}
+	if outcome.Floundering != nil {
+		d.FlounderingScore = outcome.Floundering.Score
+	}
+	d.DriftScore = drift.Score
+	// RoutingDecision left empty when no escalation route is wired
+	// (chitin-routes.yaml absent or disabled). A future commit can
+	// resolve a candidate via router.RouteFor and stamp the rationale
+	// here when policy.RoutesEnabled — for tonight's cull, the
+	// signals are enough; consumers can re-derive the candidate.
+
+	if err := gov.WriteLog(d, chitinDir()); err != nil {
+		writeJSONLine(errOut, map[string]string{
+			"warning": "router_heuristic_stamp_failed",
+			"err":     err.Error(),
+		})
+	}
+}
+
+// targetForSignal extracts a short identifier of what the action
+// targets for the signal-row's action_target field. Best-effort —
+// chain consumers join on (ts, tool_name) when this is too lossy.
+func targetForSignal(input router.HookInput) string {
+	if v, ok := input.ToolInput["file_path"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := input.ToolInput["notebook_path"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := input.ToolInput["command"].(string); ok && v != "" {
+		// Truncate so the audit row stays bounded.
+		if len(v) > 200 {
+			return v[:200]
+		}
+		return v
+	}
+	return ""
+}
+
 // writeRouterTelemetry emits one structured JSONL line per
-// router-hook invocation. The escalate field is always present
-// (false on paths that don't involve the advisor) so downstream
-// consumers see a stable schema across emit kinds.
-func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny, escalate bool) {
+// router-hook invocation when at least one heuristic produced
+// signal. The escalate field was removed alongside the in-gate LLM
+// advisor (audit Tier 6 cull, 2026-05-08); chain consumers stamp
+// any escalation intent themselves when they read the signals.
+func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny bool) {
 	out := map[string]interface{}{
 		"ts":                time.Now().UTC().Format(time.RFC3339),
 		"level":             "info",
@@ -291,18 +283,10 @@ func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.Heuristi
 		"msg":               kind,
 		"kernel_denied":     kernelDeny,
 		"heuristic_outcome": outcome,
-		"escalate":          escalate,
 	}
 	body, _ := json.Marshal(out)
 	_, _ = errOut.Write(body)
 	_, _ = errOut.Write([]byte{'\n'})
-}
-
-func errStringFor(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func kernelDecisionLabel(deny bool) string {

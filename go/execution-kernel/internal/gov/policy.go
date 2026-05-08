@@ -164,6 +164,19 @@ type Decision struct {
 	// pending_approvals table that this referenced is gone; any
 	// audit-trail join via this id no longer makes sense.
 
+	// Router-heuristic signal metadata, stamped by the router-hook
+	// post-2026-05-08 cull. All four are optional + omitempty so
+	// non-router decisions (operator-CLI gate-evaluate, plain
+	// gov.Gate.Evaluate calls without a router) keep their existing
+	// schema. Consumers that care (hermes' approval flow, operator-
+	// wired chain readers) join the router-stamped row with the
+	// kernel's enforcement row via (ts, action_target). See
+	// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
+	PredictedBlast   float64 `json:"predicted_blast,omitempty"`
+	FlounderingScore float64 `json:"floundering_score,omitempty"`
+	DriftScore       float64 `json:"drift_score,omitempty"`
+	RoutingDecision  string  `json:"routing_decision,omitempty"`
+
 	// Effect is the rule's effect value as parsed from chitin.yaml
 	// (allow|deny|guide|monitor). Internal to the gate's flow control;
 	// not serialized to the chain (the chain only cares about the

@@ -1,22 +1,24 @@
-// Package router implements the heuristic + advisor pipeline that
-// wraps the kernel's deterministic gate. It runs in-process inside
-// chitin-kernel for hot-path speed (~10ms vs the TS implementation's
-// ~500ms cold start).
+// Package router implements the heuristic pipeline that wraps the
+// kernel's deterministic gate. It runs in-process inside
+// chitin-kernel for hot-path speed (~10ms; pure Go, no LLM).
 //
-// Pipeline:
+// Pipeline (post-cull, audit Tier 6 — 2026-05-08):
 //   stdin (Claude Code PreToolUse JSON)
 //     ↓
-//   step 1: kernel verdict (gov.Gate.Evaluate)
-//     ↓ if deny → return deny
-//   step 2: heuristics (BlastRadius, Floundering)
-//     ↓ if none fire → return kernel verdict
-//   step 3: policy.Advisor decides whether to invoke advisor
-//     ↓ if yes → spawn `claude -p` with structured prompt, parse response
-//   step 4: compose final hook output
+//   step 1: kernel verdict (gov.Gate.Evaluate via evalHookStdin)
+//     ↓
+//   step 2: heuristics (BlastRadius, Floundering, Drift) +
+//     operator-declared plugins
+//     ↓
+//   step 3: stamp heuristic-signal scores onto the chain via
+//     gov.Decision so downstream consumers can route follow-ups
+//     ↓
+//   step 4: emit kernel verdict; chitin never spawns an LLM in-line
 //
-// The TS implementation in apps/runner/src/router/ is the
-// design substrate that informed this port. Test fixtures port
-// directly (see router_test.go).
+// LLM consultation lives downstream of the gate now: hermes'
+// `approvals.mode: smart` for hermes-driven tools, operator-wired
+// chain consumers for other drivers. See
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
 package router
 
 // HookInput is the inbound shape from Claude Code's PreToolUse hook.
@@ -50,22 +52,12 @@ type HeuristicOutcome struct {
 	AnyFired    bool            `json:"any_fired"`
 }
 
-// AdvisorRequest is the payload sent to the advisor LLM.
-type AdvisorRequest struct {
-	Question         string           `json:"question"`
-	Context          string           `json:"context"`
-	ProposedAction   HookInput        `json:"proposed_action"`
-	HeuristicOutcome HeuristicOutcome `json:"heuristic_outcome"`
-	CallerTier       string           `json:"caller_tier,omitempty"`
-	ChainDepth       int              `json:"chain_depth"`
-}
-
-// AdvisorResponse is the parsed structured output from the advisor.
-type AdvisorResponse struct {
-	Nudge    string `json:"nudge"`
-	Verdict  string `json:"verdict"`  // "continue" | "takeover"
-	Escalate bool   `json:"escalate"` // true → request mid-task tier escalation; consumed by the in-gate router-hook escalate composition logic to bump tier on the next agent turn (see docs/design/2026-05-03-mid-task-continuation.md)
-}
+// AdvisorRequest / AdvisorResponse were removed in the audit Tier 6
+// cull (2026-05-08). The in-gate `claude -p` advisor that produced
+// these envelopes is gone; LLM consultation lives downstream now
+// (hermes' `approvals.mode: smart` for hermes-driven tools, operator-
+// wired chain consumers for other drivers). See
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
 
 // HeuristicConfig — per-heuristic policy from chitin.yaml.
 type HeuristicConfig struct {
@@ -75,7 +67,11 @@ type HeuristicConfig struct {
 	MaxStallSeconds   int     `yaml:"max_stall_seconds,omitempty" json:"max_stall_seconds,omitempty"`
 }
 
-// AdvisorConfig — advisor policy from chitin.yaml.
+// AdvisorConfig — parse-and-ignore stub kept so chitin.yaml files
+// authored before the audit Tier 6 cull (2026-05-08) continue to
+// load cleanly. The kernel never reads these fields anymore. See
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md
+// for where LLM consultation lives now.
 type AdvisorConfig struct {
 	Enabled bool     `yaml:"enabled" json:"enabled"`
 	When    []string `yaml:"when" json:"when"`
