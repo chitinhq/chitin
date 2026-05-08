@@ -60,6 +60,8 @@ func main() {
 		cmdGate(args)
 	case "envelope":
 		cmdEnvelope(args)
+	case "decisions":
+		cmdDecisions(args)
 	case "router":
 		cmdRouter(args)
 	case "simulate":
