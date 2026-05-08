@@ -9,38 +9,28 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
 )
 
-// TestWriteRouterTelemetry_EscalateFlagThrough verifies the escalate
-// bool propagates into telemetry JSON. Foundation for the mid-task
-// continuation loop: the activity tails router-hook stderr and
-// reacts to escalate=true by spawning a higher-tier driver.
-//
-// All emit kinds (pre-action-block, heuristic-fired-no-advisor,
-// advisor-takeover, advisor-allow) now carry a uniform escalate
-// field so downstream consumers see a stable schema.
-func TestWriteRouterTelemetry_EscalateFlagThrough(t *testing.T) {
+// TestWriteRouterTelemetry_EmitsStableSchema pins the keys + values
+// emitted on the structured telemetry line. The advisor's escalate
+// field was removed in the audit Tier 6 cull (2026-05-08); chain
+// consumers now stamp escalation intent themselves when they read
+// the heuristic signals off gov.Decision rows.
+func TestWriteRouterTelemetry_EmitsStableSchema(t *testing.T) {
 	cases := []struct {
 		name       string
 		kind       string
 		kernelDeny bool
-		escalate   bool
 	}{
-		{"advisor-takeover-escalate-true", "advisor-takeover", false, true},
-		{"advisor-allow-escalate-false", "advisor-allow", false, false},
-		{"advisor-takeover-with-deny-escalate", "advisor-takeover", true, true},
-		{"pre-action-block-no-escalate", "pre-action-block", false, false},
+		{"heuristic-fired-allow", "heuristic-fired", false},
+		{"heuristic-fired-deny", "heuristic-fired", true},
+		{"pre-action-block", "pre-action-block", false},
 	}
 	for _, tc := range cases {
 		var buf bytes.Buffer
-		writeRouterTelemetry(&buf, tc.kind, router.HeuristicOutcome{}, tc.kernelDeny, tc.escalate)
+		writeRouterTelemetry(&buf, tc.kind, router.HeuristicOutcome{}, tc.kernelDeny)
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &parsed); err != nil {
 			t.Errorf("%s: telemetry not valid JSON: %v (raw: %q)", tc.name, err, buf.String())
 			continue
-		}
-		// Assert on parsed boolean rather than substring — robust to
-		// JSON field-ordering changes.
-		if got := parsed["escalate"]; got != tc.escalate {
-			t.Errorf("%s: parsed escalate=%v want %v", tc.name, got, tc.escalate)
 		}
 		if parsed["msg"] != tc.kind {
 			t.Errorf("%s: msg=%v want %v", tc.name, parsed["msg"], tc.kind)
@@ -51,45 +41,66 @@ func TestWriteRouterTelemetry_EscalateFlagThrough(t *testing.T) {
 		if parsed["kernel_denied"] != tc.kernelDeny {
 			t.Errorf("%s: kernel_denied=%v want %v", tc.name, parsed["kernel_denied"], tc.kernelDeny)
 		}
+		// Regression: the advisor `escalate` field must not return —
+		// chain consumers compute escalation intent off the stamped
+		// signal scores, not off a router-hook flag.
+		if _, ok := parsed["escalate"]; ok {
+			t.Errorf("%s: telemetry line carries removed escalate field; got: %s", tc.name, buf.String())
+		}
 	}
 }
 
-// TestTakeoverEnvelope_CarriesEscalationRequested pins the JSON
-// shape of the takeover envelope written to stdout when the
-// advisor escalates. The activity reads `escalation_requested`
-// from this stdout — if the field name or shape changes, every
-// downstream consumer breaks silently.
-//
-// Testing through evalRouterHookStdin would require a running
-// advisor subprocess (deferred — see follow-up entry); this test
-// asserts the envelope-level contract that runs immediately
-// before the WriteString call.
-func TestTakeoverEnvelope_CarriesEscalationRequested(t *testing.T) {
-	advice := struct {
-		Verdict  string
-		Nudge    string
-		Escalate bool
-	}{Verdict: "takeover", Nudge: "consider escalating", Escalate: true}
-
-	composed := map[string]interface{}{"decision": "block", "reason": advice.Nudge}
-	if advice.Escalate {
-		composed["escalation_requested"] = true
+// TestHasNonZeroSignal pins the predicate that decides whether to
+// stamp a signal row on the chain. Skipping the stamp when every
+// score is zero keeps the audit log small on read-only tool calls
+// (Read/Glob/etc.) which trivially produce zero blast/floundering/
+// drift scores.
+func TestHasNonZeroSignal(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome router.HeuristicOutcome
+		drift   router.HeuristicScore
+		want    bool
+	}{
+		{
+			name:    "all-zero",
+			outcome: router.HeuristicOutcome{},
+			drift:   router.HeuristicScore{},
+			want:    false,
+		},
+		{
+			name: "blast-nonzero",
+			outcome: router.HeuristicOutcome{
+				BlastRadius: &router.HeuristicScore{Score: 0.3},
+			},
+			want: true,
+		},
+		{
+			name: "floundering-nonzero",
+			outcome: router.HeuristicOutcome{
+				Floundering: &router.HeuristicScore{Score: 0.1},
+			},
+			want: true,
+		},
+		{
+			name:  "drift-nonzero",
+			drift: router.HeuristicScore{Score: 0.5},
+			want:  true,
+		},
+		{
+			name: "all-zero-but-pointers-present",
+			outcome: router.HeuristicOutcome{
+				BlastRadius: &router.HeuristicScore{Score: 0},
+				Floundering: &router.HeuristicScore{Score: 0},
+			},
+			drift: router.HeuristicScore{Score: 0},
+			want:  false,
+		},
 	}
-	body, err := json.Marshal(composed)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := parsed["escalation_requested"]; got != true {
-		t.Errorf("escalation_requested=%v want true", got)
-	}
-	if parsed["decision"] != "block" {
-		t.Errorf("decision=%v want block", parsed["decision"])
-	}
-	if parsed["reason"] != advice.Nudge {
-		t.Errorf("reason=%v want %v", parsed["reason"], advice.Nudge)
+	for _, tc := range cases {
+		got := hasNonZeroSignal(tc.outcome, tc.drift)
+		if got != tc.want {
+			t.Errorf("%s: hasNonZeroSignal=%v want %v", tc.name, got, tc.want)
+		}
 	}
 }

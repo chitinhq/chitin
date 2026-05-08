@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
@@ -17,28 +15,36 @@ import (
 // "if I tried this, what would happen?" — useful for pre-flight
 // reasoning, operator debugging, and CI policy regression tests.
 //
-// Mirrors `gate evaluate --hook-stdin` in the kernel-only path
-// AND the full router pipeline (heuristics + advisor) in the
+// Mirrors `gate evaluate --hook-stdin` in the kernel-only path AND
+// the heuristic pipeline (blast-radius, floundering, drift) in the
 // router-enabled path. The output is the SAME shape as the hook
 // would emit: { decision, message, ... } JSON.
 //
 // Differences from the real hook:
 //   - No envelope spend (simulated, not real).
 //   - No chain event emitted (this is hypothetical).
-//   - Advisor IS called if heuristics fire — same cost as real.
+//
+// The in-gate `claude -p` advisor was culled on 2026-05-08 (audit
+// Tier 6) — see
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
+// Simulation is now pure-Go and deterministic; consumers (hermes'
+// approval system, operator-written cron, custom kanban-dispatched
+// profile) handle any LLM follow-up off the stamped heuristic
+// signals on the chain.
 //
 // Usage:
-//   chitin-kernel simulate --hook-stdin [--no-advisor]
+//   chitin-kernel simulate --hook-stdin
 //
 // Read a synthetic HookInput JSON from stdin, print the would-be
 // decision to stdout. Operator + CI use this to test policies
 // before deploying.
 func cmdSimulate(args []string) {
-	noAdvisor := false
 	for _, a := range args {
 		switch {
 		case a == "--no-advisor":
-			noAdvisor = true
+			// Accepted as a no-op for backwards-compat with operator
+			// scripts written before the advisor cull. The advisor is
+			// always off in this code path now.
 		case a == "--hook-stdin":
 			// already-default; flag accepted for parity with gate evaluate
 		case a == "--help" || a == "-h":
@@ -52,13 +58,12 @@ Useful for:
   - Policy regression tests: pipe corpus inputs, diff outputs
     against expected
   - Pre-action reasoning: agents emit a simulate call before
-    expensive actions (future advisor pattern)
+    expensive actions
 
 Flags:
   --hook-stdin    accepted for parity with gate evaluate (default)
-  --no-advisor    skip advisor consultation; only run kernel +
-                  heuristics. Useful when network or claude -p is
-                  unavailable.
+  --no-advisor    no-op (the in-gate advisor was culled 2026-05-08;
+                  flag retained for script backwards-compat)
 
 Output JSON shape (same as the real hook):
   { "decision": "allow"|"deny", "message": "...", ... }`)
@@ -83,6 +88,7 @@ Output JSON shape (same as the real hook):
 
 	// Run heuristics
 	outcome := router.HeuristicOutcome{}
+	var chainEvents []router.ChainEvent
 	if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Enabled {
 		score := router.ScoreBlastRadius(hookIn, cfg.Threshold)
 		outcome.BlastRadius = &score
@@ -91,8 +97,8 @@ Output JSON shape (same as the real hook):
 		}
 	}
 	if cfg, ok := policy.Heuristics["floundering"]; ok && cfg.Enabled {
-		events := router.ReadChainEvents(hookIn.SessionID)
-		score := router.DetectFloundering(events, router.FlounderingThresholds{
+		chainEvents = router.ReadChainEvents(hookIn.SessionID)
+		score := router.DetectFloundering(chainEvents, router.FlounderingThresholds{
 			MaxLoopCount:    cfg.MaxLoopCount,
 			MaxStallSeconds: cfg.MaxStallSeconds,
 		}, time.Now())
@@ -101,60 +107,25 @@ Output JSON shape (same as the real hook):
 			outcome.AnyFired = true
 		}
 	}
-
-	// Decide whether the advisor would be called
-	wantAdvisor := false
-	if !noAdvisor && policy.Advisor.Enabled {
-		for _, trigger := range policy.Advisor.When {
-			switch trigger {
-			case "blast_radius_above_threshold":
-				if outcome.BlastRadius != nil && outcome.BlastRadius.Fired {
-					wantAdvisor = true
-				}
-			case "floundering_detected":
-				if outcome.Floundering != nil && outcome.Floundering.Fired {
-					wantAdvisor = true
-				}
-			}
-			if wantAdvisor {
-				break
-			}
-		}
+	driftThreshold := 0.5
+	if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Threshold > 0 {
+		driftThreshold = cfg.Threshold
 	}
+	if chainEvents == nil {
+		chainEvents = router.ReadChainEvents(hookIn.SessionID)
+	}
+	driftScore := router.DetectDrift(hookIn, chainEvents, driftThreshold)
 
 	result := map[string]interface{}{
-		"hook_input":         hookIn,
-		"router_enabled":     policy.Enabled,
-		"heuristic_outcome":  outcome,
-		"would_call_advisor": wantAdvisor,
+		"hook_input":        hookIn,
+		"router_enabled":    policy.Enabled,
+		"heuristic_outcome": outcome,
+		"drift_score":       driftScore,
 	}
 
-	if wantAdvisor && !noAdvisor {
-		// Actually call the advisor — simulation is faithful
-		ctx := context.Background()
-		advisorReq := router.AdvisorRequest{
-			Question: "Heuristic flagged this proposed action (simulated). Is it safe to proceed?",
-			Context:  fmt.Sprintf("Simulation — session %s. Heuristic outcome attached.", hookIn.SessionID),
-			ProposedAction: hookIn,
-			HeuristicOutcome: outcome,
-			ChainDepth:       0,
-		}
-		advice, advErr := router.CallAdvisor(ctx, advisorReq, "", 60*time.Second)
-		if advErr != nil || advice == nil {
-			result["advisor_error"] = errStringFor(advErr)
-		} else {
-			result["advisor_response"] = advice
-			if advice.Verdict == "takeover" {
-				result["simulated_decision"] = "deny"
-				result["simulated_message"] = advice.Nudge
-			} else {
-				result["simulated_decision"] = "allow"
-				result["simulated_message"] = advice.Nudge
-			}
-		}
-	} else if outcome.AnyFired {
+	if outcome.AnyFired || driftScore.Fired {
 		result["simulated_decision"] = "allow"
-		result["simulated_message"] = "heuristic-fired-no-advisor (router policy or --no-advisor)"
+		result["simulated_message"] = "heuristic-fired (kernel verdict pass-through; chain consumer can route follow-up off stamped signals)"
 	} else {
 		result["simulated_decision"] = "allow"
 		result["simulated_message"] = "no-signals — kernel pass-through"
@@ -166,7 +137,3 @@ Output JSON shape (same as the real hook):
 		exitErr("simulate_marshal", err.Error())
 	}
 }
-
-// Glue: errStringFor is defined in router_hook.go but the simulate
-// command uses it too. Ensure import compiles.
-var _ = strings.TrimSpace

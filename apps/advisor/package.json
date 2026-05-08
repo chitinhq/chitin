@@ -1,0 +1,26 @@
+{
+  "name": "@chitin/advisor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "chitin-advisor": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "nx": {
+    "tags": ["layer:app", "scope:advisor"],
+    "targets": {
+      "run": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsx apps/advisor/src/index.ts",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
+  },
+  "dependencies": {}
+}

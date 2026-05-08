@@ -58,6 +58,16 @@ func WriteLog(d Decision, dir string) error {
 		Role        string `json:"role,omitempty"`
 		WorkflowID  string `json:"workflow_id,omitempty"`
 		Fingerprint string `json:"fingerprint,omitempty"`
+		// Router-heuristic signal metadata (audit Tier 6 cull,
+		// 2026-05-08). Stamped by router-hook when its policy is
+		// enabled; absent on plain gate.Evaluate rows. Consumers
+		// (hermes' approvals.mode: smart, operator-written cron,
+		// custom kanban-dispatched profile) read these to route
+		// follow-ups without the kernel running any LLM in-line.
+		PredictedBlast   float64 `json:"predicted_blast,omitempty"`
+		FlounderingScore float64 `json:"floundering_score,omitempty"`
+		DriftScore       float64 `json:"drift_score,omitempty"`
+		RoutingDecision  string  `json:"routing_decision,omitempty"`
 	}{
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
@@ -71,6 +81,10 @@ func WriteLog(d Decision, dir string) error {
 		Role:        d.Role,
 		WorkflowID:  d.WorkflowID,
 		Fingerprint: d.Fingerprint,
+		PredictedBlast:   d.PredictedBlast,
+		FlounderingScore: d.FlounderingScore,
+		DriftScore:       d.DriftScore,
+		RoutingDecision:  d.RoutingDecision,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal decision: %w", err)

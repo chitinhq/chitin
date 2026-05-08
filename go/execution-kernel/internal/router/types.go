@@ -1,22 +1,25 @@
-// Package router implements the heuristic + advisor pipeline that
-// wraps the kernel's deterministic gate. It runs in-process inside
-// chitin-kernel for hot-path speed (~10ms vs the TS implementation's
-// ~500ms cold start).
+// Package router implements the heuristic pipeline that wraps the
+// kernel's deterministic gate. It runs in-process inside
+// chitin-kernel for hot-path speed (~10ms).
 //
 // Pipeline:
 //   stdin (Claude Code PreToolUse JSON)
 //     ↓
 //   step 1: kernel verdict (gov.Gate.Evaluate)
 //     ↓ if deny → return deny
-//   step 2: heuristics (BlastRadius, Floundering)
-//     ↓ if none fire → return kernel verdict
-//   step 3: policy.Advisor decides whether to invoke advisor
-//     ↓ if yes → spawn `claude -p` with structured prompt, parse response
-//   step 4: compose final hook output
+//   step 2: heuristics (BlastRadius, Floundering, Drift)
+//     ↓ stamp scores onto the chain via gov.Decision metadata fields
+//   step 3: compose final hook output (kernel verdict + heuristic
+//           signal metadata)
 //
-// The TS implementation in apps/runner/src/router/ is the
-// design substrate that informed this port. Test fixtures port
-// directly (see router_test.go).
+// LLM consultation was culled from the hot path on 2026-05-08
+// (audit Tier 6) — see
+// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
+// Heuristic signals are stamped on every chain decision row.
+// Consumers (hermes' approval system via approvals.mode: smart,
+// operator-written cron, custom kanban-dispatched profile) read
+// the chain and act on signals however they want. Chitin emits;
+// chitin does not consult.
 package router
 
 // HookInput is the inbound shape from Claude Code's PreToolUse hook.
@@ -50,22 +53,12 @@ type HeuristicOutcome struct {
 	AnyFired    bool            `json:"any_fired"`
 }
 
-// AdvisorRequest is the payload sent to the advisor LLM.
-type AdvisorRequest struct {
-	Question         string           `json:"question"`
-	Context          string           `json:"context"`
-	ProposedAction   HookInput        `json:"proposed_action"`
-	HeuristicOutcome HeuristicOutcome `json:"heuristic_outcome"`
-	CallerTier       string           `json:"caller_tier,omitempty"`
-	ChainDepth       int              `json:"chain_depth"`
-}
-
-// AdvisorResponse is the parsed structured output from the advisor.
-type AdvisorResponse struct {
-	Nudge    string `json:"nudge"`
-	Verdict  string `json:"verdict"`  // "continue" | "takeover"
-	Escalate bool   `json:"escalate"` // true → request mid-task tier escalation; consumed by the in-gate router-hook escalate composition logic to bump tier on the next agent turn (see docs/design/2026-05-03-mid-task-continuation.md)
-}
+// AdvisorRequest / AdvisorResponse types were removed on 2026-05-08
+// (audit Tier 6) when the in-gate `claude -p` subprocess was culled.
+// The kernel emits heuristic signal metadata on the gov.Decision row
+// and that's the boundary. Consumers (hermes' approvals.mode: smart,
+// operator-written cron, custom kanban-dispatched profile) own any
+// LLM second-opinion, request/response shape, and routing logic.
 
 // HeuristicConfig — per-heuristic policy from chitin.yaml.
 type HeuristicConfig struct {
@@ -75,7 +68,14 @@ type HeuristicConfig struct {
 	MaxStallSeconds   int     `yaml:"max_stall_seconds,omitempty" json:"max_stall_seconds,omitempty"`
 }
 
-// AdvisorConfig — advisor policy from chitin.yaml.
+// AdvisorConfig — historical advisor policy from chitin.yaml.
+// Parsed for backwards-compat with existing operator policy files;
+// the kernel no longer acts on these fields after 2026-05-08
+// (the in-gate `claude -p` subprocess was culled — audit Tier 6).
+// Consumers (hermes' approval system, operator-written cron, custom
+// kanban-dispatched profile) read the heuristic signal metadata
+// stamped on gov.Decision rows; this struct is retained only so
+// chitin.yaml continues to parse cleanly.
 type AdvisorConfig struct {
 	Enabled bool     `yaml:"enabled" json:"enabled"`
 	When    []string `yaml:"when" json:"when"`

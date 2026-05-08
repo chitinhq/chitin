@@ -164,6 +164,25 @@ type Decision struct {
 	// pending_approvals table that this referenced is gone; any
 	// audit-trail join via this id no longer makes sense.
 
+	// Router-heuristic signal metadata (audit Tier 6 cull, 2026-05-08).
+	// When a router-hook fires (router.LoadPolicy().Enabled = true),
+	// the hook computes blast-radius / floundering / drift scores in
+	// pure Go and stamps them onto a Decision row before WriteLog.
+	// Heuristic signals are stamped on every chain decision row.
+	// Consumers (hermes' approval system via approvals.mode: smart,
+	// operator-written cron, custom kanban-dispatched profile) read
+	// the chain and act on signals however they want. Chitin emits;
+	// chitin does not consult — the kernel never invokes an LLM
+	// itself. See
+	// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
+	//
+	// All four are optional (omitempty) so pre-router rows and
+	// router-disabled invocations keep the existing on-disk shape.
+	PredictedBlast   float64 `json:"predicted_blast,omitempty"`
+	FlounderingScore float64 `json:"floundering_score,omitempty"`
+	DriftScore       float64 `json:"drift_score,omitempty"`
+	RoutingDecision  string  `json:"routing_decision,omitempty"` // candidate driver/model from RouteFor (e.g. "copilot/gpt-5.4")
+
 	// Effect is the rule's effect value as parsed from chitin.yaml
 	// (allow|deny|guide|monitor). Internal to the gate's flow control;
 	// not serialized to the chain (the chain only cares about the
