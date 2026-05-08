@@ -1,5 +1,7 @@
 # Chitin repository instructions
 
+> **Read `AGENTS.md` at the repo root first.** It covers what chitin is, what it isn't, the four allowed buckets in this monorepo, and the moat. This file is the build/test/lint reference for after you've read that.
+
 ## Build, test, and lint commands
 
 - Install dependencies with `pnpm install`. CI uses Node 22 + pnpm 10. If `better-sqlite3` did not build during install, run `pnpm rebuild better-sqlite3`.
