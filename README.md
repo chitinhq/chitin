@@ -1,114 +1,126 @@
 # Chitin
 
-**Execution kernel for AI coding agents.** Every tool call across Claude Code, Codex CLI, Gemini CLI, Copilot CLI, and openclaw is gated by a single policy and recorded in a hash-linked event chain that also emits OTEL spans into your existing observability stack. Nx monorepo (Go + TypeScript + Python). Apache 2.0 licensed.
+**Execution governance runtime for heterogeneous AI coding agents.**
 
-> Principle: real execution before policy. Policy before automation. Automation gated by the same kernel.
+Every tool call across Claude Code, Codex CLI, Gemini CLI, Copilot CLI, and OpenClaw passes through one declarative policy and lands in a hash-linked audit chain that emits OTEL spans into your existing observability stack. Apache 2.0 licensed.
 
-## What chitin is today
+> Stable primitives (tool invocation, execution authority, policy enforcement, observability, escalation) wrapped around an unstable substrate (drivers, models, benchmarks). Composes with whatever orchestrator you already run.
 
-The kernel and the contract it enforces:
+## What chitin IS
 
-- **Kernel + governance** — Go binary that adjudicates every tool call across the integration points it's wired into: Claude Code / Codex / Gemini PreToolUse hooks (`--agent=<id>`), the Copilot CLI driver (`chitin-kernel drive copilot`), and the OpenClaw `before_tool_call` plugin path. Each evaluates `chitin.yaml` and writes a hash-linked JSONL chain. Gate decisions are auditable; chain integrity is SHA-256-verified.
-- **OTEL emit (F4, 2026-05-02)** — kernel projects every chain event onto an OTLP/HTTP JSON span after the canonical write succeeds. One-way bridge: chain authoritative, OTEL non-authoritative. Opt-in via `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+The kernel and the contract it enforces — exhaustively three things:
 
-Chitin is *not* a tick-loop, not an agent runner, not an OTEL ingest target, not a cloud product — see [`docs/thesis.md`](./docs/thesis.md) for the full set of refusals.
+1. **The kernel** — `chitin-kernel` Go binary. Gate, escalation counter, lockdown, envelope, audit. Single side-effect authority.
+2. **Driver plugins** — `go/execution-kernel/internal/driver/{claudecode,codex,gemini,hermes,copilot}/normalize.go`. Adapters between vendor tool vocabularies and the kernel's canonical action enum.
+3. **The data** — `~/.chitin/{gov-decisions-*.jsonl, events-*.jsonl, gov.db, chain_index.sqlite}`. Tamper-evident chain + the read-side analysis surface (`python/analysis/`).
 
-## Reference consumers (hosted in the monorepo for dogfooding)
+Plus the scaffolding to keep those healthy: systemd timers for kernel redeploy, agent-unlock, chain-watch, envelope-rotate. Internal, not orchestration.
 
-These are downstream consumers of the kernel — they run *on* chitin, they aren't chitin. Hosted in the same repo so they share `libs/contracts/` schemas and the Nx project graph; governed by the same kernel via the per-driver integration points (Claude Code PreToolUse for `claude-code-headless`, the Copilot CLI driver for `copilot`, the OpenClaw plugin for the `local-*` drivers, the Codex/Gemini PreToolUse hooks where applicable).
+## What chitin is NOT
 
-- **Autonomous swarm runtime** (`apps/runner/`) — Temporal-backed dispatcher + worker that picks ready backlog entries, dispatches role-typed agents (programmer, reviewer, researcher, analyst, …), runs the §5 review-tier escalation chain (R1→R2→R3→operator), and (with `CHITIN_GATEKEEPER_AUTO_MERGE=1`) auto-merges PRs that pass the §6 gate matrix. Design: [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md).
-- **Self-feeding telemetry loop** (cron scripts under `apps/runner/`) — periodic researcher / lessons / debt-curator / groomer / alarm-feeder / stale-doc detector keep the backlog hydrated from external signals + internal alarms; the analyst role runs deterministic Python recipes against the chain to investigate regressions.
+- Not an agent framework. The agent runs in Claude Code / Codex / Gemini / Copilot / OpenClaw / Hermes. Chitin gates each one's tool calls; it doesn't host a session.
+- Not an orchestrator. Work tracking, dispatch, scheduling, workflows, kanban — that's hermes (or whatever orchestrator you run). Chitin is agnostic to it.
+- Not a model router. The driver picks the model; chitin observes the decision via fingerprint dimensions in the chain.
+- Not an approval system. Hermes' `tools/approval.py` provides operator-prompt + reply-parse + persistent allowlist natively. Chitin's gate denies; hermes prompts. See `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`.
+- Not a SaaS. Local-only. Operator's box, operator's data.
+
+## The moat
+
+Asymmetric strengths nothing else in the ecosystem provides:
+
+1. **Cross-driver canonical action vocabulary.** Hermes' `pre_tool_call` fires only inside Hermes; OpenClaw's `before_tool_call` only inside its pi-runtime. Chitin alone gates Claude Code, Codex, Gemini, Copilot, OpenClaw, and Hermes against one shared enum (`internal/gov/action.go`).
+2. **Typed-action policy** with `path_under` and `bounds`. `chitin.yaml` evaluates a structured action against typed predicates, not regex-on-shell-string.
+3. **Tamper-evident chain across all drivers + sessions.** SHA-256-linked JSONL with SQLite materialized index. Replay-able. Cross-driver, cross-session, cross-day.
+4. **Per-agent severity ladder + lockdown counter.** `agent_state` in `gov.db` tracks behavior across all tasks and drivers. Hermes has per-task retry budgets; chitin's counter spans the agent's lifetime.
+5. **Bounds enforcement on push-shaped actions** (lines/files changed). No equivalent in any substrate.
+6. **Heuristic + LLM-advisor pipeline** (`internal/router/`). Blast-radius + floundering-detector + drift signals + LLM second-opinion. Justifies itself for non-Hermes drivers and for chain-derived signals Hermes' `smart` mode can't see.
+
+## How chitin composes with what you already run
+
+```
+        Claude Code   Codex CLI   Gemini CLI   Copilot CLI   OpenClaw   Hermes
+              │           │            │            │            │         │
+              └─────┬─────┴─────┬──────┴──────┬─────┴─────┬──────┴────┬────┘
+                    │ tool calls (PreToolUse / SDK / hook / plugin)
+                    ▼
+            ┌──────────────────────────────────────────┐
+            │ chitin-kernel gate                       │  ◄── chitin.yaml (declarative policy)
+            │   normalize → policy → bounds → counter  │
+            │   → envelope → audit → OTEL              │
+            └──────────────────────────────────────────┘
+                    │
+                    ▼
+            ~/.chitin/{events-*.jsonl, gov-decisions-*.jsonl,
+                       gov.db, chain_index.sqlite}
+```
+
+Hermes runs the orchestration substrate (kanban, cron, approvals). OpenClaw runs the personal-AI gateway. Chitin gates every tool call from both, plus the standalone CLI drivers, against one policy.
 
 ## Quick start
 
 ```bash
-pnpm install
-pnpm exec nx run execution-kernel:build
-pnpm exec nx run cli:build
-./dist/apps/cli/main.js init claude-code
-# Run a Claude Code session...
-./dist/apps/cli/main.js events list
-./dist/apps/cli/main.js replay <run_id>
-./dist/apps/cli/main.js health
+# Build the kernel
+go build -o ~/.local/bin/chitin-kernel ./go/execution-kernel/cmd/chitin-kernel/
+
+# Install hooks for your driver(s)
+chitin-kernel install-hook            # default: claude-code
+chitin-kernel install-hook --agent codex
+chitin-kernel install-hook --agent gemini
+
+# Inspect activity
+chitin-kernel chain-info --chain-id <id>
+chitin-kernel envelope tail
+chitin-kernel health
 ```
 
-To run the autonomous swarm on your own rig, see [`infra/systemd/README.md`](./infra/systemd/README.md).
-
-## Architecture
+## Repo layout
 
 ```
 .
-├── apps/
-│   ├── cli/                          # operator CLI (`chitin`)
-│   ├── runner/              # autonomous swarm runtime + cron-fired scripts
-│   └── openclaw-plugin-governance/   # openclaw integration: chitin gates every openclaw tool call
+├── go/execution-kernel/         # Go kernel — only layer with side effects
+│   ├── cmd/chitin-kernel/       #   binary + subcommands
+│   └── internal/
+│       ├── gov/                 #   gate, policy, bounds, escalation, chain
+│       ├── driver/              #   per-driver normalize.go (claudecode, codex,
+│       │                        #   gemini, hermes, copilot)
+│       ├── router/              #   heuristic + LLM-advisor pipeline
+│       ├── chain/               #   audit chain + SQLite index
+│       └── canon/               #   canonical-JSON SHA-256
 ├── libs/
-│   ├── contracts/                    # canonical schemas (event chain, ExecutionRequest, envelope)
-│   └── telemetry/                    # JSONL tailer + SQLite indexer + replay streamer
-├── go/execution-kernel/              # the Go kernel — only layer allowed side effects
-├── python/analysis/                  # decisions / debt / souls streams + daily rollup + analyst recipes
-└── infra/systemd/                    # user-mode systemd units for the swarm
+│   ├── contracts/               # canonical wire schemas (TS)
+│   ├── governance/              # TS mirror of policy schema
+│   └── adapters/                # per-driver TS shims for read-side tooling
+├── apps/cli/                    # operator CLI (`chitin` — events, replay, health, ledger)
+├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect)
+├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,
+│                                # envelope-rotate, codex-chain-ingest, codex-usage-feed)
+├── docs/decisions/              # durable boundary docs (positioning, scope, culls)
+├── chitin.yaml                  # policy
+└── bin/chitin-router-hook       # PreToolUse shim
 ```
-
-| Package | What it owns |
-|---------|--------------|
-| `apps/cli` | Operator CLI (`init`, `events list/tail/tree`, `replay`, `health`, `ledger`, `review`, `install`). [README](./apps/cli/README.md) |
-| `apps/runner` | Dispatcher, review-graph workflow, gatekeeper, role-typed prompts, all cron scripts. [README](./apps/runner/README.md) |
-| `apps/openclaw-plugin-governance` | openclaw plugin that wires chitin's policy gate into openclaw's tool-call lifecycle. [README](./apps/openclaw-plugin-governance/README.md) |
-| `libs/contracts` | Canonical schemas every chitin component agrees on. [README](./libs/contracts/README.md) |
-| `libs/telemetry` | Read-side of the event chain. [README](./libs/telemetry/README.md) |
-| `go/execution-kernel` | The Go kernel binary — `canon`, `normalize`, `emit`, `gov`, `hook`, `health`. The only layer allowed side effects. |
-| `python/analysis` | Decisions / debt / souls / swarm-runs / swarm-health / daily rollup + the analyst-role investigation recipe. |
-| `infra/systemd` | User-mode systemd units (worker + 7 cron timers). [README](./infra/systemd/README.md) |
 
 ## Where chitin writes data
 
-Chitin emits append-only JSONL and a SQLite materialized view to a `.chitin/` directory. The kernel resolves the path in this order: `--chitin-dir` flag → repo-local `.chitin/` (walking up from cwd) → fallback `$HOME/.chitin/`. **The Go kernel is the only writer.** TS adapters are read-only against the filesystem (see [architecture.md](./docs/architecture.md#hard-rule)).
+The kernel resolves the chitin dir via `CHITIN_HOME` env → fallback `$HOME/.chitin/`. Every chitin process writes only there.
 
 ```
-$HOME/.chitin/                       # global state — used when no repo-local .chitin/ exists
-├── flow_events.jsonl                # governance flow events (gov decisions, swarm ticks)
-├── gov-decisions-YYYY-MM-DD.jsonl   # daily gov decision logs (one file per day)
-├── gov.db                           # SQLite gov state
-├── hook-capture/                    # raw Pre/PostToolUse JSON captures (one file per hook fire)
-├── kernel-errors.log                # kernel-side errors (read by `chitin health`)
-└── current-envelope                 # active cost envelope
-
-<repo>/.chitin/                      # repo-local capture (created by `chitin-kernel init`)
-├── events-<run_id>.jsonl            # canonical event stream — one file per run
-└── session_state.json
+$HOME/.chitin/
+├── events-<run_id>.jsonl              # canonical event chain (one file per run)
+├── gov-decisions-YYYY-MM-DD.jsonl     # daily gate decisions
+├── gov.db                             # SQLite: envelope state + agent_state (severity counter)
+├── chain_index.sqlite                 # materialized view of events for fast lookup
+├── current-envelope                   # active cost envelope
+└── kernel-errors.log                  # kernel-side errors (read by `chitin health`)
 ```
 
-For diagnostics, run `chitin health` — it reports on the resolved dir and exits non-zero on `[FAIL]` rows. The [health runbook](./docs/observations/runbooks/health.md) explains every row and what to do when it's red.
+## Documentation
 
-## Toolchain
-
-- **Nx** — orchestrator (project graph, affected, module boundaries)
-- **Vite+** (`vp`) — TypeScript test/lint/format/build (Vitest, Oxlint, Oxfmt, Rolldown, tsgo)
-- **Go 1.22+** — execution kernel, run via `nx:run-commands`
-- **uv + pytest** — Python analysis lib (`python/analysis/`)
-- **Temporal** — workflow durability for the autonomous swarm
-
-## Docs
-
-Core:
-- [`docs/thesis.md`](./docs/thesis.md) — what chitin is + isn't
-- [`docs/operating-model.md`](./docs/operating-model.md) — how chitin runs against an agent surface
-- [`docs/architecture.md`](./docs/architecture.md) — three-plane model (Temporal control / OpenClaw execution / Chitin enforcement)
-- [`docs/event-model.md`](./docs/event-model.md) — canonical event chain + OTEL projection
-- [`docs/toolchain.md`](./docs/toolchain.md)
-- [`docs/roadmap.md`](./docs/roadmap.md)
-
-Autonomous swarm (factory model):
-- [`docs/design/2026-05-02-swarm-as-software-factory.md`](./docs/design/2026-05-02-swarm-as-software-factory.md) — the full §3-§9 station-taxonomy + review-tier escalation + auto-merge gates
-- [`docs/swarm-backlog.md`](./docs/swarm-backlog.md) — what the swarm picks up next
-- [`docs/swarm-lessons.md`](./docs/swarm-lessons.md) — auto-distilled lessons prepended to programmer prompts
-- [`docs/debt-ledger.md`](./docs/debt-ledger.md) — operator-curated + auto-curated debt
-- [`infra/systemd/README.md`](./infra/systemd/README.md) — install + operate the worker + 7 cron timers
-
-Archive: [`docs/archive-map.md`](./docs/archive-map.md)
+- [`docs/decisions/2026-05-06-execution-governance-runtime-positioning.md`](./docs/decisions/2026-05-06-execution-governance-runtime-positioning.md) — the moat
+- [`docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`](./docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md) — the boundary
+- [`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`](./docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md) — why operator-approval lives in hermes, not chitin
+- [`docs/architecture.md`](./docs/architecture.md) — kernel internals
+- [`docs/roadmap.md`](./docs/roadmap.md) — strategic arc + what's in flight
 
 ## License
 
-[Apache 2.0](./LICENSE)
+Apache 2.0.
