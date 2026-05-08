@@ -44,8 +44,5 @@ has a paired `tests/<name>.schema.test.ts`.
 
 ## Related
 
-- `apps/runner/src/review-graph-workflow.ts` — illustrative
-  consumer of the type-only import pattern (hotfix #150 added the
-  workflow-bundler note).
 - `go/execution-kernel/internal/event/` — the Go-side mirror of the
   event schema; chitin-kernel writes events the TS schemas validate.

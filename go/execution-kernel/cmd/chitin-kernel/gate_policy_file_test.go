@@ -112,8 +112,8 @@ rules:
 
 // TestCLI_GateEvaluate_PolicyFileEnvFallback proves the CHITIN_POLICY_FILE
 // env var is honored when --policy-file is not passed. This is the path
-// the hermes plugin will use after we update apps/runner/src/activity.ts
-// to set CHITIN_POLICY_FILE in the spawned-process env.
+// the hermes plugin uses to set CHITIN_POLICY_FILE in the spawned-process
+// env.
 func TestCLI_GateEvaluate_PolicyFileEnvFallback(t *testing.T) {
 	policyDir := t.TempDir()
 	policyPath := filepath.Join(policyDir, "chitin.yaml")

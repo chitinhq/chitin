@@ -251,59 +251,9 @@ fi
 
 emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"
 
-# --- Chitin worker restart logic for TS changes ---
-# Track last-applied SHA for apps/runner/src/ in ~/.cache/chitin/install-kernel-state.json
-STATE_FILE="$HOME/.cache/chitin/install-kernel-state.json"
-TS_PATH="apps/runner/src/"
-
-restart_worker=0
-restart_reason=""
-
-# Get current HEAD
-current_head=$(git rev-parse HEAD)
-
-# Read last-applied SHA for TS worker (if exists)
-last_ts_sha=""
-if [[ -f "$STATE_FILE" ]]; then
-  last_ts_sha=$(jq -r '.ts_worker_sha // empty' "$STATE_FILE" 2>/dev/null || true)
-fi
-
-# If no prior state, record baseline and skip restart
-if [[ -z "$last_ts_sha" ]]; then
-  jq -n --arg sha "$current_head" '{ts_worker_sha: $sha}' > "$STATE_FILE"
-  emit noop "ts-worker baseline set" "ts_worker_sha=$current_head"
-else
-  # Check for changes in apps/runner/src/ since last applied
-  if ! git diff --quiet "$last_ts_sha" "$current_head" -- "$TS_PATH"; then
-    restart_worker=1
-    restart_reason="ts-changed"
-  fi
-fi
-
-if [[ $restart_worker -eq 1 ]]; then
-  old_sha="$last_ts_sha"
-  new_sha="$current_head"
-  commits_in_diff=$(git rev-list --count "$old_sha".."$new_sha" -- "$TS_PATH")
-  restart_start=$(date +%s%3N)
-  if systemctl --user restart chitin-worker.service; then
-    # Wait for active (running)
-    for i in {1..10}; do
-      if systemctl --user is-active --quiet chitin-worker.service; then
-        break
-      fi
-      sleep 1
-    done
-    restart_end=$(date +%s%3N)
-    restart_dur_ms=$((restart_end - restart_start))
-    emit worker-restarted "worker restarted after TS change" \
-      "old_sha=$old_sha" "new_sha=$new_sha" "restart_dur_ms=$restart_dur_ms" "commits_in_diff=$commits_in_diff"
-    # Update state file
-    jq -n --arg sha "$new_sha" '{ts_worker_sha: $sha}' > "$STATE_FILE"
-  else
-    restart_end=$(date +%s%3N)
-    restart_dur_ms=$((restart_end - restart_start))
-    emit fail worker-restart-failed "old_sha=$old_sha" "new_sha=$new_sha" "restart_dur_ms=$restart_dur_ms"
-  fi
-fi
+# (apps/runner/src/ TS worker restart logic removed 2026-05-08 — the
+# TS dispatcher/worker source was culled in the orchestration deletion
+# wave. The Go kernel rebuild above is the only artifact this script
+# ships now; hermes/openclaw drivers manage their own process lifecycle.)
 
 exit 0

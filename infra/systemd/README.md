@@ -119,16 +119,15 @@ systemctl --user stop chitin-dispatcher.timer chitin-researcher.timer chitin-swa
 ## Manual one-shot
 
 ```bash
-# Dispatch a single tick on demand (no timer)
-systemctl --user start chitin-dispatcher.service
-systemctl --user start chitin-researcher.service
-
-# Or run dispatcher directly (dry-run available)
-cd ~/workspace/chitin
-pnpm exec tsx apps/runner/src/dispatcher.ts --dry-run
-pnpm exec tsx apps/runner/src/dispatcher.ts
-pnpm exec tsx apps/runner/src/researcher.ts
+# Trigger a single tick on demand (no timer)
+systemctl --user start chitin-<unit>.service
 ```
+
+(NOTE 2026-05-08: the `apps/runner/` TS dispatcher/researcher were
+culled in the orchestration-deletion wave; sections of this README
+referencing `chitin-dispatcher`/`chitin-researcher`/`chitin-worker`
+units describe the pre-cull world. The unit list at the top of this
+file is the source of truth for what's installed today.)
 
 ## What gets dispatched
 
