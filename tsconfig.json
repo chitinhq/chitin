@@ -25,9 +25,6 @@
       "path": "./apps/cli"
     },
     {
-      "path": "./libs/governance"
-    },
-    {
       "path": "./apps/mcp-server"
     },
     {

@@ -144,12 +144,6 @@ importers:
 
   libs/contracts: {}
 
-  libs/governance:
-    dependencies:
-      zod:
-        specifier: '*'
-        version: 4.3.6
-
   libs/mcp-chitin: {}
 
   libs/router-plugin-api/typescript: {}
