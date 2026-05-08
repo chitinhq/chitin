@@ -254,7 +254,8 @@ rules:
     effect: allow
     reason: "Single-file deletes allowed (mass recursive delete via rm -rf denied above)"
 
-  # Hermes worker plumbing: kanban_* tools used by chitin-runner (and
+  # Hermes worker plumbing: kanban_* tools used by chitin-worker (renamed
+  # from chitin-runner 2026-05-07; see PR #386) and
   # any other hermes-spawned worker profile) to manage its own card
   # lifecycle — show, complete, block, comment, heartbeat, etc. These
   # are the worker reading/writing its own status, not actions on the
