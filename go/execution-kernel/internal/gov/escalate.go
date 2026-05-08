@@ -239,6 +239,18 @@ func (s *EscalateStore) ResolveTimeout(id string) error {
 
 func (s *EscalateStore) resolve(id, resolution, by, reason string, grantSeconds *int) error {
 	now := nowUnix()
+	// Read rule_id + agent BEFORE the UPDATE so we can insert the grant
+	// after a successful approve. Reading after the UPDATE works too
+	// (the row stays present, only resolved_ts changes), but reading
+	// first avoids a SELECT-after-UPDATE race window if any caller ever
+	// goes parallel against the same id.
+	var ruleID, agent string
+	if resolution == "approved" && grantSeconds != nil && *grantSeconds > 0 {
+		_ = s.db.QueryRow(
+			`SELECT rule_id, agent FROM pending_approvals WHERE id = ? AND resolved_ts IS NULL`,
+			id,
+		).Scan(&ruleID, &agent)
+	}
 	res, err := s.db.Exec(`
 		UPDATE pending_approvals
 		SET resolved_ts = ?, resolution = ?, resolution_by = ?,
@@ -251,6 +263,21 @@ func (s *EscalateStore) resolve(id, resolution, by, reason string, grantSeconds 
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
 		return ErrAlreadyResolved
+	}
+	// Bug L (PR #394 dogfood, 2026-05-08): when resolution arrives via
+	// a path that is NOT the gate's Wait return (CLI approve, hermes
+	// watcher), the grant insertion gate.go does after Wait returns
+	// never runs — the original kernel subprocess that called Wait was
+	// killed by the harness's hook timeout long before the operator
+	// resolved the row. Result: row marked approved, grant_seconds
+	// stamped, but remember_grants is empty → next agent retry hits
+	// the rule again instead of short-circuiting via grant.
+	//
+	// Insert the grant here so it lands regardless of which path
+	// resolves the row. InsertGrant is idempotent (ON CONFLICT DO
+	// UPDATE), so the gate.go path inserting again is harmless.
+	if resolution == "approved" && grantSeconds != nil && *grantSeconds > 0 && ruleID != "" && agent != "" {
+		_ = s.InsertGrant(ruleID, agent, *grantSeconds)
 	}
 	return nil
 }
