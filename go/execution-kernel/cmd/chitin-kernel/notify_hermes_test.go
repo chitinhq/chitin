@@ -31,9 +31,10 @@ func TestNotifyHermes_TwoCallSequence(t *testing.T) {
 	prev := execHermes
 	execHermes = func(bin string, args []string) ([]byte, error) {
 		c := call{bin: bin, args: args}
-		// First call (kanban create) returns a task id.
+		// First call (kanban create) returns a task id. Hermes
+		// uses field name `id` (not `task_id` — see PR #391 dogfood).
 		if len(calls) == 0 {
-			c.out = []byte(`{"task_id":"t_FAKE001"}`)
+			c.out = []byte(`{"id":"t_FAKE001"}`)
 		} else {
 			// Second call (notify-subscribe) returns ok.
 			c.out = []byte(`{"ok":true}`)

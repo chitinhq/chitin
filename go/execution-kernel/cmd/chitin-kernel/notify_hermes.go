@@ -146,8 +146,18 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 	if err != nil {
 		return "", fmt.Errorf("hermes kanban create: %w", err)
 	}
+	// Hermes `kanban create --json` returns the task object with the
+	// task id under the field `id` (e.g. "id": "t_b0cdbd6c"). The
+	// original spec used `task_id` based on a draft of the hermes CLI
+	// that was never shipped — actual hermes returns `id`. Without
+	// this fix every escalate's notify-subscribe failed silently because
+	// TaskID was always "" (parsed from a missing field), gate_hook.go
+	// stamped `notify_hermes_failed`, and no whatsapp ping fired.
+	// Surfaced 2026-05-08 in PR #389's wrap-up dogfood — operator on
+	// remote bypass mode triggered escalates that hung on Wait while
+	// hermes_task_id stayed empty in pending_approvals.
 	var created struct {
-		TaskID string `json:"task_id"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(out, &created); err != nil {
 		// Hermes returned non-JSON output. Without a task_id we can't
@@ -155,8 +165,8 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 		// Surface to caller; they stamp notify_failed_reason.
 		return "", fmt.Errorf("hermes kanban create: parse JSON: %w (output: %s)", err, out)
 	}
-	if created.TaskID == "" {
-		return "", fmt.Errorf("hermes kanban create: empty task_id (output: %s)", out)
+	if created.ID == "" {
+		return "", fmt.Errorf("hermes kanban create: empty id (output: %s)", out)
 	}
 
 	// Call 2: subscribe operator's chat to task notifications. Failure
@@ -167,12 +177,12 @@ func notifyHermes(id string, row gov.PendingApproval, cfg operatorConfig) (strin
 		"kanban", "notify-subscribe",
 		"--platform", cfg.NotifyPlatform,
 		"--chat-id", cfg.NotifyChatID,
-		created.TaskID,
+		created.ID,
 	}
 	if _, subErr := execHermes(cfg.HermesBin, subArgs); subErr != nil {
-		return created.TaskID, fmt.Errorf("hermes kanban notify-subscribe: %w (task_id %s created OK)", subErr, created.TaskID)
+		return created.ID, fmt.Errorf("hermes kanban notify-subscribe: %w (id %s created OK)", subErr, created.ID)
 	}
-	return created.TaskID, nil
+	return created.ID, nil
 }
 
 // HermesReplyParse is what parseHermesReply returns on a successful parse.
