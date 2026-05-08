@@ -13,9 +13,6 @@
       "path": "../../libs/telemetry"
     },
     {
-      "path": "../../libs/scheduler"
-    },
-    {
       "path": "../../libs/contracts"
     }
   ]

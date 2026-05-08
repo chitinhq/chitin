@@ -1,3 +1,22 @@
+---
+status: superseded
+superseded_on: 2026-05-08
+superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
+reason: |
+  Scheduling and dispatch live outside chitin per the kernel-narrow
+  decision (2026-05-06). The libs/scheduler library, apps/cli scheduler
+  subcommands, and the swarm-tunable rank/ingest boundary all moved out
+  of chitin's scope to hermes + the future orchestrator. Chitin owns
+  kernel + plugins + data; nothing else.
+---
+
+> **SUPERSEDED 2026-05-08.** Per
+> `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`,
+> chitin no longer owns scheduling, dispatch, or work-tracking. The
+> `libs/scheduler` library, its CLI subcommands, and the
+> Angular dashboard described below are not being built in chitin.
+> Retained as historical context for the design moves; do not implement.
+
 # Scheduler — design plan (Nx-shaped, library + Angular dashboard)
 
 **Status:** scoping (pre-implementation). Pins the library API surface, the Angular dashboard, the swarm-tunable boundary, and the Nx project layout BEFORE any code lands so downstream PRs are mechanical.

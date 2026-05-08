@@ -22,9 +22,6 @@
       "path": "./libs/mcp-chitin"
     },
     {
-      "path": "./libs/scheduler"
-    },
-    {
       "path": "./apps/runner"
     },
     {

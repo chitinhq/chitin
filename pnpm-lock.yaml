@@ -98,9 +98,6 @@ importers:
       '@chitin/contracts':
         specifier: workspace:*
         version: link:../../libs/contracts
-      '@chitin/scheduler':
-        specifier: workspace:*
-        version: link:../../libs/scheduler
       '@chitin/telemetry':
         specifier: workspace:*
         version: link:../../libs/telemetry
@@ -129,18 +126,6 @@ importers:
         specifier: '>=2026.5.4'
         version: 2026.5.4(@types/express@4.17.25)(encoding@0.1.13)
 
-  apps/runner:
-    dependencies:
-      '@chitin/contracts':
-        specifier: workspace:*
-        version: link:../../libs/contracts
-
-  apps/slack-app:
-    dependencies:
-      '@chitin/contracts':
-        specifier: workspace:*
-        version: link:../../libs/contracts
-
   go/execution-kernel: {}
 
   libs/adapters/claude-code:
@@ -168,15 +153,6 @@ importers:
   libs/mcp-chitin: {}
 
   libs/router-plugin-api/typescript: {}
-
-  libs/scheduler:
-    dependencies:
-      better-sqlite3:
-        specifier: '*'
-        version: 12.9.0
-      zod:
-        specifier: '*'
-        version: 4.3.6
 
   libs/telemetry:
     dependencies:

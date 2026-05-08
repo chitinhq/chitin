@@ -1,3 +1,21 @@
+---
+status: superseded
+superseded_on: 2026-05-08
+superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
+reason: |
+  The compatibility_seed / operator_matrix / refresh_stale modules and
+  their search_backends consumers have been removed from chitin; the
+  stale-seed-refresh loop ran on dispatch-side rails and lives outside
+  chitin per the 2026-05-06 scope-narrow decision.
+---
+
+> **SUPERSEDED 2026-05-08.** The Python modules this design drives —
+> `compatibility_seed`, `operator_matrix`, `refresh_stale` — have been
+> deleted from chitin per
+> `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`. Seed
+> refresh, if rebuilt, lives outside chitin. Retained as historical
+> context for the operator-credentials web-search pattern.
+
 # Stale-seed refresh: web-search-augmented mining
 
 Status: design. Companion to `2026-05-05-conformance-substrate.md`
