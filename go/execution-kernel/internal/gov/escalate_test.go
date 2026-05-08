@@ -580,3 +580,118 @@ func TestOpenEscalateStore_MigratesOlderSchema(t *testing.T) {
 	}
 	store2.Close()
 }
+
+// TestResolveApprove_AutoInsertsGrant pins the Bug L fix (PR #394
+// dogfood, 2026-05-08): ResolveApprove with grantSeconds > 0 must
+// land a row in remember_grants. Pre-fix, this insert lived only in
+// gate.go's Wait return path — when the harness killed the kernel
+// subprocess before Wait returned (typical for chitin.yaml escalates
+// where the rule's 600s timeout vastly exceeds Claude Code's ~60s
+// hook deadline), the grant was never inserted, and the next agent
+// retry hit the rule again instead of short-circuiting.
+func TestResolveApprove_AutoInsertsGrant(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	const id = "01TEST0000000000000000ESCL"
+	const ruleID = "no-governance-self-modification"
+	const agent = "claude-code"
+	const window = 1800
+
+	if err := store.InsertPending(PendingApproval{
+		ID: id, Agent: agent, RuleID: ruleID,
+		ActionType: "file.write", ActionTarget: "/tmp/foo",
+		Cwd: "/tmp", Reason: "smoke",
+		Channel: "cli-only", TimeoutSeconds: 60,
+		RememberWindowSeconds: window, CreatedTs: 1700000000,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := store.ResolveApprove(id, "operator-cli", window); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	// Grant must be present.
+	if !store.HasUnexpiredGrant(ruleID, agent) {
+		t.Errorf("HasUnexpiredGrant(%s, %s) = false; want true after ResolveApprove with window=%d",
+			ruleID, agent, window)
+	}
+
+	// Different agent must NOT have a grant — make sure we didn't
+	// blanket-insert.
+	if store.HasUnexpiredGrant(ruleID, "different-agent") {
+		t.Errorf("HasUnexpiredGrant should be false for different agent")
+	}
+}
+
+// TestResolveApprove_NoGrantWhenWindowZero confirms the auto-insert
+// is gated on grantSeconds > 0. A bare `chitin-kernel pending approve`
+// without --window resolves the row without any remember-grant.
+func TestResolveApprove_NoGrantWhenWindowZero(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	const id = "01TEST0000000000000NOWNDW"
+	const ruleID = "no-governance-self-modification"
+	const agent = "claude-code"
+
+	if err := store.InsertPending(PendingApproval{
+		ID: id, Agent: agent, RuleID: ruleID,
+		ActionType: "file.write", ActionTarget: "/tmp/foo",
+		Cwd: "/tmp", Reason: "smoke",
+		Channel: "cli-only", TimeoutSeconds: 60,
+		CreatedTs: 1700000000,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := store.ResolveApprove(id, "operator-cli", 0); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	if store.HasUnexpiredGrant(ruleID, agent) {
+		t.Errorf("HasUnexpiredGrant should be false when window=0")
+	}
+}
+
+// TestResolveDeny_NoGrantInserted confirms deny path doesn't land a
+// grant accidentally (defense against future refactors).
+func TestResolveDeny_NoGrantInserted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEscalateStore(filepath.Join(dir, "p.sqlite"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	const id = "01TEST00000000000000DENIED"
+	const ruleID = "no-governance-self-modification"
+	const agent = "claude-code"
+
+	if err := store.InsertPending(PendingApproval{
+		ID: id, Agent: agent, RuleID: ruleID,
+		ActionType: "file.write", ActionTarget: "/tmp/foo",
+		Cwd: "/tmp", Reason: "smoke",
+		Channel: "cli-only", TimeoutSeconds: 60,
+		CreatedTs: 1700000000,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := store.ResolveDeny(id, "operator-cli", "no thanks"); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+
+	if store.HasUnexpiredGrant(ruleID, agent) {
+		t.Errorf("deny path should not insert grant")
+	}
+}
