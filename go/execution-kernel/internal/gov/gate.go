@@ -88,8 +88,7 @@ type FingerprintContext struct {
 }
 
 // FingerprintContextFromEnv reads the CHITIN_* env vars that the
-// dispatching agent sets on its spawn (see
-// apps/runner/src/activity.ts). Single helper so every Gate
+// dispatching agent sets on its spawn. Single helper so every Gate
 // constructor in the kernel + drivers populates the same way; before
 // this helper, gate_hook.go was the only caller, leaving copilot
 // driver runs and the operator-CLI gate-evaluate path writing

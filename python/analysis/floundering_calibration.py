@@ -17,7 +17,7 @@ Result: silent failure with no advisor engagement.
 This script computes per-driver thresholds from the actual chain
 event distributions so the operator can drop calibrated values into
 chitin.yaml. Drivers map to tiers via the well-known
-TIER_DRIVER_DEFAULTS in apps/runner/src/dispatcher.ts:
+TIER_DRIVER_DEFAULTS:
     T0/T1 → openclaw-glm-flash
     T2    → copilot
     T3    → openclaw-glm-cloud

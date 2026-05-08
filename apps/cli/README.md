@@ -36,9 +36,8 @@ subcommand by:
 
 ## Layer
 
-`@chitin/cli` is the operator surface. It's NOT used by the swarm
-worker (that's `apps/runner`). Both compose against the
-same kernel + libs.
+`@chitin/cli` is the operator surface. It composes against the same
+kernel + libs as the runtime drivers (hermes/openclaw/copilot/etc.).
 
 ## Test suite
 
@@ -48,7 +47,6 @@ pnpm exec vitest run apps/cli/tests
 
 ## Related
 
-- `apps/runner/README.md` — the autonomous swarm runtime
 - `go/execution-kernel/cmd/chitin-kernel/` — the Go kernel binary
   the CLI wraps
 - `libs/contracts/README.md` — the schemas the CLI consumes

@@ -66,7 +66,7 @@ const (
 	// lockdown (root cause of the 2026-05-07 chitin-worker smoke
 	// stalling at deny-everything; profile renamed from chitin-runner
 	// to chitin-worker the same day to disambiguate from the deleted
-	// apps/runner TypeScript orchestration runner).
+	// TypeScript orchestration runner).
 	ActKanbanCall        ActionType = "kanban.call"
 	// ActHermesProcess: Hermes Agent's `process` tool — a runtime helper
 	// for managing background processes inside the agent's own session.

@@ -20,7 +20,7 @@ Generates a chitin service/timer pair from `service.tmpl` and `timer.tmpl`.
 bash tools/generators/systemd-unit/generate.sh \
   --name <unit-name> \
   --description "<text>" \
-  ( --ts-script <script> | --exec <full-cmd> ) \
+  --exec <full-cmd> \
   ( --interval <duration> | --calendar "<spec>" ) \
   [--boot-delay <dur>] \
   [--timeout <sec>] \
@@ -33,8 +33,7 @@ bash tools/generators/systemd-unit/generate.sh \
 Per-flag:
 - `--name` — e.g. `pr-event-ingester` (becomes `chitin-pr-event-ingester.{service,timer}`)
 - `--description` — human label (appears in `systemctl status`)
-- `--ts-script` — shorthand: `pnpm exec tsx apps/runner/src/<script>.ts`
-- `--exec` — full ExecStart path (alternative to `--ts-script`)
+- `--exec` — full ExecStart path
 - `--interval` — e.g. `5min`, `1h`, `24h` (`OnUnitActiveSec`)
 - `--calendar` — e.g. `'*-*-* 06:00:00'` (`OnCalendar`)
 - `--boot-delay` — `OnBootSec` for interval timers (default: `5min`); ignored on calendar timers (which fire only per `OnCalendar`)
@@ -52,7 +51,7 @@ Per-flag:
 bash tools/generators/systemd-unit/generate.sh \
   --name pr-event-ingester \
   --description "PR event ingester" \
-  --ts-script pr-event-ingester \
+  --exec '%h/workspace/chitin/scripts/pr-event-ingester.sh' \
   --interval 5min \
   --after worker
 ```
@@ -63,7 +62,7 @@ bash tools/generators/systemd-unit/generate.sh \
 bash tools/generators/systemd-unit/generate.sh \
   --name nightly-report \
   --description "nightly summary report" \
-  --ts-script nightly-report \
+  --exec '%h/workspace/chitin/scripts/nightly-report.sh' \
   --calendar '*-*-* 02:00:00' \
   --boot-delay 10min \
   --persistent

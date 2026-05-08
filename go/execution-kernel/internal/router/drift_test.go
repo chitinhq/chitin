@@ -18,11 +18,11 @@ func TestDetectDrift_InScope(t *testing.T) {
 		Payload: map[string]interface{}{
 			"entry_id":   "foo",
 			"task_class": "refactor",
-			"file_paths": []interface{}{"apps/runner/src/dispatcher.ts"},
+			"file_paths": []interface{}{"apps/cli/src/main.ts"},
 		},
 	}
 	res := DetectDrift(
-		HookInput{ToolName: "Edit", ToolInput: map[string]interface{}{"file_path": "apps/runner/src/dispatcher.ts"}},
+		HookInput{ToolName: "Edit", ToolInput: map[string]interface{}{"file_path": "apps/cli/src/main.ts"}},
 		[]ChainEvent{intent},
 		0.5,
 	)
@@ -37,7 +37,7 @@ func TestDetectDrift_OutOfScope(t *testing.T) {
 		Payload: map[string]interface{}{
 			"entry_id":   "foo",
 			"task_class": "refactor",
-			"file_paths": []interface{}{"apps/runner/src/dispatcher.ts"},
+			"file_paths": []interface{}{"apps/cli/src/main.ts"},
 		},
 	}
 	res := DetectDrift(
@@ -56,7 +56,7 @@ func TestDetectDrift_OutOfScopeHighBlast(t *testing.T) {
 		Payload: map[string]interface{}{
 			"entry_id":   "foo",
 			"task_class": "refactor",
-			"file_paths": []interface{}{"apps/runner/src/dispatcher.ts"},
+			"file_paths": []interface{}{"apps/cli/src/main.ts"},
 		},
 	}
 	res := DetectDrift(

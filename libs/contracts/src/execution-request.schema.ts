@@ -73,8 +73,7 @@ export const RoleSchema = z.enum([
 //    Each spawns the vendor CLI (chitin-kernel drive copilot, claude,
 //    codex, gemini) and gates per-tool-call via PreToolUse hooks. Model
 //    selection is per-call via the driver-specific flag: `--model` for
-//    copilot and claude-code-headless, `-m` for codex and gemini (see
-//    apps/runner/src/activity.ts planInvocation).
+//    copilot and claude-code-headless, `-m` for codex and gemini.
 //
 // 2. Via openclaw plugin: `openclaw-glm-flash` (3090 local, glm-4.7-flash),
 //    `openclaw-glm-cloud` (Ollama Cloud, glm-5.1:cloud), `openclaw-deepseek`
@@ -106,7 +105,7 @@ export const DriverIdSchema = z.enum([
   'openclaw-deepseek',   // 3090: deepseek (kept for future use, not in defaults)
   // `hermes` = Hermes Agent (kanban dispatcher) running with the
   // chitin-worker profile (renamed from chitin-runner on 2026-05-07
-  // to disambiguate from the deleted apps/runner orchestration
+  // to disambiguate from the deleted TypeScript orchestration
   // runner). Per docs/design/2026-05-06-kernel-gate-
   // escalation.md core invariant: Hermes is the worker; chitin
   // (kernel) handles in-tool-call escalation. Profile + provider +

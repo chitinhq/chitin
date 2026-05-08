@@ -11,8 +11,7 @@
 # Options:
 #   --name <name>          Unit name, e.g. pr-event-ingester (required)
 #   --description <text>   Human-readable description (required)
-#   --exec <path>          ExecStart command (required unless --ts-script)
-#   --ts-script <name>     Shorthand for pnpm exec tsx apps/runner/src/<name>.ts
+#   --exec <path>          ExecStart command (required)
 #   --interval <duration>  OnUnitActiveSec, e.g. 5min, 1h, 24h (mutually exclusive with --calendar)
 #   --calendar <spec>      OnCalendar spec, e.g. '*-*-* 06:00:00' (mutually exclusive with --interval)
 #   --boot-delay <dur>     OnBootSec (default: 5min)
@@ -49,10 +48,6 @@ while [[ $# -gt 0 ]]; do
     --name)        NAME="$2";                                                                  shift 2 ;;
     --description) DESCRIPTION="$2";                                                          shift 2 ;;
     --exec)        EXEC_START="$2";                                                            shift 2 ;;
-    # Use bare `pnpm` and rely on the unit's PATH (set in service.tmpl
-    # to include %h/.vite-plus/bin). Avoids hardcoding /home/red/...
-    # which breaks on every other operator's machine.
-    --ts-script)   EXEC_START="pnpm exec tsx apps/runner/src/$2.ts"; shift 2 ;;
     --interval)    INTERVAL="$2";                                                              shift 2 ;;
     --calendar)    CALENDAR="$2";                                                              shift 2 ;;
     --boot-delay)  BOOT_DELAY="$2";                                                            shift 2 ;;
@@ -68,7 +63,7 @@ done
 
 [[ -z "$NAME"        ]] && { echo "error: --name is required"                    >&2; exit 1; }
 [[ -z "$DESCRIPTION" ]] && { echo "error: --description is required"             >&2; exit 1; }
-[[ -z "$EXEC_START"  ]] && { echo "error: --exec or --ts-script is required"     >&2; exit 1; }
+[[ -z "$EXEC_START"  ]] && { echo "error: --exec is required"                    >&2; exit 1; }
 [[ -z "$INTERVAL" && -z "$CALENDAR" ]] && { echo "error: --interval or --calendar is required" >&2; exit 1; }
 [[ -n "$INTERVAL" && -n "$CALENDAR" ]] && { echo "error: --interval and --calendar are mutually exclusive" >&2; exit 1; }
 
