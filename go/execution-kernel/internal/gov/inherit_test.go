@@ -97,6 +97,44 @@ func TestLoadWithInheritance_NoPolicyFound(t *testing.T) {
 	}
 }
 
+// TestLoadWithInheritance_RejectsMalformedRegex pins that a child rule
+// with a malformed target_regex causes LoadWithInheritance to fail and
+// the error names the offending rule_id. Pre-fix, the post-merge
+// ApplyDefaults() return value was discarded; per-file load catches
+// per-file regex errors today, but propagating the merge-time error
+// closes the contract that the merged Policy is fully revalidated.
+func TestLoadWithInheritance_RejectsMalformedRegex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "chitin.yaml"), `
+id: parent
+mode: enforce
+rules:
+  - id: parent-rule
+    action: shell.exec
+    effect: deny
+    target: "rm"
+    reason: "parent"
+`)
+	child := filepath.Join(root, "sub")
+	writeFile(t, filepath.Join(child, "chitin.yaml"), `
+id: child
+mode: enforce
+rules:
+  - id: bad-regex-rule
+    action: shell.exec
+    effect: deny
+    target_regex: "("
+    reason: "bad"
+`)
+	_, _, err := LoadWithInheritance(child)
+	if err == nil {
+		t.Fatal("LoadWithInheritance must reject malformed regex")
+	}
+	if !strings.Contains(err.Error(), "bad-regex-rule") {
+		t.Errorf("error should name the offending rule_id, got: %v", err)
+	}
+}
+
 func TestLoadWithInheritance_MonotonicStrictness(t *testing.T) {
 	// Parent is mode:enforce. Child tries mode:monitor.
 	// Child CANNOT weaken — merge should reject.

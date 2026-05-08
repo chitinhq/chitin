@@ -2,6 +2,7 @@ package gov
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -298,7 +299,15 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		d.RuleID == "envelope-not-found"
 	if !d.Allowed && !envelopeDeny && g.Counter != nil {
 		if !g.NoRecord {
-			g.Counter.RecordDenial(agent, a.Fingerprint(), weight)
+			// Log on failure rather than silently swallow — a SQLite
+			// failure here is the "agent never locks" path. We still
+			// fall through and stamp Escalation from Level (which reads
+			// from the DB, so the row may be stale) so the caller gets a
+			// Decision; the operator sees the error on stderr and can
+			// repair the DB before the next call.
+			if err := g.Counter.RecordDenial(agent, a.Fingerprint(), weight); err != nil {
+				fmt.Fprintf(os.Stderr, "gov: RecordDenial failed agent=%s rule=%s: %v\n", agent, d.RuleID, err)
+			}
 		}
 		d.Escalation = g.Counter.Level(agent)
 	} else if g.Counter != nil {
