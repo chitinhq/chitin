@@ -70,7 +70,7 @@ Reserved (not yet wired): `policy_decided`, `rewritten`, `denied`, `chain_verify
 
 - **`raw_input`** — verbatim from the agent's tool call.
 - **`canonical_form`** — produced by the kernel's `canon` package (shell command → canonical `Command`/`Pipeline`).
-- **`action_type`** — produced by the kernel's `normalize` package; **closed enum** of 6 classes: `read | write | exec | git | net | dangerous`. Unknown actions are denied (this is the dogfood signal that produced "extend the normalizer" feedback).
+- **`action_type`** — produced by the kernel's `gov.Normalize` package; **closed enum** of 18 types: `file.read`, `file.write`, `file.delete`, `file.move`, `file.recursive_delete`, `shell.exec`, `git.push`, `git.force_push`, `git.commit`, `git.status`, `git.worktree_add`, `git.worktree_remove`, `http.request`, `delegate.task`, `infra_destroy`, `mcp.call`, `kanban.call`, `hermes.process`. Unknown actions produce `unknown` and are **denied** by default — the dogfood signal that produced "extend the normalizer" feedback. See `go/execution-kernel/internal/gov/action.go` for the authoritative list and `governance-setup.md` for the human-readable table.
 - **`decision.decision`** — produced by `gov.Gate.Evaluate` against `chitin.yaml`.
 - **`schema_version`** — owned by `libs/contracts/`; the kernel rejects events with a missing or stale version.
 
