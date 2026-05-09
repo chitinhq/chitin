@@ -79,5 +79,5 @@ All capture and gating works fully offline. OTEL emit (post-F4) is opt-in and re
 ## What chitin does not do
 
 - It does not run an agent loop. The drivers do.
-- It does not ship a cloud SaaS. That is step 5 on the strategic arc, not today.
+- It does not ship a cloud SaaS. Local-only is the product boundary.
 - It does not replace the agent. It observes and gates.
