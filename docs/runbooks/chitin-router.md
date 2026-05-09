@@ -21,12 +21,14 @@ it). As of 2026-05-04 that's all of:
 | `claude-code-headless` | `PreToolUse` | `~/.claude/settings.json` | `chitin-kernel install --surface claude-code` |
 | `codex` | `PreToolUse` (codex 0.128.0+) | `~/.codex/config.toml` (`[features] codex_hooks=true`) | `scripts/install-codex-hook.sh` |
 | `gemini` | `BeforeTool` (same wire shape; renamed event) | `~/.gemini/settings.json` | `scripts/install-gemini-hook.sh` |
+| `hermes` | `pre_tool_call` (same wire shape) | `~/.hermes/config.yaml` | `scripts/install-hermes-hook.sh` |
 | `copilot` | n/a — wrapping driver | (in-kernel) | `chitin-kernel drive copilot` |
 | `local-*` (qwen/glm/glm-flash/deepseek) | `before_tool_call` plugin | openclaw plugin config | openclaw-side |
 
 The `chitin-router-hook` shim is the same binary across all hook-
 surface drivers; per-vendor tool-name normalization lives in
-`internal/driver/<vendor>/normalize.go` (claudecode, codex, gemini).
+`internal/driver/<vendor>/normalize.go` (claudecode, codex, gemini,
+hermes).
 
 ## What it does
 
@@ -115,7 +117,8 @@ router:
   plugins:
     - name: tests-required-before-commit
       type: pre-action
-      command: ["python3", "scripts/check-tests-before-commit.py"]
+      runtime: python3
+      module: scripts/check-tests-before-commit.py
       timeout_ms: 750
       allowlist_paths: ["."]
 ```

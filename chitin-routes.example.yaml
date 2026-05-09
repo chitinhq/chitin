@@ -26,7 +26,8 @@ spawn_timeout_seconds: 60
 max_concurrent_peers: 1
 
 # Rules — when this signal at this severity fires, look up `route` in
-# the Routes section and spawn its first quota-affording candidate.
+# the Routes section and return its candidate list to downstream
+# consumers.
 rules:
   - name: floundering-loop
     signal: floundering
