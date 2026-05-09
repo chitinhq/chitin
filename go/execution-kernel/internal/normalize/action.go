@@ -1,3 +1,9 @@
+// Package normalize maps raw tool call invocations to the canonical
+// action vocabulary used by chitin's governance evaluation.
+//
+// v2 simplification: 6 types instead of v1's 43, with each driver's
+// normalizer doing the mapping from vendor-specific tool names to the
+// canonical ActionType enum.
 package normalize
 
 // ActionType is one of 6 canonical action categories.
