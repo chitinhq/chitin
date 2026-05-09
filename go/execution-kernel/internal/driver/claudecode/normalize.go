@@ -116,7 +116,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 		a.Path = in.Cwd
 		return a, nil
 
-	case "Read":
+	case "Read", "NotebookRead":
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: stringField(in.ToolInput, "file_path"),
@@ -186,9 +186,9 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "TaskGet", "TaskList", "TaskOutput", "ToolSearch", "AskUserQuestion":
-		// Browse-shape; no external side effect. Default-allow under
-		// the existing read policy.
+	case "TaskGet", "TaskList", "TaskOutput", "ToolSearch", "AskUserQuestion", "TodoRead":
+		// Browse/read-shape; no external side effect. Default-allow under
+		// the existing read policy. TodoRead reads the current todo list.
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: in.ToolName,
