@@ -27,18 +27,10 @@ in one of these outcomes:
 
 ## Near-term work
 
-1. Mine `default-deny` / `unknown` rows from `~/.chitin/gov-decisions-*.jsonl`
-   by `(agent, tool_name, action_target)` and map the highest-volume real
-   tools first.
-2. Add a fixture and normalizer test for each mapped tool before changing
-   `chitin.yaml`.
-3. For Hermes modality tools, decide whether the canonical vocabulary needs
-   new action types (`media.generate`, `speech.generate`, `vision.analyze`,
-   `schedule.job`) or whether they should stay fail-closed as substrate
-   features.
-4. For VS Code Copilot, keep instructions current and explicit that IDE
-   guidance is not governance. The enforceable Copilot path remains
-   `chitin-kernel drive copilot`.
+1. ~~Mine `default-deny` / `unknown` rows from `~/.chitin/gov-decisions-*.jsonl`~~ **Done.** Cross-driver conformance test (`go/execution-kernel/internal/driver/cross_driver_conformance_test.go`) and openclaw-specific conformance test (`go/execution-kernel/internal/gov/normalize_openclaw_conformance_test.go`) now catch ActUnknown regressions at test time. Two bugs found and fixed: claudecode was missing `NotebookRead` and `TodoRead`; gov.Normalize was missing 11 openclaw tool names.
+2. ~~Add a fixture and normalizer test for each mapped tool before changing `chitin.yaml`.~~ **Done.** See the conformance tests above.
+3. For Hermes modality tools, decide whether the canonical vocabulary needs new action types (`media.generate`, `speech.generate`, `vision.analyze`, `schedule.job`) or whether they should stay fail-closed as substrate features.
+4. For VS Code Copilot, keep instructions current and explicit that IDE guidance is not governance. The enforceable Copilot path remains `chitin-kernel drive copilot`.
 
 ## External status notes
 
