@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -305,5 +306,164 @@ func TestRebuild_AcceptsExactDuplicate(t *testing.T) {
 	a, _ := idx.Get("A")
 	if a == nil || a.LastSeq != 1 || a.LastHash != "ha1" {
 		t.Errorf("expected seq=1 hash=ha1 after dup collapse, got %+v", a)
+	}
+}
+
+// --- BeginEmit / Commit / Rollback tests ---
+
+func TestBeginEmit_NewChainThenCommit(t *testing.T) {
+	idx := newTempIndex(t)
+
+	// BeginEmit on a brand-new chain should return Current=nil.
+	tx, err := idx.BeginEmit("chain-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tx.Current != nil {
+		t.Fatalf("expected nil Current for new chain, got %+v", tx.Current)
+	}
+
+	// Commit writes the chain tail.
+	if err := tx.Commit(0, "hash0", "tool_call", "lhash0", "2026-05-09T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := idx.Get("chain-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info == nil || info.LastSeq != 0 || info.LastHash != "hash0" {
+		t.Errorf("expected seq=0 hash=hash0, got %+v", info)
+	}
+	if info.LastEventType != "tool_call" {
+		t.Errorf("expected LastEventType=tool_call, got %q", info.LastEventType)
+	}
+	if info.LastLogicalHash != "lhash0" {
+		t.Errorf("expected LastLogicalHash=lhash0, got %q", info.LastLogicalHash)
+	}
+	if info.LastEmitTs != "2026-05-09T00:00:00Z" {
+		t.Errorf("expected LastEmitTs=2026-05-09..., got %q", info.LastEmitTs)
+	}
+}
+
+func TestBeginEmit_ExistingChainReturnsCurrent(t *testing.T) {
+	idx := newTempIndex(t)
+	idx.Upsert("chain-exist", 5, "hash5", "tool_call", "lhash5", "2026-05-09T01:00:00Z")
+
+	tx, err := idx.BeginEmit("chain-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tx.Current == nil {
+		t.Fatal("expected non-nil Current for existing chain")
+	}
+	if tx.Current.LastSeq != 5 || tx.Current.LastHash != "hash5" {
+		t.Errorf("expected seq=5 hash=hash5, got %+v", tx.Current)
+	}
+	if tx.Current.LastEventType != "tool_call" {
+		t.Errorf("expected EventType=tool_call, got %q", tx.Current.LastEventType)
+	}
+
+	if err := tx.Commit(6, "hash6", "shell_run", "lhash6", "2026-05-09T02:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, _ := idx.Get("chain-exist")
+	if info.LastSeq != 6 || info.LastHash != "hash6" {
+		t.Errorf("expected seq=6 hash=hash6 after commit, got %+v", info)
+	}
+}
+
+func TestBeginEmit_RollbackLeavesUnchanged(t *testing.T) {
+	idx := newTempIndex(t)
+	idx.Upsert("chain-rollback", 3, "orig3", "session_end", "lh3", "2026-05-09T03:00:00Z")
+
+	tx, err := idx.BeginEmit("chain-rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rollback should leave the chain state unchanged.
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, _ := idx.Get("chain-rollback")
+	if info.LastSeq != 3 || info.LastHash != "orig3" {
+		t.Errorf("rollback should leave state unchanged, got %+v", info)
+	}
+}
+
+func TestBeginEmit_CommitAfterCommitIsNoop(t *testing.T) {
+	idx := newTempIndex(t)
+
+	tx, _ := idx.BeginEmit("chain-dbl")
+	tx.Commit(0, "h0", "ev0", "lh0", "ts0")
+
+	// Second Commit should be a no-op (tx.done=true).
+	if err := tx.Commit(1, "h1", "ev1", "lh1", "ts1"); err != nil {
+		t.Fatalf("second Commit should be no-op, got: %v", err)
+	}
+
+	info, _ := idx.Get("chain-dbl")
+	if info.LastSeq != 0 || info.LastHash != "h0" {
+		t.Errorf("double commit should keep first value, got %+v", info)
+	}
+}
+
+func TestBeginEmit_RollbackAfterCommitIsNoop(t *testing.T) {
+	idx := newTempIndex(t)
+
+	tx, _ := idx.BeginEmit("chain-rba")
+	tx.Commit(0, "h0", "ev0", "lh0", "ts0")
+
+	// Rollback after commit should be a no-op.
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback after Commit should be no-op, got: %v", err)
+	}
+
+	info, _ := idx.Get("chain-rba")
+	if info.LastSeq != 0 {
+		t.Errorf("rollback-after-commit should not undo, got seq=%d", info.LastSeq)
+	}
+}
+
+// --- LogicalHash tests ---
+
+func TestLogicalHash_EmptyEventType(t *testing.T) {
+	h := LogicalHash("", json.RawMessage(`{"a":1}`))
+	if h != "" {
+		t.Fatalf("empty event type should return empty hash, got %q", h)
+	}
+}
+
+func TestLogicalHash_Deterministic(t *testing.T) {
+	h1 := LogicalHash("tool_call", json.RawMessage(`{"tool":"Bash","cmd":"ls"}`))
+	h2 := LogicalHash("tool_call", json.RawMessage(`{"tool":"Bash","cmd":"ls"}`))
+	if h1 != h2 {
+		t.Fatalf("identical inputs should produce same hash: %s vs %s", h1, h2)
+	}
+}
+
+func TestLogicalHash_DifferentEventType(t *testing.T) {
+	h1 := LogicalHash("tool_call", json.RawMessage(`{"a":1}`))
+	h2 := LogicalHash("shell_run", json.RawMessage(`{"a":1}`))
+	if h1 == h2 {
+		t.Fatal("different event types should produce different hashes")
+	}
+}
+
+func TestLogicalHash_DifferentPayload(t *testing.T) {
+	h1 := LogicalHash("tool_call", json.RawMessage(`{"a":1}`))
+	h2 := LogicalHash("tool_call", json.RawMessage(`{"a":2}`))
+	if h1 == h2 {
+		t.Fatal("different payloads should produce different hashes")
+	}
+}
+
+func TestLogicalHash_EmptyPayload(t *testing.T) {
+	h := LogicalHash("event", json.RawMessage(``))
+	if h == "" {
+		t.Fatal("non-empty event type with empty payload should still produce a hash")
 	}
 }
