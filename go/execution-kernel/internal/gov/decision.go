@@ -51,13 +51,18 @@ func WriteLog(d Decision, dir string) error {
 		OutputBytes      int64   `json:"output_bytes,omitempty"`
 		ToolCalls        int64   `json:"tool_calls,omitempty"`
 		CallerOrigin     string  `json:"caller_origin,omitempty"`
-		// P2 routing-as-learning-system fingerprint dimensions.
-		// All four are optional with omitempty so older readers and
-		// non-fingerprint dispatches keep working.
-		Model       string `json:"model,omitempty"`
-		Role        string `json:"role,omitempty"`
-		WorkflowID  string `json:"workflow_id,omitempty"`
-		Fingerprint string `json:"fingerprint,omitempty"`
+		// Typed agent identity dimensions. All are optional with
+		// omitempty so older readers and non-identity dispatches keep
+		// working. Fingerprint is retained as the legacy alias for
+		// AgentFingerprint.
+		AgentInstanceID  string `json:"agent_instance_id,omitempty"`
+		AgentFingerprint string `json:"agent_fingerprint,omitempty"`
+		Driver           string `json:"driver,omitempty"`
+		Model            string `json:"model,omitempty"`
+		Role             string `json:"role,omitempty"`
+		Authority        string `json:"authority,omitempty"`
+		WorkflowID       string `json:"workflow_id,omitempty"`
+		Fingerprint      string `json:"fingerprint,omitempty"`
 		// Router-heuristic signal metadata (audit Tier 6 cull,
 		// 2026-05-08). Stamped by router-hook when its policy is
 		// enabled and at least one signal is non-zero; absent on
@@ -77,11 +82,15 @@ func WriteLog(d Decision, dir string) error {
 		Ts:         d.Ts,
 		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
 		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
-		CallerOrigin: d.CallerOrigin,
-		Model:       d.Model,
-		Role:        d.Role,
-		WorkflowID:  d.WorkflowID,
-		Fingerprint: d.Fingerprint,
+		CallerOrigin:     d.CallerOrigin,
+		AgentInstanceID:  d.AgentInstanceID,
+		AgentFingerprint: d.AgentFingerprint,
+		Driver:           d.Driver,
+		Model:            d.Model,
+		Role:             d.Role,
+		Authority:        d.Authority,
+		WorkflowID:       d.WorkflowID,
+		Fingerprint:      d.Fingerprint,
 		PredictedBlast:   d.PredictedBlast,
 		FlounderingScore: d.FlounderingScore,
 		DriftScore:       d.DriftScore,

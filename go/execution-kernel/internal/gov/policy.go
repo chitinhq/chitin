@@ -139,26 +139,26 @@ type Decision struct {
 	// Surfaced for the analysis layer's `decisions_missing_envelope_id` finding.
 	CallerOrigin string `json:"caller_origin,omitempty"`
 
-	// Routing-as-learning-system fingerprint dimensions (P2 of the
-	// project_routing_as_learning_system phase ladder). Stamped on every
-	// decision the kernel writes when the dispatching agent supplies them
-	// via the env vars CHITIN_MODEL / CHITIN_ROLE / CHITIN_WORKFLOW_ID /
-	// CHITIN_FINGERPRINT (or the equivalent fields on a hook payload).
-	// All four are optional + omitempty for backwards compatibility:
-	// pre-fingerprint dispatches (operator manual runs, older swarm
-	// builds, ad-hoc CLI invocations) write rows without these fields
-	// and existing readers tolerate the omission.
+	// Typed agent identity dimensions. Stamped on every decision the
+	// kernel writes when the dispatching agent supplies them via the
+	// CHITIN_* env vars (or equivalent hook payload fields). All are
+	// optional + omitempty for backwards compatibility: pre-identity
+	// dispatches write rows without these fields and existing readers
+	// tolerate the omission.
 	//
-	// Why these four: (driver, model, role) define WHAT the agent was;
-	// workflow_id joins to Temporal/swarm-runs for outcome attribution;
-	// fingerprint is the pre-computed canonical hash from
-	// libs/contracts/src/fingerprint.ts so the analysis lib can group
-	// decisions by configuration without re-deriving the hash here.
-	// Driver is captured implicitly via the Agent field already.
-	Model       string `json:"model,omitempty"`
-	Role        string `json:"role,omitempty"`
-	WorkflowID  string `json:"workflow_id,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
+	// Agent remains the legacy display/source field. AgentInstanceID
+	// identifies one running instance/session; AgentFingerprint is the
+	// canonical config hash from libs/contracts/src/fingerprint.ts;
+	// Fingerprint is retained as its legacy JSON alias for analytics
+	// already reading that field.
+	AgentInstanceID  string `json:"agent_instance_id,omitempty"`
+	AgentFingerprint string `json:"agent_fingerprint,omitempty"`
+	Driver           string `json:"driver,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Authority        string `json:"authority,omitempty"`
+	WorkflowID       string `json:"workflow_id,omitempty"`
+	Fingerprint      string `json:"fingerprint,omitempty"`
 
 	// EscalationID was removed in cull Phase 3 (2026-05-08). The
 	// pending_approvals table that this referenced is gone; any

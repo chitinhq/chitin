@@ -19,7 +19,7 @@ func TestWriteLog_PersistsCallerOrigin(t *testing.T) {
 	dir := t.TempDir()
 	d := Decision{
 		Allowed: true, Mode: "enforce", RuleID: "default-allow-reads",
-		Ts: "2026-04-30T12:00:00Z",
+		Ts:           "2026-04-30T12:00:00Z",
 		CallerOrigin: "main.go:42",
 	}
 	if err := WriteLog(d, dir); err != nil {
@@ -44,7 +44,7 @@ func TestWriteLog_PersistsFingerprintDims(t *testing.T) {
 	dir := t.TempDir()
 	d := Decision{
 		Allowed: true, Mode: "enforce", RuleID: "default-allow-shell",
-		Ts: "2026-05-04T17:30:00Z",
+		Ts:    "2026-05-04T17:30:00Z",
 		Agent: "claude-code", Action: Action{Type: ActShellExec, Target: "ls"},
 		Model:       "claude-haiku-4-5",
 		Role:        "reviewer",
@@ -71,6 +71,43 @@ func TestWriteLog_PersistsFingerprintDims(t *testing.T) {
 	}
 }
 
+func TestWriteLog_PersistsTypedAgentIdentity(t *testing.T) {
+	dir := t.TempDir()
+	d := Decision{
+		Allowed: true, Mode: "enforce", RuleID: "default-allow-shell",
+		Ts:    "2026-05-09T13:45:00Z",
+		Agent: "codex-cli", Action: Action{Type: ActShellExec, Target: "ls"},
+		AgentInstanceID:  "codex-session-42",
+		AgentFingerprint: "agentfp123456",
+		Driver:           "codex",
+		Model:            "gpt-5.5",
+		Role:             "reviewer",
+		Authority:        "worker",
+		WorkflowID:       "wf-agent-identity",
+		Fingerprint:      "agentfp123456",
+	}
+	if err := WriteLog(d, dir); err != nil {
+		t.Fatalf("WriteLog: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	for _, want := range []string{
+		`"agent":"codex-cli"`,
+		`"agent_instance_id":"codex-session-42"`,
+		`"agent_fingerprint":"agentfp123456"`,
+		`"driver":"codex"`,
+		`"model":"gpt-5.5"`,
+		`"role":"reviewer"`,
+		`"authority":"worker"`,
+		`"workflow_id":"wf-agent-identity"`,
+		`"fingerprint":"agentfp123456"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing %q in JSONL; got: %s", want, string(data))
+		}
+	}
+}
+
 func TestWriteLog_OmitsEmptyFingerprintDims(t *testing.T) {
 	// Backwards compatibility: pre-fingerprint dispatches (operator
 	// manual runs, older swarm builds, ad-hoc CLI invocations) write
@@ -88,8 +125,12 @@ func TestWriteLog_OmitsEmptyFingerprintDims(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
 	for _, unwant := range []string{
+		`"agent_instance_id":`,
+		`"agent_fingerprint":`,
+		`"driver":`,
 		`"model":`,
 		`"role":`,
+		`"authority":`,
 		`"workflow_id":`,
 		`"fingerprint":`,
 	} {
