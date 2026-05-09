@@ -1,5 +1,7 @@
 # Hermes CLI surface for pending-approvals integration
 
+> **Cull note (2026-05-08):** The operator-approval escalation feature this doc supports was built (PRs #380–#396) and then culled (PRs #397–#400). Operator approvals are now handled by hermes' `tools/approval.py`. The hermes CLI surface documented here remains factual; retained for reference.
+
 Date: 2026-05-07
 Purpose: confirm the hermes CLI surface required by Tasks 17-19 of the
 operator-approval escalation plan

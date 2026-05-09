@@ -1,6 +1,9 @@
 ---
 date: 2026-05-04
 status: design — pending operator answers on §10 open questions
+
+> **Post-cull note (2026-05-08):** This design proposes a kernel extension (content-addressed tool-output storage). The concept is valid but implementation is deferred per the scope narrowing (`docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`). References to `apps/runner` are stale (deleted in the cull).
+
 audience: operator + future agents picking up bounded-context work
 purpose: Crystallize the shape of chitin's bounded-context layer —
   event schema, storage model, policy logic, and MVP slicing — so

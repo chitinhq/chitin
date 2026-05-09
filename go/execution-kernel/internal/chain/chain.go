@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 
+	eventhash "github.com/chitinhq/chitin/go/execution-kernel/internal/hash"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -272,6 +274,16 @@ type jsonlEventRow struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
+// VerifyJSONL recomputes every event's canonical this_hash and validates
+// per-chain seq/prev_hash linkage without mutating the SQLite index.
+func VerifyJSONL(chitinDir string) error {
+	rowsByChain, err := readJSONLRows(chitinDir, true)
+	if err != nil {
+		return err
+	}
+	return validateRowsByChain(rowsByChain)
+}
+
 // RebuildFromJSONL brings the index into agreement with the ground-truth JSONL
 // files found in chitinDir, refusing to reconcile any chain whose linkage is
 // broken.
@@ -312,87 +324,19 @@ func (i *Index) RebuildFromJSONL(chitinDir string) error {
 		return nil
 	}
 
-	pattern := filepath.Join(chitinDir, "events-*.jsonl")
-	files, err := filepath.Glob(pattern)
+	rowsByChain, err := readJSONLRows(chitinDir, false)
 	if err != nil {
 		return err
 	}
-	if len(files) == 0 {
-		return nil
-	}
-
-	// Collect all rows per chain — not just the max — so we can validate linkage.
-	rowsByChain := make(map[string][]jsonlEventRow)
-	for _, fpath := range files {
-		f, err := os.Open(fpath)
-		if err != nil {
-			// Non-fatal: skip unreadable file.
-			continue
-		}
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-		for scanner.Scan() {
-			var row jsonlEventRow
-			if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
-				continue // tolerate malformed lines
-			}
-			if row.ChainID == "" || row.ThisHash == "" {
-				continue
-			}
-			rowsByChain[row.ChainID] = append(rowsByChain[row.ChainID], row)
-		}
-		f.Close()
+	if err := validateRowsByChain(rowsByChain); err != nil {
+		return err
 	}
 
 	// Sort, dedup exact duplicates, validate linkage, and upsert per chain.
 	for chainID, rows := range rowsByChain {
-		sort.Slice(rows, func(a, b int) bool { return rows[a].Seq < rows[b].Seq })
-
-		// Collapse exact duplicates (same seq + same this_hash); refuse conflicts.
-		deduped := rows[:0]
-		for k, row := range rows {
-			if k > 0 && rows[k-1].Seq == row.Seq {
-				if rows[k-1].ThisHash != row.ThisHash {
-					return fmt.Errorf(
-						"chain %s: seq %d has conflicting this_hash: %s vs %s",
-						chainID, row.Seq, rows[k-1].ThisHash, row.ThisHash,
-					)
-				}
-				continue
-			}
-			deduped = append(deduped, row)
-		}
-		rows = deduped
-
-		// Seqs must be 0..N-1 contiguous; linkage must hold at every step.
-		for k, row := range rows {
-			if row.Seq != int64(k) {
-				return fmt.Errorf(
-					"chain %s: expected seq %d at position %d, got %d (gap or out-of-range head)",
-					chainID, k, k, row.Seq,
-				)
-			}
-			if k == 0 {
-				if row.PrevHash != nil {
-					return fmt.Errorf(
-						"chain %s: seq 0 must have prev_hash=null, got %q",
-						chainID, *row.PrevHash,
-					)
-				}
-				continue
-			}
-			if row.PrevHash == nil {
-				return fmt.Errorf(
-					"chain %s: seq %d has prev_hash=null (must link to seq %d)",
-					chainID, row.Seq, row.Seq-1,
-				)
-			}
-			if *row.PrevHash != rows[k-1].ThisHash {
-				return fmt.Errorf(
-					"chain %s: seq %d prev_hash %s does not match seq %d this_hash %s",
-					chainID, row.Seq, *row.PrevHash, rows[k-1].Seq, rows[k-1].ThisHash,
-				)
-			}
+		rows, err = sortAndDedupRows(chainID, rows)
+		if err != nil {
+			return err
 		}
 
 		if len(rows) == 0 {

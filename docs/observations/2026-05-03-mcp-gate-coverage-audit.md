@@ -1,5 +1,7 @@
 # MCP gate coverage audit (2026-05-03)
 
+> **Cull note (2026-05-08):** §7 references `libs/governance/` (TS classifier), which was deleted in the 2026-05-08 cull. The Go kernel is now the canonical policy evaluator. §6 references `apps/runner/`, also deleted.
+
 ## Question
 
 Which MCP tool calls reach `gov.Policy.Evaluate`? Which slip through?

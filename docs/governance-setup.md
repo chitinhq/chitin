@@ -137,6 +137,8 @@ rules:
 - **enforce** — block silently; return `reason` only. No agent-readable feedback.
 - **guide** — block AND return `reason` + `suggestion` + `correctedCommand` as the agent's next-turn input. The agent sees why it was blocked and the recommended alternative. **This is the differentiator.**
 
+> **Note:** The `effect: escalate` rule effect was removed in the 2026-05-08 cull. Operator approvals are now handled by Hermes' `tools/approval.py` — see `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`. Using `effect: escalate` in a rule will fail at parse time.
+
 Global `mode:` is the default. Per-rule `invariantModes:` overrides.
 
 ## Cost-gov v3 (envelope + tier classification)

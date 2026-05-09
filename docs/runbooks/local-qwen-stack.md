@@ -125,24 +125,23 @@ jq '.agents.list[] | select(.id=="qwen-agent") | .model' ~/.openclaw/openclaw.js
 # Expect: "ollama/qwen3-coder:30b-32k"
 ```
 
-## 4. Smoke-test (without flipping the dispatcher)
+## 4. Smoke-test (direct gate invocation)
 
-The dispatcher uses `TIER_DRIVER` to pick the driver and **ignores**
-backlog-level `allowed_drivers`. So a smoke-test that puts
-`allowed_drivers: ['local-qwen']` in the entry yaml does not actually
-test local-qwen — it tests whatever `TIER_DRIVER[T0]` is currently
-routed to (copilot at the time of writing).
-
-To actually exercise local-qwen, bypass the dispatcher and submit a
-workflow directly via `submit.ts`, which honors the `DRIVER` env var:
+To exercise local-qwen through the chitin gate, run:
 
 ```bash
-cd /home/red/workspace/chitin
-DRIVER=local-qwen \
-WALL_TIMEOUT_S=180 \
-MAX_TOOL_CALLS=5 \
-PROMPT="Use the Bash tool to run exactly: echo ok > /tmp/qwen-smoke.txt. Then stop." \
-pnpm exec tsx apps/runner/src/submit.ts
+chitin-kernel gate evaluate \
+  -agent openclaw \
+  -tool Bash \
+  -args-json '{"command": "echo ok > /tmp/qwen-smoke.txt"}' \
+  -cwd /home/red/workspace/chitin
+# Expect exit 0 (allowed) and a JSON decision with allowed: true
+```
+
+Then run the actual command through the openclaw agent:
+
+```bash
+openclaw chat --agent qwen-agent "Use the Bash tool to run exactly: echo ok > /tmp/qwen-smoke.txt. Then stop."
 ```
 
 While the workflow runs, watch ollama:
@@ -153,25 +152,15 @@ journalctl -u ollama -f
 
 **Expected outcome:**
 
-- `submit.ts` exits 0 with `result.exit_code: 0`.
 - `/tmp/qwen-smoke.txt` contains `ok`.
-- `journalctl` shows model load + inference, **no** `offloaded N/M
-  layers to CPU` lines (any non-zero offload means num_ctx is still
-  too high or another GPU process is competing for VRAM — check
-  `nvidia-smi` and free what's holding VRAM).
+- `journalctl` shows model load + inference, **no** `offloaded N/M layers to CPU` lines.
 
 If the smoke test fails, see Diagnostics below before iterating on
 the config.
 
-## 5. Re-enable T0 routing to local-qwen
+## 5. Verify routing in chitin.yaml
 
-Once smoke-test passes, flip `TIER_DRIVER[T0]` in
-`apps/runner/src/dispatcher.ts` from `'copilot'` back to
-`'local-qwen'`. That's a one-line change tracked as a separate
-backlog entry (`dispatcher-flip-t0-back-to-local-qwen` in
-`docs/swarm-backlog.md`). Don't flip until you have a successful
-smoke-test artifact pasted into this doc — flipping prematurely
-re-creates the slice-7-tuning failures that motivated the rerouting.
+Once smoke-test passes, verify that `chitin.yaml` has appropriate rules for the openclaw agent's tool calls. The local-qwen stack works through the openclaw driver, which routes through `chitin-kernel gate evaluate`. No TIER_DRIVER or dispatcher flip is needed — chitin routes by agent identity, not by environment variable.
 
 ## Diagnostics
 
@@ -179,7 +168,7 @@ re-creates the slice-7-tuning failures that motivated the rerouting.
 |---------|-------------|-----|
 | `exit_code=1`, timeout | num_ctx still too large → CPU spill | Confirm Modelfile has `PARAMETER num_ctx 32768` and the `qwen-agent` config points at the `:30b-32k` variant |
 | OOM / ollama crash | KV cache not q8_0 | `systemctl show ollama -p Environment` should include `OLLAMA_KV_CACHE_TYPE=q8_0`; if absent, drop-in didn't apply |
-| 0 dispatches to local-qwen | TIER_DRIVER still points to copilot | Smoke-test via `submit.ts` first (bypasses TIER_DRIVER); flip routing only after smoke succeeds |
+| 0 dispatches to local-qwen | chitin.yaml rules may be denying tool calls | Check `~/.chitin/gov-decisions-$(date +%Y-%m-%d).jsonl` for denials |
 | ollama 0.21.0 still installed | Upgrade script didn't run / ollama wasn't restarted | `curl -fsSL https://ollama.com/install.sh \| sh` + `sudo systemctl restart ollama` |
 | `qwen3-coder:30b-32k` not found | Modelfile create skipped | Re-run section 3 |
 

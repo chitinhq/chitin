@@ -59,7 +59,7 @@ Codex + gemini both speak the Claude Code PreToolUse wire format byte-for-byte; 
 | Telemetry | `libs/telemetry/` | JSONL tailer, SQLite indexer, replay streamer | No |
 | Adapters | `libs/adapters/<surface>/` | Thin per-surface forwarders | No |
 | CLI | `apps/cli/` | Operator commands (`chitin run / events / replay`) | No |
-| Souls | `souls/canonical/` + `souls/experimental/` | Cognitive lens definitions; `soul_id` populates `session_start.payload` | No |
+| Souls | `souls/canonical/` + `souls/experimental/` | Cognitive lens definitions; `soul_id` populates `session_start.payload` — **historical reference, not a runtime dependency** | No |
 
 The Go kernel exposes these subcommands:
 

@@ -175,8 +175,7 @@ reason to keep it anymore.
 
 ## Related
 
-- Strategic entry: `agent-router-architecture` (in
-  `docs/swarm-backlog.md`)
+- The hermes kanban system tracks agent-router work items
 - Auto-flipper companion: `chitin-shipped-entry-flipper` (separate
   systemd timer, separate concern — backlog hygiene)
 - Kernel binary: `chitin-kernel-redeploy.timer` keeps the

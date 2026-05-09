@@ -1,5 +1,7 @@
 # Chitin as the agent-systems conformance substrate
 
+> **Post-cull note (2026-05-08):** The conformance substrate concept (chain-derived capability profiles per driver/model) is aligned with the current moat. References to `apps/runner/src/dispatcher.ts` are stale (deleted in the 2026-05-06 cull). Implementation is deferred pending operator demand.
+
 Status: design. Supersedes `2026-05-05-tier-driver-matrix.md` (which
 made the wrong-shape mistake of trying to curate a static matrix).
 

@@ -1,6 +1,8 @@
 # Grant-Request Protocol — Design
 
-**Status:** spec draft — Milestone G of cost-governance kernel v3, deferred to post-talk (after 2026-05-07).
+> **Superseded (2026-05-08):** The `effect: escalate` mechanism was built to address this gap (operator approval on gate denial), then culled because Hermes' `tools/approval.py` already provides operator-prompt + reply-parse + persistent-allowlist natively. Grant-request is now a Hermes concern, not a chitin kernel concern. See `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`.
+
+**Status:** ~~spec draft~~ superseded.
 
 **Author:** in-session sketch, 2026-04-29.
 
