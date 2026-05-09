@@ -1,5 +1,12 @@
 # Local GLM-4.7-Flash Stack Runbook
 
+> **Historical note, 2026-05-09:** this runbook predates the
+> 2026-05-06/2026-05-08 scope cull. The local model and OpenClaw
+> setup details may still be useful, but all `apps/runner`,
+> dispatcher, tier-router, and in-gate advisor instructions below are
+> historical. Chitin no longer owns orchestration or model routing; it
+> gates OpenClaw/Hermes tool calls and records chain signals.
+
 > **Status: draft, pending operator validation on the 3090 rig.** This
 > runbook captures the operator-side wiring needed to make the new
 > `local-glm-flash` driver (added 2026-05-03) actually dispatch work
@@ -112,20 +119,16 @@ flipping back to `local-glm-flash` is the same env var unset.
 | Quality degradation on tasks T0 used to handle on copilot | model under-fit | flip back via `CHITIN_TIER_DRIVER_T0=copilot`; file backlog entry to either tune the prompt (skill folder) or escalate to T1 |
 | GPU OOM | model loaded alongside another model | `ollama stop <other>`; or run a second 3090, or give T0 a smaller budget so it doesn't keep two models hot |
 
-## 6. Tier-router consultation (when it ships)
+## 6. Router signals after the cull
 
-Once `tier-router-with-advisor-consultation` (filed in PR #208's
-skill-folder cohort) lands, GLM-4.7-flash hitting a judgment call
-will get a structured T2 (Sonnet) consultation rather than failing
-silently or escalating the whole task. Until then: low-confidence
-classification is just a deny-with-reason on the chain, and the
-operator (or the dispatcher's tier ladder) re-dispatches at T1.
+The in-gate tier-router advisor was removed on 2026-05-08. If
+GLM-4.7-flash hits a judgment call now, chitin's role is to stamp
+kernel decisions and router signals onto the chain. Hermes, OpenClaw,
+or an operator-wired chain reader owns any follow-up consultation,
+approval, retry, or model escalation.
 
 ## Reference
 
-- The driver definition: `libs/contracts/src/execution-request.schema.ts`
-  (`DriverIdSchema` enum)
-- Agent mapping: `apps/runner/src/activity.ts`
-  (`DRIVER_AGENT_MAP`)
-- Tier defaults + env override: `apps/runner/src/dispatcher.ts`
-  (`TIER_DRIVER_DEFAULTS` + `envDriverOverride`)
+- OpenClaw governance adapter: `libs/adapters/openclaw`
+- Hermes hook installer: `scripts/install-hermes-hook.sh`
+- Driver conformance map: `docs/driver-conformance.md`

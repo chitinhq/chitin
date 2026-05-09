@@ -1,5 +1,12 @@
 # Local Qwen Stack Runbook
 
+> **Historical note, 2026-05-09:** this runbook predates the
+> 2026-05-06/2026-05-08 scope cull. The Ollama/OpenClaw tuning notes
+> may still be useful, but all `apps/runner`, dispatcher, and backlog
+> flip instructions below are historical. Chitin no longer owns local
+> model orchestration; it gates tool calls from OpenClaw, Hermes, and
+> the standalone drivers.
+
 > **Status: draft, pending operator validation on the 3090 rig.** This
 > runbook captures the remediations the 2026-05-01 instability
 > investigation (PR #112) recommended, scoped to commands that match
