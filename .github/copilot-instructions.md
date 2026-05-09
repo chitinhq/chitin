@@ -37,3 +37,5 @@
 - Nx TypeScript typecheck targets are wired through `@nx/js:typescript-sync`, so interactive runs may prompt for `nx sync` before the task executes.
 - Other assistant configs in this repo already assume Nx-aware tooling (`.claude/settings.json` enables the Nx plugin and `.codex/config.toml` registers `nx-mcp`). If the current client supports Nx MCP or Nx workspace introspection, use that instead of guessing targets.
 - Claude global install verification depends on wrapper entries in `~/.claude/settings.json` shaped like Chitin's `_tag: "chitin"` hook wrappers with an empty `matcher` and nested `hooks` command entries.
+- VS Code Copilot should use this file, `AGENTS.md`, and `.github/instructions/chitin-*.instructions.md`. These files guide IDE behavior only; enforceable Copilot execution uses `chitin-kernel drive copilot`.
+- For driver/tool-call questions, check `docs/driver-conformance.md` before adding policy or normalizer behavior.

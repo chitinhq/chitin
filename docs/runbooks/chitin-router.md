@@ -1,10 +1,11 @@
 # chitin-router runbook
 
-> The router wraps the kernel's `PreToolUse` hook with a heuristic
-> + advisor pipeline. When enabled, it scores each tool call for
-> blast radius / floundering / drift; if any heuristic fires, it
-> consults a higher-tier advisor (via `claude -p`) for a nudge or
-> takeover verdict.
+> The router wraps the kernel's `PreToolUse` hook with advisory
+> signal stamping. When enabled, it scores each tool call for blast
+> radius / floundering / drift and writes a second `router.signal`
+> decision row to the chain. The router never spawns an LLM in the
+> gate; downstream consumers such as hermes can read the signal rows
+> and decide what to do.
 >
 > **Off by default** — operator opts in via a sentinel file. Hot
 > path stays fast (kernel only) until then.
@@ -20,12 +21,14 @@ it). As of 2026-05-04 that's all of:
 | `claude-code-headless` | `PreToolUse` | `~/.claude/settings.json` | `chitin-kernel install --surface claude-code` |
 | `codex` | `PreToolUse` (codex 0.128.0+) | `~/.codex/config.toml` (`[features] codex_hooks=true`) | `scripts/install-codex-hook.sh` |
 | `gemini` | `BeforeTool` (same wire shape; renamed event) | `~/.gemini/settings.json` | `scripts/install-gemini-hook.sh` |
+| `hermes` | `pre_tool_call` (same wire shape) | `~/.hermes/config.yaml` | `scripts/install-hermes-hook.sh` |
 | `copilot` | n/a — wrapping driver | (in-kernel) | `chitin-kernel drive copilot` |
 | `local-*` (qwen/glm/glm-flash/deepseek) | `before_tool_call` plugin | openclaw plugin config | openclaw-side |
 
 The `chitin-router-hook` shim is the same binary across all hook-
 surface drivers; per-vendor tool-name normalization lives in
-`internal/driver/<vendor>/normalize.go` (claudecode, codex, gemini).
+`internal/driver/<vendor>/normalize.go` (claudecode, codex, gemini,
+hermes).
 
 ## What it does
 
@@ -34,23 +37,26 @@ For each `PreToolUse` hook call from any chitin-governed agent:
 1. **Kernel verdict (deterministic)** — `chitin-kernel gate evaluate
    --hook-stdin`. If the kernel denies, the router returns the deny
    immediately.
-2. **Heuristics** — pure functions over the hook input + recent chain
+2. **Signals** — pure functions over the hook input + recent chain
    events:
    - `blast_radius` — scores actions on reversibility / scope /
      visibility / counterparties (0.0–1.0; > threshold = fired)
    - `floundering` — detects looping tool calls, stalled progress,
      denial cascades over the agent's chain
-3. **Advisor (optional)** — if any heuristic fires AND the policy
-   triggers match, calls `claude -p` with a structured prompt
-   asking for a nudge + verdict (continue / takeover) + escalate
-   bool. The advisor's response is composed into the hook reply.
-4. **Compose** — kernel decision + advisor nudge → Claude Code
-   sees the nudge in the tool-call result and continues.
+   - `drift` — detects high-risk actions that diverge from the
+     recent task/session context
+3. **Plugins (optional)** — operator-declared subprocess checks can
+   add advisory scores. Pre-action plugins may return `block=true`
+   for deterministic checks.
+4. **Stamp** — non-zero signal scores are written as a second
+   `gov.Decision` row with action type `router.signal`.
+5. **Return** — the kernel verdict is emitted unchanged. Heuristics
+   do not deny or allow; kernel policy and pre-action plugin blocks
+   are the only authoritative verdicts.
 
 Hot path performance: when the sentinel file is absent, the
 wrapper is a single `exec chitin-kernel` — adds ~0ms. When the
-sentinel is present, the TS pipeline runs (~500ms cold, but most
-tool calls don't fire heuristics so the advisor isn't invoked).
+sentinel is present, the Go router evaluates heuristics in-process.
 
 ## Install
 
@@ -81,17 +87,17 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_pat
 # Expect: {"decision":"allow","source":"kernel-allow"}
 ```
 
-Smoke a high-blast action (should fire blast_radius + try advisor):
+Smoke a high-blast action (should fire blast_radius and stamp a
+router signal row):
 
 ```bash
 echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"},"cwd":"'"$PWD"'","session_id":"smoke"}' \
   | ~/workspace/chitin/bin/chitin-router-hook --agent=smoke
-# Expect: {"decision":"allow|deny","message":"<nudge>","source":"advisor-allow|advisor-deny"}
-# (Takes ~30-60s if advisor is reachable.)
+# Expect: the kernel verdict on stdout; router telemetry on stderr.
 ```
 
-If the advisor errors / times out, the wrapper falls through to
-the kernel verdict (fail-open) — the agent isn't blocked.
+Signal rows are written to the same chain as normal kernel
+decisions. Use the chain readers to inspect `router.signal` rows.
 
 ## Configure
 
@@ -108,19 +114,16 @@ router:
       enabled: true
       max_loop_count: 3             # same tool+target N times → fire
       max_stall_seconds: 600        # no writes in N seconds → fire
-  advisor:
-    enabled: true
-    when:                           # which signals trigger the advisor
-      - blast_radius_above_threshold
-      - floundering_detected
-      - kernel_denied               # advise on every deny too
-    chain:
-      max_depth: 3                  # cap on advisor-chain depth
-      tier_steps: [T2, T3, T4]      # tier ladder for chained advice
-    model: claude-code-headless     # advisor model id
+  plugins:
+    - name: tests-required-before-commit
+      type: pre-action
+      runtime: python3
+      module: scripts/check-tests-before-commit.py
+      timeout_ms: 750
+      allowlist_paths: ["."]
 ```
 
-Most edits don't require restarting anything — the TS hook reads
+Most edits don't require restarting anything — the router reads
 `chitin.yaml` per-call (with a small cache, but cache is per-
 process and the hook is per-process).
 
@@ -133,10 +136,10 @@ to stderr; journald captures it for the systemd-driven hooks):
 journalctl --user -u chitin-worker -f | grep '"component":"router-'
 ```
 
-Read the per-workflow shared memory (advisor nudges):
+Read stamped router signal rows:
 
 ```bash
-cat ~/.chitin/shared-memory/<workflow-id>.json | jq .
+chitin-kernel chain stats --action router.signal
 ```
 
 Disable a heuristic without touching policy YAML — set the env var
@@ -151,9 +154,9 @@ override on the worker:
 | Failure | Impact | Fix |
 |---|---|---|
 | `chitin-kernel` binary missing | Wrapper logs warn, falls open (allow). Agent unaffected. | Rebuild kernel; `chitin-kernel-redeploy.timer` should catch this. |
-| Advisor (`claude -p`) times out | Wrapper logs warn, returns kernel verdict only. Agent gets no nudge but isn't blocked. | Increase `--timeoutMs` in `advisor.ts` (default 60s); verify Claude Code auth. |
-| `chitin.yaml` unreadable / missing `router:` | Wrapper uses `DEFAULT_ROUTER_POLICY` (advisor disabled). | Add or fix the section. |
-| TS hook crashes | Wrapper catches, falls open (allow). Agent unaffected. | Check stderr; report bug. |
+| Plugin times out or errors | Router logs warn and ignores that plugin result. | Fix the plugin command or lower its scope. |
+| `chitin.yaml` unreadable / missing `router:` | Wrapper uses `DefaultPolicy` (router disabled). | Add or fix the section. |
+| Router hook crashes | Wrapper returns a non-blocking hook error. Agent unaffected. | Check stderr; report bug. |
 
 ## Why a sentinel file (not a config flag)
 

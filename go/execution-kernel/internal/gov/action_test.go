@@ -11,7 +11,8 @@ func TestActionType_ClosedEnum(t *testing.T) {
 		ActShellExec, ActFileRead, ActFileWrite, ActFileDelete,
 		ActGitPush, ActGitForcePush, ActGitCommit, ActGitCheckout,
 		ActGitWorktreeAdd, ActGithubPRCreate, ActGithubIssueView,
-		ActDelegateTask, ActHTTPRequest, ActUnknown,
+		ActDelegateTask, ActHTTPRequest, ActMCPCall, ActMemoryAccess,
+		ActCustomTool, ActHookInvoke, ActUnknown,
 	}
 	for _, a := range wantPresent {
 		if a == "" {

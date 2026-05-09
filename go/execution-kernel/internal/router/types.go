@@ -34,7 +34,7 @@ type HookInput struct {
 type HookOutput struct {
 	Decision string `json:"decision"`          // "allow" | "deny"
 	Message  string `json:"message,omitempty"` // shown to the agent
-	Source   string `json:"source,omitempty"`  // kernel | heuristic-deny | advisor-* | kernel-allow
+	Source   string `json:"source,omitempty"`  // kernel | heuristic-deny | plugin-block | kernel-allow
 }
 
 // HeuristicScore is the result of one heuristic running over a HookInput.
@@ -88,7 +88,7 @@ type AdvisorConfig struct {
 // wire protocol.
 type PluginConfig struct {
 	Name      string                 `yaml:"name" json:"name"`
-	Type      string                 `yaml:"type" json:"type"`           // heuristic | advisor
+	Type      string                 `yaml:"type" json:"type"`           // heuristic | pre-action
 	Runtime   string                 `yaml:"runtime" json:"runtime"`     // python3 | node | bun | bash
 	Module    string                 `yaml:"module" json:"module"`       // path to script
 	Config    map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
@@ -141,13 +141,13 @@ func DefaultPolicy() Policy {
 			},
 		},
 		Advisor: AdvisorConfig{
-			Enabled: true,
-			When:    []string{"blast_radius_above_threshold", "floundering_detected"},
+			Enabled: false,
+			When:    nil,
 			Chain: struct {
 				MaxDepth  int      `yaml:"max_depth" json:"max_depth"`
 				TierSteps []string `yaml:"tier_steps" json:"tier_steps"`
-			}{MaxDepth: 3, TierSteps: []string{"T2", "T3", "T4"}},
-			Model: "claude-code-headless",
+			}{},
+			Model: "",
 		},
 	}
 }

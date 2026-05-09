@@ -11,10 +11,10 @@ The strategic arc, what's shipped, what's in flight, what's deferred. Updated 20
           │                    │                      │
           └────────►───────────┴────────►─────────────┤
                                                       │
-   4. Policy packs      5. Cloud offering      6. North star
-      reusable             centralized            execution governance
-      governance           trace + policy         as the auditable layer
-      bundles              SaaS                   under whatever the
+   4. Policy packs      5. Local operator      6. North star
+      reusable             leverage               execution governance
+      governance           replay + analytics     as the auditable layer
+      bundles              on operator data       under whatever the
                                                   orchestration ecosystem
                                                   picks next
           │                    │                      │
@@ -48,7 +48,7 @@ Go execution kernel (canon, normalize, emit, hook), `libs/contracts` (zod schema
 - **Gemini CLI hook driver** — `--agent=gemini` PreToolUse handler
 - **Copilot CLI in-kernel SDK driver** — PR #51 (`chitin-kernel drive copilot`)
 - **OpenClaw before_tool_call plugin** — `~/.openclaw/plugins/chitin-governance/`
-- **Hermes pre_tool_call plugin** — `~/.hermes/plugins/chitin-governance/`
+- **Hermes pre_tool_call hook** — `scripts/install-hermes-hook.sh` wires `~/.hermes/config.yaml`
 
 The hero sentence names six drivers. Bitrot in any is a hero-sentence bug.
 

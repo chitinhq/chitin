@@ -55,7 +55,7 @@ the outcome via `post_approval_response`.
 - **`chitin-kernel gate` per-tool-call evaluation.** Universal cross-driver gate; Hermes' `pre_tool_call` is local to Hermes only. Chitin gates Claude Code, Codex, Gemini, and Hermes from one canonical action vocabulary.
 - **Cross-driver `normalize.go`** (claudecode/codex/gemini/hermes). Canonical action vocabulary; no Hermes equivalent.
 - **`chitin.yaml` declarative policy schema.** Typed actions + `path_under` + bounds; Hermes is regex-on-shell-string only.
-- **`chitin-router-hook` + advisor pipeline.** Heuristics (blast-radius, floundering) + LLM second-opinion; unique to chitin.
+- **`chitin-router-hook` signal stamping.** Heuristics (blast-radius, floundering, drift) + tamper-evident chain rows; LLM consultation belongs downstream.
 - **`gov-decisions.jsonl` audit log + chain replay.** Tamper-evident chain shape; Hermes has logs but not this.
 - **Severity ladder + lockdown counter** (`agent_state` in gov.db). Per-agent escalation across all tasks; Hermes has per-task retry budgets only.
 - **Bounds enforcement** (lines/files changed on git push). No Hermes equivalent.

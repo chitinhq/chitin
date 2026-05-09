@@ -13,7 +13,7 @@ func samplePolicy() RoutesPolicy {
 		Rules: []RoutingRule{
 			{Name: "floundering-loop", Signal: "floundering", Severity: ">= 2 loops", Route: "patch_quality", MaxPerHour: 10},
 			{Name: "blast-radius-large", Signal: "blast_radius", Severity: "> 25 files", Route: "reasoning_depth", MaxPerHour: 5},
-			{Name: "drift-takeover", Signal: "drift", Severity: "advisor.verdict=takeover", Route: "reasoning_depth", MaxPerHour: 3},
+			{Name: "drift-high", Signal: "drift", Severity: "score>=0.6", Route: "reasoning_depth", MaxPerHour: 3},
 		},
 		Routes: map[string][]Candidate{
 			"patch_quality": {
@@ -59,8 +59,8 @@ func TestRouteFor_DriftMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Rule.Name != "drift-takeover" {
-		t.Errorf("expected drift-takeover; got %q", d.Rule.Name)
+	if d.Rule.Name != "drift-high" {
+		t.Errorf("expected drift-high; got %q", d.Rule.Name)
 	}
 }
 

@@ -147,7 +147,7 @@ func TestNormalize_Memory(t *testing.T) {
 		Subject: ptr("user preferences"),
 	}
 	got := Normalize(req, "/work")
-	if got.Type != "memory.access" {
+	if got.Type != gov.ActMemoryAccess {
 		t.Errorf("Type: got %q, want memory.access", got.Type)
 	}
 }
@@ -158,7 +158,7 @@ func TestNormalize_CustomTool(t *testing.T) {
 		ToolName: ptr("my-custom-tool"),
 	}
 	got := Normalize(req, "/work")
-	if got.Type != "tool.custom" {
+	if got.Type != gov.ActCustomTool {
 		t.Errorf("Type: got %q, want tool.custom", got.Type)
 	}
 }
@@ -169,7 +169,7 @@ func TestNormalize_Hook(t *testing.T) {
 		HookMessage: ptr("pre-commit hook needs approval"),
 	}
 	got := Normalize(req, "/work")
-	if got.Type != "hook.invoke" {
+	if got.Type != gov.ActHookInvoke {
 		t.Errorf("Type: got %q, want hook.invoke", got.Type)
 	}
 }

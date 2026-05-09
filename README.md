@@ -4,13 +4,13 @@
 
 Every tool call across Claude Code, Codex CLI, Gemini CLI, Copilot CLI, and OpenClaw passes through one declarative policy and lands in a hash-linked audit chain that emits OTEL spans into your existing observability stack. Apache 2.0 licensed.
 
-> Stable primitives (tool invocation, execution authority, policy enforcement, observability, escalation) wrapped around an unstable substrate (drivers, models, benchmarks). Composes with whatever orchestrator you already run.
+> Stable primitives (tool invocation, execution authority, policy enforcement, observability, heuristic signals) wrapped around an unstable substrate (drivers, models, benchmarks). Composes with whatever orchestrator you already run.
 
 ## What chitin IS
 
 The kernel and the contract it enforces — exhaustively three things:
 
-1. **The kernel** — `chitin-kernel` Go binary. Gate, escalation counter, lockdown, envelope, audit. Single side-effect authority.
+1. **The kernel** — `chitin-kernel` Go binary. Gate, severity counter, lockdown, envelope, audit, router signals. Single side-effect authority.
 2. **Driver plugins** — `go/execution-kernel/internal/driver/{claudecode,codex,gemini,hermes,copilot}/normalize.go`. Adapters between vendor tool vocabularies and the kernel's canonical action enum.
 3. **The data** — `~/.chitin/{gov-decisions-*.jsonl, events-*.jsonl, gov.db, chain_index.sqlite}`. Tamper-evident chain + the read-side analysis surface (`python/analysis/`).
 
@@ -33,7 +33,7 @@ Asymmetric strengths nothing else in the ecosystem provides:
 3. **Tamper-evident chain across all drivers + sessions.** SHA-256-linked JSONL with SQLite materialized index. Replay-able. Cross-driver, cross-session, cross-day.
 4. **Per-agent severity ladder + lockdown counter.** `agent_state` in `gov.db` tracks behavior across all tasks and drivers. Hermes has per-task retry budgets; chitin's counter spans the agent's lifetime.
 5. **Bounds enforcement on push-shaped actions** (lines/files changed). No equivalent in any substrate.
-6. **Heuristic + LLM-advisor pipeline** (`internal/router/`). Blast-radius + floundering-detector + drift signals + LLM second-opinion. Justifies itself for non-Hermes drivers and for chain-derived signals Hermes' `smart` mode can't see.
+6. **Heuristic signals stamped onto the chain** (`internal/router/`). Blast-radius, floundering, and drift are pure-Go signals emitted as advisory decision rows. LLM consultation lives downstream in Hermes `approvals.mode: smart` or operator-wired chain consumers, not in the kernel hot path.
 
 ## How chitin composes with what you already run
 
@@ -80,16 +80,17 @@ chitin-kernel health
 ├── go/execution-kernel/         # Go kernel — only layer with side effects
 │   ├── cmd/chitin-kernel/       #   binary + subcommands
 │   └── internal/
-│       ├── gov/                 #   gate, policy, bounds, escalation, chain
+│       ├── gov/                 #   gate, policy, bounds, severity, chain
 │       ├── driver/              #   per-driver normalize.go (claudecode, codex,
 │       │                        #   gemini, hermes, copilot)
-│       ├── router/              #   heuristic + LLM-advisor pipeline
+│       ├── router/              #   pure-Go heuristic signals + plugin checks
 │       ├── chain/               #   audit chain + SQLite index
 │       └── canon/               #   canonical-JSON SHA-256
 ├── libs/
 │   ├── contracts/               # canonical wire schemas (TS)
-│   ├── governance/              # TS mirror of policy schema
-│   └── adapters/                # per-driver TS shims for read-side tooling
+│   ├── telemetry/               # read/query side over the event chain
+│   ├── router-plugin-api/       # typed API for external router plugins
+│   └── adapters/                # operator-installed driver-side adapters
 ├── apps/cli/                    # operator CLI (`chitin` — events, replay, health, ledger)
 ├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect)
 ├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,
@@ -120,6 +121,7 @@ $HOME/.chitin/
 - [`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`](./docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md) — why operator-approval lives in hermes, not chitin
 - [`docs/architecture.md`](./docs/architecture.md) — kernel internals
 - [`docs/roadmap.md`](./docs/roadmap.md) — strategic arc + what's in flight
+- [`docs/driver-conformance.md`](./docs/driver-conformance.md) — current driver hook matrix and normalizer gaps
 
 ## License
 

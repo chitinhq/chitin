@@ -1,23 +1,21 @@
 package router
 
-// routeFor — peer-escalation routing decision.
+// routeFor — advisory routing decision.
 //
-// Per docs/design/2026-05-06-kernel-gate-escalation.md (step 2 of 6):
-// pure function from (signal, severity, context, policy) → RouteDecision.
-// NO peer spawning yet (that's step 3); NO live quota integration yet
-// (that's step 6 — observed dimensions feed back). This step ships
-// the deterministic decision engine reachable from tests but not wired
-// into the gate.
+// Pure function from (signal, severity, context, policy) to
+// RouteDecision. It never spawns a peer CLI, shells out, or consults an
+// LLM. The result is a candidate label that can be stamped on the
+// chain for downstream consumers.
 //
 // Contract:
 //   - First rule whose Signal matches `req.Signal` wins. Severity is
 //     captured for telemetry but does NOT participate in matching yet
 //     (string-only, no comparator parser).
 //   - Rule's Route is looked up in policy.Routes; first candidate is
-//     returned (FUTURE step 6: walk by quota state + observed
-//     compatibility, not just first).
-//   - No matching rule → ErrNoRuleMatched. Caller falls back to the
-//     existing kernel deny+escalation_requested behavior.
+//     returned. A future chain consumer can walk by quota state +
+//     observed compatibility instead of taking the head.
+//   - No matching rule → ErrNoRuleMatched. Caller emits no routing
+//     candidate.
 //   - No candidates in route → ErrRouteEmpty. Validation should have
 //     prevented this; treat as a config bug worth logging.
 
@@ -27,15 +25,15 @@ import (
 )
 
 var (
-	ErrNoRuleMatched = errors.New("no escalation rule matched the signal")
+	ErrNoRuleMatched = errors.New("no routing rule matched the signal")
 	ErrRouteEmpty    = errors.New("matched route has no candidates")
-	ErrPolicyOff     = errors.New("escalation policy is disabled")
+	ErrPolicyOff     = errors.New("routing policy is disabled")
 )
 
 // RouteRequest is the per-tool-call input to RouteFor.
 type RouteRequest struct {
-	// Signal that triggered the escalation: "floundering" |
-	// "blast_radius" | "drift" | "advisor_takeover".
+	// Signal that triggered routing: "floundering" | "blast_radius" |
+	// "drift".
 	Signal string
 
 	// Human-readable severity string (recorded in telemetry; not yet
@@ -44,12 +42,10 @@ type RouteRequest struct {
 	Severity string
 
 	// ToolCall is the worker's pending tool-call payload. Opaque to
-	// RouteFor today; passed through to spawnPeer (step 3) which
-	// wraps it for the peer CLI's prompt.
+	// RouteFor today; downstream consumers may use it for context.
 	ToolCall map[string]any
 
-	// Recent chain events for context. Same — opaque to RouteFor;
-	// wrapped by spawnPeer.
+	// Recent chain events for context. Same — opaque to RouteFor.
 	ChainTail []map[string]any
 
 	// Worker's workflow_id, for Provenance attribution downstream.
@@ -72,7 +68,7 @@ type RouteDecision struct {
 	Rationale string
 }
 
-// RouteFor maps an escalation signal to a (driver, model) candidate
+// RouteFor maps a router signal to a (driver, model) candidate
 // using the operator's policy. Pure function — no I/O, no clocks, no
 // subprocess. Safe to call from inside the gate hot path.
 func RouteFor(req RouteRequest, policy RoutesPolicy) (RouteDecision, error) {
