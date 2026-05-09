@@ -20,14 +20,15 @@ type Policy struct {
 	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
 	Bounds         Bounds            `yaml:"bounds,omitempty"`
 	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
+	Worktree       WorktreeConfig    `yaml:"worktree,omitempty"`
 	Rules          []Rule            `yaml:"rules"`
 }
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
 type Rule struct {
 	ID               string        `yaml:"id"`
-	Action           ActionMatcher `yaml:"action"` // single type OR list of types
-	Effect           string        `yaml:"effect"` // allow | deny | guide | monitor
+	Action           ActionMatcher `yaml:"action"`                 // single type OR list of types
+	Effect           string        `yaml:"effect"`                 // allow | deny | guide | monitor
 	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
@@ -80,6 +81,16 @@ type ActionBounds struct {
 	MaxLinesChanged int `yaml:"max_lines_changed"`
 }
 
+// WorktreeConfig requires selected side-effect action types to run from a
+// linked git worktree instead of the protected primary checkout. This is a
+// deterministic local invariant: no approvals, no orchestration, no workflow
+// creation. Empty RequireFor disables the check.
+type WorktreeConfig struct {
+	RequireFor     ActionMatcher `yaml:"require_for,omitempty"`
+	Mode           string        `yaml:"mode,omitempty"` // guide | enforce; default guide
+	ProtectedRoots []string      `yaml:"protected_roots,omitempty"`
+}
+
 // effectiveBounds returns the bounds that apply to actionType — the
 // PerAction override merged with the top-level defaults. Zero values
 // in the override fall back to the default; non-zero values win.
@@ -101,10 +112,10 @@ func (b Bounds) effectiveBounds(actionType string) ActionBounds {
 
 // EscalationConfig overrides the default escalation thresholds.
 type EscalationConfig struct {
-	ElevatedThreshold  int `yaml:"elevated_threshold"`  // default 3
-	HighThreshold      int `yaml:"high_threshold"`      // default 7
-	LockdownThreshold  int `yaml:"lockdown_threshold"`  // default 10
-	MaxRetriesPerFp    int `yaml:"max_retries_per_action"` // default 3
+	ElevatedThreshold int `yaml:"elevated_threshold"`     // default 3
+	HighThreshold     int `yaml:"high_threshold"`         // default 7
+	LockdownThreshold int `yaml:"lockdown_threshold"`     // default 10
+	MaxRetriesPerFp   int `yaml:"max_retries_per_action"` // default 3
 }
 
 // Decision is the result of evaluating an Action against a Policy.
@@ -276,6 +287,26 @@ func (p *Policy) ApplyDefaults() error {
 	}
 	if p.Escalation.MaxRetriesPerFp == 0 {
 		p.Escalation.MaxRetriesPerFp = 3
+	}
+	if len(p.Worktree.RequireFor) > 0 {
+		if p.Worktree.Mode == "" {
+			p.Worktree.Mode = "guide"
+		}
+		switch p.Worktree.Mode {
+		case "guide", "enforce":
+		default:
+			return fmt.Errorf("worktree.mode=%q: must be guide or enforce", p.Worktree.Mode)
+		}
+		for j, a := range p.Worktree.RequireFor {
+			if a == "" {
+				return fmt.Errorf("worktree.require_for[%d] is empty; remove the entry or fill it in", j)
+			}
+		}
+		for j, root := range p.Worktree.ProtectedRoots {
+			if strings.TrimSpace(root) == "" {
+				return fmt.Errorf("worktree.protected_roots[%d] is empty; remove the entry or fill it in", j)
+			}
+		}
 	}
 	for i := range p.Rules {
 		if p.Rules[i].EscalationWeight == 0 {
