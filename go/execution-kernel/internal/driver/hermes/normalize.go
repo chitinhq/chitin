@@ -35,6 +35,11 @@
 //	skill_view         → file.read, target = name (skill .md path).
 //	skills_list        → file.read, target = category.
 //	skill_manage       → file.write, target = name (skill creation/edit).
+//	memory             → file.write, target = memory (durable memory write).
+//	todo               → file.write, target = todo (session task state).
+//	session_search     → file.read, target = query (past session/memory search).
+//	process            → hermes.process, target = action.
+//	kanban_*           → kanban.call, target = verb without kanban_ prefix.
 //	mcp__<server>__<tool> → mcp.call (hermes uses the same MCP convention
 //	                     as Claude Code; reuse the parsing).
 //
@@ -43,7 +48,6 @@
 //	image_generate, text_to_speech, vision_analyze — modality-side-effect
 //	cronjob — scheduling action; no clear gov-action peer
 //	clarify — chat-only, no fs/network impact
-//	process — generic process action; ambiguous
 //
 // These produce ActUnknown which fail-closes under default-deny — safer
 // than guessing wrong. Add proper types as the surface stabilizes.
@@ -202,6 +206,37 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Type:   gov.ActFileWrite,
 			Target: stringField(in.ToolInput, "name"),
 			Path:   in.Cwd,
+		}, nil
+
+	case "memory":
+		// Hermes durable memory mutates operator-owned agent memory.
+		// Keep the target stable rather than action/target-specific so
+		// policy can reason about the memory surface as one governed sink.
+		return gov.Action{
+			Type:   gov.ActFileWrite,
+			Target: "memory",
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
+
+	case "todo":
+		return gov.Action{
+			Type:   gov.ActFileWrite,
+			Target: "todo",
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
+
+	case "session_search":
+		target := stringField(in.ToolInput, "query")
+		if target == "" {
+			target = "session_search"
+		}
+		return gov.Action{
+			Type:   gov.ActFileRead,
+			Target: target,
+			Path:   in.Cwd,
+			Params: in.ToolInput,
 		}, nil
 
 	// Kanban runtime calls — the hermes worker reading/writing its own
