@@ -397,6 +397,61 @@ rules: []
 	}
 }
 
+func TestLoadPolicyRejectsGlobalAuthorityGrant(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chitin.yaml")
+	if err := os.WriteFile(path, []byte(`
+id: test
+mode: enforce
+authority:
+  trusted:
+    - authority: supervisor
+rules:
+  - id: allow-read
+    action: file.read
+    effect: allow
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadPolicyFile(path)
+	if err == nil {
+		t.Fatal("LoadPolicyFile must reject trusted authority grants without an identity selector")
+	}
+	if !strings.Contains(err.Error(), "authority.trusted[0]") {
+		t.Fatalf("error should identify invalid authority grant, got %v", err)
+	}
+}
+
+func TestLoadPolicyRejectsSpoofableOnlyAuthorityGrant(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chitin.yaml")
+	if err := os.WriteFile(path, []byte(`
+id: test
+mode: enforce
+authority:
+  trusted:
+    - authority: supervisor
+      driver: hermes
+      model: qwen3.6:27b
+      role: reviewer
+rules:
+  - id: allow-read
+    action: file.read
+    effect: allow
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadPolicyFile(path)
+	if err == nil {
+		t.Fatal("LoadPolicyFile must reject trusted authority grants that only use spoofable selectors")
+	}
+	if !strings.Contains(err.Error(), "stable identity selector") {
+		t.Fatalf("error should explain stable selector requirement, got %v", err)
+	}
+}
+
 // TestPolicy_RejectsEmptyListEntries pins the contract that a stray
 // blank entry in a list-typed rule field (path_under, branches,
 // action) is a load-time error, not a silent surface-widening at

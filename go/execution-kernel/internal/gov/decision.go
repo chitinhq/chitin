@@ -60,6 +60,7 @@ func WriteLog(d Decision, dir string) error {
 		Driver           string `json:"driver,omitempty"`
 		Model            string `json:"model,omitempty"`
 		Role             string `json:"role,omitempty"`
+		ClaimedAuthority string `json:"claimed_authority,omitempty"`
 		Authority        string `json:"authority,omitempty"`
 		WorkflowID       string `json:"workflow_id,omitempty"`
 		Fingerprint      string `json:"fingerprint,omitempty"`
@@ -88,6 +89,7 @@ func WriteLog(d Decision, dir string) error {
 		Driver:           d.Driver,
 		Model:            d.Model,
 		Role:             d.Role,
+		ClaimedAuthority: d.ClaimedAuthority,
 		Authority:        d.Authority,
 		WorkflowID:       d.WorkflowID,
 		Fingerprint:      d.Fingerprint,

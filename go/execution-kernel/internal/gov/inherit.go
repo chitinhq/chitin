@@ -132,6 +132,7 @@ func mergePolicies(parent, child Policy) Policy {
 	if child.Escalation.MaxRetriesPerFp > 0 {
 		out.Escalation.MaxRetriesPerFp = child.Escalation.MaxRetriesPerFp
 	}
+	out.Authority.Trusted = append(out.Authority.Trusted, child.Authority.Trusted...)
 	if out.InvariantModes == nil {
 		out.InvariantModes = make(map[string]string)
 	}

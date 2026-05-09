@@ -380,7 +380,7 @@ func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
 		Driver:           "codex",
 		Model:            "gpt-5.5",
 		Role:             "reviewer",
-		Authority:        "worker",
+		ClaimedAuthority: "supervisor",
 		WorkflowID:       "wf-agent-identity",
 	}
 
@@ -400,9 +400,39 @@ func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
 	if d.Fingerprint != "agentfp123456" {
 		t.Errorf("legacy Fingerprint alias: got %q want agentfp123456", d.Fingerprint)
 	}
+	if d.ClaimedAuthority != "supervisor" {
+		t.Errorf("ClaimedAuthority: got %q want supervisor", d.ClaimedAuthority)
+	}
 	if d.Driver != "codex" || d.Model != "gpt-5.5" || d.Role != "reviewer" ||
 		d.Authority != "worker" || d.WorkflowID != "wf-agent-identity" {
 		t.Errorf("typed identity dims not stamped: %+v", d)
+	}
+}
+
+func TestGate_TrustedAuthorityGrantStampsSupervisor(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Policy.Authority.Trusted = []TrustedAuthority{
+		{Authority: "supervisor", AgentFingerprint: "agentfp123456"},
+	}
+	g.Fingerprint = FingerprintContext{
+		AgentInstanceID:  "hermes-run-9",
+		AgentFingerprint: "agentfp123456",
+		Driver:           "hermes",
+		Model:            "qwen3.6:27b",
+		Role:             "reviewer",
+		ClaimedAuthority: "worker",
+		WorkflowID:       "wf-agent-identity",
+	}
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "hermes", nil)
+	if !d.Allowed {
+		t.Fatalf("expected allow, got %+v", d)
+	}
+	if d.ClaimedAuthority != "worker" {
+		t.Errorf("ClaimedAuthority: got %q want worker", d.ClaimedAuthority)
+	}
+	if d.Authority != "supervisor" {
+		t.Errorf("trusted effective Authority: got %q want supervisor", d.Authority)
 	}
 }
 
@@ -439,6 +469,22 @@ func TestGate_FingerprintEmptyByDefault(t *testing.T) {
 	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
 	if d.Model != "" || d.Role != "" || d.WorkflowID != "" || d.Fingerprint != "" {
 		t.Errorf("expected empty fingerprint dims by default, got %+v", d)
+	}
+}
+
+func TestGate_DefaultExternalRoleStampsExternalAuthority(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Fingerprint = FingerprintContextFromEnv()
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Role != "external" {
+		t.Errorf("Role: got %q want external", d.Role)
+	}
+	if d.Authority != "external" {
+		t.Errorf("Authority: got %q want external", d.Authority)
+	}
+	if d.ClaimedAuthority != "" {
+		t.Errorf("ClaimedAuthority should stay empty by default, got %q", d.ClaimedAuthority)
 	}
 }
 
@@ -535,8 +581,11 @@ func TestFingerprintContextFromEnv_TypedIdentityVarsRead(t *testing.T) {
 	if got.Driver != "hermes" {
 		t.Errorf("Driver: got %q want hermes", got.Driver)
 	}
-	if got.Authority != "supervisor" {
-		t.Errorf("Authority: got %q want supervisor", got.Authority)
+	if got.ClaimedAuthority != "supervisor" {
+		t.Errorf("ClaimedAuthority: got %q want supervisor", got.ClaimedAuthority)
+	}
+	if got.Authority != "" {
+		t.Errorf("env authority must not become trusted effective authority: got %q", got.Authority)
 	}
 }
 
@@ -551,7 +600,7 @@ func TestFingerprintContextFromEnv_TypedDispatchVarsFallback(t *testing.T) {
 	got := FingerprintContextFromEnv()
 	if got.AgentInstanceID != "inst-dispatch" || got.AgentFingerprint != "agentfp-dispatch" ||
 		got.Fingerprint != "agentfp-dispatch" || got.Driver != "copilot" ||
-		got.Authority != "worker" || got.WorkflowID != "wf-dispatch" {
+		got.ClaimedAuthority != "worker" || got.Authority != "" || got.WorkflowID != "wf-dispatch" {
 		t.Errorf("typed dispatch vars not read correctly: %+v", got)
 	}
 }
