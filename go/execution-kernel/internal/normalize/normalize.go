@@ -1,3 +1,5 @@
+// Package normalize maps raw driver tool invocations to the
+// canonical action vocabulary used by chitin policy evaluation.
 package normalize
 
 import (

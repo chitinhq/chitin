@@ -1,4 +1,4 @@
-// F4 OTEL emit MVP. Projects canonical chain events onto OTLP/HTTP JSON spans
+// Package emit projects canonical chain events onto OTLP/HTTP JSON spans
 // and POSTs them to a configured collector. One-way bridge — chain is canonical,
 // OTEL is non-authoritative projection.
 //
