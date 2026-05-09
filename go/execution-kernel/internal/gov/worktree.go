@@ -41,26 +41,22 @@ func worktreeDenied(a Action, mode, reason string) Decision {
 }
 
 func isLinkedGitWorktree(cwd string) (bool, error) {
-	inside, err := gitOutput(cwd, "rev-parse", "--is-inside-work-tree")
+	out, err := gitOutput(cwd, "rev-parse", "--is-inside-work-tree", "--git-dir", "--git-common-dir")
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(inside) != "true" {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		return false, fmt.Errorf("unexpected git rev-parse output: got %d lines", len(lines))
+	}
+	if strings.TrimSpace(lines[0]) != "true" {
 		return false, fmt.Errorf("not inside a git worktree")
 	}
-	gitDir, err := gitOutput(cwd, "rev-parse", "--git-dir")
+	absGitDir, err := absGitPath(cwd, strings.TrimSpace(lines[1]))
 	if err != nil {
 		return false, err
 	}
-	commonDir, err := gitOutput(cwd, "rev-parse", "--git-common-dir")
-	if err != nil {
-		return false, err
-	}
-	absGitDir, err := absGitPath(cwd, strings.TrimSpace(gitDir))
-	if err != nil {
-		return false, err
-	}
-	absCommonDir, err := absGitPath(cwd, strings.TrimSpace(commonDir))
+	absCommonDir, err := absGitPath(cwd, strings.TrimSpace(lines[2]))
 	if err != nil {
 		return false, err
 	}

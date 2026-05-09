@@ -55,6 +55,23 @@ func TestGate_WorktreeRequirementFailsClosedOutsideGit(t *testing.T) {
 	}
 }
 
+func TestGate_WorktreeRequirementDeniesProtectedRoot(t *testing.T) {
+	repo, _ := newWorktreeFixture(t)
+	g := newWorktreeGate(t, repo, "guide")
+	g.Policy.Worktree.ProtectedRoots = []string{repo}
+
+	d := g.Evaluate(Action{Type: ActFileWrite, Target: "README.md"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("file.write inside protected root should be denied, got %+v", d)
+	}
+	if d.RuleID != "worktree-required" {
+		t.Fatalf("RuleID=%q want worktree-required", d.RuleID)
+	}
+	if !strings.Contains(d.Reason, "protected primary checkout") {
+		t.Fatalf("Reason=%q should mention protected primary checkout", d.Reason)
+	}
+}
+
 func TestGate_WorktreeRequirementSkipsUnlistedReadActions(t *testing.T) {
 	repo, _ := newWorktreeFixture(t)
 	g := newWorktreeGate(t, repo, "guide")
