@@ -75,22 +75,25 @@ func parseRouterSection(routerYaml string) Policy {
 		policy.Enabled = m[1] == "true"
 	}
 
+	sectionRe := regexp.MustCompile(`^\s{2}\w`)
+	subsectionRe := regexp.MustCompile(`^\s{4}\w.*:\s*$`)
+	kvRe := regexp.MustCompile(`^\s+([a-z_]+):\s+(.+)$`)
+
 	section := ""
 	subsection := ""
 	for _, rawLine := range lines {
 		// Section header at 2-space indent + word
-		if matched, _ := regexp.MatchString(`^\s{2}\w`, rawLine); matched {
+		if sectionRe.MatchString(rawLine) {
 			section = strings.TrimSuffix(strings.TrimSpace(rawLine), ":")
 			subsection = ""
 			continue
 		}
 		// Subsection header at 4-space indent + word + colon-EOL
-		if matched, _ := regexp.MatchString(`^\s{4}\w.*:\s*$`, rawLine); matched {
+		if subsectionRe.MatchString(rawLine) {
 			subsection = strings.TrimSuffix(strings.TrimSpace(rawLine), ":")
 			continue
 		}
 		// key: value at any indent
-		kvRe := regexp.MustCompile(`^\s+([a-z_]+):\s+(.+)$`)
 		m := kvRe.FindStringSubmatch(rawLine)
 		if m == nil {
 			continue

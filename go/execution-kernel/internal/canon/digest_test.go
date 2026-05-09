@@ -151,8 +151,10 @@ func TestPipelineDigest_Equivalent(t *testing.T) {
 			{Op: OpAnd, Command: Command{Digest: "cccc3333dddd4444"}},
 		}}
 	}
-	if PipelineDigest(mkPipeline()) != PipelineDigest(mkPipeline()) {
-		t.Errorf("identical pipelines should produce same digest")
+	d1 := PipelineDigest(mkPipeline())
+	d2 := PipelineDigest(mkPipeline())
+	if d1 != d2 {
+		t.Errorf("identical pipelines should produce same digest: got %q and %q", d1, d2)
 	}
 }
 

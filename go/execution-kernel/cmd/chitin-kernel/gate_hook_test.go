@@ -14,9 +14,8 @@ import (
 // hookTestEnv stages a CHITIN_HOME + chitin.yaml in cwd so evalHookStdin
 // can run end-to-end against a real policy + sqlite gov.db.
 type hookTestEnv struct {
-	cwd     string
-	chitin  string
-	cleanup func()
+	cwd    string
+	chitin string
 }
 
 func setupHookEnv(t *testing.T, policyYAML string) *hookTestEnv {
