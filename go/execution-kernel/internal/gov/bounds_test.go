@@ -1,6 +1,11 @@
 package gov
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+)
 
 func TestBounds_NonPushShapedSkips(t *testing.T) {
 	// Bounds only fires for git.push / github.pr.create.
@@ -14,10 +19,10 @@ func TestBounds_NonPushShapedSkips(t *testing.T) {
 
 func TestBounds_ParseStatLine(t *testing.T) {
 	cases := []struct {
-		line     string
-		wantF    int
-		wantIns  int
-		wantDel  int
+		line    string
+		wantF   int
+		wantIns int
+		wantDel int
 	}{
 		{" 3 files changed, 10 insertions(+), 5 deletions(-)", 3, 10, 5},
 		{" 1 file changed, 1 insertion(+)", 1, 1, 0},
@@ -83,6 +88,96 @@ func TestBounds_NoCeiling(t *testing.T) {
 	d := evaluateBoundsFromStats(a, p, p.Bounds.effectiveBounds(string(a.Type)), 1000, 100000, 100000)
 	if !d.Allowed {
 		t.Errorf("zero bounds should be no-op, got %+v", d)
+	}
+}
+
+func TestBounds_UndeterminedFailsClosedInEnforce(t *testing.T) {
+	p := Policy{
+		Mode:   "enforce",
+		Bounds: Bounds{MaxFilesChanged: 1, MaxLinesChanged: 1},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	d := CheckBounds(Action{Type: ActGitPush, Target: "fix/bounds"}, p, t.TempDir())
+	if d.Allowed {
+		t.Fatalf("bounds must fail closed when diff stats are unavailable, got %+v", d)
+	}
+	if d.RuleID != "bounds:undetermined" {
+		t.Fatalf("RuleID=%q want bounds:undetermined", d.RuleID)
+	}
+	if d.Mode != "enforce" {
+		t.Fatalf("Mode=%q want enforce", d.Mode)
+	}
+}
+
+func TestGate_BoundsDenyOverridesAllowedPush(t *testing.T) {
+	repo := newBoundsGitRepo(t)
+	logDir := filepath.Join(t.TempDir(), "decisions")
+	counter, err := OpenCounter(filepath.Join(t.TempDir(), "gov.db"))
+	if err != nil {
+		t.Fatalf("OpenCounter: %v", err)
+	}
+	t.Cleanup(func() { counter.Close() })
+
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{ID: "allow-push", Action: ActionMatcher{string(ActGitPush)}, Effect: "allow"},
+		},
+		Bounds: Bounds{MaxFilesChanged: 1, MaxLinesChanged: 1000},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	g := &Gate{Policy: p, Counter: counter, LogDir: logDir, Cwd: repo}
+	d := g.Evaluate(Action{Type: ActGitPush, Target: "fix/bounds"}, "agent1", nil)
+
+	if d.Allowed {
+		t.Fatalf("push allowed by policy must still be denied by bounds, got %+v", d)
+	}
+	if d.RuleID != "bounds:max_files_changed" {
+		t.Fatalf("RuleID=%q want bounds:max_files_changed", d.RuleID)
+	}
+	if d.Agent != "agent1" {
+		t.Fatalf("Agent=%q want agent1", d.Agent)
+	}
+}
+
+func TestGate_ProtectedPushDeniesBeforeBounds(t *testing.T) {
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{
+				ID:       "no-protected-push",
+				Action:   ActionMatcher{string(ActGitPush)},
+				Effect:   "deny",
+				Branches: []string{"main", "master"},
+				Reason:   "Direct push to protected branch",
+			},
+			{ID: "allow-push", Action: ActionMatcher{string(ActGitPush)}, Effect: "allow"},
+		},
+		Bounds: Bounds{MaxFilesChanged: 1, MaxLinesChanged: 1},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+	counter, err := OpenCounter(filepath.Join(t.TempDir(), "gov.db"))
+	if err != nil {
+		t.Fatalf("OpenCounter: %v", err)
+	}
+	t.Cleanup(func() { counter.Close() })
+
+	g := &Gate{Policy: p, Counter: counter, LogDir: filepath.Join(t.TempDir(), "decisions"), Cwd: t.TempDir()}
+	d := g.Evaluate(Action{Type: ActGitPush, Target: "main"}, "agent1", nil)
+
+	if d.Allowed {
+		t.Fatalf("protected branch push must be denied, got %+v", d)
+	}
+	if d.RuleID != "no-protected-push" {
+		t.Fatalf("RuleID=%q want no-protected-push; bounds must not replace prior policy deny", d.RuleID)
 	}
 }
 
@@ -173,5 +268,45 @@ func TestGate_MonitorModeOverridesBoundsDeny(t *testing.T) {
 	if !d.Allowed {
 		t.Errorf("monitor-mode override should flip bounds deny to allow, got Mode=%q RuleID=%q",
 			d.Mode, d.RuleID)
+	}
+}
+
+func newBoundsGitRepo(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	origin := filepath.Join(root, "origin.git")
+	runGit(t, root, "init", "--bare", origin)
+	runGit(t, root, "init", repo)
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	runGit(t, repo, "checkout", "-b", "main")
+	writeBoundsFile(t, filepath.Join(repo, "base.txt"), "base\n")
+	runGit(t, repo, "add", "base.txt")
+	runGit(t, repo, "commit", "-m", "base")
+	runGit(t, repo, "remote", "add", "origin", origin)
+	runGit(t, repo, "push", "-u", "origin", "main")
+	runGit(t, repo, "checkout", "-b", "fix/bounds")
+	writeBoundsFile(t, filepath.Join(repo, "one.txt"), "one\n")
+	writeBoundsFile(t, filepath.Join(repo, "two.txt"), "two\n")
+	runGit(t, repo, "add", "one.txt", "two.txt")
+	runGit(t, repo, "commit", "-m", "two files")
+	return repo
+}
+
+func runGit(t *testing.T, cwd string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func writeBoundsFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

@@ -94,6 +94,55 @@ func TestCounter_PerAgentIsolation(t *testing.T) {
 	}
 }
 
+func TestCounter_DenialsKeyedByAgentAndFingerprint(t *testing.T) {
+	c := newTestCounter(t)
+	if err := c.RecordDenial("agent1", "fp-alpha", 1); err != nil {
+		t.Fatalf("RecordDenial alpha #1: %v", err)
+	}
+	if err := c.RecordDenial("agent1", "fp-alpha", 1); err != nil {
+		t.Fatalf("RecordDenial alpha #2: %v", err)
+	}
+	if err := c.RecordDenial("agent1", "fp-beta", 1); err != nil {
+		t.Fatalf("RecordDenial beta: %v", err)
+	}
+	if err := c.RecordDenial("agent2", "fp-alpha", 1); err != nil {
+		t.Fatalf("RecordDenial agent2 alpha: %v", err)
+	}
+
+	rows, err := c.db.Query(`SELECT agent, action_fp, count FROM denials`)
+	if err != nil {
+		t.Fatalf("query denials: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[string]int{}
+	for rows.Next() {
+		var agent, fp string
+		var count int
+		if err := rows.Scan(&agent, &fp, &count); err != nil {
+			t.Fatalf("scan denials: %v", err)
+		}
+		got[agent+"/"+fp] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate denials: %v", err)
+	}
+
+	want := map[string]int{
+		"agent1/fp-alpha": 2,
+		"agent1/fp-beta":  1,
+		"agent2/fp-alpha": 1,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("denial rows=%v want=%v", got, want)
+	}
+	for key, count := range want {
+		if got[key] != count {
+			t.Fatalf("denial %s count=%d want %d (all rows=%v)", key, got[key], count, got)
+		}
+	}
+}
+
 func TestCounter_Reset(t *testing.T) {
 	c := newTestCounter(t)
 	for i := 0; i < 10; i++ {
@@ -136,6 +185,50 @@ func TestCounter_PersistsAcrossReopen(t *testing.T) {
 	defer c2.Close()
 	if !c2.IsLocked("agent1") {
 		t.Errorf("lockdown should persist across Close/Open")
+	}
+}
+
+func TestGate_LockdownPersistsAcrossGateInstances(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gov.db")
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{ID: "deny-shell", Action: ActionMatcher{string(ActShellExec)}, Effect: "deny", Reason: "blocked"},
+			{ID: "allow-read", Action: ActionMatcher{string(ActFileRead)}, Effect: "allow"},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	c1, err := OpenCounter(dbPath)
+	if err != nil {
+		t.Fatalf("OpenCounter c1: %v", err)
+	}
+	g1 := &Gate{Policy: p, Counter: c1, LogDir: filepath.Join(dir, "decisions-1"), Cwd: dir}
+	for i := 0; i < 10; i++ {
+		d := g1.Evaluate(Action{Type: ActShellExec, Target: "rm -rf tmp"}, "agent1", nil)
+		if d.Allowed {
+			t.Fatalf("iter %d: deny-shell unexpectedly allowed", i)
+		}
+	}
+	if err := c1.Close(); err != nil {
+		t.Fatalf("close c1: %v", err)
+	}
+
+	c2, err := OpenCounter(dbPath)
+	if err != nil {
+		t.Fatalf("OpenCounter c2: %v", err)
+	}
+	defer c2.Close()
+	g2 := &Gate{Policy: p, Counter: c2, LogDir: filepath.Join(dir, "decisions-2"), Cwd: dir}
+	d := g2.Evaluate(Action{Type: ActFileRead, Target: "README.md"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("new gate instance must preserve lockdown, got allow: %+v", d)
+	}
+	if d.RuleID != "lockdown" {
+		t.Fatalf("RuleID=%q want lockdown", d.RuleID)
 	}
 }
 

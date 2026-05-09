@@ -1,0 +1,17 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "data-access-analysis",
+  "root": "python/analysis",
+  "sourceRoot": "python/analysis",
+  "projectType": "library",
+  "tags": ["type:data-access", "scope:analysis", "lang:py"],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/analysis",
+        "command": "python3 -m pytest"
+      }
+    }
+  }
+}

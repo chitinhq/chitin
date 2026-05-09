@@ -148,3 +148,78 @@ rules:
 		t.Errorf("expected env-loaded policy's rule_id=deny-everything in stdout, got: %s", stdout)
 	}
 }
+
+func TestCLI_GateStateCommandsUseChitinHome(t *testing.T) {
+	chitinHome := t.TempDir()
+	policyDir := t.TempDir()
+	policyPath := filepath.Join(policyDir, "chitin.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+id: state-commands
+mode: enforce
+rules:
+  - id: allow-read
+    action: file.read
+    effect: allow
+    reason: "reads allowed"
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	stdout, stderr, code := runCLIWithEnv(t, policyDir,
+		[]string{"CHITIN_HOME=" + chitinHome},
+		"gate", "lockdown", "--agent", "state-agent",
+	)
+	if code != 0 {
+		t.Fatalf("lockdown code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(chitinHome, "gov.db")); err != nil {
+		t.Fatalf("lockdown should create gov.db under CHITIN_HOME: %v", err)
+	}
+
+	stdout, stderr, code = runCLIWithEnv(t, policyDir,
+		[]string{"CHITIN_HOME=" + chitinHome},
+		"gate", "status", "--cwd", policyDir, "--agent", "state-agent",
+	)
+	if code != 0 {
+		t.Fatalf("status locked code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	status := parseJSONStdout(t, stdout)
+	assertJSONField(t, status, "agent", "state-agent")
+	assertJSONField(t, status, "level", "lockdown")
+	assertJSONField(t, status, "locked", true)
+
+	stdout, stderr, code = runCLIWithEnv(t, policyDir,
+		[]string{"CHITIN_HOME=" + chitinHome},
+		"gate", "reset", "--agent", "state-agent",
+	)
+	if code != 0 {
+		t.Fatalf("reset code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	stdout, stderr, code = runCLIWithEnv(t, policyDir,
+		[]string{"CHITIN_HOME=" + chitinHome},
+		"gate", "status", "--cwd", policyDir, "--agent", "state-agent",
+	)
+	if code != 0 {
+		t.Fatalf("status reset code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	status = parseJSONStdout(t, stdout)
+	assertJSONField(t, status, "level", "normal")
+	assertJSONField(t, status, "locked", false)
+}
+
+func parseJSONStdout(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	return out
+}
+
+func assertJSONField(t *testing.T, out map[string]any, key string, want any) {
+	t.Helper()
+	if got := out[key]; got != want {
+		t.Fatalf("%s=%#v want %#v in %#v", key, got, want, out)
+	}
+}

@@ -392,6 +392,36 @@ func TestProjectAndPost_NilExporterIsNoOp(t *testing.T) {
 	// Pass = no panic
 }
 
+func TestEmitterWithDisabledOTELCommitsLocalRecord(t *testing.T) {
+	dir, idx := newEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	logPath := filepath.Join(dir, "events.jsonl")
+	em := Emitter{LogPath: logPath, Index: idx}
+	em.EnableOTELFromEnv()
+	if em.OTEL != nil {
+		t.Fatal("expected OTEL disabled when env is unset")
+	}
+
+	ev := minimalSessionStart("550e8400-e29b-41d4-a716-446655440000", 0)
+	if err := em.Emit(ev); err != nil {
+		t.Fatalf("Emit with OTEL disabled: %v", err)
+	}
+
+	lines := readLines(t, logPath)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 local JSONL line, got %d", len(lines))
+	}
+	info, err := idx.Get(ev.ChainID)
+	if err != nil {
+		t.Fatalf("idx.Get: %v", err)
+	}
+	if info == nil || info.LastHash != ev.ThisHash {
+		t.Fatalf("index not committed for disabled OTEL: info=%+v hash=%q", info, ev.ThisHash)
+	}
+}
+
 // TestKernelSurvivesOTELFailure verifies the F4 failure invariant: when the
 // configured OTEL endpoint is unreachable, Emit must still return nil, the
 // JSONL line must be written, and the chain index must be updated. OTEL
@@ -502,7 +532,7 @@ func TestProjectToSpan_RejectsEmptyTs(t *testing.T) {
 	idx := openTestIndex(t)
 	ev := &event.Event{
 		EventType: "decision", ChainID: "550e8400-e29b-41d4-a716-446655440000",
-		ThisHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		ThisHash:        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 		AgentInstanceID: "agent-1", Ts: "", // EMPTY
 		Payload: json.RawMessage(`{}`),
 	}
@@ -523,7 +553,7 @@ func TestProjectToSpan_RejectsInvalidChainID(t *testing.T) {
 	idx := openTestIndex(t)
 	ev := &event.Event{
 		EventType: "session_start", ChainID: "otel:01010101010101010101010101010101:0101",
-		ThisHash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		ThisHash:        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 		AgentInstanceID: "agent-1", Ts: "2026-04-30T01:39:37.647Z",
 		Payload: json.RawMessage(`{}`),
 	}
@@ -535,4 +565,3 @@ func TestProjectToSpan_RejectsInvalidChainID(t *testing.T) {
 		t.Errorf("error should name chain_id: %v", err)
 	}
 }
-

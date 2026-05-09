@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -159,5 +161,70 @@ func TestHasNonZeroSignal_BoundaryCases(t *testing.T) {
 		if got != tc.wantHit {
 			t.Errorf("%s: hasNonZeroSignal=%v want %v", tc.name, got, tc.wantHit)
 		}
+	}
+}
+
+func TestStampHeuristicSignalsWritesAdvisoryMonitorRow(t *testing.T) {
+	chitinHome := t.TempDir()
+	prev, hadPrev := os.LookupEnv("CHITIN_HOME")
+	if err := os.Setenv("CHITIN_HOME", chitinHome); err != nil {
+		t.Fatalf("set CHITIN_HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv("CHITIN_HOME", prev)
+		} else {
+			_ = os.Unsetenv("CHITIN_HOME")
+		}
+	})
+
+	outcome := router.HeuristicOutcome{
+		BlastRadius: &router.HeuristicScore{Score: 0.65, Fired: true, Reason: "recursive-delete"},
+		Floundering: &router.HeuristicScore{Score: 0.9, Fired: true, Reason: "denial-cascade:4-of-last-5"},
+		AnyFired:    true,
+	}
+	drift := router.HeuristicScore{Score: 0.8, Fired: true, Reason: "out-of-scope-high-blast"}
+	hookInput := router.HookInput{
+		ToolName:  "Bash",
+		ToolInput: map[string]interface{}{"command": "rm -rf /tmp/out-of-scope"},
+	}
+
+	var errOut bytes.Buffer
+	stampHeuristicSignals(&errOut, "agent1", hookInput, outcome, drift, false, "allow", false)
+	if errOut.Len() != 0 {
+		t.Fatalf("unexpected stamp warning: %s", errOut.String())
+	}
+
+	entries, err := os.ReadDir(chitinHome)
+	if err != nil {
+		t.Fatalf("read CHITIN_HOME: %v", err)
+	}
+	var logPath string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "gov-decisions-") && strings.HasSuffix(entry.Name(), ".jsonl") {
+			logPath = filepath.Join(chitinHome, entry.Name())
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatalf("expected gov-decisions JSONL in %s", chitinHome)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read decision log: %v", err)
+	}
+	var row map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &row); err != nil {
+		t.Fatalf("unmarshal decision row: %v\n%s", err, raw)
+	}
+	assertJSONField(t, row, "allowed", true)
+	assertJSONField(t, row, "mode", "monitor")
+	assertJSONField(t, row, "rule_id", "router-heuristic:allow")
+	assertJSONField(t, row, "action_type", "router.signal")
+	assertJSONField(t, row, "predicted_blast", 0.65)
+	assertJSONField(t, row, "floundering_score", 0.9)
+	assertJSONField(t, row, "drift_score", 0.8)
+	if _, present := row["routing_decision"]; present {
+		t.Fatalf("routing_decision should be absent unless a route is explicitly resolved: %#v", row)
 	}
 }

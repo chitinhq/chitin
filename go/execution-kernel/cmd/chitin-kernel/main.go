@@ -221,9 +221,9 @@ func cmdChainVerify(args []string) {
 	}
 	if info == nil {
 		out, _ := json.Marshal(map[string]any{
-			"verified":  false,
-			"reason":    "chain not found in index",
-			"chain_id":  *sessionID,
+			"verified":     false,
+			"reason":       "chain not found in index",
+			"chain_id":     *sessionID,
 			"phase_2_note": "full hash-recomputation verification lands in Phase 2",
 		})
 		fmt.Println(string(out))
@@ -244,17 +244,19 @@ func cmdChainVerify(args []string) {
 // in one of two modes:
 //
 // Parse-only mode (no --envelope-template):
-//   Parses the transcript, saves a checkpoint recording the byte offset, and
-//   prints {"ok":true,"turns":[...]} to stdout.  Useful for external callers
-//   that want the parsed turn data without emitting to a chain.
+//
+//	Parses the transcript, saves a checkpoint recording the byte offset, and
+//	prints {"ok":true,"turns":[...]} to stdout.  Useful for external callers
+//	that want the parsed turn data without emitting to a chain.
 //
 // Emit mode (--envelope-template <file>):
-//   In addition to parsing and checkpointing, emits one assistant_turn event
-//   per parsed turn into .chitin/events-<run_id>.jsonl using the transactional
-//   Emitter.  The template JSON must contain all required envelope fields
-//   (schema_version, run_id, session_id, surface, chain_id, chain_type="session");
-//   missing fields cause a loud failure before any emission.  On success prints
-//   {"ok":true,"emitted":N,"turns":N}.
+//
+//	In addition to parsing and checkpointing, emits one assistant_turn event
+//	per parsed turn into .chitin/events-<run_id>.jsonl using the transactional
+//	Emitter.  The template JSON must contain all required envelope fields
+//	(schema_version, run_id, session_id, surface, chain_id, chain_type="session");
+//	missing fields cause a loud failure before any emission.  On success prints
+//	{"ok":true,"emitted":N,"turns":N}.
 func cmdIngestTranscript(args []string) {
 	fs := flag.NewFlagSet("ingest-transcript", flag.ExitOnError)
 	fs.Usage = func() {
@@ -775,7 +777,8 @@ func exitErrWithChain(kind, msg, chainID string) {
 // cmdGate dispatches subcommands: evaluate, status, lockdown, reset.
 //
 // evaluate: --tool <name> --args-json <json> --agent <name> [--cwd <path>]
-//   Stdout: Decision JSON. Exit 0=allow, 1=deny, 2=internal error.
+//
+//	Stdout: Decision JSON. Exit 0=allow, 1=deny, 2=internal error.
 //
 // status:   --cwd <path> --agent <name>
 // lockdown: --agent <name>
@@ -944,8 +947,11 @@ func cmdGateStatus(args []string) {
 		exitErr("status_load_policy", err.Error())
 	}
 
-	home, _ := os.UserHomeDir()
-	counter, err := gov.OpenCounter(filepath.Join(home, ".chitin", "gov.db"))
+	chitinDir := chitinDir()
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		exitErr("status_state_dir", err.Error())
+	}
+	counter, err := gov.OpenCounter(filepath.Join(chitinDir, "gov.db"))
 	if err != nil {
 		exitErr("status_counter", err.Error())
 	}
@@ -961,8 +967,8 @@ func cmdGateStatus(args []string) {
 	out := map[string]any{
 		"policy_id": policy.ID, "mode": policy.Mode,
 		"policy_sources": sources,
-		"rules_count": len(policy.Rules),
-		"agent": *agent, "level": level, "locked": locked,
+		"rules_count":    len(policy.Rules),
+		"agent":          *agent, "level": level, "locked": locked,
 	}
 	b, _ := json.Marshal(out)
 	fmt.Println(string(b))
@@ -1000,15 +1006,11 @@ func cmdGateReset(args []string) {
 	fmt.Println(`{"ok":true,"action":"reset","agent":"` + *agent + `"}`)
 }
 
-// openStateCounter opens ~/.chitin/gov.db, creating the parent dir if needed.
+// openStateCounter opens the kernel state DB, creating the parent dir if needed.
 // Shared by gate subcommands that need to touch escalation state without
 // a full policy load.
 func openStateCounter() (*gov.Counter, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("user home: %w", err)
-	}
-	stateDir := filepath.Join(home, ".chitin")
+	stateDir := chitinDir()
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state dir: %w", err)
 	}
