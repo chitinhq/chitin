@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/canon"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/cost"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/codex"
@@ -48,6 +49,97 @@ func isChitinAdminCommand(a gov.Action) bool {
 		return reChitinAdminCmd.MatchString(strings.TrimSpace(a.Target))
 	}
 	return false
+}
+
+type chitinAdminClass string
+
+const (
+	chitinAdminNone     chitinAdminClass = ""
+	chitinAdminRead     chitinAdminClass = "read"
+	chitinAdminMutation chitinAdminClass = "mutation"
+)
+
+func classifyChitinAdminCommand(a gov.Action) chitinAdminClass {
+	switch a.Type {
+	case gov.ActShellExec, gov.ActFileRecursiveDelete:
+	default:
+		return chitinAdminNone
+	}
+
+	pipeline := canon.ParseAST(strings.TrimSpace(a.Target))
+	var matched *canon.Command
+	for i := range pipeline.Segments {
+		cmd := pipeline.Segments[i].Command
+		if !isChitinKernelCommand(cmd.Raw) {
+			continue
+		}
+		if len(pipeline.Segments) != 1 {
+			return chitinAdminMutation
+		}
+		matched = &cmd
+		break
+	}
+	if matched == nil {
+		return chitinAdminNone
+	}
+	fields := chitinKernelFields(matched.Raw)
+	if len(fields) < 1 {
+		return chitinAdminMutation
+	}
+	if len(fields) == 1 {
+		return chitinAdminMutation
+	}
+	switch fields[1] {
+	case "gate":
+		if len(fields) >= 3 && fields[2] == "status" {
+			return chitinAdminRead
+		}
+		return chitinAdminMutation
+	case "envelope":
+		if len(fields) >= 3 {
+			switch fields[2] {
+			case "inspect", "list", "tail":
+				return chitinAdminRead
+			}
+		}
+		return chitinAdminMutation
+	case "decisions", "chain", "health", "chain-info", "chain-verify", "router", "simulate":
+		return chitinAdminRead
+	default:
+		return chitinAdminMutation
+	}
+}
+
+func isChitinKernelCommand(raw string) bool {
+	return len(chitinKernelFields(raw)) > 0
+}
+
+func chitinKernelFields(raw string) []string {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	for len(fields) > 0 {
+		if fields[0] == "env" || strings.Contains(fields[0], "=") {
+			fields = fields[1:]
+			continue
+		}
+		break
+	}
+	if len(fields) > 0 && fields[0] == "command" {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 || filepath.Base(fields[0]) != "chitin-kernel" {
+		return nil
+	}
+	fields[0] = "chitin-kernel"
+	return fields
+}
+
+func authorityCanMutateGovernance(authority string) bool {
+	switch authority {
+	case "supervisor", "operator", "system":
+		return true
+	default:
+		return false
+	}
 }
 
 // runHookStdin is the production entry point for the Claude Code
@@ -220,6 +312,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 	}
 
 	rates := loadRates(absCwd, errOut)
+	identity := gov.FingerprintContextFromEnv()
 
 	gate := &gov.Gate{
 		Policy: policy, Counter: counter,
@@ -232,12 +325,30 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		// Decision the gate writes when the dispatching agent supplies
 		// them via env. FingerprintContextFromEnv centralizes the env
 		// read so all Gate constructors stay in sync.
-		Fingerprint: gov.FingerprintContextFromEnv(),
+		Fingerprint: identity,
 		// noRecord=true suppresses Counter.RecordDenial + WriteLog inside
 		// gov.Gate. We additionally skip OnDecision wiring + envelope
 		// spend below so a smoke evaluation has zero persistent side
 		// effects regardless of which path it traverses.
 		NoRecord: noRecord,
+	}
+	if classifyChitinAdminCommand(action) == chitinAdminMutation {
+		effectiveAuthority := gov.ResolveTrustedAuthority(identity, policy.Authority)
+		if !authorityCanMutateGovernance(effectiveAuthority) {
+			policy.Rules = append(policy.Rules, gov.Rule{
+				ID:         "governance-mutation-authority-required",
+				Action:     gov.ActionMatcher{string(gov.ActShellExec), string(gov.ActFileRecursiveDelete)},
+				Effect:     "deny",
+				Target:     action.Target,
+				Reason:     "governance mutation requires trusted supervisor/operator/system authority; self-reset is not permitted",
+				Suggestion: "Ask the operator or a trusted supervisor to perform the governance mutation.",
+			})
+			if policy.InvariantModes == nil {
+				policy.InvariantModes = map[string]string{}
+			}
+			policy.InvariantModes["governance-mutation-authority-required"] = "enforce"
+			gate.Policy = policy
+		}
 	}
 	// Operator-approval escalation wiring removed in cull Phase 3
 	// (2026-05-08). Hermes' tools/approval.py provides operator-prompt

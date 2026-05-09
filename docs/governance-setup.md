@@ -160,6 +160,22 @@ The envelope is the live cost view; gov-decisions JSONL is the audit log.
 - **Hard** — `chitin-kernel gate lockdown --agent=<agent-name>`. That agent is denied all actions until reset.
 - **Clear** — `chitin-kernel gate reset --agent=<agent-name>`.
 
+When these commands are attempted from inside a governed hook session,
+Chitin classifies `chitin-kernel` commands before envelope spend:
+
+- **Worker-safe reads:** `gate status`, `envelope inspect/list/tail`,
+  `decisions`, `chain`, `health`, `chain-info`, `chain-verify`, `router`,
+  and `simulate`.
+- **Supervisor/operator/system mutations:** `gate reset`, `gate lockdown`,
+  envelope mutation (`create/use/grant/close`), install/uninstall, ingest,
+  emit, init, drive, and unknown `chitin-kernel` subcommands.
+
+Env claims such as `CHITIN_AUTHORITY=supervisor` are recorded as
+`claimed_authority`, but do not grant mutation rights. The effective
+`authority` must resolve through trusted identity metadata, such as an
+`authority.trusted` policy grant anchored by `agent_fingerprint`,
+`agent_instance_id`, or `workflow_id`.
+
 ## Escalation ladder
 
 Denials accumulate per-agent in `~/.chitin/gov.db`:

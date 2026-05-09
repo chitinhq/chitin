@@ -409,12 +409,12 @@ func stampFingerprint(d *Decision, ctx FingerprintContext, authority AuthorityCo
 	d.Model = ctx.Model
 	d.Role = ctx.Role
 	d.ClaimedAuthority = ctx.ClaimedAuthority
-	d.Authority = resolveTrustedAuthority(ctx, authority)
+	d.Authority = ResolveTrustedAuthority(ctx, authority)
 	d.WorkflowID = ctx.WorkflowID
 	d.Fingerprint = agentFingerprint
 }
 
-func resolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) string {
+func ResolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) string {
 	if ctx.Authority != "" {
 		return ctx.Authority
 	}
