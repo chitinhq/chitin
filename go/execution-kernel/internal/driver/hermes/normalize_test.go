@@ -64,6 +64,8 @@ func TestNormalize_readWriteFileMappings(t *testing.T) {
 		{"skill_view", "name", "my-skill", gov.ActFileRead, "my-skill"},
 		{"skills_list", "category", "devops", gov.ActFileRead, "devops"},
 		{"skill_manage", "name", "new-skill", gov.ActFileWrite, "new-skill"},
+		{"memory", "content", "remember this", gov.ActFileWrite, "memory"},
+		{"todo", "todos", "[]", gov.ActFileWrite, "todo"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -83,6 +85,42 @@ func TestNormalize_readWriteFileMappings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalize_sessionSearchIsRead(t *testing.T) {
+	t.Run("uses_query_as_target", func(t *testing.T) {
+		a, err := Normalize(HookInput{
+			Cwd:       "/cwd",
+			ToolName:  "session_search",
+			ToolInput: map[string]any{"query": "hermes hooks"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Type != gov.ActFileRead {
+			t.Errorf("Type: got %q, want %q", a.Type, gov.ActFileRead)
+		}
+		if a.Target != "hermes hooks" {
+			t.Errorf("Target: got %q, want %q", a.Target, "hermes hooks")
+		}
+	})
+
+	t.Run("falls_back_to_tool_name_without_query", func(t *testing.T) {
+		a, err := Normalize(HookInput{
+			Cwd:       "/cwd",
+			ToolName:  "session_search",
+			ToolInput: map[string]any{},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Type != gov.ActFileRead {
+			t.Errorf("Type: got %q, want %q", a.Type, gov.ActFileRead)
+		}
+		if a.Target != "session_search" {
+			t.Errorf("Target: got %q, want %q", a.Target, "session_search")
+		}
+	})
 }
 
 func TestNormalize_webAndBrowserToolsAreHTTPRequest(t *testing.T) {
@@ -119,7 +157,7 @@ func TestNormalize_webAndBrowserToolsAreHTTPRequest(t *testing.T) {
 
 func TestNormalize_delegateAndMixtureAreDelegateTask(t *testing.T) {
 	d, err := Normalize(HookInput{
-		ToolName: "delegate_task",
+		ToolName:  "delegate_task",
 		ToolInput: map[string]any{"goal": "summarize logs"},
 	})
 	if err != nil || d.Type != gov.ActDelegateTask || d.Target != "summarize logs" {
