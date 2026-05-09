@@ -175,9 +175,9 @@ reason to keep it anymore.
 
 ## Related
 
-- The hermes kanban system tracks agent-router work items
-- Auto-flipper companion: `chitin-shipped-entry-flipper` (separate
-  systemd timer, separate concern — backlog hygiene)
+- Boundary decision: `docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md`
+- Router plugin sandbox: `docs/runbooks/plugin-sandbox.md`
+- Driver conformance map: `docs/driver-conformance.md`
 - Kernel binary: `chitin-kernel-redeploy.timer` keeps the
   underlying gate fresh; rebuild script at
   `scripts/install-kernel.sh`

@@ -119,17 +119,68 @@ bash scripts/install-kernel-symlink.sh    # symlinks ~/.local/bin/chitin-kernel
 
 ## chitin.yaml — the policy file
 
+The policy file uses a rule-list evaluated with deny-first semantics: all deny
+rules are checked first (first match wins), then all allow rules are checked
+(first match wins), then default-deny if no rule matches.
+
 ```yaml
-version: "1"
-mode: guide                  # global default: monitor | enforce | guide
+id: my-agent
+name: My Agent Policy
+mode: enforce              # monitor | enforce | guide
+
+bounds:
+  max_files_changed: 25    # blast-radius ceiling per push
+  max_lines_changed: 500
+
+escalation:
+  elevated_threshold: 3    # denials before elevated warning
+  high_threshold: 7        # denials before high restriction
+  lockdown_threshold: 10   # denials before agent-wide lockdown
+
 rules:
-  - id: no-rm-rf-root
-    when: { tool: Bash, command_match: "^rm -rf /( |$)" }
-    deny: true
-    invariantModes: [enforce] # per-rule override
-    reason: "Recursive root deletion is never the right answer."
-    suggestion: "Identify the specific path you meant; never use `/`."
+  # Hard deny — catastrophic patterns
+  - id: no-recursive-delete
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+    suggestion: "Use git rm <specific-files>"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master]
+    reason: "Direct push to protected branch is blocked"
+
+  # Allow productive work within bounds
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-writes
+    action: file.write
+    effect: allow
+    reason: "Writes within blast-radius bounds are allowed"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Feature branch pushes are allowed"
 ```
+
+### Tier example configs
+
+Three ready-to-use policy configs for different agent tiers are in
+`docs/examples/policies/`:
+
+| Tier | File | Mode | Philosophy |
+|------|------|------|------------|
+| T0 (flash) | `tier-0-flash.yaml` | guide | Permissive; only blocks catastrophic mistakes |
+| T2 (heavy) | `tier-2-heavy.yaml` | enforce | Balanced; blocks destructive ops, allows productive work |
+| T4 (autonomous) | `tier-4-autonomous.yaml` | enforce | Strict default-deny; only allows what's explicitly needed |
+
+These configs are validated by Go tests in
+`go/execution-kernel/internal/gov/policy_tiers_test.go`.
 
 ### The three modes
 
@@ -213,15 +264,46 @@ Every gate call appends one JSON line to `~/.chitin/gov-decisions-<YYYY-MM-DD>.j
 
 ## Driver conformance
 
-See [driver-conformance.md](./driver-conformance.md) for the current driver
-matrix, known normalizer gaps, and the next mapping work to prioritize from
-live `default-deny` / `unknown` chain rows.
+See [driver-conformance.md](./driver-conformance.md) for the driver matrix.
+
+The cross-driver conformance test in
+`go/execution-kernel/internal/driver/cross_driver_conformance_test.go`
+verifies that every documented tool name from each driver (claudecode, gemini,
+hermes) normalizes to a non-`ActUnknown` ActionType. When a new tool is added
+to a driver, add it to the conformance test to prevent silent default-deny
+regressions in enforce mode.
 
 ## Closed-enum action vocabulary
 
-`action_type` is the closed enum in `go/execution-kernel/internal/gov/action.go`:
-file, shell, git, GitHub, delegation, HTTP, npm, test, MCP, memory, custom
-tool, hook, Hermes plumbing, infra, and `unknown`. Unknown actions are
-**denied**, not allowed-by-default. If `Normalize()` returns `ActUnknown`, the
-fix is to extend the normalizer with tests — never to broaden the rule. See
-[event-model.md](./event-model.md#field-ownership).
+`action_type` is the closed enum in `go/execution-kernel/internal/gov/action.go`. The
+current types are:
+
+| Type | Meaning |
+|------|----------|
+| `file.read` | Read-only file access |
+| `file.write` | File creation/modification |
+| `file.delete` | File deletion |
+| `file.move` | File rename/move |
+| `file.recursive_delete` | `rm -rf` — re-tagged from shell.exec |
+| `shell.exec` | Shell command execution |
+| `git.push` | Git push (any ref) |
+| `git.force_push` | Force push |
+| `git.commit` | Git commit |
+| `git.status` | Git status |
+| `git.worktree_add` | Git worktree add |
+| `git.worktree_remove` | Git worktree remove |
+| `http.request` | Outbound HTTP/network |
+| `delegate.task` | Subagent delegation |
+| `infra_destroy` | Terraform/kubectl destroy |
+| `mcp.call` | MCP tool invocation |
+| `kanban.call` | Hermes kanban plumbing |
+| `hermes.process` | Hermes process management |
+| `unknown` | Unrecognized tool — **denied by default** |
+
+Unknown actions are **denied**, not allowed-by-default. If `Normalize()` returns
+`ActUnknown`, the fix is to extend the normalizer with tests — never to broaden
+the rule. The openclaw conformance test in
+`go/execution-kernel/internal/gov/normalize_openclaw_conformance_test.go` catches
+regressions; the cross-driver conformance test in
+`go/execution-kernel/internal/driver/cross_driver_conformance_test.go` catches
+driver-level gaps. See [event-model.md](./event-model.md#field-ownership).

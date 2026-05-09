@@ -88,8 +88,7 @@ Net result: ~5000+ LOC removed; chitin's surface tightened to the moat.
 
 | ID | Slice | Why it ships now |
 |----|-------|------------------|
-| **G3** | Documentation refresh — README + roadmap to post-2026-05-08 narrative | This rev |
-| **R1** | Router advisor asymmetry doc | Disclaim where chitin's advisor justifies itself vs hermes' `smart` mode (non-hermes drivers + chain-derived signals) |
+| **D1** | Chain-mined driver conformance gaps | The next high-leverage work comes from real `default-deny-unknown` rows: extend per-driver normalizers, then redeploy hooks/binaries so the chain proves the gap closed. |
 
 ## Deferred
 
