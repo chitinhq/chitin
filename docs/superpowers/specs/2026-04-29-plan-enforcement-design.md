@@ -1,6 +1,6 @@
 # Plan-Enforcement — Design
 
-**Status:** spec draft — Milestone H of cost-governance kernel v3, deferred to post-talk (after 2026-05-07). Sibling to grant-request (Milestone G); H builds on G's `request-pending` substrate.
+**Status:** **pre-cull draft, needs revision** — Written before the 2026-05-06/08 scope narrowing and cull. References `grant-request` (Milestone G) and `request-pending` substrate, both of which were removed in the cull (Phase 3 deleted the escalate/request-pending runtime; operator approvals are now handled by Hermes). This spec's core idea — plan-aware gating inside each AI node — is still valid, but the implementation path needs rewriting against the post-cull kernel surface (gate→chain→signals, no in-kernel LLM, no request-pending state). Mark as needs-revision until updated.
 
 **Author:** in-session sketch, 2026-04-29.
 
