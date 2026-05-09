@@ -295,11 +295,14 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		}
 	}
 
-	// 7. Counter on deny — but skip envelope-budget denials. Operators
-	// imposing caps is not the agent misbehaving; counting envelope hits
-	// against the lockdown ladder would force-lock a perfectly compliant
-	// agent after ~10 budget-denied calls. All envelope-* RuleIDs
-	// (exhausted, closed, not-found) are budget-class and exempt.
+	// 7. Counter on deny — but skip envelope-budget denials and
+	// worktree-requirement denials. Operator-imposed constraints (caps,
+	// worktree policy) are not agent misbehavior; counting them against
+	// the lockdown ladder would force-lock a compliant agent. All
+	// envelope-* RuleIDs (exhausted, closed, not-found) are budget-class
+	// and exempt. worktree-required is exempt for the same reason — the
+	// operator asked for the worktree invariant, the agent just called
+	// from the wrong directory. (#414 review)
 	weight := 1
 	for _, r := range g.Policy.Rules {
 		if r.ID == d.RuleID && r.EscalationWeight > 0 {
@@ -310,7 +313,8 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	envelopeDeny := d.RuleID == "envelope-exhausted" ||
 		d.RuleID == "envelope-closed" ||
 		d.RuleID == "envelope-not-found"
-	if !d.Allowed && !envelopeDeny && g.Counter != nil {
+	opDeny := envelopeDeny || d.RuleID == "worktree-required"
+	if !d.Allowed && !opDeny && g.Counter != nil {
 		if !g.NoRecord {
 			// Log on failure rather than silently swallow — a SQLite
 			// failure here is the "agent never locks" path. We still
