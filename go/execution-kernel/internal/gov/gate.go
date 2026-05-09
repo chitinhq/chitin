@@ -84,6 +84,7 @@ type FingerprintContext struct {
 	Driver           string
 	Model            string
 	Role             string
+	ClaimedAuthority string
 	Authority        string
 	WorkflowID       string
 	Fingerprint      string
@@ -138,7 +139,7 @@ func FingerprintContextFromEnv() FingerprintContext {
 		Driver:           firstNonEmpty(os.Getenv("CHITIN_DRIVER"), os.Getenv("CHITIN_DISPATCH_DRIVER")),
 		Model:            firstNonEmpty(os.Getenv("CHITIN_MODEL"), os.Getenv("CHITIN_DISPATCH_MODEL")),
 		Role:             role,
-		Authority:        firstNonEmpty(os.Getenv("CHITIN_AUTHORITY"), os.Getenv("CHITIN_DISPATCH_AUTHORITY")),
+		ClaimedAuthority: firstNonEmpty(os.Getenv("CHITIN_AUTHORITY"), os.Getenv("CHITIN_DISPATCH_AUTHORITY")),
 		WorkflowID: firstNonEmpty(
 			os.Getenv("CHITIN_WORKFLOW_ID"),
 			os.Getenv("CHITIN_DISPATCH_WORKFLOW_ID"),
@@ -222,7 +223,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			CallerOrigin: callerOrigin,
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
-		stampFingerprint(&d, g.Fingerprint)
+		stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
 		if !g.NoRecord {
 			_ = WriteLog(d, g.LogDir)
 		}
@@ -337,7 +338,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// 7a. Stamp fingerprint dims (P2 routing-as-learning-system) so the
 	// row carries (model, role, workflow_id, fingerprint) for joining
 	// against PR/review outcomes downstream.
-	stampFingerprint(&d, g.Fingerprint)
+	stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
 
 	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
 	// daily chain rollups (fingerprint_outcomes, swarm_health) with
@@ -400,16 +401,63 @@ func stampEnvelopeWith(d *Decision, envelope *BudgetEnvelope, tier Tier, delta C
 // drop them on serialization, so pre-identity dispatches still emit the
 // smaller schema with no breakage. Single call site (lockdown path +
 // main flow) prevents drift if the field set grows.
-func stampFingerprint(d *Decision, ctx FingerprintContext) {
+func stampFingerprint(d *Decision, ctx FingerprintContext, authority AuthorityConfig) {
 	agentFingerprint := firstNonEmpty(ctx.AgentFingerprint, ctx.Fingerprint)
 	d.AgentInstanceID = ctx.AgentInstanceID
 	d.AgentFingerprint = agentFingerprint
 	d.Driver = ctx.Driver
 	d.Model = ctx.Model
 	d.Role = ctx.Role
-	d.Authority = ctx.Authority
+	d.ClaimedAuthority = ctx.ClaimedAuthority
+	d.Authority = resolveTrustedAuthority(ctx, authority)
 	d.WorkflowID = ctx.WorkflowID
 	d.Fingerprint = agentFingerprint
+}
+
+func resolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) string {
+	if ctx.Authority != "" {
+		return ctx.Authority
+	}
+	for _, grant := range authority.Trusted {
+		if grant.matches(ctx) {
+			return grant.Authority
+		}
+	}
+	if ctx.Role == "external" && ctx.ClaimedAuthority == "" && ctx.AgentInstanceID == "" &&
+		ctx.AgentFingerprint == "" && ctx.Driver == "" && ctx.Model == "" &&
+		ctx.WorkflowID == "" && ctx.Fingerprint == "" {
+		return "external"
+	}
+	if ctx.ClaimedAuthority != "" || ctx.AgentInstanceID != "" || ctx.AgentFingerprint != "" ||
+		ctx.Driver != "" || ctx.Model != "" || ctx.Role != "" || ctx.WorkflowID != "" || ctx.Fingerprint != "" {
+		return "worker"
+	}
+	return ""
+}
+
+func (t TrustedAuthority) matches(ctx FingerprintContext) bool {
+	if !t.hasStableSelector() {
+		return false
+	}
+	if t.AgentInstanceID != "" && t.AgentInstanceID != ctx.AgentInstanceID {
+		return false
+	}
+	if t.AgentFingerprint != "" && t.AgentFingerprint != firstNonEmpty(ctx.AgentFingerprint, ctx.Fingerprint) {
+		return false
+	}
+	if t.Driver != "" && t.Driver != ctx.Driver {
+		return false
+	}
+	if t.Model != "" && t.Model != ctx.Model {
+		return false
+	}
+	if t.Role != "" && t.Role != ctx.Role {
+		return false
+	}
+	if t.WorkflowID != "" && t.WorkflowID != ctx.WorkflowID {
+		return false
+	}
+	return true
 }
 
 // findRuleEscalation removed in cull Phase 3 (2026-05-08).

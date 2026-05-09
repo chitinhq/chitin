@@ -20,14 +20,15 @@ type Policy struct {
 	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
 	Bounds         Bounds            `yaml:"bounds,omitempty"`
 	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
+	Authority      AuthorityConfig   `yaml:"authority,omitempty"`
 	Rules          []Rule            `yaml:"rules"`
 }
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
 type Rule struct {
 	ID               string        `yaml:"id"`
-	Action           ActionMatcher `yaml:"action"` // single type OR list of types
-	Effect           string        `yaml:"effect"` // allow | deny | guide | monitor
+	Action           ActionMatcher `yaml:"action"`                 // single type OR list of types
+	Effect           string        `yaml:"effect"`                 // allow | deny | guide | monitor
 	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
@@ -80,6 +81,38 @@ type ActionBounds struct {
 	MaxLinesChanged int `yaml:"max_lines_changed"`
 }
 
+// AuthorityConfig declares operator-owned identity grants. Hook/env
+// metadata may claim an authority, but only these trusted grants (or an
+// explicitly populated trusted context in-process) can turn that claim into
+// the effective Decision.Authority value.
+type AuthorityConfig struct {
+	Trusted []TrustedAuthority `yaml:"trusted,omitempty"`
+}
+
+// TrustedAuthority grants an effective authority to identities matching all
+// non-empty selector fields. At least one stable selector is required so
+// caller-controlled context like driver/model/role cannot grant authority by
+// itself.
+type TrustedAuthority struct {
+	Authority        string `yaml:"authority"`
+	AgentInstanceID  string `yaml:"agent_instance_id,omitempty"`
+	AgentFingerprint string `yaml:"agent_fingerprint,omitempty"`
+	Driver           string `yaml:"driver,omitempty"`
+	Model            string `yaml:"model,omitempty"`
+	Role             string `yaml:"role,omitempty"`
+	WorkflowID       string `yaml:"workflow_id,omitempty"`
+}
+
+func (t TrustedAuthority) hasSelector() bool {
+	return t.hasStableSelector()
+}
+
+func (t TrustedAuthority) hasStableSelector() bool {
+	return t.AgentInstanceID != "" ||
+		t.AgentFingerprint != "" ||
+		t.WorkflowID != ""
+}
+
 // effectiveBounds returns the bounds that apply to actionType — the
 // PerAction override merged with the top-level defaults. Zero values
 // in the override fall back to the default; non-zero values win.
@@ -101,10 +134,10 @@ func (b Bounds) effectiveBounds(actionType string) ActionBounds {
 
 // EscalationConfig overrides the default escalation thresholds.
 type EscalationConfig struct {
-	ElevatedThreshold  int `yaml:"elevated_threshold"`  // default 3
-	HighThreshold      int `yaml:"high_threshold"`      // default 7
-	LockdownThreshold  int `yaml:"lockdown_threshold"`  // default 10
-	MaxRetriesPerFp    int `yaml:"max_retries_per_action"` // default 3
+	ElevatedThreshold int `yaml:"elevated_threshold"`     // default 3
+	HighThreshold     int `yaml:"high_threshold"`         // default 7
+	LockdownThreshold int `yaml:"lockdown_threshold"`     // default 10
+	MaxRetriesPerFp   int `yaml:"max_retries_per_action"` // default 3
 }
 
 // Decision is the result of evaluating an Action against a Policy.
@@ -156,6 +189,7 @@ type Decision struct {
 	Driver           string `json:"driver,omitempty"`
 	Model            string `json:"model,omitempty"`
 	Role             string `json:"role,omitempty"`
+	ClaimedAuthority string `json:"claimed_authority,omitempty"`
 	Authority        string `json:"authority,omitempty"`
 	WorkflowID       string `json:"workflow_id,omitempty"`
 	Fingerprint      string `json:"fingerprint,omitempty"`
@@ -276,6 +310,19 @@ func (p *Policy) ApplyDefaults() error {
 	}
 	if p.Escalation.MaxRetriesPerFp == 0 {
 		p.Escalation.MaxRetriesPerFp = 3
+	}
+	for i, grant := range p.Authority.Trusted {
+		if grant.Authority == "" {
+			return fmt.Errorf("authority.trusted[%d]: authority is required", i)
+		}
+		switch grant.Authority {
+		case "worker", "supervisor", "operator", "system":
+		default:
+			return fmt.Errorf("authority.trusted[%d]: invalid authority=%q: must be one of worker|supervisor|operator|system", i, grant.Authority)
+		}
+		if !grant.hasSelector() {
+			return fmt.Errorf("authority.trusted[%d]: at least one stable identity selector is required", i)
+		}
 	}
 	for i := range p.Rules {
 		if p.Rules[i].EscalationWeight == 0 {
