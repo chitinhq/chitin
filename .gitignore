@@ -71,3 +71,4 @@ python/analysis/*.egg-info/
 python/analysis/.pytest_cache/
 __pycache__/
 *.pyc
+go/execution-kernel/coverage.out
