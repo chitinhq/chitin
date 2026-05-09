@@ -372,6 +372,40 @@ func TestGate_FingerprintStampedOnAllow(t *testing.T) {
 	}
 }
 
+func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Fingerprint = FingerprintContext{
+		AgentInstanceID:  "codex-session-42",
+		AgentFingerprint: "agentfp123456",
+		Driver:           "codex",
+		Model:            "gpt-5.5",
+		Role:             "reviewer",
+		Authority:        "worker",
+		WorkflowID:       "wf-agent-identity",
+	}
+
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "codex-cli", nil)
+	if d.Allowed {
+		t.Fatalf("expected deny")
+	}
+	if d.Agent != "codex-cli" {
+		t.Errorf("legacy Agent display field changed: got %q want codex-cli", d.Agent)
+	}
+	if d.AgentInstanceID != "codex-session-42" {
+		t.Errorf("AgentInstanceID: got %q want codex-session-42", d.AgentInstanceID)
+	}
+	if d.AgentFingerprint != "agentfp123456" {
+		t.Errorf("AgentFingerprint: got %q want agentfp123456", d.AgentFingerprint)
+	}
+	if d.Fingerprint != "agentfp123456" {
+		t.Errorf("legacy Fingerprint alias: got %q want agentfp123456", d.Fingerprint)
+	}
+	if d.Driver != "codex" || d.Model != "gpt-5.5" || d.Role != "reviewer" ||
+		d.Authority != "worker" || d.WorkflowID != "wf-agent-identity" {
+		t.Errorf("typed identity dims not stamped: %+v", d)
+	}
+}
+
 func TestGate_FingerprintStampedOnLockdown(t *testing.T) {
 	// Lockdown short-circuit must also stamp fingerprint dims so the
 	// audit row stays consistent regardless of which branch produced
@@ -412,9 +446,14 @@ func TestGate_FingerprintEmptyByDefault(t *testing.T) {
 // Centralized so the cleanup helper below can never drift from the
 // reader and leak a leftover value into adjacent tests.
 var fingerprintEnvKeys = []string{
+	"CHITIN_AGENT_INSTANCE_ID", "CHITIN_DISPATCH_AGENT_INSTANCE_ID",
+	"CHITIN_AGENT_FINGERPRINT", "CHITIN_DISPATCH_AGENT_FINGERPRINT",
+	"CHITIN_DRIVER", "CHITIN_DISPATCH_DRIVER",
 	"CHITIN_MODEL", "CHITIN_DISPATCH_MODEL",
 	"CHITIN_ROLE", "CHITIN_DISPATCH_ROLE",
-	"CHITIN_WORKFLOW_ID", "CHITIN_FINGERPRINT",
+	"CHITIN_AUTHORITY", "CHITIN_DISPATCH_AUTHORITY",
+	"CHITIN_WORKFLOW_ID", "CHITIN_DISPATCH_WORKFLOW_ID",
+	"CHITIN_FINGERPRINT",
 }
 
 // withCleanFingerprintEnv saves+clears every fingerprint-related env
@@ -458,6 +497,9 @@ func TestFingerprintContextFromEnv_LegacyVarsRead(t *testing.T) {
 		got.WorkflowID != "wf-123" || got.Fingerprint != "fp-abc" {
 		t.Errorf("legacy CHITIN_* vars not read correctly: %+v", got)
 	}
+	if got.AgentFingerprint != "fp-abc" {
+		t.Errorf("legacy CHITIN_FINGERPRINT must mirror AgentFingerprint: got %q want fp-abc", got.AgentFingerprint)
+	}
 }
 
 func TestFingerprintContextFromEnv_DispatchVarsFallback(t *testing.T) {
@@ -476,6 +518,44 @@ func TestFingerprintContextFromEnv_DispatchVarsFallback(t *testing.T) {
 	}
 }
 
+func TestFingerprintContextFromEnv_TypedIdentityVarsRead(t *testing.T) {
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_AGENT_INSTANCE_ID", "inst-123")
+	_ = os.Setenv("CHITIN_AGENT_FINGERPRINT", "agentfp-primary")
+	_ = os.Setenv("CHITIN_DRIVER", "hermes")
+	_ = os.Setenv("CHITIN_AUTHORITY", "supervisor")
+
+	got := FingerprintContextFromEnv()
+	if got.AgentInstanceID != "inst-123" {
+		t.Errorf("AgentInstanceID: got %q want inst-123", got.AgentInstanceID)
+	}
+	if got.AgentFingerprint != "agentfp-primary" || got.Fingerprint != "agentfp-primary" {
+		t.Errorf("agent fingerprint and legacy alias not mirrored: %+v", got)
+	}
+	if got.Driver != "hermes" {
+		t.Errorf("Driver: got %q want hermes", got.Driver)
+	}
+	if got.Authority != "supervisor" {
+		t.Errorf("Authority: got %q want supervisor", got.Authority)
+	}
+}
+
+func TestFingerprintContextFromEnv_TypedDispatchVarsFallback(t *testing.T) {
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_DISPATCH_AGENT_INSTANCE_ID", "inst-dispatch")
+	_ = os.Setenv("CHITIN_DISPATCH_AGENT_FINGERPRINT", "agentfp-dispatch")
+	_ = os.Setenv("CHITIN_DISPATCH_DRIVER", "copilot")
+	_ = os.Setenv("CHITIN_DISPATCH_AUTHORITY", "worker")
+	_ = os.Setenv("CHITIN_DISPATCH_WORKFLOW_ID", "wf-dispatch")
+
+	got := FingerprintContextFromEnv()
+	if got.AgentInstanceID != "inst-dispatch" || got.AgentFingerprint != "agentfp-dispatch" ||
+		got.Fingerprint != "agentfp-dispatch" || got.Driver != "copilot" ||
+		got.Authority != "worker" || got.WorkflowID != "wf-dispatch" {
+		t.Errorf("typed dispatch vars not read correctly: %+v", got)
+	}
+}
+
 func TestFingerprintContextFromEnv_LegacyWinsOverDispatch(t *testing.T) {
 	// Precedence: CHITIN_<DIM> beats CHITIN_DISPATCH_<DIM>. The legacy
 	// names are what existing dispatchers stamp; a stray DISPATCH-
@@ -486,12 +566,17 @@ func TestFingerprintContextFromEnv_LegacyWinsOverDispatch(t *testing.T) {
 	_ = os.Setenv("CHITIN_DISPATCH_ROLE", "programmer")
 	_ = os.Setenv("CHITIN_MODEL", "claude-opus-4-7")
 	_ = os.Setenv("CHITIN_DISPATCH_MODEL", "qwen3-coder")
+	_ = os.Setenv("CHITIN_FINGERPRINT", "fp-legacy-direct")
+	_ = os.Setenv("CHITIN_DISPATCH_AGENT_FINGERPRINT", "fp-dispatch")
 	got := FingerprintContextFromEnv()
 	if got.Role != "reviewer" {
 		t.Errorf("legacy CHITIN_ROLE must win: got %q want reviewer", got.Role)
 	}
 	if got.Model != "claude-opus-4-7" {
 		t.Errorf("legacy CHITIN_MODEL must win: got %q want claude-opus-4-7", got.Model)
+	}
+	if got.AgentFingerprint != "fp-legacy-direct" || got.Fingerprint != "fp-legacy-direct" {
+		t.Errorf("legacy CHITIN_FINGERPRINT must win over dispatch agent fingerprint: %+v", got)
 	}
 }
 

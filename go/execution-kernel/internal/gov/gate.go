@@ -47,13 +47,11 @@ type Gate struct {
 	EstimateCost func(a Action, agent string) CostDelta
 	ClassifyTier func(a Action) Tier
 	OnDecision   func(d *Decision)
-	// Fingerprint dimensions for the routing-as-learning-system (P2).
-	// Stamped onto every Decision this Gate writes when populated. The
-	// CLI hook layer reads these from CHITIN_MODEL / CHITIN_ROLE /
-	// CHITIN_WORKFLOW_ID / CHITIN_FINGERPRINT and sets them on the Gate
-	// at construction. Empty values omit the JSON field (omitempty on
-	// Decision); pre-fingerprint dispatches (manual operator runs, older
-	// swarm builds) keep writing the smaller schema with no breakage.
+	// Agent identity dimensions stamped onto every Decision this Gate
+	// writes when populated. The CLI hook layer reads these from CHITIN_*
+	// env vars and sets them on the Gate at construction. Empty values
+	// omit the JSON field (omitempty on Decision); pre-identity dispatches
+	// keep writing the smaller schema with no breakage.
 	Fingerprint FingerprintContext
 
 	// NoRecord, when true, suppresses persistent side effects: no
@@ -76,15 +74,19 @@ type Gate struct {
 	// no longer maintains its own pending_approvals + bridge POST.
 }
 
-// FingerprintContext carries the four routing dimensions the kernel
+// FingerprintContext carries the typed identity dimensions the kernel
 // stamps on every Decision it writes. All optional — when missing the
 // Decision row omits the corresponding JSON field. See
 // libs/contracts/src/fingerprint.ts for the canonical-hash side.
 type FingerprintContext struct {
-	Model       string
-	Role        string
-	WorkflowID  string
-	Fingerprint string
+	AgentInstanceID  string
+	AgentFingerprint string
+	Driver           string
+	Model            string
+	Role             string
+	Authority        string
+	WorkflowID       string
+	Fingerprint      string
 }
 
 // FingerprintContextFromEnv reads the CHITIN_* env vars that the
@@ -97,7 +99,7 @@ type FingerprintContext struct {
 //
 // Read precedence per dimension is:
 //
-//  1. CHITIN_<DIM> — the legacy name read by the kernel since P2.
+//  1. CHITIN_<DIM> — the direct name read by the kernel.
 //  2. CHITIN_DISPATCH_<DIM> — the dispatch_meta-shaped name introduced
 //     by PR #344 so the dispatcher's (role, model, tier, driver) tuple
 //     can flow into the kernel without re-stamping the legacy vars.
@@ -122,11 +124,26 @@ func FingerprintContextFromEnv() FingerprintContext {
 	if role == "" {
 		role = "external"
 	}
+	agentFingerprint := firstNonEmpty(
+		os.Getenv("CHITIN_AGENT_FINGERPRINT"),
+		os.Getenv("CHITIN_FINGERPRINT"),
+		os.Getenv("CHITIN_DISPATCH_AGENT_FINGERPRINT"),
+	)
 	return FingerprintContext{
-		Model:       firstNonEmpty(os.Getenv("CHITIN_MODEL"), os.Getenv("CHITIN_DISPATCH_MODEL")),
-		Role:        role,
-		WorkflowID:  os.Getenv("CHITIN_WORKFLOW_ID"),
-		Fingerprint: os.Getenv("CHITIN_FINGERPRINT"),
+		AgentInstanceID: firstNonEmpty(
+			os.Getenv("CHITIN_AGENT_INSTANCE_ID"),
+			os.Getenv("CHITIN_DISPATCH_AGENT_INSTANCE_ID"),
+		),
+		AgentFingerprint: agentFingerprint,
+		Driver:           firstNonEmpty(os.Getenv("CHITIN_DRIVER"), os.Getenv("CHITIN_DISPATCH_DRIVER")),
+		Model:            firstNonEmpty(os.Getenv("CHITIN_MODEL"), os.Getenv("CHITIN_DISPATCH_MODEL")),
+		Role:             role,
+		Authority:        firstNonEmpty(os.Getenv("CHITIN_AUTHORITY"), os.Getenv("CHITIN_DISPATCH_AUTHORITY")),
+		WorkflowID: firstNonEmpty(
+			os.Getenv("CHITIN_WORKFLOW_ID"),
+			os.Getenv("CHITIN_DISPATCH_WORKFLOW_ID"),
+		),
+		Fingerprint: agentFingerprint,
 	}
 }
 
@@ -378,16 +395,21 @@ func stampEnvelopeWith(d *Decision, envelope *BudgetEnvelope, tier Tier, delta C
 	d.ToolCalls = delta.ToolCalls
 }
 
-// stampFingerprint writes the routing-as-learning-system dims onto d.
+// stampFingerprint writes the typed identity dims onto d.
 // Empty-string values are pass-through — Decision's omitempty JSON tags
-// drop them on serialization, so pre-fingerprint dispatches still emit
-// the smaller schema with no breakage. Single call site (lockdown path
-// + main flow) prevents drift if the field set grows.
+// drop them on serialization, so pre-identity dispatches still emit the
+// smaller schema with no breakage. Single call site (lockdown path +
+// main flow) prevents drift if the field set grows.
 func stampFingerprint(d *Decision, ctx FingerprintContext) {
+	agentFingerprint := firstNonEmpty(ctx.AgentFingerprint, ctx.Fingerprint)
+	d.AgentInstanceID = ctx.AgentInstanceID
+	d.AgentFingerprint = agentFingerprint
+	d.Driver = ctx.Driver
 	d.Model = ctx.Model
 	d.Role = ctx.Role
+	d.Authority = ctx.Authority
 	d.WorkflowID = ctx.WorkflowID
-	d.Fingerprint = ctx.Fingerprint
+	d.Fingerprint = agentFingerprint
 }
 
 // findRuleEscalation removed in cull Phase 3 (2026-05-08).
