@@ -59,3 +59,28 @@ func TestInit_ForceWipes(t *testing.T) {
 		t.Errorf("expected marker wiped by --force, got err=%v", err)
 	}
 }
+
+func TestInit_CheckpointNotOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	chitinDir := filepath.Join(dir, ".chitin")
+	if err := Init(chitinDir, false); err != nil {
+		t.Fatal(err)
+	}
+	// Write custom checkpoint content
+	cp := filepath.Join(chitinDir, "transcript_checkpoint.json")
+	custom := `{"session":"abc"}`
+	if err := os.WriteFile(cp, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Second init should NOT overwrite existing checkpoint
+	if err := Init(chitinDir, false); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != custom {
+		t.Errorf("checkpoint overwritten: got %q, want %q", string(b), custom)
+	}
+}
