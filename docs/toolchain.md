@@ -26,7 +26,7 @@ Two-pass lint:
 
 ## Go
 
-Real Nx project with `project.json` and named targets driven by `nx:run-commands`. Go 1.22+; no custom Nx executors in Phase 1.
+Real Nx project with `project.json` and named targets driven by `nx:run-commands`. Go 1.25+; no custom Nx executors in Phase 1.
 
 ## Python
 
