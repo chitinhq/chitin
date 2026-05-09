@@ -45,6 +45,9 @@ func Format(d gov.Decision) ([]byte, int) {
 		"decision": "block",
 		"reason":   formatReason(d),
 	}
+	if d.RuleID != "" {
+		out["rule_id"] = d.RuleID
+	}
 	if d.RuleID == "lockdown" {
 		out["continue"] = false
 		out["stopReason"] = formatLockdownStopReason(d)
@@ -69,7 +72,15 @@ func Format(d gov.Decision) ([]byte, int) {
 // Identical shape to the v1 SDK driver's formatGuideError so audit-log
 // analytics across both drivers can pattern-match the same way.
 func formatReason(d gov.Decision) string {
-	parts := []string{"chitin: " + d.Reason}
+	reason := d.Reason
+	if d.RuleID != "" && !strings.Contains(reason, d.RuleID) {
+		if reason == "" {
+			reason = d.RuleID
+		} else {
+			reason = d.RuleID + ": " + reason
+		}
+	}
+	parts := []string{"chitin: " + reason}
 	if d.Suggestion != "" {
 		parts = append(parts, "suggest: "+d.Suggestion)
 	}

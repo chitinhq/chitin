@@ -35,8 +35,14 @@ func TestFormat_DenyIsBlockExit2WithReason(t *testing.T) {
 	if parsed["decision"] != "block" {
 		t.Fatalf("decision=%q want block", parsed["decision"])
 	}
+	if parsed["rule_id"] != "no-rm" {
+		t.Fatalf("rule_id=%q want no-rm", parsed["rule_id"])
+	}
 	if !strings.Contains(parsed["reason"], "chitin:") {
 		t.Fatalf("reason missing chitin: prefix: %q", parsed["reason"])
+	}
+	if !strings.Contains(parsed["reason"], "no-rm") {
+		t.Fatalf("reason missing kernel rule id: %q", parsed["reason"])
 	}
 	if !strings.Contains(parsed["reason"], "no rm") {
 		t.Fatalf("reason missing the policy reason: %q", parsed["reason"])

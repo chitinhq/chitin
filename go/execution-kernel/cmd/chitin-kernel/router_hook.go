@@ -143,7 +143,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		}
 	}
 
-	kernelDeny := kernelCode == claudecode.ExitBlock
+	kernelVerdict := parseKernelVerdict(kernelOut.Bytes(), kernelCode)
 
 	// Pre-action analysis short-circuit: if any plugin fired with
 	// block=true, deny immediately with the plugin's reason. Pre-
@@ -160,7 +160,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
 			stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, true, "pre-action-block:"+r.Name, noRecord)
-			writeRouterTelemetry(errOut, "pre-action-block", outcome, false)
+			writeRouterTelemetry(errOut, "pre-action-block", outcome, kernelVerdict)
 			return claudecode.ExitBlock
 		}
 	}
@@ -172,7 +172,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 	// non-zero — read-only tools whose scores are trivially zero
 	// don't need a stamping row.
 	if hasNonZeroSignal(outcome, driftScore) {
-		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, kernelDeny, kernelDecisionLabel(kernelDeny), noRecord)
+		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, kernelVerdict.Denied, kernelDecisionLabel(kernelVerdict.Denied), noRecord)
 	}
 
 	// Emit kernel verdict (deny or allow) — never altered by
@@ -182,9 +182,39 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 		_, _ = out.Write(kernelOut.Bytes())
 	}
 	if outcome.AnyFired {
-		writeRouterTelemetry(errOut, "heuristic-fired", outcome, kernelDeny)
+		writeRouterTelemetry(errOut, "heuristic-fired", outcome, kernelVerdict)
 	}
 	return kernelCode
+}
+
+// KernelVerdict is the router's parsed view of the authoritative
+// kernel decision. The router remains advisory, but its telemetry must
+// preserve the kernel rule and reason so heuristic lines never obscure
+// why an action was actually blocked.
+type KernelVerdict struct {
+	Denied bool
+	RuleID string
+	Reason string
+}
+
+func parseKernelVerdict(body []byte, code int) KernelVerdict {
+	v := KernelVerdict{Denied: code == claudecode.ExitBlock}
+	if !v.Denied || len(bytes.TrimSpace(body)) == 0 {
+		return v
+	}
+	var parsed struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+		RuleID   string `json:"rule_id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &parsed); err != nil {
+		return v
+	}
+	if parsed.Decision == "block" {
+		v.RuleID = parsed.RuleID
+		v.Reason = parsed.Reason
+	}
+	return v
 }
 
 // hasNonZeroSignal returns true if any heuristic produced a non-zero
@@ -275,14 +305,20 @@ func targetForSignal(input router.HookInput) string {
 // signal. The escalate field was removed alongside the in-gate LLM
 // advisor (audit Tier 6 cull, 2026-05-08); chain consumers stamp
 // any escalation intent themselves when they read the signals.
-func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernelDeny bool) {
+func writeRouterTelemetry(errOut io.Writer, kind string, outcome router.HeuristicOutcome, kernel KernelVerdict) {
 	out := map[string]interface{}{
 		"ts":                time.Now().UTC().Format(time.RFC3339),
 		"level":             "info",
 		"component":         "router-hook",
 		"msg":               kind,
-		"kernel_denied":     kernelDeny,
+		"kernel_denied":     kernel.Denied,
 		"heuristic_outcome": outcome,
+	}
+	if kernel.RuleID != "" {
+		out["kernel_rule_id"] = kernel.RuleID
+	}
+	if kernel.Reason != "" {
+		out["kernel_reason"] = kernel.Reason
 	}
 	body, _ := json.Marshal(out)
 	_, _ = errOut.Write(body)
