@@ -132,15 +132,6 @@ func mergePolicies(parent, child Policy) Policy {
 	if child.Escalation.MaxRetriesPerFp > 0 {
 		out.Escalation.MaxRetriesPerFp = child.Escalation.MaxRetriesPerFp
 	}
-	if child.Worktree.Mode != "" {
-		out.Worktree.Mode = child.Worktree.Mode
-	}
-	if len(child.Worktree.RequireFor) > 0 {
-		out.Worktree.RequireFor = mergeActionMatchers(out.Worktree.RequireFor, child.Worktree.RequireFor)
-	}
-	if len(child.Worktree.ProtectedRoots) > 0 {
-		out.Worktree.ProtectedRoots = mergeStrings(out.Worktree.ProtectedRoots, child.Worktree.ProtectedRoots)
-	}
 	if out.InvariantModes == nil {
 		out.InvariantModes = make(map[string]string)
 	}
@@ -158,36 +149,6 @@ func mergePolicies(parent, child Policy) Policy {
 			out.Rules[idx] = r
 		} else {
 			out.Rules = append(out.Rules, r)
-		}
-	}
-	return out
-}
-
-func mergeActionMatchers(parent, child ActionMatcher) ActionMatcher {
-	out := append(ActionMatcher{}, parent...)
-	seen := make(map[string]bool, len(out)+len(child))
-	for _, a := range out {
-		seen[a] = true
-	}
-	for _, a := range child {
-		if !seen[a] {
-			out = append(out, a)
-			seen[a] = true
-		}
-	}
-	return out
-}
-
-func mergeStrings(parent, child []string) []string {
-	out := append([]string{}, parent...)
-	seen := make(map[string]bool, len(out)+len(child))
-	for _, s := range out {
-		seen[s] = true
-	}
-	for _, s := range child {
-		if !seen[s] {
-			out = append(out, s)
-			seen[s] = true
 		}
 	}
 	return out

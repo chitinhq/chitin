@@ -28,18 +28,6 @@ escalation:
   lockdown_threshold: 10
   max_retries_per_action: 3
 
-worktree:
-  mode: guide
-  require_for:
-    - file.write
-    - file.delete
-    - file.move
-    - shell.exec
-    - file.recursive_delete
-    - git.commit
-    - git.push
-    - github.pr.create
-
 invariantModes:
   no-governance-self-modification: enforce
   no-rm-recursive: guide

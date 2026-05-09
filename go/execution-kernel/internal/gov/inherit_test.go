@@ -168,10 +168,10 @@ rules: []
 // 500-line global instead of the 5000-line override.
 //
 // Boundaries:
-//  1. parent has no PerAction, child has one — child's PerAction wins.
-//  2. parent has PerAction, child has none — parent survives.
-//  3. both have PerAction with overlapping keys — child overrides on
-//     collision, parent-only keys survive.
+//   1. parent has no PerAction, child has one — child's PerAction wins.
+//   2. parent has PerAction, child has none — parent survives.
+//   3. both have PerAction with overlapping keys — child overrides on
+//      collision, parent-only keys survive.
 func TestMergePolicies_PerActionMergedAdditively(t *testing.T) {
 	t.Run("parent_empty_child_has_perAction", func(t *testing.T) {
 		parent := Policy{}
@@ -222,45 +222,6 @@ func TestMergePolicies_PerActionMergedAdditively(t *testing.T) {
 		// Parent-only key survives.
 		if effPR := out.Bounds.effectiveBounds("github.pr.create"); effPR.MaxLinesChanged != 2000 {
 			t.Errorf("parent-only github.pr.create should survive merge, got %d", effPR.MaxLinesChanged)
-		}
-	})
-}
-
-func TestMergePolicies_WorktreeRequirementMergedAdditively(t *testing.T) {
-	t.Run("parent_requirement_survives_child_without_worktree", func(t *testing.T) {
-		parent := Policy{Worktree: WorktreeConfig{
-			Mode:       "guide",
-			RequireFor: ActionMatcher{string(ActFileWrite)},
-		}}
-		child := Policy{}
-		out := mergePolicies(parent, child)
-		if !out.Worktree.RequireFor.Matches(ActFileWrite) {
-			t.Fatalf("parent worktree.require_for should survive child without worktree: %+v", out.Worktree)
-		}
-		if out.Worktree.Mode != "guide" {
-			t.Fatalf("mode=%q want guide", out.Worktree.Mode)
-		}
-	})
-	t.Run("child_requirement_adds_action_and_overrides_mode", func(t *testing.T) {
-		parent := Policy{Worktree: WorktreeConfig{
-			Mode:           "guide",
-			RequireFor:     ActionMatcher{string(ActFileWrite)},
-			ProtectedRoots: []string{"/repo"},
-		}}
-		child := Policy{Worktree: WorktreeConfig{
-			Mode:           "enforce",
-			RequireFor:     ActionMatcher{string(ActGitCommit)},
-			ProtectedRoots: []string{"/repo-child"},
-		}}
-		out := mergePolicies(parent, child)
-		if !out.Worktree.RequireFor.Matches(ActFileWrite) || !out.Worktree.RequireFor.Matches(ActGitCommit) {
-			t.Fatalf("worktree.require_for should merge additively, got %+v", out.Worktree.RequireFor)
-		}
-		if out.Worktree.Mode != "enforce" {
-			t.Fatalf("child mode should override parent, got %q", out.Worktree.Mode)
-		}
-		if len(out.Worktree.ProtectedRoots) != 2 {
-			t.Fatalf("protected roots should merge additively, got %+v", out.Worktree.ProtectedRoots)
 		}
 	})
 }

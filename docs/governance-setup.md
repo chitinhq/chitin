@@ -139,30 +139,6 @@ rules:
 
 Global `mode:` is the default. Per-rule `invariantModes:` overrides.
 
-### Worktree requirement
-
-Use `worktree:` to require selected side-effect actions to run from a linked
-git worktree instead of the primary checkout. This is a deterministic local
-gate invariant, not an approval flow or task workflow.
-
-```yaml
-worktree:
-  mode: guide              # guide | enforce
-  require_for:
-    - file.write
-    - file.delete
-    - file.move
-    - shell.exec
-    - file.recursive_delete
-    - git.commit
-    - git.push
-    - github.pr.create
-```
-
-When configured, Chitin denies matching actions unless `cwd` is a linked git
-worktree. Read-only actions and `git.worktree.add` are not blocked by this
-example, so an agent can still create a worktree before retrying from there.
-
 ## Cost-gov v3 (envelope + tier classification)
 
 On top of `gov.Gate`, three invariants govern cost across drivers:

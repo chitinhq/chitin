@@ -157,15 +157,14 @@ func firstNonEmpty(vals ...string) string {
 // Sequence:
 //  1. Lockdown short-circuit.
 //  2. Policy evaluation.
-//  3. Worktree requirement check for configured side-effect actions.
-//  4. Bounds check (push-shaped only).
-//  5. Monitor-mode override on policy decisions.
-//  6. Envelope.Spend on allow (if envelope != nil).
-//  7. Counter increment on deny — but NOT on envelope-budget denials.
+//  3. Bounds check (push-shaped only).
+//  4. Monitor-mode override on policy decisions.
+//  5. Envelope.Spend on allow (if envelope != nil).
+//  6. Counter increment on deny — but NOT on envelope-budget denials.
 //     Caps are operator-imposed, not agent misbehavior; counting them
 //     would lockdown a compliant agent for hitting its budget.
-//  8. Stamp envelope/tier/cost fields on Decision.
-//  9. Log append.
+//  7. Stamp envelope/tier/cost fields on Decision.
+//  8. Log append.
 //
 // Envelope exhaustion is NOT subject to monitor-mode override — caps are
 // hard contracts even when policy is in monitor.
@@ -220,20 +219,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	d.Agent = agent
 	d.CallerOrigin = callerOrigin
 
-	// 3. Worktree requirement — only when policy allows the action so far.
-	// This keeps explicit denies authoritative and makes the worktree
-	// invariant a deterministic post-policy guard, not a workflow system.
-	if d.Allowed {
-		wd := CheckWorktreeRequirement(a, g.Policy, g.Cwd)
-		if !wd.Allowed {
-			d = wd
-			d.Ts = now
-			d.Agent = agent
-			d.CallerOrigin = callerOrigin
-		}
-	}
-
-	// 4. Bounds — only for push-shaped when policy allows the action so far.
+	// 3. Bounds — only for push-shaped when policy allows the action so far.
 	// Caught in PR #79 review: overwriting d with bd dropped both Agent and
 	// CallerOrigin from the bounds-deny audit row. Preserve them explicitly.
 	if d.Allowed && (a.Type == ActGitPush || a.Type == ActGithubPRCreate) {
@@ -246,18 +232,18 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		}
 	}
 
-	// 5. Monitor mode override: if we're in monitor mode and the rule
+	// 4. Monitor mode override: if we're in monitor mode and the rule
 	// would deny, flip to allow (log-only). Do NOT override on enforce/guide.
 	if !d.Allowed && d.Mode == "monitor" {
 		d.Allowed = true
 	}
 
-	// (Step 5.5 — escalate-effect resolution — removed in cull Phase 3,
+	// (Step 4.5 — escalate-effect resolution — removed in cull Phase 3,
 	// 2026-05-08. Hermes' tools/approval.py provides the operator-
 	// prompt + reply-parse natively; chitin no longer maintains its
 	// own pending_approvals + Wait + bridge POST + grant table.)
 
-	// 6. Envelope spend on allow. Compute delta via callbacks even when
+	// 5. Envelope spend on allow. Compute delta via callbacks even when
 	// the policy denies — so the audit row records what would have been
 	// spent for telemetry. But only call Spend when allowed.
 	var delta CostDelta
@@ -295,14 +281,11 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		}
 	}
 
-	// 7. Counter on deny — but skip envelope-budget denials and
-	// worktree-requirement denials. Operator-imposed constraints (caps,
-	// worktree policy) are not agent misbehavior; counting them against
-	// the lockdown ladder would force-lock a compliant agent. All
-	// envelope-* RuleIDs (exhausted, closed, not-found) are budget-class
-	// and exempt. worktree-required is exempt for the same reason — the
-	// operator asked for the worktree invariant, the agent just called
-	// from the wrong directory. (#414 review)
+	// 6. Counter on deny — but skip envelope-budget denials. Operators
+	// imposing caps is not the agent misbehaving; counting envelope hits
+	// against the lockdown ladder would force-lock a perfectly compliant
+	// agent after ~10 budget-denied calls. All envelope-* RuleIDs
+	// (exhausted, closed, not-found) are budget-class and exempt.
 	weight := 1
 	for _, r := range g.Policy.Rules {
 		if r.ID == d.RuleID && r.EscalationWeight > 0 {
@@ -313,8 +296,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	envelopeDeny := d.RuleID == "envelope-exhausted" ||
 		d.RuleID == "envelope-closed" ||
 		d.RuleID == "envelope-not-found"
-	opDeny := envelopeDeny || d.RuleID == "worktree-required"
-	if !d.Allowed && !opDeny && g.Counter != nil {
+	if !d.Allowed && !envelopeDeny && g.Counter != nil {
 		if !g.NoRecord {
 			// Log on failure rather than silently swallow — a SQLite
 			// failure here is the "agent never locks" path. We still
@@ -331,16 +313,16 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		d.Escalation = g.Counter.Level(agent)
 	}
 
-	// 8. Stamp envelope/tier/cost fields on the Decision row. We do this
+	// 7. Stamp envelope/tier/cost fields on the Decision row. We do this
 	// for both allow and deny so audit-log analytics can join cost-
 	// classified decisions regardless of outcome.
 	stampEnvelopeWith(&d, envelope, tier, delta)
-	// 8a. Stamp fingerprint dims (P2 routing-as-learning-system) so the
+	// 7a. Stamp fingerprint dims (P2 routing-as-learning-system) so the
 	// row carries (model, role, workflow_id, fingerprint) for joining
 	// against PR/review outcomes downstream.
 	stampFingerprint(&d, g.Fingerprint)
 
-	// 9. Log. Suppressed by NoRecord so smoke evaluations don't pollute
+	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
 	// daily chain rollups (fingerprint_outcomes, swarm_health) with
 	// synthetic deny rows. The Decision still flows back to the caller
 	// via the named return — what changes is durability.
@@ -348,7 +330,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		_ = WriteLog(d, g.LogDir)
 	}
 
-	// 10. F4 addendum: OnDecision callback fires from the deferred
+	// 9. F4 addendum: OnDecision callback fires from the deferred
 	// callsite at the top of Evaluate (single-source-of-truth so a
 	// future short-circuit can't skip the callback). Order is preserved:
 	// WriteLog runs before the deferred OnDecision because defers fire
