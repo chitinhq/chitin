@@ -59,3 +59,52 @@ func TestInit_ForceWipes(t *testing.T) {
 		t.Errorf("expected marker wiped by --force, got err=%v", err)
 	}
 }
+
+func TestInit_ForceRecreatesSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	chitinDir := filepath.Join(dir, ".chitin")
+	if err := Init(chitinDir, false); err != nil {
+		t.Fatal(err)
+	}
+	// Force wipe + recreate should produce all subdirs.
+	if err := Init(chitinDir, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"sessions"} {
+		if _, err := os.Stat(filepath.Join(chitinDir, sub)); err != nil {
+			t.Errorf("missing subdir %s after force recreate: %v", sub, err)
+		}
+	}
+	cp := filepath.Join(chitinDir, "transcript_checkpoint.json")
+	b, err := os.ReadFile(cp)
+	if err != nil {
+		t.Fatalf("missing checkpoint after force recreate: %v", err)
+	}
+	if string(b) != "{}" {
+		t.Errorf("checkpoint should be reset to {}, got %q", b)
+	}
+}
+
+func TestInit_DoesNotOverwriteCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	chitinDir := filepath.Join(dir, ".chitin")
+	if err := Init(chitinDir, false); err != nil {
+		t.Fatal(err)
+	}
+	// Write a non-empty checkpoint.
+	cp := filepath.Join(chitinDir, "transcript_checkpoint.json")
+	if err := os.WriteFile(cp, []byte(`{"last_seq":42}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Second Init (non-force) must NOT overwrite.
+	if err := Init(chitinDir, false); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"last_seq":42}` {
+		t.Errorf("checkpoint overwritten; expected preserved content, got %q", b)
+	}
+}
