@@ -34,6 +34,22 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// already encodes that policy.
 	case "write", "edit":
 		return normalizeWriteFile(args), nil
+	// Read-only tools from Claude Code and openclaw: file listing, grep,
+	// glob, notebook read. All side-effect-free from the policy's
+	// perspective.
+	case "glob", "grep", "ls", "notebookread":
+		return Action{Type: ActFileRead, Target: stringArg(args, "path")}, nil
+	// Notebook cell editing (Jupyter kernel execution).
+	case "notebookedit":
+		path := stringArg(args, "path")
+		if path == "" {
+			path = stringArg(args, "file_path")
+		}
+		return Action{Type: ActFileWrite, Target: path}, nil
+	// Agent/spawn tools: treat as delegate.task. These are openclaw's
+	// agent and task management tools.
+	case "agent", "task", "taskcreate", "taskupdate", "tasklist", "taskget":
+		return Action{Type: ActDelegateTask, Target: toolName}, nil
 	case "read_file":
 		path := stringArg(args, "path")
 		if path == "" {
