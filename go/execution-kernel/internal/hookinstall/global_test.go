@@ -418,3 +418,101 @@ func TestWriteSettings_LeavesNoTempFileOnSuccess(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobalSettingsPath_UsesHome(t *testing.T) {
+	t.Setenv("HOME", "/fake/home")
+	path, err := globalSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join("/fake/home", ".claude", "settings.json")
+	if path != expected {
+		t.Errorf("expected %s, got %s", expected, path)
+	}
+}
+
+func TestLoadSettings_NonexistentFileReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonexistent.json")
+	s, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s) != 0 {
+		t.Errorf("expected empty map for nonexistent file, got %v", s)
+	}
+}
+
+func TestLoadSettings_ValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	content := `{"hooks":{"PreToolUse":[{"matcher":"Bash"}]}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, ok := s["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("expected hooks map")
+	}
+	if _, ok := hooks["PreToolUse"]; !ok {
+		t.Error("expected PreToolUse in hooks")
+	}
+}
+
+func TestFilterOutChitin_MixedEntries(t *testing.T) {
+	list := []any{
+		map[string]any{"_tag": chitinTag, "matcher": ""},
+		map[string]any{"matcher": "Bash", "hooks": []any{}},
+	}
+	filtered := filterOutChitin(list)
+	if len(filtered) != 1 {
+		t.Errorf("expected 1 after filtering, got %d", len(filtered))
+	}
+	m, ok := filtered[0].(map[string]any)
+	if !ok || m["matcher"] != "Bash" {
+		t.Errorf("expected Bash entry to survive, got %v", filtered[0])
+	}
+}
+
+func TestToAnySlice_NilReturns(t *testing.T) {
+	if v := toAnySlice(nil); v != nil {
+		t.Errorf("expected nil for nil input, got %v", v)
+	}
+	if v := toAnySlice(42); v != nil {
+		t.Errorf("expected nil for non-slice, got %v", v)
+	}
+	if v := toAnySlice([]any{}); len(v) != 0 {
+		t.Errorf("expected empty slice, got %d", len(v))
+	}
+}
+
+func TestWriteSettings_OverwritesContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	initial := map[string]any{"version": 1}
+	if err := writeSettings(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	updated := map[string]any{"version": 2, "newKey": "val"}
+	if err := writeSettings(path, updated); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["version"] != float64(2) {
+		t.Errorf("expected version 2, got %v", result["version"])
+	}
+	if result["newKey"] != "val" {
+		t.Errorf("expected newKey=val, got %v", result["newKey"])
+	}
+}
