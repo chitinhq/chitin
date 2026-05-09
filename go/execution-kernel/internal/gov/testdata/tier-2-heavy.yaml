@@ -1,0 +1,107 @@
+# T2 Heavy Policy — moderate guardrails for capable agents
+# Designed for: powerful agents with human oversight (e.g. glm-agent, claude-code)
+# Mode: enforce (block violations, not just log)
+# Philosophy: allow productive work, block destructive operations, require approval for risky moves
+
+id: tier-2-heavy
+name: T2 Heavy — balanced enforcement
+mode: enforce
+
+bounds:
+  max_files_changed: 25
+  max_lines_changed: 500
+  per_action:
+    git.push:
+      max_files_changed: 100
+      max_lines_changed: 2000
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+
+rules:
+  # === HARD DENY — always blocked ===
+  - id: no-recursive-delete
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+    suggestion: "Use git rm <specific-files>"
+
+  - id: no-force-push
+    action: git.force_push
+    effect: deny
+    reason: "Force push can irrevocably destroy shared history"
+    suggestion: "Use git push (non-force) or create a new branch"
+
+  - id: no-infra-destroy
+    action: infra_destroy
+    effect: deny
+    reason: "Infrastructure destroy commands are blocked"
+    suggestion: "Use targeted kubectl delete or terraform plan"
+
+  - id: no-self-mod
+    action: file.write
+    effect: deny
+    target_regex: "\\.openclaw/"
+    reason: "Agents must not modify their own governance config"
+    suggestion: "Ask the operator to modify their config manually"
+
+  - id: no-env-write
+    action: file.write
+    effect: deny
+    target: ".env"
+    reason: "Writing to .env files risks exposing secrets"
+    suggestion: "Use a secret manager or inject via environment"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master]
+    reason: "Direct push to protected branch is blocked"
+    suggestion: "Push to a feature branch and open a PR"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: "curl.*\\|.*(bash|sh)"
+    reason: "Piping remote content to shell is blocked"
+    suggestion: "Download and review the script first"
+
+  # === MONITOR — logged but not blocked, builds escalation score ===
+  - id: monitor-net
+    action: http.request
+    effect: monitor
+    reason: "Network requests are logged for audit"
+
+  - id: monitor-delegate
+    action: delegate.task
+    effect: monitor
+    reason: "Subagent spawning is logged"
+
+  # === ALLOW — productive work is trusted within bounds ===
+  - id: allow-reads
+    action: [file.read, git.status]
+    effect: allow
+    reason: "Read operations are safe"
+
+  - id: allow-git-safe
+    action: [git.status, git.commit]
+    effect: allow
+    reason: "Safe git operations are allowed"
+
+  - id: allow-writes
+    action: file.write
+    effect: allow
+    reason: "File writes within blast-radius bounds are allowed"
+
+  - id: allow-shell-exec
+    action: shell.exec
+    effect: allow
+    reason: "Shell commands are allowed within bounds"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Non-protected branch pushes are allowed within bounds"
