@@ -10,7 +10,7 @@
     "test": "vitest run tests"
   },
   "nx": {
-    "tags": ["layer:tooling"],
+    "tags": ["npm:private", "type:tooling", "scope:tooling", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",

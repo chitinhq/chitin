@@ -1,11 +1,14 @@
 package chain
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	eventhash "github.com/chitinhq/chitin/go/execution-kernel/internal/hash"
 )
 
 func newTempIndex(t *testing.T) *Index {
@@ -77,6 +80,36 @@ func writeJSONLFile(t *testing.T, dir, name string, lines []string) {
 	for _, l := range lines {
 		fmt.Fprintln(f, l)
 	}
+}
+
+func canonicalEventLine(t *testing.T, chainID string, seq int64, prevHash *string, payload string) (string, string) {
+	t.Helper()
+	var payloadValue any
+	if err := json.Unmarshal([]byte(payload), &payloadValue); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	var prev any
+	if prevHash != nil {
+		prev = *prevHash
+	}
+	m := map[string]any{
+		"chain_id":   chainID,
+		"seq":        seq,
+		"prev_hash":  prev,
+		"event_type": "decision",
+		"ts":         fmt.Sprintf("2026-05-09T00:00:%02dZ", seq),
+		"payload":    payloadValue,
+	}
+	h, err := eventhash.HashEvent(m)
+	if err != nil {
+		t.Fatalf("HashEvent: %v", err)
+	}
+	m["this_hash"] = h
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b), h
 }
 
 // newTempIndexInDir creates an Index whose SQLite file lives inside dir.
@@ -305,5 +338,62 @@ func TestRebuild_AcceptsExactDuplicate(t *testing.T) {
 	a, _ := idx.Get("A")
 	if a == nil || a.LastSeq != 1 || a.LastHash != "ha1" {
 		t.Errorf("expected seq=1 hash=ha1 after dup collapse, got %+v", a)
+	}
+}
+
+func TestVerifyJSONL_RecomputesThisHash(t *testing.T) {
+	dir := t.TempDir()
+	line0, h0 := canonicalEventLine(t, "A", 0, nil, `{"decision":"allow","rule_id":"r0"}`)
+	line1, _ := canonicalEventLine(t, "A", 1, &h0, `{"decision":"deny","rule_id":"r1"}`)
+	writeJSONLFile(t, dir, "run1", []string{line0, line1})
+
+	if err := VerifyJSONL(dir); err != nil {
+		t.Fatalf("VerifyJSONL valid chain: %v", err)
+	}
+}
+
+func TestVerifyJSONL_DetectsModifiedRecord(t *testing.T) {
+	dir := t.TempDir()
+	line0, h0 := canonicalEventLine(t, "A", 0, nil, `{"decision":"allow","rule_id":"r0"}`)
+	line1, _ := canonicalEventLine(t, "A", 1, &h0, `{"decision":"deny","rule_id":"r1"}`)
+	line1 = strings.Replace(line1, `"rule_id":"r1"`, `"rule_id":"tampered"`, 1)
+	writeJSONLFile(t, dir, "run1", []string{line0, line1})
+
+	err := VerifyJSONL(dir)
+	if err == nil {
+		t.Fatal("expected hash mismatch for modified record")
+	}
+	if !strings.Contains(err.Error(), "this_hash mismatch") {
+		t.Fatalf("expected this_hash mismatch, got %v", err)
+	}
+}
+
+func TestVerifyJSONL_DetectsMissingRecord(t *testing.T) {
+	dir := t.TempDir()
+	_, h0 := canonicalEventLine(t, "A", 0, nil, `{"decision":"allow","rule_id":"r0"}`)
+	line1, _ := canonicalEventLine(t, "A", 1, &h0, `{"decision":"deny","rule_id":"r1"}`)
+	writeJSONLFile(t, dir, "run1", []string{line1})
+
+	err := VerifyJSONL(dir)
+	if err == nil {
+		t.Fatal("expected missing head/gap error")
+	}
+	if !strings.Contains(err.Error(), "expected seq 0") {
+		t.Fatalf("expected seq gap error, got %v", err)
+	}
+}
+
+func TestVerifyJSONL_DetectsReorderedRecordBySeq(t *testing.T) {
+	dir := t.TempDir()
+	line0, h0 := canonicalEventLine(t, "A", 0, nil, `{"decision":"allow","rule_id":"r0"}`)
+	line1, _ := canonicalEventLine(t, "A", 2, &h0, `{"decision":"deny","rule_id":"r1"}`)
+	writeJSONLFile(t, dir, "run1", []string{line0, line1})
+
+	err := VerifyJSONL(dir)
+	if err == nil {
+		t.Fatal("expected seq gap error")
+	}
+	if !strings.Contains(err.Error(), "expected seq 1") {
+		t.Fatalf("expected seq gap error, got %v", err)
 	}
 }

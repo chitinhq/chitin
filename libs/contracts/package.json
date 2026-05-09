@@ -18,7 +18,7 @@
     "generate-go-types": "tsx tools/generate-go-types.ts"
   },
   "nx": {
-    "tags": ["layer:contracts"],
+    "tags": ["npm:private", "type:contract", "scope:contracts", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",

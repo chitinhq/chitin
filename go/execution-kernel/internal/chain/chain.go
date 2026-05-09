@@ -150,12 +150,17 @@ func (i *Index) Upsert(chainID string, seq int64, hash, eventType, logicalHash, 
 //
 // Precondition:  The Index is open; chain_id is non-empty.
 // Postcondition on Commit(seq, hash): the chains table for chain_id has
-//   (last_seq = seq, last_hash = hash) and the IMMEDIATE lock is released.
+//
+//	(last_seq = seq, last_hash = hash) and the IMMEDIATE lock is released.
+//
 // Postcondition on Rollback(): the chains table is unchanged from its state
-//   at BeginEmit and the lock is released.
+//
+//	at BeginEmit and the lock is released.
+//
 // Invariant: at most one BeginEmit across all OS processes sharing the same
-//   DB file can be in the "acquired but not yet Commit/Rollback" state at any
-//   moment — SQLite's RESERVED lock (acquired by BEGIN IMMEDIATE) enforces this.
+//
+//	DB file can be in the "acquired but not yet Commit/Rollback" state at any
+//	moment — SQLite's RESERVED lock (acquired by BEGIN IMMEDIATE) enforces this.
 type EmitTx struct {
 	// Current is the last-known state of the chain at the time BeginEmit was
 	// called. Nil if the chain has no prior events.
@@ -222,7 +227,8 @@ func (tx *EmitTx) Rollback() error {
 // Postcondition on Commit(seq, hash): see EmitTx.Commit.
 // Postcondition on Rollback(): see EmitTx.Rollback.
 // Invariant: at most one BeginEmit across all processes holding the same DB
-//   file can be in the "acquired but not yet Commit/Rollback" state at any moment.
+//
+//	file can be in the "acquired but not yet Commit/Rollback" state at any moment.
 func (i *Index) BeginEmit(chainID string) (*EmitTx, error) {
 	ctx := context.Background()
 	conn, err := i.db.Conn(ctx)
@@ -289,16 +295,18 @@ func VerifyJSONL(chitinDir string) error {
 // broken.
 //
 // Precondition:  chitinDir contains zero or more files whose names match
-//                events-*.jsonl; each line is either valid JSON containing
-//                chain_id/seq/this_hash/prev_hash or is malformed and must
-//                be tolerated.
+//
+//	events-*.jsonl; each line is either valid JSON containing
+//	chain_id/seq/this_hash/prev_hash or is malformed and must
+//	be tolerated.
 //
 // Postcondition: For every chain_id that appears in any JSONL file, if the
-//                chain's events form a valid linked list (seqs 0..N-1,
-//                prev_hash at seq 0 is null, prev_hash at seq k matches
-//                this_hash at seq k-1), idx.Get(chain_id) returns
-//                (N-1, this_hash at seq N-1). Chains not present in any
-//                JSONL file are untouched.
+//
+//	chain's events form a valid linked list (seqs 0..N-1,
+//	prev_hash at seq 0 is null, prev_hash at seq k matches
+//	this_hash at seq k-1), idx.Get(chain_id) returns
+//	(N-1, this_hash at seq N-1). Chains not present in any
+//	JSONL file are untouched.
 //
 // On any broken linkage detected — gap in seq, wrong prev_hash, non-null
 // prev_hash at head, duplicate seq with conflicting this_hash — returns an
@@ -308,17 +316,19 @@ func VerifyJSONL(chitinDir string) error {
 // divergent fork, so the correct response is to refuse rather than to guess.
 //
 // Invariant:     JSONL files are never modified.  The DB is monotonically
-//                brought up to match validated JSONL: an existing row is
-//                only overwritten when the JSONL evidence has a strictly
-//                higher seq.  Calling RebuildFromJSONL twice in a row
-//                produces the same DB state (idempotent).  Concurrent
-//                invocations are safe because SQLite serialises writers and
-//                the UPSERT guard (WHERE excluded.last_seq > last_seq) is a
-//                monotone advance.
+//
+//	brought up to match validated JSONL: an existing row is
+//	only overwritten when the JSONL evidence has a strictly
+//	higher seq.  Calling RebuildFromJSONL twice in a row
+//	produces the same DB state (idempotent).  Concurrent
+//	invocations are safe because SQLite serialises writers and
+//	the UPSERT guard (WHERE excluded.last_seq > last_seq) is a
+//	monotone advance.
 //
 // Phase 2 note:  This scans all JSONL on every emit.  At Phase 1.5 volumes
-//                this is acceptable.  Phase 2 can replace this with a
-//                checkpoint-based incremental reconcile.
+//
+//	this is acceptable.  Phase 2 can replace this with a
+//	checkpoint-based incremental reconcile.
 func (i *Index) RebuildFromJSONL(chitinDir string) error {
 	if _, err := os.Stat(chitinDir); os.IsNotExist(err) {
 		return nil
@@ -363,6 +373,117 @@ func (i *Index) RebuildFromJSONL(chitinDir string) error {
 		}
 	}
 	return nil
+}
+
+func readJSONLRows(chitinDir string, verifyHash bool) (map[string][]jsonlEventRow, error) {
+	if _, err := os.Stat(chitinDir); os.IsNotExist(err) {
+		return map[string][]jsonlEventRow{}, nil
+	}
+	pattern := filepath.Join(chitinDir, "events-*.jsonl")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	rowsByChain := make(map[string][]jsonlEventRow)
+	for _, fpath := range files {
+		f, err := os.Open(fpath)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			var row jsonlEventRow
+			if err := json.Unmarshal(line, &row); err != nil {
+				continue
+			}
+			if row.ChainID == "" || row.ThisHash == "" {
+				continue
+			}
+			if verifyHash {
+				var m map[string]any
+				if err := json.Unmarshal(line, &m); err != nil {
+					continue
+				}
+				recorded, _ := m["this_hash"].(string)
+				delete(m, "this_hash")
+				computed, err := eventhash.HashEvent(m)
+				if err != nil {
+					_ = f.Close()
+					return nil, fmt.Errorf("chain %s seq %d: recompute this_hash: %w", row.ChainID, row.Seq, err)
+				}
+				if recorded != computed {
+					_ = f.Close()
+					return nil, fmt.Errorf("chain %s seq %d this_hash mismatch: recorded %s computed %s", row.ChainID, row.Seq, recorded, computed)
+				}
+			}
+			rowsByChain[row.ChainID] = append(rowsByChain[row.ChainID], row)
+		}
+		if err := scanner.Err(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		f.Close()
+	}
+	return rowsByChain, nil
+}
+
+func validateRowsByChain(rowsByChain map[string][]jsonlEventRow) error {
+	for chainID, rows := range rowsByChain {
+		deduped, err := sortAndDedupRows(chainID, rows)
+		if err != nil {
+			return err
+		}
+		for k, row := range deduped {
+			if row.Seq != int64(k) {
+				return fmt.Errorf(
+					"chain %s: expected seq %d at position %d, got %d (gap or out-of-range head)",
+					chainID, k, k, row.Seq,
+				)
+			}
+			if k == 0 {
+				if row.PrevHash != nil {
+					return fmt.Errorf(
+						"chain %s: seq 0 must have prev_hash=null, got %q",
+						chainID, *row.PrevHash,
+					)
+				}
+				continue
+			}
+			if row.PrevHash == nil {
+				return fmt.Errorf(
+					"chain %s: seq %d has prev_hash=null (must link to seq %d)",
+					chainID, row.Seq, row.Seq-1,
+				)
+			}
+			if *row.PrevHash != deduped[k-1].ThisHash {
+				return fmt.Errorf(
+					"chain %s: seq %d prev_hash %s does not match seq %d this_hash %s",
+					chainID, row.Seq, *row.PrevHash, deduped[k-1].Seq, deduped[k-1].ThisHash,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func sortAndDedupRows(chainID string, rows []jsonlEventRow) ([]jsonlEventRow, error) {
+	sort.Slice(rows, func(a, b int) bool { return rows[a].Seq < rows[b].Seq })
+	deduped := rows[:0]
+	for k, row := range rows {
+		if k > 0 && rows[k-1].Seq == row.Seq {
+			if rows[k-1].ThisHash != row.ThisHash {
+				return nil, fmt.Errorf(
+					"chain %s: seq %d has conflicting this_hash: %s vs %s",
+					chainID, row.Seq, rows[k-1].ThisHash, row.ThisHash,
+				)
+			}
+			continue
+		}
+		deduped = append(deduped, row)
+	}
+	return deduped, nil
 }
 
 // LogicalHash returns a stable hash over (event_type, payload) — the

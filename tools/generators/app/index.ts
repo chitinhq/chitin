@@ -69,7 +69,7 @@ function packageJson(name: string): string {
         type: 'module',
         main: './src/main.ts',
         nx: {
-          tags: ['layer:app'],
+          tags: ['npm:private', 'type:app', 'scope:cli', 'lang:ts'],
           targets: {
             run: {
               executor: 'nx:run-commands',

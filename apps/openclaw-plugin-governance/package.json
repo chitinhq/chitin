@@ -22,7 +22,7 @@
     "test": "vitest run test/"
   },
   "nx": {
-    "tags": ["layer:app"],
+    "tags": ["npm:public", "type:adapter", "scope:driver", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",

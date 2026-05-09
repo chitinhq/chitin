@@ -14,9 +14,7 @@
     "./package.json": "./package.json"
   },
   "nx": {
-    "tags": [
-      "layer:adapter"
-    ]
+    "tags": ["npm:private", "type:adapter", "scope:driver", "lang:ts"]
   },
   "dependencies": {
     "@chitin/contracts": "workspace:*"

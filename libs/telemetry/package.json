@@ -17,7 +17,7 @@
     "test": "vitest run tests"
   },
   "nx": {
-    "tags": ["layer:telemetry"],
+    "tags": ["npm:private", "type:data-access", "scope:telemetry", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",

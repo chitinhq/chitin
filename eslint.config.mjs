@@ -1,6 +1,6 @@
 // Narrow ESLint config — runs the @nx/enforce-module-boundaries rule only.
 // Oxlint (via .oxlintrc.json) is the primary fast-pass linter; this ESLint
-// exists solely to enforce Nx layer-tag dependency constraints because Oxlint
+// exists solely to enforce Nx project-tag dependency constraints because Oxlint
 // does not support custom ESLint plugin rules.
 import nx from '@nx/eslint-plugin';
 
@@ -21,16 +21,56 @@ export default [
           enforceBuildableLibDependency: true,
           allow: [],
           depConstraints: [
-            { sourceTag: 'layer:contracts',  onlyDependOnLibsWithTags: [] },
-            { sourceTag: 'layer:telemetry',  onlyDependOnLibsWithTags: ['layer:contracts'] },
-            { sourceTag: 'layer:scheduler',  onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
-            { sourceTag: 'layer:slack',      onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
-            { sourceTag: 'layer:adapter',    onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
-            { sourceTag: 'layer:mcp',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
-            { sourceTag: 'layer:cli',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry', 'layer:scheduler'] },
-            { sourceTag: 'layer:app',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
-            { sourceTag: 'layer:tooling',    onlyDependOnLibsWithTags: ['layer:contracts'] },
-            { sourceTag: 'layer:kernel',     onlyDependOnLibsWithTags: [] },
+            {
+              sourceTag: 'type:app',
+              onlyDependOnLibsWithTags: [
+                'type:feature',
+                'type:data-access',
+                'type:contract',
+                'type:adapter',
+                'type:util',
+              ],
+            },
+            {
+              sourceTag: 'type:feature',
+              onlyDependOnLibsWithTags: [
+                'type:feature',
+                'type:data-access',
+                'type:contract',
+                'type:adapter',
+                'type:ui',
+                'type:util',
+              ],
+            },
+            {
+              sourceTag: 'type:adapter',
+              onlyDependOnLibsWithTags: ['type:contract', 'type:util'],
+            },
+            {
+              sourceTag: 'type:data-access',
+              onlyDependOnLibsWithTags: ['type:data-access', 'type:contract', 'type:util'],
+            },
+            {
+              sourceTag: 'type:contract',
+              onlyDependOnLibsWithTags: ['type:util'],
+            },
+            {
+              sourceTag: 'type:ui',
+              onlyDependOnLibsWithTags: ['type:ui', 'type:util'],
+            },
+            {
+              sourceTag: 'type:util',
+              onlyDependOnLibsWithTags: ['type:util'],
+            },
+            {
+              sourceTag: 'type:tooling',
+              onlyDependOnLibsWithTags: [
+                'type:contract',
+                'type:data-access',
+                'type:util',
+                'type:tooling',
+              ],
+            },
           ],
         },
       ],

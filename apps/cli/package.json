@@ -11,7 +11,7 @@
     "test": "vitest run tests"
   },
   "nx": {
-    "tags": ["layer:cli"],
+    "tags": ["npm:private", "type:app", "scope:cli", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",
