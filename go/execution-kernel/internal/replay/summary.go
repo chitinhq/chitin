@@ -19,7 +19,7 @@ import (
 //   ## Prior session <id> summary
 //   - <N> tool calls (M denied), files touched: a.ts, b.go, ...
 //   - Last decision: <ts> <tool> on <target> [allow|deny rule]
-//   - Open questions / advisor nudges (from shared memory)
+//   - Router signals / open questions (from chain-derived context)
 //   - Outcome (if known): commit_sha, error, ...
 //
 // Designed to be SHORT — agents have limited prompt budget.

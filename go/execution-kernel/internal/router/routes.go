@@ -1,15 +1,16 @@
 package router
 
-// chitin-routes.yaml — peer-escalation routing policy loader.
+// chitin-routes.yaml — advisory routing policy loader.
 //
-// Per docs/design/2026-05-06-kernel-gate-escalation.md (step 1 of 6):
-// schema only. This file ONLY defines types + loader + validation.
-// Nothing in the kernel reads RoutesPolicy yet; subsequent steps wire
-// routeFor() and spawnPeer() against it.
+// This sidecar maps router signals to candidate downstream handlers
+// (driver/model labels). It is intentionally pure data: no subprocess,
+// no peer spawn, no LLM consultation. The kernel may stamp a
+// RoutingDecision string derived from this policy; Hermes, OpenClaw,
+// or another chain consumer decides whether to act on that signal.
 //
-// Sidecar (not part of chitin.yaml) so escalation routes can grow large
-// candidate lists without bloating the main policy file. Loaded from
-// the same parent-walk that finds chitin.yaml.
+// Sidecar (not part of chitin.yaml) so routing candidate lists can grow
+// without bloating the main policy file. Loaded from the same parent
+// walk that finds chitin.yaml.
 
 import (
 	"fmt"
@@ -26,16 +27,16 @@ type RoutesPolicy struct {
 	Version int `yaml:"version"`
 
 	// When false, rules + routes are loaded + validated but the
-	// gate falls back to today's deny+escalation_requested behavior.
-	// Default off — operator opts in.
+	// gate does not stamp routing candidates. Default off — operator
+	// opts in.
 	Enabled bool `yaml:"enabled"`
 
-	// Maximum wall-clock seconds for a peer-spawn before timeout.
-	// 0 → use built-in default (60).
+	// Historical no-op retained for schema compatibility with early
+	// route files. The kernel no longer spawns peers from this policy.
 	SpawnTimeoutSeconds int `yaml:"spawn_timeout_seconds"`
 
-	// At most N peer spawns in flight per worker session. Prevents
-	// runaway when heuristics keep firing. 0 → use default (1).
+	// Historical no-op retained for schema compatibility with early
+	// route files. The kernel no longer spawns peers from this policy.
 	MaxConcurrentPeers int `yaml:"max_concurrent_peers"`
 
 	// Rules: signal+severity → which named route to use.
@@ -53,8 +54,8 @@ type RoutingRule struct {
 	// Operator-friendly id (used in telemetry + error messages).
 	Name string `yaml:"name"`
 
-	// Which heuristic / advisor signal triggers this rule.
-	// "floundering" | "blast_radius" | "drift" | "advisor_takeover".
+		// Which router signal triggers this rule.
+		// "floundering" | "blast_radius" | "drift".
 	Signal string `yaml:"signal"`
 
 	// Human-readable severity expression. Today: free-text shown in
@@ -65,9 +66,8 @@ type RoutingRule struct {
 	// Name of the route in RoutesPolicy.Routes to consult.
 	Route string `yaml:"route"`
 
-	// Rate cap — kernel refuses to fire this rule more than N times
-	// per rolling hour, regardless of how often the signal triggers.
-	// 0 → no cap. Prevents quota exhaustion + runaway escalation.
+	// Advisory rate cap retained for future chain consumers. The
+	// kernel's current loader validates but does not enforce it.
 	MaxPerHour int `yaml:"max_per_hour"`
 }
 
@@ -156,7 +156,7 @@ func ValidateRoutesPolicy(p RoutesPolicy) error {
 	}
 	allowedSignals := map[string]bool{
 		"floundering": true, "blast_radius": true,
-		"drift": true, "advisor_takeover": true,
+		"drift": true,
 	}
 	seenRule := map[string]bool{}
 	for i, rule := range p.Rules {
@@ -168,7 +168,7 @@ func ValidateRoutesPolicy(p RoutesPolicy) error {
 		}
 		seenRule[rule.Name] = true
 		if !allowedSignals[rule.Signal] {
-			return fmt.Errorf("rule[%s]: unknown signal %q (expected one of floundering, blast_radius, drift, advisor_takeover)",
+			return fmt.Errorf("rule[%s]: unknown signal %q (expected one of floundering, blast_radius, drift)",
 				rule.Name, rule.Signal)
 		}
 		if rule.Route == "" {

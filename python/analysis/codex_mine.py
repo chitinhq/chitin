@@ -1,9 +1,9 @@
-"""Mine ~/.codex/sessions/**/*.jsonl into chitin-shaped chain events
-and a per-session usage rollup.
+"""Mine ~/.codex/sessions/**/*.jsonl for Codex usage and post-hoc events.
 
-Codex doesn't have a PreToolUse hook, so chitin can't gate codex
-calls in real time. But codex DOES emit a structured session
-JSONL with everything we need post-hoc:
+Chitin now has a live Codex PreToolUse integration via
+``scripts/install-codex-hook.sh`` and ``internal/driver/codex``. This
+module is still useful for the data Codex exposes only in its session
+JSONL, especially quota/rate-limit state and post-hoc session mining:
 
   - session_meta:        cwd, model_provider, cli_version
   - event_msg.task_started:   turn_id, started_at, model_context_window

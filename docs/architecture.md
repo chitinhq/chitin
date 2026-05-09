@@ -81,7 +81,7 @@ chitin-kernel uninstall-hook
 chitin-kernel install / uninstall   # surface-aware install (`--surface claude-code --global`)
 chitin-kernel health                # report on resolved .chitin/ state
 chitin-kernel gate <evaluate|status|lockdown|reset>
-chitin-kernel router evaluate       # router pipeline (kernel verdict → heuristics → optional advisor → composed verdict)
+chitin-kernel router evaluate       # router pipeline (kernel verdict -> pure-Go signals/plugin checks -> advisory telemetry)
 chitin-kernel simulate              # what-if a single hook input without executing
 chitin-kernel envelope <…>          # cost-gov v3 envelope (cross-process, sqlite WAL)
 chitin-kernel drive copilot         # in-kernel Copilot CLI driver

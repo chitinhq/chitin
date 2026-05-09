@@ -1,6 +1,18 @@
 # Mid-task continuation — design proposal
 
-Status: design only. This PR ships the kernel-side wire (the `escalation_requested` flag in the chain envelope + router-hook telemetry). The Temporal workflow loop that consumes it is intentionally deferred — the architectural commit is large enough that it warrants discussion before code.
+Status: superseded by the 2026-05-06 scope narrowing and the 2026-05-08 router/advisor cull. This document is historical context only.
+
+The accepted current boundary is narrower: chitin emits gate decisions
+and router signals, but it does not run Temporal workflows, continue
+tasks at higher tiers, spawn peer CLIs, or carry an in-kernel
+`escalation_requested` approval/continuation loop. Hermes or another
+substrate owns work continuation and orchestration.
+
+See:
+
+- `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`
+- `docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md`
+- `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`
 
 Date: 2026-05-03
 Driving need: when the router/advisor decides "this action shape exceeds the current driver's competence, escalate to a higher tier", the kernel should hand the in-flight task off to a higher-tier worker rather than killing the session and surfacing a human-pickup nudge.

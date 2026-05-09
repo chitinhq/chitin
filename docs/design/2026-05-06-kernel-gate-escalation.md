@@ -1,11 +1,32 @@
 # Kernel-gate escalation: chitin as the in-tool-call router
 
-Status: design.
+Status: superseded by the 2026-05-08 cull.
 Companion to / partial supersession of:
   - `2026-05-05-conformance-substrate.md` (the routing query API §148)
   - `apps/runner/src/dispatcher.ts` (the static TIER_DRIVER map)
 
 Date: 2026-05-06
+
+## Superseded note
+
+This proposal is retained as historical context only. Its core shape
+is no longer allowed: the kernel must not synchronously spawn peer CLIs
+or run an LLM advisor inside the tool-call hot path. The accepted
+post-cull shape is:
+
+1. `chitin-kernel gate` produces the authoritative allow/deny decision.
+2. `internal/router` computes pure-Go blast-radius, floundering, and
+   drift signals, plus deterministic plugin pre-block checks.
+3. The router stamps advisory `router.signal` decision rows onto the
+   chain.
+4. Hermes, OpenClaw, or an operator-wired chain consumer decides what
+   to do with those signals.
+
+See:
+
+- `docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md`
+- `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`
+- `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`
 
 ## What this is, in one sentence
 

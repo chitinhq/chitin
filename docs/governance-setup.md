@@ -1,6 +1,6 @@
 # Chitin Governance Setup
 
-The `gov.Gate.Evaluate(action, agent) → Decision` API is the single enforcement point. Every tool call across every driver evaluates against `chitin.yaml`. Five install paths — one per supported vendor surface — wire this API into the driver's tool-call lifecycle.
+The `gov.Gate.Evaluate(action, agent) → Decision` API is the single enforcement point. Every tool call across every supported execution driver evaluates against `chitin.yaml`. Install paths wire this API into each driver's tool-call lifecycle where the vendor exposes a hook or SDK boundary.
 
 ## Install paths by driver
 
@@ -8,16 +8,16 @@ The `gov.Gate.Evaluate(action, agent) → Decision` API is the single enforcemen
                  chitin.yaml (single policy)
                           │
                           ▼
-                  gov.Gate.Evaluate ◄──────────────┐
-       ▲       ▲      ▲       ▲       ▲             │
-       │       │      │       │       │             │
-   Claude   Codex  Gemini   Copilot  openclaw       │
-    Code     CLI    CLI      CLI      plugin        │
-   PreToo  PreToo  BeforeT   SDK      before_       │
-   Use     Use     ool       wrap     tool_call     │
-   hook    hook    hook                             │
-       │       │      │       │       │             │
-       ▼       ▼      ▼       ▼       ▼             │
+                  gov.Gate.Evaluate ◄────────────────────────┐
+       ▲       ▲      ▲       ▲        ▲        ▲             │
+       │       │      │       │        │        │             │
+   Claude   Codex  Gemini  Hermes   Copilot  openclaw        │
+    Code     CLI    CLI     Agent     CLI      plugin         │
+   PreToo  PreToo  BeforeT pre_tool   SDK      before_        │
+   Use     Use     ool     _call      wrap     tool_call      │
+   hook    hook    hook    hook                              │
+       │       │      │       │        │        │             │
+       ▼       ▼      ▼       ▼        ▼        ▼             │
                    tool calls  ───────────────────  │
 ```
 
@@ -55,7 +55,21 @@ Writes a `BeforeTool` block to `~/.gemini/settings.json`. Stdin payload is byte-
 
 Both `install-codex-hook.sh` and `install-gemini-hook.sh` are idempotent and refused-on-malformed-config; they run after each `install-kernel.sh` invocation so kernel rebuilds refresh the hook wiring automatically.
 
-### 4. Copilot CLI (in-kernel driver — wrapping orchestrator)
+### 4. Hermes (`pre_tool_call` shell hook)
+
+```bash
+bash scripts/install-hermes-hook.sh
+```
+
+Writes a `pre_tool_call` entry into `~/.hermes/config.yaml` pointing at
+`chitin-router-hook --agent=hermes`. Hermes' shell-hook payload is byte-
+compatible with Claude Code's PreToolUse shape; per-tool normalization lives
+in `internal/driver/hermes/normalize.go`.
+
+The installer also writes the matching entry to Hermes' shell-hook allowlist
+so the worker service does not block on first-run consent.
+
+### 5. Copilot CLI (in-kernel driver — wrapping orchestrator)
 
 ```bash
 chitin-kernel drive copilot "<prompt>"
@@ -63,7 +77,7 @@ chitin-kernel drive copilot "<prompt>"
 
 The kernel spawns Copilot CLI as a child of a chitin-driven harness (closed-vendor pattern: see [architecture.md](./architecture.md#vendor-integration-patterns-open-vs-closed-vendor)). Tool calls are gated via the SDK; chitin enforces the same `gov.Gate` policy.
 
-### 5. openclaw (`local-*` drivers via `before_tool_call` plugin)
+### 6. openclaw (`local-*` drivers via `before_tool_call` plugin)
 
 ```yaml
 # ~/.config/openclaw/openclaw.json
@@ -73,6 +87,20 @@ plugins:
 ```
 
 The plugin is loaded by openclaw at startup; every tool call dispatched by openclaw-managed agents (qwen / glm / glm-flash / deepseek) passes through `before_tool_call` → `chitin-kernel gate evaluate`. Same policy file.
+
+### 7. VS Code Copilot (IDE guidance, not enforcement)
+
+VS Code Copilot uses repository instructions rather than a chitin hook. This
+repo provides:
+
+- `AGENTS.md` as the universal product boundary.
+- `.github/copilot-instructions.md` for repository-wide Copilot context.
+- `.github/instructions/chitin-*.instructions.md` for path-specific guidance.
+- `.vscode/settings.json` enabling instruction files and `AGENTS.md` loading.
+
+This setup helps Copilot in the IDE follow the same boundary as other agents,
+but it is not a security boundary. Use `chitin-kernel drive copilot` when
+Copilot execution must be governed by the kernel.
 
 ## Build the kernel
 
@@ -161,6 +189,17 @@ Exit codes: `0` = allow, `1` = deny, `2` = internal error.
 
 Every gate call appends one JSON line to `~/.chitin/gov-decisions-<YYYY-MM-DD>.jsonl`. These are folded into the chitin event chain via `decision` events emitted by the kernel. The on-disk JSONL is the audit log; the in-chain `decision` event is the canonical record for replay and policy backtesting.
 
+## Driver conformance
+
+See [driver-conformance.md](./driver-conformance.md) for the current driver
+matrix, known normalizer gaps, and the next mapping work to prioritize from
+live `default-deny` / `unknown` chain rows.
+
 ## Closed-enum action vocabulary
 
-`action_type` is a closed enum of 6 classes: `read | write | exec | git | net | dangerous`. Unknown actions are **denied**, not allowed-by-default. If `Normalize()` returns `ActUnknown`, the fix is to extend the normalizer — never to broaden the rule. See [event-model.md](./event-model.md#field-ownership).
+`action_type` is the closed enum in `go/execution-kernel/internal/gov/action.go`:
+file, shell, git, GitHub, delegation, HTTP, npm, test, MCP, memory, custom
+tool, hook, Hermes plumbing, infra, and `unknown`. Unknown actions are
+**denied**, not allowed-by-default. If `Normalize()` returns `ActUnknown`, the
+fix is to extend the normalizer with tests — never to broaden the rule. See
+[event-model.md](./event-model.md#field-ownership).

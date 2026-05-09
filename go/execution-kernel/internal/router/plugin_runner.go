@@ -107,15 +107,15 @@ func RunPlugins(ctx context.Context, pluginConfigs []PluginConfig, trust Plugins
 }
 
 // NamedHeuristicScore wraps a HeuristicScore with the plugin's
-// name + type + block flag so the router can route fired-plugin
-// signals into advisor triggers OR direct blocks.
+// name + type + block flag so the router can distinguish advisory
+// signals from deterministic pre-action blocks.
 type NamedHeuristicScore struct {
 	Name  string
 	Type  string
 	// Block — when true AND Score.Fired is true, the router denies
 	// the action directly with Score.Reason as the deny message
-	// (pre-action analysis verdict). When false, the firing is a
-	// heuristic signal that may trigger advisor consultation.
+	// (pre-action analysis verdict). When false, the firing is an
+	// advisory heuristic signal stamped onto the chain.
 	Block bool
 	Score HeuristicScore
 }

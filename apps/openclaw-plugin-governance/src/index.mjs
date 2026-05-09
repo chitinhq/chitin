@@ -143,10 +143,10 @@ export function resolveConfig(raw) {
     mode: r.mode === 'observe' ? 'observe' : 'enforce',
     workerMode: r.workerMode === true,
     denyOnError: r.denyOnError !== false,
-    // Default 30s: covers the router pipeline including a possible advisor
-    // (claude -p) round-trip which can take 5-15s. The pre-router gate path
-    // was 5s — bumped because evaluateRouter replaced evaluateGate as the
-    // default invocation surface.
+    // Default 30s: covers the router pipeline, including pure-Go signals and
+    // optional plugin subprocess checks. The pre-router gate path was 5s,
+    // bumped because evaluateRouter replaced evaluateGate as the default
+    // invocation surface.
     timeoutMs: typeof r.timeoutMs === 'number' && r.timeoutMs >= 100 ? r.timeoutMs : 30000,
   };
 }

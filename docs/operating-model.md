@@ -39,26 +39,26 @@ Single-box. One Linux workstation with an RTX 3090 hosts the entire dev + dogfoo
 | Predictive model (chain-predict-outcome) | Python `analysis/predict.py` | ✅ shipped 2026-05-03 (#256) |
 | Governance (`gov.Gate`) | Go kernel `internal/gov` | ✅ shipped 2026-04-28 (PR #45 + #51) |
 | Cost envelope (cross-process) | Go kernel `internal/envelope` | ✅ cost-gov v3 |
-| Universal usage feed (codex 5h/weekly, gemini calls, ollama-cloud rpm/tpm) | `chitin-budget` + `~/.cache/chitin/usage/` | ✅ schema + codex producer shipped 2026-05-04 (#269); gemini/ollama producers in backlog |
+| Universal usage feed (codex 5h/weekly, gemini calls, ollama-cloud rpm/tpm) | `python/analysis/codex_mine.py` + `~/.cache/chitin/usage/` | ✅ schema + codex producer shipped 2026-05-04 (#269); gemini/ollama producers in backlog |
 | Drivers — Claude Code hook | `internal/driver/claudecode/normalize.go` + kernel install path | ✅ shipped (PR #66) |
 | Drivers — Codex CLI (PreToolUse) | `internal/driver/codex/normalize.go` + `scripts/install-codex-hook.sh` | ✅ shipped 2026-05-04 (#272) |
 | Drivers — Gemini CLI (BeforeTool) | `internal/driver/gemini/normalize.go` + `scripts/install-gemini-hook.sh` | ✅ shipped 2026-05-04 (#267) |
-| Drivers — Codex as activity-spawned reviewer (env-overridable per tier) | `apps/runner` `planInvocation` + `REVIEW_TIER_DRIVER` | ✅ shipped 2026-05-04 (#270) |
 | Drivers — Copilot CLI (wrapping) | Kernel `drive copilot` | ✅ shipped (PR #51) |
 | Drivers — openclaw (`local-*`) | openclaw `before_tool_call` plugin | ✅ shipped |
 | Plugin runtime (Python + TS heuristic plugins) | `internal/router/plugins` + opt-in side-effect gate libs | ✅ shipped (#235, #237, #241, #250) |
 | Plugin sandbox (bubblewrap, opt-in) | `internal/router/plugins/sandbox.go` | ✅ shipped 2026-05-03 (#255) |
 | OTEL emit (projection) | Go kernel `internal/emit` | ✅ F4 shipped before 2026-05-07 talk |
-| Worktree index (dispatcher writes `WORKTREE_INDEX.md`) | `apps/runner/src/activity.ts` | ✅ shipped 2026-05-03 (#261) |
-| Souls library | `souls/canonical/` + `souls/experimental/` | ✅ shipped Phase 1.5 |
+| Router signal stamping | Go kernel `internal/router` + `cmd/chitin-kernel/router_hook.go` | ✅ post-cull shape: pure-Go signals, no in-gate LLM advisor |
+| Removed orchestration surfaces | `apps/runner`, scheduler, Temporal, Slack app, in-gate peer spawn | ❌ culled 2026-05-06 to 2026-05-08; Hermes owns orchestration |
+| Souls library | `souls/canonical/` + `souls/experimental/` | historical analytics/reference artifact; not a kernel runtime surface |
 
 ## Order of operations (current, not aspirational)
 
-Older docs stated "observability → governance → automation, in that order, per surface." That ordering described Phase 1's implementation sequence; it is not a design constraint anymore. Today all three coexist:
+Older docs stated "observability → governance → automation, in that order, per surface." That ordering described Phase 1's implementation sequence; it is not a design constraint anymore. Today chitin owns the first two and emits signals for downstream automation:
 
 1. **Observability** is always-on. Every driver emits events to the chain by default.
-2. **Governance** is on by default in `mode: guide`. Policies start permissive and tighten as the debt ledger surfaces real-world denials worth enforcing.
-3. **Automation** (the swarm / self-building product north star) lives downstream of both.
+2. **Governance** is on by default in `mode: enforce` for the baseline policy. Policies tighten as the debt ledger surfaces real-world denials worth enforcing.
+3. **Automation** lives downstream in Hermes, OpenClaw, or operator wiring. Chitin does not run the agent loop, scheduler, kanban, approval flow, or peer-spawn workflow.
 
 ## The three analysis output streams
 

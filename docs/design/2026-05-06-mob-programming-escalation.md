@@ -1,10 +1,10 @@
 # Mob-programming escalation: T0 worker + T1-T4 recursive consultants
 
-Status: design extension. Updates and partially supersedes
-`2026-05-06-kernel-gate-escalation.md` (the original peer-spawn design,
-which assumed one-level-only escalation with `CHITIN_NO_ESCALATE=1`
-recursive guard). This doc extends that to bounded recursive
-escalation with tier-graded consultants.
+Status: superseded historical design. The 2026-05-08 cull removed
+in-kernel advisor consultation and peer spawning from the hot path;
+bounded consultant routing belongs in downstream substrates such as
+hermes. This document remains as context for the rejected recursive
+escalation shape.
 
 Date: 2026-05-06 (later than the original)
 

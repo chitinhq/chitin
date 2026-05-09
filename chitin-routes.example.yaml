@@ -1,11 +1,14 @@
-# chitin-routes.yaml — peer-escalation routing policy
+# chitin-routes.yaml — advisory routing policy
 #
-# Sidecar to chitin.yaml. Loaded by chitin-kernel router on every gate
-# evaluation (when `enabled: true`). Operator declares:
-#   - Rules: which signal+severity triggers a peer-escalation
+# Sidecar to chitin.yaml. Loaded by chitin-kernel router when a chain
+# consumer wants route candidates for stamped router signals. Operator
+# declares:
+#   - Rules: which signal+severity suggests a route
 #   - Routes: which (driver, model) candidates serve each named route
 #
-# Per docs/design/2026-05-06-kernel-gate-escalation.md.
+# This file does not cause the kernel to spawn peer CLIs. Chitin emits
+# gate decisions and router signals; Hermes, OpenClaw, or another
+# operator-wired chain consumer decides how to react.
 #
 # Copy this file to `chitin-routes.yaml` (no `.example` suffix) at the
 # same level as chitin.yaml to enable. The kernel walks parent dirs
@@ -14,12 +17,11 @@
 version: 1
 
 # Default off. Until set true, the kernel loads + validates this file
-# but does NOT spawn peer CLIs from inside the gate — falls back to
-# today's "set escalation_requested=true and let the runner handle it"
-# behavior.
+# but does NOT stamp routing candidates.
 enabled: false
 
-# Per-spawn safety knobs.
+# Historical no-op fields retained for compatibility with early route
+# policy experiments. The kernel does not spawn peers from this file.
 spawn_timeout_seconds: 60
 max_concurrent_peers: 1
 
@@ -40,7 +42,7 @@ rules:
 
   - name: drift-takeover
     signal: drift
-    severity: "advisor.verdict=takeover"
+    severity: "score>=0.6"
     route: reasoning_depth
     max_per_hour: 3
 

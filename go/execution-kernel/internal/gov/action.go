@@ -54,6 +54,9 @@ const (
 	ActNPMRun            ActionType = "npm.script.run"
 	ActTestRun           ActionType = "test.run"
 	ActMCPCall           ActionType = "mcp.call"
+	ActMemoryAccess      ActionType = "memory.access"
+	ActCustomTool        ActionType = "tool.custom"
+	ActHookInvoke        ActionType = "hook.invoke"
 	// ActKanbanCall: Hermes Agent's per-tool kanban API calls
 	// (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_comment`,
 	// `kanban_heartbeat`, `kanban_create`, `kanban_link`, `kanban_unlink`,

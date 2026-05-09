@@ -104,19 +104,19 @@ func Normalize(req copilotsdk.PermissionRequest, cwd string) gov.Action {
 		}
 
 	case copilotsdk.PermissionRequestKindMemory:
-		action.Type = "memory.access"
+		action.Type = gov.ActMemoryAccess
 		if req.Subject != nil {
 			action.Target = *req.Subject
 		}
 
 	case copilotsdk.PermissionRequestKindCustomTool:
-		action.Type = "tool.custom"
+		action.Type = gov.ActCustomTool
 		if req.ToolName != nil {
 			action.Target = *req.ToolName
 		}
 
 	case copilotsdk.PermissionRequestKindHook:
-		action.Type = "hook.invoke"
+		action.Type = gov.ActHookInvoke
 		if req.HookMessage != nil {
 			action.Target = *req.HookMessage
 		}

@@ -15,10 +15,9 @@
 //                have bun installed)
 //   bash     →  shell scripts (fastest, ~10ms; for prototyping)
 //
-// Cost model: per-call subprocess spawn. Most tool calls SKIP
-// plugins (gated by policy.advisor.when triggers). Plugin authors
-// should keep their work fast — heavy compute belongs in advisor
-// LLM calls, not heuristic plugins.
+// Cost model: per-call subprocess spawn. Plugin authors should keep
+// their work fast; heavy judgment loops belong downstream in Hermes,
+// OpenClaw, or operator-wired chain consumers, not in the gate.
 package plugins
 
 import (
@@ -36,8 +35,9 @@ import (
 type PluginManifest struct {
 	// Name identifies the plugin in telemetry (operator-readable).
 	Name string `yaml:"name" json:"name"`
-	// Type — heuristic | advisor. Heuristics fire pre-advisor; advisors
-	// receive the heuristic outcome and return a verdict + nudge.
+	// Type identifies the plugin shape. "heuristic" emits an advisory
+	// score; other values are preserved for backward-compatible config
+	// loading but do not reintroduce an in-gate LLM advisor.
 	Type string `yaml:"type" json:"type"`
 	// Runtime — which interpreter to spawn (python3, node, bun, bash).
 	Runtime string `yaml:"runtime" json:"runtime"`
@@ -96,16 +96,14 @@ type PluginInput struct {
 //
 // Two plugin shapes are supported:
 //
-//  1. HEURISTIC plugins — score the action; firing flags it for
-//     advisor consultation but doesn't block on its own. Set
-//     Fired but leave Block false.
+//  1. HEURISTIC plugins — score the action; firing stamps a signal
+//     row but doesn't block on its own. Set Fired but leave Block
+//     false.
 //
 //  2. PRE-ACTION ANALYSIS plugins — block the action directly
 //     based on a deterministic check (e.g., "no commit until tests
 //     pass"). Set both Fired AND Block=true. The router emits a
-//     kernel-level deny with the plugin's Reason as the message;
-//     no advisor consultation is needed (plugin verdict is
-//     authoritative).
+//     kernel-level deny with the plugin's Reason as the message.
 //
 // A plugin can switch shape per-invocation: heuristic-fire on
 // one input and block-fire on another.
@@ -115,8 +113,7 @@ type PluginOutput struct {
 	Reason string                 `json:"reason"`
 	Axis   map[string]interface{} `json:"axis,omitempty"`
 	// Block — when true AND Fired is true, the router denies the
-	// action directly with Reason as the deny message; advisor
-	// not consulted.
+	// action directly with Reason as the deny message.
 	Block bool `json:"block,omitempty"`
 }
 
