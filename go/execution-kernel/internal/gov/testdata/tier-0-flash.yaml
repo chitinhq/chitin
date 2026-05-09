@@ -1,0 +1,82 @@
+# T0 Flash Policy — permissive, auto-allow most operations
+# Designed for: fast agents on trusted codepaths (e.g. glm-flash-agent, qwen-agent)
+# Mode: guide (log violations, don't enforce blocks)
+# Philosophy: trust the agent, only guard against catastrophic mistakes
+
+id: tier-0-flash
+name: T0 Flash — permissive guardrails
+mode: guide
+
+bounds:
+  max_files_changed: 50
+  max_lines_changed: 2000
+
+escalation:
+  elevated_threshold: 5
+  high_threshold: 10
+  lockdown_threshold: 15
+
+rules:
+  # === HARD DENY — catastrophic mistakes, even in guide mode ===
+  - id: no-recursive-delete
+    action: file.recursive_delete
+    effect: deny
+    reason: "rm -rf is never appropriate for flash-tier agents"
+    suggestion: "Use git rm <specific-files> or delete files individually"
+
+  - id: no-force-push
+    action: git.force_push
+    effect: deny
+    reason: "Force push can irrevocably destroy shared history"
+    suggestion: "Use git push (non-force) or create a new branch"
+
+  - id: no-infra-destroy
+    action: infra_destroy
+    effect: deny
+    reason: "Infrastructure destroy commands are never appropriate for automated agents"
+    suggestion: "Use targeted kubectl delete or terraform plan first"
+
+  # === SOFT GUIDE — dangerous patterns, logged but not blocked ===
+  - id: guide-self-mod
+    action: file.write
+    effect: guide
+    target_regex: "\\.openclaw/"
+    reason: "Writing to .openclaw configs — should be operator-initiated"
+    suggestion: "Let the operator modify their own config"
+
+  - id: guide-protected-push
+    action: git.push
+    effect: guide
+    branches: [main, master]
+    reason: "Push to protected branch — consider a feature branch"
+
+  - id: guide-net-exfil
+    action: http.request
+    effect: guide
+    reason: "Outbound network request logged for audit trail"
+
+  # === ALLOW — flash agents are trusted for common operations ===
+  - id: allow-reads
+    action: [file.read, file.delete, file.move]
+    effect: allow
+    reason: "Read operations are safe"
+
+  - id: allow-shell-exec
+    action: shell.exec
+    effect: allow
+    reason: "Flash agents can run commands freely"
+
+  - id: allow-git-ops
+    action: git.status
+    effect: allow
+    reason: "Git read operations are safe"
+
+  - id: allow-writes
+    action: file.write
+    effect: allow
+    reason: "File writes within blast-radius bounds are allowed"
+
+  - id: allow-delegate
+    action: delegate.task
+    effect: allow
+    reason: "Subagent spawning is allowed"

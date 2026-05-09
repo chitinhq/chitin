@@ -1,0 +1,137 @@
+# T4 Autonomous Policy — strict guardrails for unsupervised agents
+# Designed for: fully autonomous agents running without human in the loop (cron, hermes)
+# Mode: enforce (block all violations)
+# Philosophy: default-deny, only allow what's explicitly needed;
+#             autonomous agents cannot self-correct from catastrophic mistakes
+#
+# This policy is intentionally restrictive. If an autonomous agent needs more
+# freedom, add an explicit allow rule with a narrow target rather than widening
+# existing rules. Every deny rule here exists because we've seen autonomous
+# agents cause real damage with the listed pattern.
+
+id: tier-4-autonomous
+name: T4 Autonomous — strict default-deny
+mode: enforce
+
+bounds:
+  max_files_changed: 10
+  max_lines_changed: 200
+  per_action:
+    git.push:
+      max_files_changed: 50
+      max_lines_changed: 1000
+
+escalation:
+  elevated_threshold: 2
+  high_threshold: 4
+  lockdown_threshold: 6
+  max_retries_per_action: 2
+
+rules:
+  # === HARD DENY — catastrophic for autonomous agents ===
+  - id: no-recursive-delete
+    action: file.recursive_delete
+    effect: deny
+    reason: "rm -rf is never appropriate for autonomous agents"
+    suggestion: "Use git rm <specific-files> or delete files individually"
+
+  - id: no-force-push
+    action: git.force_push
+    effect: deny
+    reason: "Force push is never appropriate for autonomous agents"
+
+  - id: no-infra-destroy
+    action: infra_destroy
+    effect: deny
+    reason: "Infrastructure destroy commands are blocked for autonomous agents"
+
+  - id: no-self-mod
+    action: file.write
+    effect: deny
+    target_regex: "\\.openclaw/"
+    reason: "Autonomous agents must never modify their own governance config"
+    suggestion: "This is a policy violation. Do not modify .openclaw/ files."
+
+  - id: no-self-mod-shell
+    action: shell.exec
+    effect: deny
+    target_regex: ">.*\\.openclaw/"
+    reason: "Autonomous agents must never redirect writes to .openclaw/ configs"
+
+  - id: no-env-write
+    action: file.write
+    effect: deny
+    target_regex: "\\.env"
+    reason: "Writing to .env files is blocked"
+    suggestion: "Use a secret manager"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to protected branch is blocked"
+    suggestion: "Push to a feature branch"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: "curl.*\\|.*(bash|sh)"
+    reason: "Piping remote content to shell is blocked"
+
+  - id: no-network-from-shell
+    action: [http.request, shell.exec]
+    effect: deny
+    target_regex: "(curl|wget|ssh|scp|rsync)\\s"
+    reason: "Network commands from shell are blocked — use http.request actions instead"
+    suggestion: "Use the web_fetch tool instead"
+
+  - id: no-daemon-install
+    action: shell.exec
+    effect: deny
+    target_regex: "(systemctl|launchctl|crontab)\\s"
+    reason: "Installing daemons or cron jobs from shell is blocked"
+    suggestion: "Use the cron tool for scheduling"
+
+  - id: no-package-install
+    action: shell.exec
+    effect: deny
+    target_regex: "(apt-get|yum|brew|pip install|npm install -g)\\s"
+    reason: "Package installation is blocked for autonomous agents"
+    suggestion: "Request operator approval first"
+
+  # === MONITOR — logged for audit, contributes to escalation ===
+  - id: monitor-net
+    action: http.request
+    effect: monitor
+    reason: "Network requests are logged for audit"
+
+  - id: monitor-delegate
+    action: delegate.task
+    effect: monitor
+    reason: "Subagent spawning is logged"
+
+  # === ALLOW — only what's explicitly needed ===
+  - id: allow-reads
+    action: [file.read, git.status]
+    effect: allow
+    reason: "Read operations are safe"
+
+  - id: allow-shell-read-only
+    action: shell.exec
+    effect: allow
+    reason: "Shell commands are allowed (dangerous patterns blocked above)"
+
+  - id: allow-writes-in-workspace
+    action: file.write
+    effect: allow
+    reason: "File writes within blast-radius bounds are allowed"
+
+  - id: allow-git-push-nonprotected
+    action: git.push
+    effect: allow
+    reason: "Feature branch pushes are allowed within bounds"
+
+  - id: allow-git-commit
+    action: git.commit
+    effect: allow
+    reason: "Git commits are allowed"
