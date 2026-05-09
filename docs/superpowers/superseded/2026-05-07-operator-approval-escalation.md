@@ -1,5 +1,7 @@
 # Operator-Approval Escalation Implementation Plan
 
+> **Superseded (2026-05-08):** This implementation was built (PRs #380–#396) and then culled (PRs #397–#400). Operator approvals are now handled by Hermes' `tools/approval.py`. See `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `effect: escalate` to the chitin policy DSL so any rule can request real-time operator approval (via hermes-gateway chat or CLI fallback) before allowing/denying a tool call.

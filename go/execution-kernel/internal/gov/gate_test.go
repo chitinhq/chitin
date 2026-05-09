@@ -408,6 +408,47 @@ func TestGate_FingerprintEmptyByDefault(t *testing.T) {
 	}
 }
 
+func TestGate_LogWriteFailureFailsClosedOnAllow(t *testing.T) {
+	g, dir := newTestGate(t)
+	logFile := filepath.Join(dir, "log-file-not-dir")
+	if err := os.WriteFile(logFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.LogDir = logFile
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("log write failure must fail closed, got allow: %+v", d)
+	}
+	if d.RuleID != "decision-log-failed" {
+		t.Fatalf("RuleID=%q want decision-log-failed", d.RuleID)
+	}
+	if !strings.Contains(d.Reason, "decision log write failed") {
+		t.Fatalf("Reason should identify log failure, got %q", d.Reason)
+	}
+}
+
+func TestGate_LogWriteFailureFailsClosedOnLockdown(t *testing.T) {
+	g, dir := newTestGate(t)
+	g.Counter.Lockdown("agent1")
+	logFile := filepath.Join(dir, "log-file-not-dir")
+	if err := os.WriteFile(logFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.LogDir = logFile
+
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("locked agent must stay denied")
+	}
+	if d.RuleID != "decision-log-failed" {
+		t.Fatalf("RuleID=%q want decision-log-failed", d.RuleID)
+	}
+	if d.Action.Type != ActFileRead || d.Agent != "agent1" {
+		t.Fatalf("failure decision should preserve action and agent, got %+v", d)
+	}
+}
+
 // fingerprintEnvKeys are the env vars FingerprintContextFromEnv reads.
 // Centralized so the cleanup helper below can never drift from the
 // reader and leak a leftover value into adjacent tests.

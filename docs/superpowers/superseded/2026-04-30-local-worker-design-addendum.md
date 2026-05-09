@@ -1,5 +1,7 @@
 # Local 24/7 Worker — Design Addendum (three-plane reframe)
 
+> **Superseded (2026-05-08):** The Temporal control plane was deleted. This addendum's reframe is still conceptually valid (three-plane decomposition) but the specific architecture is superseded.
+
 **Date:** 2026-04-30 (same day as parent spec).
 **Status:** addendum to `2026-04-30-local-worker-design.md`. Supersedes the openclaw-as-orchestrator framing and the chitin-owned task queue. Invariants, bootstrap rules, observability loop, and acceptance criteria from the parent spec stand.
 **Trigger:** in-session strategic input identifying that the parent spec stretches openclaw into orchestration (workflow durability, queueing, scheduling) — the failure mode `project_hermes_killed_chitin_as_governance.md` already records ("don't let chitin own the tick-loop") applied recursively: *don't let openclaw own it either*.

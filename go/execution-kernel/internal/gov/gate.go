@@ -207,7 +207,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		stampEnvelope(&d, envelope, g, a, agent)
 		stampFingerprint(&d, g.Fingerprint)
 		if !g.NoRecord {
-			_ = WriteLog(d, g.LogDir)
+			if err := WriteLog(d, g.LogDir); err != nil {
+				d = decisionLogFailed(d, err)
+			}
 		}
 		final = d
 		return
@@ -327,7 +329,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// synthetic deny rows. The Decision still flows back to the caller
 	// via the named return — what changes is durability.
 	if !g.NoRecord {
-		_ = WriteLog(d, g.LogDir)
+		if err := WriteLog(d, g.LogDir); err != nil {
+			d = decisionLogFailed(d, err)
+		}
 	}
 
 	// 9. F4 addendum: OnDecision callback fires from the deferred
@@ -337,6 +341,17 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// AFTER the function returns.
 	final = d
 	return
+}
+
+func decisionLogFailed(d Decision, err error) Decision {
+	d.Allowed = false
+	d.Mode = "enforce"
+	d.RuleID = "decision-log-failed"
+	d.Reason = "decision log write failed: " + err.Error()
+	d.Suggestion = ""
+	d.CorrectedCommand = ""
+	d.Effect = ""
+	return d
 }
 
 // stampEnvelope is the lockdown-path helper: it does its own classify +

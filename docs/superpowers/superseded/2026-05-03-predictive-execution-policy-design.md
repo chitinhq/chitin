@@ -1,7 +1,9 @@
 # Predictive Execution Policy + Audited Counterfactuals — Design
 
+> **Superseded (2026-05-08):** Slice 1 defined `libs/governance/` (TS classify+decide), which was culled in the 2026-05-08 TS substrate cull. See `docs/decisions/2026-05-08-cull-libs-governance-ts-substrate.md`.
+
 **Date:** 2026-05-03
-**Status:** Design only. No code yet. Captures the next architectural layer above the openclaw-plugin slice (`2026-05-01-chitin-as-openclaw-plugin-design.md`) — what chitin's policy layer becomes once it stops being a flat allow/deny gate.
+**Status:** ~~Design only~~ superseded. The policy concept (typed actions + bounds) ships in the Go kernel; the TS classification layer described here does not.
 **Active lens:** da Vinci (open-ended cross-surface architecture, multiple concurrent invariants — `souls/canonical/davinci.md`). When implementation begins on Slice 1, swap to Knuth for the contract definition (one provable invariant per pass).
 **Supersedes:** nothing yet — extends the three-plane architecture (control / execution / enforcement). Adds a *cognitive* layer to the enforcement plane.
 **Constraints honored:** Anthropic ToS (`project_anthropic_tos_constraints.md`); OSS boundary (`feedback_chitin_oss_boundary.md`); kernel-authority rule (`docs/architecture/layer-contracts.md` v1).

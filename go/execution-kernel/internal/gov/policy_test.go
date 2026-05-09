@@ -174,6 +174,94 @@ rules:
 	}
 }
 
+func TestPolicy_RejectsUnsupportedEffect(t *testing.T) {
+	cases := []struct {
+		name    string
+		effect  string
+		wantSub string
+	}{
+		{"typoed effect", "approve", "effect"},
+		{"culled escalate effect", "escalate", "escalate is no longer supported"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "chitin.yaml")
+			if err := os.WriteFile(path, []byte(`
+id: bad-effect
+mode: enforce
+rules:
+  - id: r
+    action: shell.exec
+    effect: `+tc.effect+`
+    reason: "bad effect"
+`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadPolicyFile(path)
+			if err == nil {
+				t.Fatalf("LoadPolicyFile must reject effect=%q", tc.effect)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error should contain %q, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestPolicy_RejectsUnknownYAMLFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chitin.yaml")
+	if err := os.WriteFile(path, []byte(`
+id: unknown-field
+mode: enforce
+rules:
+  - id: r
+    action: file.write
+    effect: deny
+    pathUnder: ["/etc/"]
+    reason: "camelCase typo should not be ignored"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadPolicyFile(path)
+	if err == nil {
+		t.Fatal("LoadPolicyFile must reject unknown YAML fields")
+	}
+	if !strings.Contains(err.Error(), "field pathUnder not found") {
+		t.Errorf("error should identify unknown field, got: %v", err)
+	}
+}
+
+func TestPolicy_GuideAndMonitorEffectsAreExplicit(t *testing.T) {
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{ID: "guide-rm", Action: ActionMatcher{"shell.exec"}, Effect: "guide", Target: "rm -rf"},
+			{ID: "monitor-shell", Action: ActionMatcher{"shell.exec"}, Effect: "monitor"},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	guide := p.Evaluate(Action{Type: ActShellExec, Target: "rm -rf /tmp/x"})
+	if guide.Allowed {
+		t.Fatalf("guide effect should deny, got allow: %+v", guide)
+	}
+	if guide.Mode != "guide" || guide.RuleID != "guide-rm" {
+		t.Fatalf("guide decision = %+v, want mode=guide rule=guide-rm", guide)
+	}
+
+	monitor := p.Evaluate(Action{Type: ActShellExec, Target: "ls -la"})
+	if !monitor.Allowed {
+		t.Fatalf("monitor effect should allow, got deny: %+v", monitor)
+	}
+	if monitor.Mode != "monitor" || monitor.RuleID != "monitor-shell" {
+		t.Fatalf("monitor decision = %+v, want mode=monitor rule=monitor-shell", monitor)
+	}
+}
+
 func TestPolicy_SelfModification_AbsolutePath(t *testing.T) {
 	// Regression for C2: the baseline no-governance-self-modification rule
 	// must match absolute paths (e.g. when hermes calls write_file with

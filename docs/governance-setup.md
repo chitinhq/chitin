@@ -183,7 +183,27 @@ chitin-kernel gate lockdown --agent=<name>
 chitin-kernel gate reset    --agent=<name>
 ```
 
-Exit codes: `0` = allow, `1` = deny, `2` = internal error.
+`gate evaluate` writes one machine-readable JSON object to stdout on every
+normal evaluation path. The stable fields are:
+
+- `allowed`: boolean verdict.
+- `mode`: resolved policy mode (`monitor`, `enforce`, or `guide`).
+- `rule_id`: matched rule, `default-deny`, `no_policy_found`, or
+  `policy_invalid`.
+- `reason`: human-readable explanation.
+- `action_type`: canonical closed-enum action.
+- `action_target`: normalized target used for policy matching.
+- `ts`: RFC3339 timestamp when a policy decision was evaluated.
+
+Exit codes:
+
+- `0` = allow.
+- `1` = policy denial, guide denial, lockdown denial, or no policy found.
+- `2` = internal/configuration error, including malformed policy.
+
+`no_policy_found` is intentionally distinguishable from `policy_invalid` so
+operators can choose compatibility behavior for unpolicied directories without
+silently allowing broken policy files.
 
 ## Decision log
 

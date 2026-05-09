@@ -15,15 +15,20 @@ in one of these outcomes:
 
 ## Current surfaces
 
-| Driver | Integration | Normalizer | Coverage | Current gaps |
-|---|---|---|---|---|
-| Claude Code | `PreToolUse` hook via `chitin-kernel install --surface claude-code --global` | `internal/driver/claudecode` | Bash, read/write/edit, web, MCP, task/delegate, task-state, worktree, cron/schedule, browse tools, todo | Future Anthropic tools intentionally hit `unknown` until mapped. |
-| Codex CLI | `PreToolUse` hook via `scripts/install-codex-hook.sh` | `internal/driver/codex` | Bash, `apply_patch`, `read_file`, MCP, Claude-tool leak fallback | Narrow native enum; any new Codex tool should be added from live hook captures before policy loosening. |
-| Gemini CLI | `BeforeTool` hook via `scripts/install-gemini-hook.sh` | `internal/driver/gemini` | Shell, read/list/search, edit/replace/write, web/search, memory/topic, Claude-tool leak fallback | Last tool-registry check in comments was Gemini CLI `0.40.1`; reverify on upgrade. |
-| Hermes | `pre_tool_call` shell hook via `scripts/install-hermes-hook.sh` | `internal/driver/hermes` | Terminal/code, file, patch/search, web/browser, delegation, skills, kanban plumbing, process, MCP, Claude-tool leak fallback | `image_generate`, `text_to_speech`, `vision_analyze`, `cronjob`, and `clarify` are intentionally unmapped. Decide canonical types before allowing them. |
-| Copilot CLI | In-kernel SDK wrapper via `chitin-kernel drive copilot` | `internal/driver/copilot` | SDK permission kinds: shell, write, read, MCP, URL, memory, custom tool, hook | Closed-vendor wrapper only. This does not cover VS Code Copilot agent-mode tool execution. |
-| OpenClaw | `before_tool_call` plugin via `apps/openclaw-plugin-governance` | Plugin bridge into `chitin-kernel gate evaluate` | Tool calls dispatched by OpenClaw's native pi-agent-core runtime | Does not gate standalone Claude/Codex/Gemini/Copilot processes; use their native driver integrations. |
-| VS Code Copilot | Repository instructions + `AGENTS.md` context | No execution normalizer | Uses repo guidance to steer agent behavior in the IDE | No pre-tool hook surface. Treat this as guidance only; route terminal-side agent execution through chitin-aware CLIs where enforcement is required. |
+Production support here means the driver has a pre-side-effect
+integration path, a kernel normalizer or kernel-backed bridge, and tests
+or fixture coverage in this repository. Guidance-only surfaces are not
+governance boundaries.
+
+| Driver | Integration point | Real-time gating | Normalizer / bridge | Fixture location | Production support | Current gaps |
+|---|---|---:|---|---|---|---|
+| Claude Code | Native `PreToolUse` hook installed by `chitin-kernel install --surface claude-code --global` or `scripts/install-claude-code-hook.sh` | Yes | `go/execution-kernel/internal/driver/claudecode` | `go/execution-kernel/internal/driver/claudecode/*_test.go` | Supported | Future Anthropic tools intentionally hit `unknown` until mapped from live captures. |
+| Codex CLI | Native `PreToolUse` hook installed by `scripts/install-codex-hook.sh` into `~/.codex/config.toml` | Yes | `go/execution-kernel/internal/driver/codex` | `go/execution-kernel/internal/driver/codex/normalize_test.go` | Supported | Narrow native enum; any new Codex tool must be added from live hook captures before policy loosening. |
+| Gemini CLI | Native `BeforeTool` hook installed by `scripts/install-gemini-hook.sh` into `~/.gemini/settings.json` | Yes | `go/execution-kernel/internal/driver/gemini` | `go/execution-kernel/internal/driver/gemini/normalize_test.go` | Supported | Last tool-registry check in comments was Gemini CLI `0.40.1`; reverify on upgrade. |
+| Copilot CLI | In-kernel SDK wrapper through `chitin-kernel drive copilot` | Yes | `go/execution-kernel/internal/driver/copilot` | `go/execution-kernel/internal/driver/copilot/*_test.go` | Supported for wrapped CLI execution | Closed-vendor wrapper only. This does not cover VS Code Copilot agent-mode tool execution. |
+| OpenClaw | `before_tool_call` plugin via `apps/openclaw-plugin-governance` and `libs/adapters/openclaw` | Yes, for OpenClaw-dispatched tool calls | Plugin bridge into `chitin-kernel gate evaluate` | `apps/openclaw-plugin-governance/test/*.test.ts` | Supported for OpenClaw runtime traffic | Does not gate standalone Claude/Codex/Gemini/Copilot processes; use their native driver integrations. Kernel has no dedicated `internal/driver/openclaw` normalizer. |
+| Hermes | `pre_tool_call` hook installed by `scripts/install-hermes-hook.sh` or plugin files in `docs/governance-setup-extras/` | Yes | `go/execution-kernel/internal/driver/hermes` | `go/execution-kernel/internal/driver/hermes/normalize_test.go` | Supported | `image_generate`, `text_to_speech`, `vision_analyze`, `cronjob`, and `clarify` are intentionally unmapped. Decide canonical types before allowing them. |
+| VS Code Copilot | Repository instructions through `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, and `AGENTS.md` | No | None | None | Guidance only | No pre-tool hook surface. Treat this as instructions, not governance. Use `chitin-kernel drive copilot` for enforceable terminal-side Copilot execution. |
 
 ## Near-term work
 

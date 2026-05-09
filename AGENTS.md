@@ -8,6 +8,10 @@ For build/test/lint commands, see `.github/copilot-instructions.md`.
 This file is about **what chitin is, what it isn't, and what's
 allowed to ship**.
 
+For Nx project layout, tags, and restructuring conventions, see
+`docs/architecture/nx-workspace-conventions.md`. Use that before moving
+apps/libs or adding new projects.
+
 ## What chitin IS
 
 **Execution governance runtime for heterogeneous AI coding agents.**

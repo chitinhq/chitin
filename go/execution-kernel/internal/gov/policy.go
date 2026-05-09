@@ -1,6 +1,7 @@
 package gov
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,19 +16,21 @@ import (
 type Policy struct {
 	ID             string            `yaml:"id"`
 	Name           string            `yaml:"name,omitempty"`
+	Description    string            `yaml:"description,omitempty"`
 	Mode           string            `yaml:"mode,omitempty"` // monitor | enforce | guide; default guide
 	Pack           string            `yaml:"pack,omitempty"`
 	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
 	Bounds         Bounds            `yaml:"bounds,omitempty"`
 	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
 	Rules          []Rule            `yaml:"rules"`
+	Router         map[string]any    `yaml:"router,omitempty"`
 }
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
 type Rule struct {
 	ID               string        `yaml:"id"`
-	Action           ActionMatcher `yaml:"action"` // single type OR list of types
-	Effect           string        `yaml:"effect"` // allow | deny | guide | monitor
+	Action           ActionMatcher `yaml:"action"`                 // single type OR list of types
+	Effect           string        `yaml:"effect"`                 // allow | deny | guide | monitor
 	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
@@ -68,9 +71,10 @@ type Rule struct {
 // to time a future action before it runs) and may return in v2 with
 // post-action runtime tracking.
 type Bounds struct {
-	MaxFilesChanged int                     `yaml:"max_files_changed"`
-	MaxLinesChanged int                     `yaml:"max_lines_changed"`
-	PerAction       map[string]ActionBounds `yaml:"per_action,omitempty"`
+	MaxFilesChanged   int                     `yaml:"max_files_changed"`
+	MaxLinesChanged   int                     `yaml:"max_lines_changed"`
+	MaxRuntimeSeconds int                     `yaml:"max_runtime_seconds,omitempty"` // legacy accepted, ignored by v1
+	PerAction         map[string]ActionBounds `yaml:"per_action,omitempty"`
 }
 
 // ActionBounds is the per-action override for blast-radius ceilings.
@@ -101,10 +105,10 @@ func (b Bounds) effectiveBounds(actionType string) ActionBounds {
 
 // EscalationConfig overrides the default escalation thresholds.
 type EscalationConfig struct {
-	ElevatedThreshold  int `yaml:"elevated_threshold"`  // default 3
-	HighThreshold      int `yaml:"high_threshold"`      // default 7
-	LockdownThreshold  int `yaml:"lockdown_threshold"`  // default 10
-	MaxRetriesPerFp    int `yaml:"max_retries_per_action"` // default 3
+	ElevatedThreshold int `yaml:"elevated_threshold"`     // default 3
+	HighThreshold     int `yaml:"high_threshold"`         // default 7
+	LockdownThreshold int `yaml:"lockdown_threshold"`     // default 10
+	MaxRetriesPerFp   int `yaml:"max_retries_per_action"` // default 3
 }
 
 // Decision is the result of evaluating an Action against a Policy.
@@ -238,16 +242,13 @@ func LoadPolicyFile(path string) (Policy, error) {
 // docs/decisions/ for the cull rationale).
 func parsePolicyYAML(data []byte) (Policy, error) {
 	var p Policy
-	if err := yaml.Unmarshal(data, &p); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
 		return Policy{}, fmt.Errorf("parse: %w", err)
 	}
 	if err := p.ApplyDefaults(); err != nil {
 		return Policy{}, fmt.Errorf("validate: %w", err)
-	}
-	for _, r := range p.Rules {
-		if r.Effect == "escalate" {
-			return Policy{}, fmt.Errorf("rule %s: effect: escalate is no longer supported (cull Phase 3, 2026-05-08); use deny and let hermes' approval system prompt the operator", r.ID)
-		}
 	}
 	return p, nil
 }
@@ -309,6 +310,13 @@ func (p *Policy) ApplyDefaults() error {
 				return fmt.Errorf("rule %q: action[%d] is empty; remove the entry or fill it in", p.Rules[i].ID, j)
 			}
 		}
+		switch p.Rules[i].Effect {
+		case "allow", "deny", "guide", "monitor":
+		case "escalate":
+			return fmt.Errorf("rule %s: effect: escalate is no longer supported (cull Phase 3, 2026-05-08); use deny and let hermes' approval system prompt the operator", p.Rules[i].ID)
+		default:
+			return fmt.Errorf("rule %q: invalid effect=%q: must be one of allow|deny|guide|monitor", p.Rules[i].ID, p.Rules[i].Effect)
+		}
 	}
 	return nil
 }
@@ -328,13 +336,13 @@ func (p *Policy) ApplyDefaults() error {
 // approvals natively.)
 func (p Policy) Evaluate(a Action) Decision {
 	for _, r := range p.Rules {
-		if r.Effect != "deny" || !r.matches(a) {
+		if (r.Effect != "deny" && r.Effect != "guide") || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, false, a)
 	}
 	for _, r := range p.Rules {
-		if r.Effect != "allow" || !r.matches(a) {
+		if (r.Effect != "allow" && r.Effect != "monitor") || !r.matches(a) {
 			continue
 		}
 		return p.decisionFromRule(r, true, a)
@@ -351,6 +359,12 @@ func (p Policy) Evaluate(a Action) Decision {
 
 func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
 	mode := p.Mode
+	if r.Effect == "guide" {
+		mode = "guide"
+	}
+	if r.Effect == "monitor" {
+		mode = "monitor"
+	}
 	if m, ok := p.InvariantModes[r.ID]; ok {
 		mode = m
 	}

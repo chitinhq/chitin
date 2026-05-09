@@ -1,7 +1,8 @@
 # Operator-approval escalation effect
 
-Status: design (validated 2026-05-07 in collaborative brainstorm).
-Implementation plan to follow in a sibling document.
+> **Superseded (2026-05-08):** This entire feature was built (PRs #380–#396) and then culled (PRs #397–#400). Operator approvals are now handled by Hermes' `tools/approval.py`. See `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`.
+
+Status: ~~design~~ superseded.
 
 Date: 2026-05-07
 

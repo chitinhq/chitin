@@ -1,6 +1,8 @@
 # Local 24/7 Worker — Design
 
-**Status:** spec draft. First articulation of the chitin-governed local worker shape; reference rig for the "safe local-LLM autonomy" thesis. Post-talk implementation candidate.
+> **Superseded (2026-05-08):** The Temporal control plane (`apps/runner`) was deleted in the 2026-05-06 scope narrowing. The worker concept (safe local-LLM autonomy via the gate) is still valid, but the specific architecture described here—Temporal orchestration, `apps/runner`, openclaw-worker-loop—is superseded. Worker shape should be redesigned using the current kernel architecture.
+
+**Status:** ~~spec draft~~ superseded. First articulation of the chitin-governed local worker shape; reference rig for the "safe local-LLM autonomy" thesis. Post-talk implementation candidate.
 
 > **PARTIALLY SUPERSEDED 2026-04-30 (same day).** The "openclaw owns the worker loop" framing in `## Positioning` (line 36), the openclaw-worker-loop-plugin component (`## Components in detail → Worker-loop plugin (openclaw)`), and the chitin-owned task queue + CLI (`## Components in detail → Task queue (chitin)`) are superseded by the three-plane decomposition recorded in `2026-04-30-local-worker-design-addendum.md`. Read the addendum first; treat the superseded sections of this spec as historical context for *why* the reframe was necessary. Invariants, bootstrap rules, observability loop, spike evidence, and acceptance criteria all stand.
 

@@ -148,3 +148,176 @@ rules:
 		t.Errorf("expected env-loaded policy's rule_id=deny-everything in stdout, got: %s", stdout)
 	}
 }
+
+func TestCLI_GateEvaluate_ExitCodesAndJSONShape(t *testing.T) {
+	policyDir := t.TempDir()
+	policyPath := filepath.Join(policyDir, "chitin.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+id: gate-contract
+mode: enforce
+rules:
+  - id: deny-system-write
+    action: file.write
+    effect: deny
+    path_under: ["/etc/"]
+    reason: "system paths are protected"
+  - id: allow-file-write
+    action: file.write
+    effect: allow
+    reason: "writes allowed"
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		argsJSON   string
+		wantCode   int
+		wantAllow  bool
+		wantMode   string
+		wantRule   string
+		wantType   string
+		wantTarget string
+	}{
+		{
+			name:       "allow exits zero",
+			argsJSON:   `{"path":"/tmp/safe.txt"}`,
+			wantCode:   0,
+			wantAllow:  true,
+			wantMode:   "enforce",
+			wantRule:   "allow-file-write",
+			wantType:   "file.write",
+			wantTarget: "/tmp/safe.txt",
+		},
+		{
+			name:       "deny exits one",
+			argsJSON:   `{"path":"/etc/hostname"}`,
+			wantCode:   1,
+			wantAllow:  false,
+			wantMode:   "enforce",
+			wantRule:   "deny-system-write",
+			wantType:   "file.write",
+			wantTarget: "/etc/hostname",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runCLI(t, t.TempDir(),
+				"gate", "evaluate",
+				"--tool", "write_file",
+				"--args-json", tc.argsJSON,
+				"--agent", "test-agent",
+				"--cwd", t.TempDir(),
+				"--policy-file", policyPath,
+				"--no-record",
+			)
+			if code != tc.wantCode {
+				t.Fatalf("exit code=%d want %d stdout=%s stderr=%s", code, tc.wantCode, stdout, stderr)
+			}
+			out := parseGateEvaluateStdout(t, stdout)
+			assertGateField(t, out, "allowed", tc.wantAllow)
+			assertGateField(t, out, "mode", tc.wantMode)
+			assertGateField(t, out, "rule_id", tc.wantRule)
+			assertGateField(t, out, "action_type", tc.wantType)
+			assertGateField(t, out, "action_target", tc.wantTarget)
+			if out["ts"] == "" {
+				t.Fatalf("ts missing from gate output: %#v", out)
+			}
+		})
+	}
+}
+
+func TestCLI_GateEvaluate_PolicyLoadFailuresAreMachineReadable(t *testing.T) {
+	t.Run("no policy is policy denial exit one", func(t *testing.T) {
+		stdout, stderr, code := runCLI(t, t.TempDir(),
+			"gate", "evaluate",
+			"--tool", "write_file",
+			"--args-json", `{"path":"/tmp/x"}`,
+			"--agent", "test-agent",
+			"--cwd", t.TempDir(),
+			"--no-record",
+		)
+		if code != 1 {
+			t.Fatalf("exit code=%d want 1 stdout=%s stderr=%s", code, stdout, stderr)
+		}
+		out := parseGateEvaluateStdout(t, stdout)
+		assertGateField(t, out, "allowed", false)
+		assertGateField(t, out, "mode", "enforce")
+		assertGateField(t, out, "rule_id", "no_policy_found")
+		assertGateField(t, out, "action_type", "file.write")
+		assertGateField(t, out, "action_target", "/tmp/x")
+		if !strings.Contains(out["reason"].(string), "no_policy_found") {
+			t.Fatalf("reason should include no_policy_found, got %#v", out["reason"])
+		}
+	})
+
+	t.Run("invalid policy is internal error exit two", func(t *testing.T) {
+		policyDir := t.TempDir()
+		policyPath := filepath.Join(policyDir, "chitin.yaml")
+		if err := os.WriteFile(policyPath, []byte(`
+id: bad
+mode: enforce
+rules:
+  - id: bad-effect
+    action: file.write
+    effect: approve
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := runCLI(t, t.TempDir(),
+			"gate", "evaluate",
+			"--tool", "write_file",
+			"--args-json", `{"path":"/tmp/x"}`,
+			"--agent", "test-agent",
+			"--cwd", t.TempDir(),
+			"--policy-file", policyPath,
+			"--no-record",
+		)
+		if code != 2 {
+			t.Fatalf("exit code=%d want 2 stdout=%s stderr=%s", code, stdout, stderr)
+		}
+		out := parseGateEvaluateStdout(t, stdout)
+		assertGateField(t, out, "allowed", false)
+		assertGateField(t, out, "mode", "enforce")
+		assertGateField(t, out, "rule_id", "policy_invalid")
+		assertGateField(t, out, "action_type", "file.write")
+		assertGateField(t, out, "action_target", "/tmp/x")
+		if !strings.Contains(out["reason"].(string), "invalid effect") {
+			t.Fatalf("reason should include invalid effect, got %#v", out["reason"])
+		}
+	})
+}
+
+func TestCLI_GateEvaluate_InternalErrorsAreDistinctFromPolicyDenials(t *testing.T) {
+	stdout, stderr, code := runCLI(t, t.TempDir(),
+		"gate", "evaluate",
+		"--tool", "write_file",
+		"--args-json", `{"path":"/tmp/x"}`,
+	)
+	if code != 2 {
+		t.Fatalf("exit code=%d want 2 stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout should be empty for exitErr path, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "gate_missing_args") {
+		t.Fatalf("stderr should identify gate_missing_args, got %q", stderr)
+	}
+}
+
+func parseGateEvaluateStdout(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	return out
+}
+
+func assertGateField(t *testing.T, out map[string]any, key string, want any) {
+	t.Helper()
+	if got := out[key]; got != want {
+		t.Fatalf("%s=%#v want %#v in %#v", key, got, want, out)
+	}
+}

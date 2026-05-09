@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nx Conventions Audit"
+  short_description: "Audit Nx convention drift"
+  default_prompt: "Use $nx-conventions-audit to audit this workspace against the local Nx conventions and start a spec-driven fix plan."

@@ -79,7 +79,7 @@ External-survey audit through three lenses (Knuth correctness, da Vinci architec
 - Half-finished orchestration cull: `apps/runner/` shells, `apps/slack-app/` shells, `infra/temporal/`, 122 stale `tmp/result-swarm-*.json`, 7 swarm-flavored Python analyzers. Finished in this rev.
 - `libs/scheduler/` + `apps/cli/src/commands/scheduler.ts` — orchestration in disguise. Deleted.
 - `internal/router/spawn_peer.go` + `cmd/chitin-kernel/router_hook_escalate.go` — out-of-loop peer-spawn weaker than hermes' in-loop `delegate_task`. Deleted (~1055 LOC).
-- 4 specs marked `superseded`: predictive-execution, local-worker (+addendum), scheduler-design, escalate-design. Moved to `docs/superpowers/superseded/`.
+- 4 specs marked `superseded`: predictive-execution, local-worker (+addendum), scheduler-design, escalate-design. Only scheduler-design was moved to `docs/superpowers/superseded/` before this rev; the other three remain in `specs/` pending move (see docs audit 2026-05-08).
 - Knuth correctness fixes: `RecordDenial` error propagation, `LoadWithInheritance` policy validation, empty-entry rejection in `path_under` / `branches` / `action`.
 
 Net result: ~5000+ LOC removed; chitin's surface tightened to the moat.
