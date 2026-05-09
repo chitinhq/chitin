@@ -89,6 +89,34 @@ func TestComputeStatsIn_EmptyDirYieldsEmptyStats(t *testing.T) {
 // promised by the doc comment. Without it, two runs over the same
 // data produce different orderings via map iteration randomness,
 // which breaks operator dashboards + test fixtures.
+func TestExtractAxis(t *testing.T) {
+	ev := map[string]interface{}{"agent_instance_id": "agent-42"}
+	payload := map[string]interface{}{
+		"tool_name":     "Bash",
+		"action_type":   "shell.exec",
+		"rule_id":       "default-allow-shell",
+		"decision":      "allow",
+	}
+
+	cases := []struct {
+		axis string
+		want string
+	}{
+		{"tool_name", "Bash"},
+		{"action_type", "shell.exec"},
+		{"rule_id", "default-allow-shell"},
+		{"decision", "allow"},
+		{"agent", "agent-42"},
+		{"unknown_axis", ""},
+	}
+	for _, c := range cases {
+		got := extractAxis(ev, payload, c.axis)
+		if got != c.want {
+			t.Errorf("extractAxis(_, _, %q) = %q, want %q", c.axis, got, c.want)
+		}
+	}
+}
+
 func TestSortedBucketKeys_TieBreakerIsLexicographic(t *testing.T) {
 	s := &Stats{
 		Buckets: map[string]BucketStats{
