@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 )
 
 // hookTestEnv stages a CHITIN_HOME + chitin.yaml in cwd so evalHookStdin
@@ -341,12 +343,11 @@ rules:
     reason: read ok
 `
 
-// TestEvalHookStdin_ChitinAdmin_AllowedOnExhaustedEnvelope verifies the
-// recovery path: with a 1-call envelope already exhausted by a prior
-// Read, a chitin-kernel admin command still passes the gate. Without
-// the exemption, the hook would deny on envelope-closed and the
-// operator would have to leave the gated session to recover.
-func TestEvalHookStdin_ChitinAdmin_AllowedOnExhaustedEnvelope(t *testing.T) {
+// TestEvalHookStdin_ChitinAdmin_ReadAllowedOnExhaustedEnvelope verifies
+// the recovery-adjacent read path: with an exhausted envelope, read-only
+// governance introspection still passes the gate without spend. Mutating
+// recovery commands such as envelope grant are supervisor/operator-only.
+func TestEvalHookStdin_ChitinAdmin_ReadAllowedOnExhaustedEnvelope(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	dbPath := filepath.Join(env.chitin, "gov.db")
 	store, _ := openBudgetStoreForTest(t, dbPath)
@@ -371,15 +372,43 @@ func TestEvalHookStdin_ChitinAdmin_AllowedOnExhaustedEnvelope(t *testing.T) {
 		t.Fatalf("non-admin call exit=%d want 2 (envelope blocked); stdout=%q", codeDeny, stdoutDeny)
 	}
 
-	// chitin-kernel envelope grant should pass — exempt from spend.
+	// chitin-kernel envelope inspect should pass — exempt from spend.
 	stdoutAdmin, _, codeAdmin := runHookCall(t, env, map[string]any{
 		"tool_name": "Bash",
 		"tool_input": map[string]any{
-			"command": "chitin-kernel envelope grant " + envelope.ID + " --calls=+10",
+			"command": "chitin-kernel envelope inspect " + envelope.ID,
 		},
 	}, envelope.ID)
 	if codeAdmin != 0 {
-		t.Fatalf("chitin-admin call exit=%d want 0 (exempt); stdout=%q", codeAdmin, stdoutAdmin)
+		t.Fatalf("chitin-admin read exit=%d want 0 (exempt); stdout=%q", codeAdmin, stdoutAdmin)
+	}
+}
+
+func TestClassifyChitinAdminCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want chitinAdminClass
+	}{
+		{"gate status", "chitin-kernel gate status --agent a", chitinAdminRead},
+		{"decisions recent", "chitin-kernel decisions recent --json", chitinAdminRead},
+		{"envelope inspect", "env CHITIN_HOME=/tmp chitin-kernel envelope inspect e1", chitinAdminRead},
+		{"gate reset", "chitin-kernel gate reset --agent a", chitinAdminMutation},
+		{"gate lockdown", "chitin-kernel gate lockdown --agent a", chitinAdminMutation},
+		{"envelope grant", "FOO=1 chitin-kernel envelope grant e1 --calls=+1", chitinAdminMutation},
+		{"install hook", "chitin-kernel install-hook --surface claude-code", chitinAdminMutation},
+		{"chained reset after read", "chitin-kernel gate status && chitin-kernel gate reset --agent a", chitinAdminMutation},
+		{"command wrapper", "command chitin-kernel gate reset --agent a", chitinAdminMutation},
+		{"path prefixed", "/usr/local/bin/chitin-kernel gate reset --agent a", chitinAdminMutation},
+		{"lookalike", "echo chitin-kernel gate reset --agent a", chitinAdminNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
+			if got != tc.want {
+				t.Fatalf("classify=%q want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -415,6 +444,116 @@ func TestEvalHookStdin_ChitinAdmin_NoEnvelopeSpend(t *testing.T) {
 	st, _ := e2.Inspect()
 	if st.SpentCalls != 0 {
 		t.Fatalf("SpentCalls=%d want 0 — admin commands debited envelope", st.SpentCalls)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_WorkerCanReadStatus(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	dbPath := filepath.Join(env.chitin, "gov.db")
+	store, _ := openBudgetStoreForTest(t, dbPath)
+	envelope, _ := store.Create(budgetLimits(t, 10, 0))
+	store.Close()
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel gate status --agent claude-code"},
+	}, envelope.ID)
+	if code != 0 {
+		t.Fatalf("gate status exit=%d want 0; stdout=%q", code, stdout)
+	}
+
+	store2, _ := openBudgetStoreForTest(t, dbPath)
+	defer store2.Close()
+	e2, _ := store2.Load(envelope.ID)
+	st, _ := e2.Inspect()
+	if st.SpentCalls != 0 {
+		t.Fatalf("SpentCalls=%d want 0 — read-only governance command debited envelope", st.SpentCalls)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_WorkerCannotResetSelf(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel gate reset --agent claude-code"},
+	}, "")
+	if code != 2 {
+		t.Fatalf("gate reset exit=%d want 2; stdout=%q", code, stdout)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout)
+	}
+	if parsed["rule_id"] != "governance-mutation-authority-required" {
+		t.Fatalf("rule_id=%q want governance-mutation-authority-required; parsed=%v", parsed["rule_id"], parsed)
+	}
+	if !strings.Contains(parsed["reason"], "self-reset is not permitted") {
+		t.Fatalf("reason should explain self-reset denial, got %q", parsed["reason"])
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_SpoofedSupervisorCannotReset(t *testing.T) {
+	t.Setenv("CHITIN_AUTHORITY", "supervisor")
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel gate reset --agent other-agent"},
+	}, "")
+	if code != 2 {
+		t.Fatalf("spoofed supervisor reset exit=%d want 2; stdout=%q", code, stdout)
+	}
+	if !strings.Contains(stdout, "trusted supervisor/operator/system authority") {
+		t.Fatalf("denial should explain trusted authority requirement: %q", stdout)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_MutationDeniedInMonitorMode(t *testing.T) {
+	env := setupHookEnv(t, `
+id: hook-test-monitor-admin
+mode: monitor
+rules:
+  - id: allow-shell
+    action: shell.exec
+    effect: allow
+    reason: shell ok
+`)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel gate reset --agent claude-code"},
+	}, "")
+	if code != 2 {
+		t.Fatalf("monitor-mode governance mutation exit=%d want 2; stdout=%q", code, stdout)
+	}
+	if !strings.Contains(stdout, "governance-mutation-authority-required") {
+		t.Fatalf("stdout missing authority rule id: %q", stdout)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_TrustedSupervisorCanReset(t *testing.T) {
+	t.Setenv("CHITIN_AGENT_FINGERPRINT", "agentfp-supervisor")
+	env := setupHookEnv(t, `
+id: hook-test-supervisor
+mode: enforce
+authority:
+  trusted:
+    - authority: supervisor
+      agent_fingerprint: agentfp-supervisor
+rules:
+  - id: allow-shell
+    action: shell.exec
+    effect: allow
+    reason: shell ok
+`)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "chitin-kernel gate reset --agent other-agent"},
+	}, "")
+	if code != 0 {
+		t.Fatalf("trusted supervisor reset exit=%d want 0; stdout=%q", code, stdout)
 	}
 }
 
