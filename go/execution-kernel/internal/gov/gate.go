@@ -249,7 +249,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	}
 
 	// 2. Policy evaluate.
-	d := g.Policy.Evaluate(a)
+	d := g.Policy.EvaluateWithFingerprint(a, g.Fingerprint)
 	d.Ts = now
 	d.Agent = agent
 	d.CallerOrigin = callerOrigin

@@ -152,6 +152,100 @@ func TestPolicy_Evaluate_DenyWinsOverEarlierAllow(t *testing.T) {
 	}
 }
 
+func TestPolicy_EvaluateWithFingerprint_IdentityRuleMatches(t *testing.T) {
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{
+				ID:     "reviewers-read-only",
+				Action: ActionMatcher{string(ActShellExec)},
+				Effect: "deny",
+				Role:   IdentityMatcher{"reviewer"},
+				Reason: "reviewers cannot run shell commands",
+			},
+			{ID: "allow-shell", Action: ActionMatcher{string(ActShellExec)}, Effect: "allow"},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	d := p.EvaluateWithFingerprint(
+		Action{Type: ActShellExec, Target: "go test ./..."},
+		FingerprintContext{Role: "reviewer"},
+	)
+	if d.Allowed || d.RuleID != "reviewers-read-only" {
+		t.Fatalf("reviewer shell should be denied by identity rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+
+	d = p.EvaluateWithFingerprint(
+		Action{Type: ActShellExec, Target: "go test ./..."},
+		FingerprintContext{Role: "worker"},
+	)
+	if !d.Allowed || d.RuleID != "allow-shell" {
+		t.Fatalf("worker shell should fall through to allow rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+}
+
+func TestPolicy_Evaluate_IgnoresIdentityRulesWithoutContext(t *testing.T) {
+	p := Policy{
+		Mode: "enforce",
+		Rules: []Rule{
+			{
+				ID:     "reviewers-read-only",
+				Action: ActionMatcher{string(ActShellExec)},
+				Effect: "deny",
+				Role:   IdentityMatcher{"reviewer"},
+			},
+			{ID: "allow-shell", Action: ActionMatcher{string(ActShellExec)}, Effect: "allow"},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	d := p.Evaluate(Action{Type: ActShellExec, Target: "go test ./..."})
+	if !d.Allowed || d.RuleID != "allow-shell" {
+		t.Fatalf("legacy action-only evaluation should ignore identity rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+}
+
+func TestPolicy_EvaluateWithFingerprint_UsesEffectiveAuthority(t *testing.T) {
+	p := Policy{
+		Mode: "enforce",
+		Authority: AuthorityConfig{Trusted: []TrustedAuthority{
+			{Authority: "supervisor", AgentFingerprint: "fp-supervisor"},
+		}},
+		Rules: []Rule{
+			{
+				ID:        "supervisor-pr-merge",
+				Action:    ActionMatcher{string(ActGithubPRMerge)},
+				Effect:    "allow",
+				Authority: IdentityMatcher{"supervisor"},
+			},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	d := p.EvaluateWithFingerprint(
+		Action{Type: ActGithubPRMerge, Target: "423"},
+		FingerprintContext{AgentFingerprint: "fp-supervisor", ClaimedAuthority: "worker"},
+	)
+	if !d.Allowed || d.RuleID != "supervisor-pr-merge" {
+		t.Fatalf("trusted supervisor should match authority rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+
+	d = p.EvaluateWithFingerprint(
+		Action{Type: ActGithubPRMerge, Target: "423"},
+		FingerprintContext{AgentFingerprint: "fp-worker", ClaimedAuthority: "supervisor"},
+	)
+	if d.Allowed || d.RuleID != "default-deny" {
+		t.Fatalf("claimed authority must not match authority rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+}
+
 func TestPolicy_RegexCompiledAtLoad(t *testing.T) {
 	// Invalid target_regex must fail at LoadPolicyFile, not silently at eval.
 	dir := t.TempDir()
@@ -505,6 +599,34 @@ rules:
     reason: "x"
 `,
 			wantSub: "bad-action",
+		},
+		{
+			name: "empty identity matcher entry",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-identity
+    action: shell.exec
+    effect: deny
+    role: ["reviewer", ""]
+    reason: "x"
+`,
+			wantSub: "bad-identity",
+		},
+		{
+			name: "empty identity matcher list",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-empty-identity-list
+    action: shell.exec
+    effect: deny
+    role: []
+    reason: "x"
+`,
+			wantSub: "identity matcher list must not be empty",
 		},
 	}
 	for _, tc := range cases {

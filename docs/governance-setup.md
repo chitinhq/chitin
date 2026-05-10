@@ -176,6 +176,26 @@ Env claims such as `CHITIN_AUTHORITY=supervisor` are recorded as
 `authority.trusted` policy grant anchored by `agent_fingerprint`,
 `agent_instance_id`, or `workflow_id`.
 
+Rules can also constrain actions by identity dimensions. These are exact-match
+selectors and accept either a scalar or list value:
+
+```yaml
+rules:
+  - id: reviewers-read-only
+    action: shell.exec
+    effect: deny
+    role: reviewer
+    reason: reviewers cannot run shell commands
+
+  - id: supervisor-can-merge-prs
+    action: github.pr.merge
+    effect: allow
+    authority: supervisor
+```
+
+The `authority` selector uses the effective kernel-resolved authority, not a
+raw env claim.
+
 ## Escalation ladder
 
 Denials accumulate per-agent in `~/.chitin/gov.db`:
