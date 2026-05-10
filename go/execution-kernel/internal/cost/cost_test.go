@@ -55,3 +55,28 @@ func TestEstimate_USDScalesWithBytes(t *testing.T) {
 		t.Fatalf("USD=%v want ~1.0", d.USD)
 	}
 }
+
+func TestEstimate_ZeroBytesPerToken_Defaults(t *testing.T) {
+	rates := RateTable{
+		"test-agent": {USDPerInputKtok: 5.0, BytesPerToken: 0},
+	}
+	// BytesPerToken <= 0 should default to 4
+	d := Estimate(gov.Action{Type: gov.ActFileRead, Target: "abcd"}, "test-agent", rates)
+	if d.USD == 0 {
+		t.Errorf("USD=0 with zero BPT; expected default BPT=4 to be used")
+	}
+	// 4 bytes / 4 BPT = 1 token, 1/1000 ktok * $5 = $0.005
+	if d.USD < 0.004 || d.USD > 0.006 {
+		t.Errorf("USD=%v, want ~0.005 with default BPT", d.USD)
+	}
+}
+
+func TestEstimate_NegativeBytesPerToken_Defaults(t *testing.T) {
+	rates := RateTable{
+		"test-agent": {USDPerInputKtok: 2.0, BytesPerToken: -1},
+	}
+	d := Estimate(gov.Action{Type: gov.ActFileRead, Target: string(make([]byte, 8))}, "test-agent", rates)
+	if d.USD == 0 {
+		t.Errorf("USD=0 with negative BPT; expected default BPT=4 to be used")
+	}
+}
