@@ -211,6 +211,15 @@ type Decision struct {
 	DriftScore       float64 `json:"drift_score,omitempty"`
 	RoutingDecision  string  `json:"routing_decision,omitempty"`
 
+	// Worktree diagnostic metadata is stamped when a side-effect action is
+	// evaluated from the primary git checkout instead of a linked worktree.
+	// This is intentionally audit-only for now: it does not change Allowed,
+	// Mode, escalation counters, or envelope spend. The chain needs operator
+	// data before this becomes an enforceable invariant.
+	WorktreeDiagnosticRuleID string `json:"worktree_diagnostic_rule_id,omitempty"`
+	WorktreeStatus           string `json:"worktree_status,omitempty"` // primary
+	WorktreeReason           string `json:"worktree_reason,omitempty"`
+
 	// Effect is the rule's effect value as parsed from chitin.yaml
 	// (allow|deny|guide|monitor). Internal to the gate's flow control;
 	// not serialized to the chain (the chain only cares about the

@@ -75,6 +75,11 @@ func WriteLog(d Decision, dir string) error {
 		FlounderingScore float64 `json:"floundering_score,omitempty"`
 		DriftScore       float64 `json:"drift_score,omitempty"`
 		RoutingDecision  string  `json:"routing_decision,omitempty"`
+		// Audit-only worktree diagnostic. This is metadata on the existing
+		// decision row, not an enforcement rule result.
+		WorktreeDiagnosticRuleID string `json:"worktree_diagnostic_rule_id,omitempty"`
+		WorktreeStatus           string `json:"worktree_status,omitempty"`
+		WorktreeReason           string `json:"worktree_reason,omitempty"`
 	}{
 		Allowed: d.Allowed, Mode: d.Mode, RuleID: d.RuleID,
 		Reason: d.Reason, Suggestion: d.Suggestion,
@@ -83,20 +88,23 @@ func WriteLog(d Decision, dir string) error {
 		Ts:         d.Ts,
 		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
 		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
-		CallerOrigin:     d.CallerOrigin,
-		AgentInstanceID:  d.AgentInstanceID,
-		AgentFingerprint: d.AgentFingerprint,
-		Driver:           d.Driver,
-		Model:            d.Model,
-		Role:             d.Role,
-		ClaimedAuthority: d.ClaimedAuthority,
-		Authority:        d.Authority,
-		WorkflowID:       d.WorkflowID,
-		Fingerprint:      d.Fingerprint,
-		PredictedBlast:   d.PredictedBlast,
-		FlounderingScore: d.FlounderingScore,
-		DriftScore:       d.DriftScore,
-		RoutingDecision:  d.RoutingDecision,
+		CallerOrigin:             d.CallerOrigin,
+		AgentInstanceID:          d.AgentInstanceID,
+		AgentFingerprint:         d.AgentFingerprint,
+		Driver:                   d.Driver,
+		Model:                    d.Model,
+		Role:                     d.Role,
+		ClaimedAuthority:         d.ClaimedAuthority,
+		Authority:                d.Authority,
+		WorkflowID:               d.WorkflowID,
+		Fingerprint:              d.Fingerprint,
+		PredictedBlast:           d.PredictedBlast,
+		FlounderingScore:         d.FlounderingScore,
+		DriftScore:               d.DriftScore,
+		RoutingDecision:          d.RoutingDecision,
+		WorktreeDiagnosticRuleID: d.WorktreeDiagnosticRuleID,
+		WorktreeStatus:           d.WorktreeStatus,
+		WorktreeReason:           d.WorktreeReason,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal decision: %w", err)
