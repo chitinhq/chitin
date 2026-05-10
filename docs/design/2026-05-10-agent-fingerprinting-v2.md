@@ -43,8 +43,8 @@ bucket for ad-hoc hooks and operator CLI calls.
 Always:
 
 - Keep allow/deny authority in the Go kernel.
-- Treat identity fields as audit metadata unless policy grants explicitly
-  trust a stable selector.
+- Treat raw identity fields as untrusted metadata unless policy grants
+  explicitly trust a stable selector.
 - Preserve the legacy `agent` display field and `fingerprint` alias.
 
 Never:
@@ -52,6 +52,26 @@ Never:
 - Let a claimed env authority become effective authority by itself.
 - Spawn or consult an LLM from the kernel.
 - Write lab/research state into the Chitin repo.
+
+## Policy Selectors
+
+Rules may constrain matches by exact identity selectors in addition to action
+shape:
+
+- `agent_instance_id`
+- `agent_fingerprint`
+- `driver`
+- `model`
+- `role`
+- `station_prompt_hash`
+- `skills_tools_hash`
+- `soul_lens`
+- `authority`
+- `workflow_id`
+
+Each selector accepts either a scalar or a list. Empty entries are rejected at
+policy load time. `authority` matches the effective authority resolved by the
+kernel from `authority.trusted`, not the caller's raw `claimed_authority`.
 
 ## Success Criteria
 

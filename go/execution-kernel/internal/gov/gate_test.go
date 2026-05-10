@@ -416,6 +416,32 @@ func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
 	}
 }
 
+func TestGate_IdentityPolicyRuleParticipatesInDecision(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Policy.Rules = append([]Rule{{
+		ID:     "reviewer-read-restricted",
+		Action: ActionMatcher{string(ActFileRead)},
+		Effect: "deny",
+		Role:   IdentityMatcher{"reviewer"},
+		Reason: "reviewers must not read this surface",
+	}}, g.Policy.Rules...)
+	if err := g.Policy.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+
+	g.Fingerprint = FingerprintContext{Role: "reviewer"}
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "codex-cli", nil)
+	if d.Allowed || d.RuleID != "reviewer-read-restricted" {
+		t.Fatalf("identity deny rule should participate in gate decision, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+
+	g.Fingerprint = FingerprintContext{Role: "worker"}
+	d = g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "codex-cli", nil)
+	if !d.Allowed || d.RuleID != "allow-read" {
+		t.Fatalf("non-matching identity should fall through to existing rule, got allowed=%v rule=%q", d.Allowed, d.RuleID)
+	}
+}
+
 func TestGate_TrustedAuthorityGrantStampsSupervisor(t *testing.T) {
 	g, _ := newTestGate(t)
 	g.Policy.Authority.Trusted = []TrustedAuthority{

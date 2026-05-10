@@ -26,17 +26,27 @@ type Policy struct {
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
 type Rule struct {
-	ID               string        `yaml:"id"`
-	Action           ActionMatcher `yaml:"action"`                 // single type OR list of types
-	Effect           string        `yaml:"effect"`                 // allow | deny | guide | monitor
-	Target           string        `yaml:"target,omitempty"`       // substring match on Action.Target
-	TargetRegex      string        `yaml:"target_regex,omitempty"` // regex match on Action.Target
-	Branches         []string      `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
-	PathUnder        []string      `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
-	Reason           string        `yaml:"reason,omitempty"`
-	Suggestion       string        `yaml:"suggestion,omitempty"`
-	CorrectedCommand string        `yaml:"correctedCommand,omitempty"`
-	EscalationWeight int           `yaml:"escalation_weight,omitempty"` // default 1
+	ID                string          `yaml:"id"`
+	Action            ActionMatcher   `yaml:"action"`                 // single type OR list of types
+	Effect            string          `yaml:"effect"`                 // allow | deny | guide | monitor
+	Target            string          `yaml:"target,omitempty"`       // substring match on Action.Target
+	TargetRegex       string          `yaml:"target_regex,omitempty"` // regex match on Action.Target
+	Branches          []string        `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
+	PathUnder         []string        `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
+	AgentInstanceID   IdentityMatcher `yaml:"agent_instance_id,omitempty"`
+	AgentFingerprint  IdentityMatcher `yaml:"agent_fingerprint,omitempty"`
+	Driver            IdentityMatcher `yaml:"driver,omitempty"`
+	Model             IdentityMatcher `yaml:"model,omitempty"`
+	Role              IdentityMatcher `yaml:"role,omitempty"`
+	StationPromptHash IdentityMatcher `yaml:"station_prompt_hash,omitempty"`
+	SkillsToolsHash   IdentityMatcher `yaml:"skills_tools_hash,omitempty"`
+	SoulLens          IdentityMatcher `yaml:"soul_lens,omitempty"`
+	Authority         IdentityMatcher `yaml:"authority,omitempty"`
+	WorkflowID        IdentityMatcher `yaml:"workflow_id,omitempty"`
+	Reason            string          `yaml:"reason,omitempty"`
+	Suggestion        string          `yaml:"suggestion,omitempty"`
+	CorrectedCommand  string          `yaml:"correctedCommand,omitempty"`
+	EscalationWeight  int             `yaml:"escalation_weight,omitempty"` // default 1
 
 	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
 	// validate patterns at load time (fail-closed on bad regex) rather than
@@ -262,6 +272,41 @@ func (a ActionMatcher) Matches(t ActionType) bool {
 	return false
 }
 
+// IdentityMatcher accepts either a scalar string or a list of exact string
+// values. Empty matcher means "no identity constraint" for that rule.
+type IdentityMatcher []string
+
+func (m *IdentityMatcher) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*m = []string{node.Value}
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		var list []string
+		if err := node.Decode(&list); err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			return fmt.Errorf("identity matcher list must not be empty")
+		}
+		*m = list
+		return nil
+	}
+	return fmt.Errorf("identity matcher must be string or list of strings, got %v", node.Kind)
+}
+
+func (m IdentityMatcher) Matches(value string) bool {
+	if len(m) == 0 {
+		return true
+	}
+	for _, candidate := range m {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadPolicyFile reads and parses a single chitin.yaml. Returns an error
 // on malformed YAML or any rule with a regex that fails to compile —
 // fail-closed at load time rather than silently-false at eval time.
@@ -368,6 +413,45 @@ func (p *Policy) ApplyDefaults() error {
 				return fmt.Errorf("rule %q: action[%d] is empty; remove the entry or fill it in", p.Rules[i].ID, j)
 			}
 		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "agent_instance_id", p.Rules[i].AgentInstanceID); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "agent_fingerprint", p.Rules[i].AgentFingerprint); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "driver", p.Rules[i].Driver); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "model", p.Rules[i].Model); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "role", p.Rules[i].Role); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "station_prompt_hash", p.Rules[i].StationPromptHash); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "skills_tools_hash", p.Rules[i].SkillsToolsHash); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "soul_lens", p.Rules[i].SoulLens); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "authority", p.Rules[i].Authority); err != nil {
+			return err
+		}
+		if err := validateIdentityMatcher(p.Rules[i].ID, "workflow_id", p.Rules[i].WorkflowID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIdentityMatcher(ruleID, field string, matcher IdentityMatcher) error {
+	for i, v := range matcher {
+		if v == "" {
+			return fmt.Errorf("rule %q: %s[%d] is empty; remove the entry or fill it in", ruleID, field, i)
+		}
 	}
 	return nil
 }
@@ -386,14 +470,28 @@ func (p *Policy) ApplyDefaults() error {
 // commit log. Hermes' tools/approval.py handles operator-prompted
 // approvals natively.)
 func (p Policy) Evaluate(a Action) Decision {
+	return p.evaluate(a, FingerprintContext{})
+}
+
+// EvaluateWithFingerprint evaluates a policy with typed identity context.
+// The legacy Evaluate method remains action-only for callers that have not
+// wired CHITIN_* identity yet; identity-constrained rules simply do not match
+// there. Gate.Evaluate uses this path so policy can constrain autonomous
+// agents by stable fingerprint dimensions without trusting claimed authority.
+func (p Policy) EvaluateWithFingerprint(a Action, ctx FingerprintContext) Decision {
+	ctx.Authority = ResolveTrustedAuthority(ctx, p.Authority)
+	return p.evaluate(a, ctx)
+}
+
+func (p Policy) evaluate(a Action, ctx FingerprintContext) Decision {
 	for _, r := range p.Rules {
-		if r.Effect != "deny" || !r.matches(a) {
+		if r.Effect != "deny" || !r.matchesWithFingerprint(a, ctx) {
 			continue
 		}
 		return p.decisionFromRule(r, false, a)
 	}
 	for _, r := range p.Rules {
-		if r.Effect != "allow" || !r.matches(a) {
+		if r.Effect != "allow" || !r.matchesWithFingerprint(a, ctx) {
 			continue
 		}
 		return p.decisionFromRule(r, true, a)
@@ -426,7 +524,14 @@ func (p Policy) decisionFromRule(r Rule, allowed bool, a Action) Decision {
 }
 
 func (r Rule) matches(a Action) bool {
+	return r.matchesWithFingerprint(a, FingerprintContext{})
+}
+
+func (r Rule) matchesWithFingerprint(a Action, ctx FingerprintContext) bool {
 	if !r.Action.Matches(a.Type) {
+		return false
+	}
+	if !r.identityMatches(ctx) {
 		return false
 	}
 	// Branch condition: Action.Target must be in the list
@@ -474,4 +579,18 @@ func (r Rule) matches(a Action) bool {
 		}
 	}
 	return true
+}
+
+func (r Rule) identityMatches(ctx FingerprintContext) bool {
+	agentFingerprint := firstNonEmpty(ctx.AgentFingerprint, ctx.Fingerprint)
+	return r.AgentInstanceID.Matches(ctx.AgentInstanceID) &&
+		r.AgentFingerprint.Matches(agentFingerprint) &&
+		r.Driver.Matches(ctx.Driver) &&
+		r.Model.Matches(ctx.Model) &&
+		r.Role.Matches(ctx.Role) &&
+		r.StationPromptHash.Matches(ctx.StationPromptHash) &&
+		r.SkillsToolsHash.Matches(ctx.SkillsToolsHash) &&
+		r.SoulLens.Matches(ctx.SoulLens) &&
+		r.Authority.Matches(ctx.Authority) &&
+		r.WorkflowID.Matches(ctx.WorkflowID)
 }
