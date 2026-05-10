@@ -79,15 +79,18 @@ type Gate struct {
 // Decision row omits the corresponding JSON field. See
 // libs/contracts/src/fingerprint.ts for the canonical-hash side.
 type FingerprintContext struct {
-	AgentInstanceID  string
-	AgentFingerprint string
-	Driver           string
-	Model            string
-	Role             string
-	ClaimedAuthority string
-	Authority        string
-	WorkflowID       string
-	Fingerprint      string
+	AgentInstanceID   string
+	AgentFingerprint  string
+	Driver            string
+	Model             string
+	Role              string
+	StationPromptHash string
+	SkillsToolsHash   string
+	SoulLens          string
+	ClaimedAuthority  string
+	Authority         string
+	WorkflowID        string
+	Fingerprint       string
 }
 
 // FingerprintContextFromEnv reads the CHITIN_* env vars that the
@@ -139,6 +142,19 @@ func FingerprintContextFromEnv() FingerprintContext {
 		Driver:           firstNonEmpty(os.Getenv("CHITIN_DRIVER"), os.Getenv("CHITIN_DISPATCH_DRIVER")),
 		Model:            firstNonEmpty(os.Getenv("CHITIN_MODEL"), os.Getenv("CHITIN_DISPATCH_MODEL")),
 		Role:             role,
+		StationPromptHash: firstNonEmpty(
+			os.Getenv("CHITIN_STATION_PROMPT_HASH"),
+			os.Getenv("CHITIN_DISPATCH_STATION_PROMPT_HASH"),
+		),
+		SkillsToolsHash: firstNonEmpty(
+			os.Getenv("CHITIN_SKILLS_TOOLS_HASH"),
+			os.Getenv("CHITIN_DISPATCH_SKILLS_TOOLS_HASH"),
+		),
+		SoulLens: firstNonEmpty(
+			os.Getenv("CHITIN_SOUL_LENS"),
+			os.Getenv("CHITIN_DISPATCH_SOUL_LENS"),
+			os.Getenv("CHITIN_ACTIVE_SOUL"),
+		),
 		ClaimedAuthority: firstNonEmpty(os.Getenv("CHITIN_AUTHORITY"), os.Getenv("CHITIN_DISPATCH_AUTHORITY")),
 		WorkflowID: firstNonEmpty(
 			os.Getenv("CHITIN_WORKFLOW_ID"),
@@ -413,6 +429,9 @@ func stampFingerprint(d *Decision, ctx FingerprintContext, authority AuthorityCo
 	d.Driver = ctx.Driver
 	d.Model = ctx.Model
 	d.Role = ctx.Role
+	d.StationPromptHash = ctx.StationPromptHash
+	d.SkillsToolsHash = ctx.SkillsToolsHash
+	d.SoulLens = ctx.SoulLens
 	d.ClaimedAuthority = ctx.ClaimedAuthority
 	d.Authority = ResolveTrustedAuthority(ctx, authority)
 	d.WorkflowID = ctx.WorkflowID
@@ -430,11 +449,13 @@ func ResolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) 
 	}
 	if ctx.Role == "external" && ctx.ClaimedAuthority == "" && ctx.AgentInstanceID == "" &&
 		ctx.AgentFingerprint == "" && ctx.Driver == "" && ctx.Model == "" &&
+		ctx.StationPromptHash == "" && ctx.SkillsToolsHash == "" &&
 		ctx.WorkflowID == "" && ctx.Fingerprint == "" {
 		return "external"
 	}
 	if ctx.ClaimedAuthority != "" || ctx.AgentInstanceID != "" || ctx.AgentFingerprint != "" ||
-		ctx.Driver != "" || ctx.Model != "" || ctx.Role != "" || ctx.WorkflowID != "" || ctx.Fingerprint != "" {
+		ctx.Driver != "" || ctx.Model != "" || ctx.Role != "" || ctx.StationPromptHash != "" ||
+		ctx.SkillsToolsHash != "" || ctx.WorkflowID != "" || ctx.Fingerprint != "" {
 		return "worker"
 	}
 	return ""

@@ -184,15 +184,18 @@ type Decision struct {
 	// canonical config hash from libs/contracts/src/fingerprint.ts;
 	// Fingerprint is retained as its legacy JSON alias for analytics
 	// already reading that field.
-	AgentInstanceID  string `json:"agent_instance_id,omitempty"`
-	AgentFingerprint string `json:"agent_fingerprint,omitempty"`
-	Driver           string `json:"driver,omitempty"`
-	Model            string `json:"model,omitempty"`
-	Role             string `json:"role,omitempty"`
-	ClaimedAuthority string `json:"claimed_authority,omitempty"`
-	Authority        string `json:"authority,omitempty"`
-	WorkflowID       string `json:"workflow_id,omitempty"`
-	Fingerprint      string `json:"fingerprint,omitempty"`
+	AgentInstanceID   string `json:"agent_instance_id,omitempty"`
+	AgentFingerprint  string `json:"agent_fingerprint,omitempty"`
+	Driver            string `json:"driver,omitempty"`
+	Model             string `json:"model,omitempty"`
+	Role              string `json:"role,omitempty"`
+	StationPromptHash string `json:"station_prompt_hash,omitempty"`
+	SkillsToolsHash   string `json:"skills_tools_hash,omitempty"`
+	SoulLens          string `json:"soul_lens,omitempty"`
+	ClaimedAuthority  string `json:"claimed_authority,omitempty"`
+	Authority         string `json:"authority,omitempty"`
+	WorkflowID        string `json:"workflow_id,omitempty"`
+	Fingerprint       string `json:"fingerprint,omitempty"`
 
 	// EscalationID was removed in cull Phase 3 (2026-05-08). The
 	// pending_approvals table that this referenced is gone; any

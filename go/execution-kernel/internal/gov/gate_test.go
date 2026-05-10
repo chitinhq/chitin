@@ -375,13 +375,16 @@ func TestGate_FingerprintStampedOnAllow(t *testing.T) {
 func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
 	g, _ := newTestGate(t)
 	g.Fingerprint = FingerprintContext{
-		AgentInstanceID:  "codex-session-42",
-		AgentFingerprint: "agentfp123456",
-		Driver:           "codex",
-		Model:            "gpt-5.5",
-		Role:             "reviewer",
-		ClaimedAuthority: "supervisor",
-		WorkflowID:       "wf-agent-identity",
+		AgentInstanceID:   "codex-session-42",
+		AgentFingerprint:  "agentfp123456",
+		Driver:            "codex",
+		Model:             "gpt-5.5",
+		Role:              "reviewer",
+		StationPromptHash: "sha256:prompt",
+		SkillsToolsHash:   "sha256:tools",
+		SoulLens:          "socrates",
+		ClaimedAuthority:  "supervisor",
+		WorkflowID:        "wf-agent-identity",
 	}
 
 	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "codex-cli", nil)
@@ -402,6 +405,10 @@ func TestGate_TypedAgentIdentityStampedOnDeny(t *testing.T) {
 	}
 	if d.ClaimedAuthority != "supervisor" {
 		t.Errorf("ClaimedAuthority: got %q want supervisor", d.ClaimedAuthority)
+	}
+	if d.StationPromptHash != "sha256:prompt" || d.SkillsToolsHash != "sha256:tools" ||
+		d.SoulLens != "socrates" {
+		t.Errorf("prompt/tool/lens dims not stamped: %+v", d)
 	}
 	if d.Driver != "codex" || d.Model != "gpt-5.5" || d.Role != "reviewer" ||
 		d.Authority != "worker" || d.WorkflowID != "wf-agent-identity" {
@@ -497,6 +504,9 @@ var fingerprintEnvKeys = []string{
 	"CHITIN_DRIVER", "CHITIN_DISPATCH_DRIVER",
 	"CHITIN_MODEL", "CHITIN_DISPATCH_MODEL",
 	"CHITIN_ROLE", "CHITIN_DISPATCH_ROLE",
+	"CHITIN_STATION_PROMPT_HASH", "CHITIN_DISPATCH_STATION_PROMPT_HASH",
+	"CHITIN_SKILLS_TOOLS_HASH", "CHITIN_DISPATCH_SKILLS_TOOLS_HASH",
+	"CHITIN_SOUL_LENS", "CHITIN_DISPATCH_SOUL_LENS", "CHITIN_ACTIVE_SOUL",
 	"CHITIN_AUTHORITY", "CHITIN_DISPATCH_AUTHORITY",
 	"CHITIN_WORKFLOW_ID", "CHITIN_DISPATCH_WORKFLOW_ID",
 	"CHITIN_FINGERPRINT",
@@ -569,6 +579,9 @@ func TestFingerprintContextFromEnv_TypedIdentityVarsRead(t *testing.T) {
 	_ = os.Setenv("CHITIN_AGENT_INSTANCE_ID", "inst-123")
 	_ = os.Setenv("CHITIN_AGENT_FINGERPRINT", "agentfp-primary")
 	_ = os.Setenv("CHITIN_DRIVER", "hermes")
+	_ = os.Setenv("CHITIN_STATION_PROMPT_HASH", "sha256:prompt")
+	_ = os.Setenv("CHITIN_SKILLS_TOOLS_HASH", "sha256:tools")
+	_ = os.Setenv("CHITIN_SOUL_LENS", "curie")
 	_ = os.Setenv("CHITIN_AUTHORITY", "supervisor")
 
 	got := FingerprintContextFromEnv()
@@ -580,6 +593,10 @@ func TestFingerprintContextFromEnv_TypedIdentityVarsRead(t *testing.T) {
 	}
 	if got.Driver != "hermes" {
 		t.Errorf("Driver: got %q want hermes", got.Driver)
+	}
+	if got.StationPromptHash != "sha256:prompt" || got.SkillsToolsHash != "sha256:tools" ||
+		got.SoulLens != "curie" {
+		t.Errorf("prompt/tool/lens vars not read correctly: %+v", got)
 	}
 	if got.ClaimedAuthority != "supervisor" {
 		t.Errorf("ClaimedAuthority: got %q want supervisor", got.ClaimedAuthority)
@@ -594,12 +611,17 @@ func TestFingerprintContextFromEnv_TypedDispatchVarsFallback(t *testing.T) {
 	_ = os.Setenv("CHITIN_DISPATCH_AGENT_INSTANCE_ID", "inst-dispatch")
 	_ = os.Setenv("CHITIN_DISPATCH_AGENT_FINGERPRINT", "agentfp-dispatch")
 	_ = os.Setenv("CHITIN_DISPATCH_DRIVER", "copilot")
+	_ = os.Setenv("CHITIN_DISPATCH_STATION_PROMPT_HASH", "sha256:dispatch-prompt")
+	_ = os.Setenv("CHITIN_DISPATCH_SKILLS_TOOLS_HASH", "sha256:dispatch-tools")
+	_ = os.Setenv("CHITIN_DISPATCH_SOUL_LENS", "lovelace")
 	_ = os.Setenv("CHITIN_DISPATCH_AUTHORITY", "worker")
 	_ = os.Setenv("CHITIN_DISPATCH_WORKFLOW_ID", "wf-dispatch")
 
 	got := FingerprintContextFromEnv()
 	if got.AgentInstanceID != "inst-dispatch" || got.AgentFingerprint != "agentfp-dispatch" ||
 		got.Fingerprint != "agentfp-dispatch" || got.Driver != "copilot" ||
+		got.StationPromptHash != "sha256:dispatch-prompt" ||
+		got.SkillsToolsHash != "sha256:dispatch-tools" || got.SoulLens != "lovelace" ||
 		got.ClaimedAuthority != "worker" || got.Authority != "" || got.WorkflowID != "wf-dispatch" {
 		t.Errorf("typed dispatch vars not read correctly: %+v", got)
 	}
@@ -646,6 +668,26 @@ func TestFingerprintContextFromEnv_DefaultsRoleToExternal(t *testing.T) {
 	}
 	if got.WorkflowID != "" || got.Fingerprint != "" {
 		t.Errorf("WorkflowID/Fingerprint must stay empty by default, got %+v", got)
+	}
+}
+
+func TestFingerprintContextFromEnv_ActiveSoulFallback(t *testing.T) {
+	withCleanFingerprintEnv(t)
+	_ = os.Setenv("CHITIN_ACTIVE_SOUL", "knuth")
+
+	got := FingerprintContextFromEnv()
+	if got.SoulLens != "knuth" {
+		t.Errorf("CHITIN_ACTIVE_SOUL fallback: got %q want knuth", got.SoulLens)
+	}
+	if got.Authority != "" {
+		t.Errorf("env reader must not resolve effective authority: got %q", got.Authority)
+	}
+
+	g, _ := newTestGate(t)
+	g.Fingerprint = got
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.Authority != "external" {
+		t.Errorf("soul lens alone must not escalate effective authority: got %q", d.Authority)
 	}
 }
 
