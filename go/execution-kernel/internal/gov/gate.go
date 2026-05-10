@@ -224,6 +224,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		}
 		stampEnvelope(&d, envelope, g, a, agent)
 		stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
+		stampWorktreeDiagnostic(&d, a, g.Cwd)
 		if !g.NoRecord {
 			_ = WriteLog(d, g.LogDir)
 		}
@@ -339,6 +340,10 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// row carries (model, role, workflow_id, fingerprint) for joining
 	// against PR/review outcomes downstream.
 	stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
+	// 7b. Stamp audit-only worktree posture. This deliberately does not
+	// alter d.Allowed or the policy RuleID; it gives downstream readers
+	// chain evidence before the worktree requirement graduates to enforce.
+	stampWorktreeDiagnostic(&d, a, g.Cwd)
 
 	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
 	// daily chain rollups (fingerprint_outcomes, swarm_health) with
