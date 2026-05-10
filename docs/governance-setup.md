@@ -102,6 +102,29 @@ This setup helps Copilot in the IDE follow the same boundary as other agents,
 but it is not a security boundary. Use `chitin-kernel drive copilot` when
 Copilot execution must be governed by the kernel.
 
+## Agent worktrees
+
+Chitin policy can require side-effecting agent work to happen outside the
+primary checkout. Use the helper instead of hand-rolling `git worktree`
+commands or symlinking `node_modules`:
+
+```bash
+cd ~/workspace/chitin
+pnpm worktree -- --agent codex --task small-fix
+cd ~/workspace/chitin-codex-small-fix
+```
+
+The helper creates or reuses a branch/worktree pair, then runs
+`scripts/bootstrap-worktree.sh` to hydrate local dependencies from a shared
+pnpm store. Each worktree gets its own `node_modules`; only the pnpm content
+store is shared.
+
+For exact branch/path control:
+
+```bash
+pnpm worktree -- --branch openclaw/coverage-router --path ~/workspace/chitin-openclaw-coverage-router
+```
+
 ## Build the kernel
 
 ```bash
