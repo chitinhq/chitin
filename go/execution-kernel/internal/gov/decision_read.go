@@ -30,7 +30,8 @@ type ReadRecentArgs struct {
 // gov-decisions-*.jsonl files in dir, newest first.
 //
 // Invariant: returned decisions satisfy
-//   ts ∈ (now-windowHours·hour, now]   AND   len ≤ limit.
+//
+//	ts ∈ (now-windowHours·hour, now]   AND   len ≤ limit.
 //
 // Behavior:
 //   - Files matching `gov-decisions-*.jsonl` are sorted by name in
@@ -136,8 +137,8 @@ func readFileReverse(path string, cutoff time.Time, maxLines int) (decs []Decisi
 	out := make([]Decision, 0, maxLines)
 	firstSeen := false
 	for i := len(lines) - 1; i >= 0; i-- {
-		var d Decision
-		if err := json.Unmarshal([]byte(lines[i]), &d); err != nil {
+		d, err := unmarshalDecisionLine([]byte(lines[i]))
+		if err != nil {
 			continue
 		}
 		if d.Ts == "" {
@@ -166,4 +167,19 @@ func readFileReverse(path string, cutoff time.Time, maxLines int) (decs []Decisi
 		}
 	}
 	return out, false, nil
+}
+
+func unmarshalDecisionLine(line []byte) (Decision, error) {
+	type wire struct {
+		Decision
+		ActionType   string `json:"action_type"`
+		ActionTarget string `json:"action_target"`
+	}
+	var row wire
+	if err := json.Unmarshal(line, &row); err != nil {
+		return Decision{}, err
+	}
+	d := row.Decision
+	d.Action = Action{Type: ActionType(row.ActionType), Target: row.ActionTarget}
+	return d, nil
 }
