@@ -6,6 +6,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -149,20 +150,86 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 	if d.Escalation != "" {
 		payload["escalation"] = d.Escalation
 	}
+	addIdentityPayload(payload, d)
 	payloadJSON, _ := json.Marshal(payload)
 	return &event.Event{
-		SchemaVersion:   "2",
-		RunID:           chainID,
-		SessionID:       chainID,
-		Surface:         surface,
-		AgentInstanceID: d.Agent,
-		EventType:       "decision",
-		ChainID:         chainID,
-		ChainType:       "session",
-		Ts:              ts,
-		Labels:          map[string]string{},
-		Payload:         payloadJSON,
+		SchemaVersion:    "2",
+		RunID:            chainID,
+		SessionID:        chainID,
+		Surface:          surface,
+		AgentInstanceID:  eventAgentInstanceID(d),
+		AgentFingerprint: eventAgentFingerprint(d),
+		EventType:        "decision",
+		ChainID:          chainID,
+		ChainType:        "session",
+		Ts:               ts,
+		Labels:           identityLabels(d),
+		Payload:          payloadJSON,
 	}
+}
+
+func addIdentityPayload(payload map[string]any, d *gov.Decision) {
+	for k, v := range identityLabels(d) {
+		payload[k] = v
+	}
+	if d.ClaimedAuthority != "" {
+		payload["claimed_authority"] = d.ClaimedAuthority
+	}
+}
+
+func identityLabels(d *gov.Decision) map[string]string {
+	labels := map[string]string{}
+	addLabel := func(k, v string) {
+		if v != "" {
+			labels[k] = v
+		}
+	}
+	addLabel("agent", d.Agent)
+	addLabel("agent_instance_id", d.AgentInstanceID)
+	addLabel("agent_fingerprint", d.AgentFingerprint)
+	addLabel("driver", d.Driver)
+	addLabel("model", d.Model)
+	addLabel("role", d.Role)
+	addLabel("station_prompt_hash", d.StationPromptHash)
+	addLabel("skills_tools_hash", d.SkillsToolsHash)
+	addLabel("soul_lens", d.SoulLens)
+	addLabel("authority", d.Authority)
+	addLabel("workflow_id", d.WorkflowID)
+	return labels
+}
+
+func eventAgentInstanceID(d *gov.Decision) string {
+	if d.AgentInstanceID != "" {
+		return d.AgentInstanceID
+	}
+	return d.Agent
+}
+
+func eventAgentFingerprint(d *gov.Decision) string {
+	fp := d.AgentFingerprint
+	if fp == "" {
+		fp = d.Fingerprint
+	}
+	if isLowerHexLen(fp, 64) {
+		return fp
+	}
+	if fp == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("chitin-agent-fingerprint-v2\x00" + fp))
+	return hex.EncodeToString(sum[:])
+}
+
+func isLowerHexLen(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // newChainID returns a fresh UUIDv4-shaped string for chain_id of

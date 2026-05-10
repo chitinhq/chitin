@@ -55,15 +55,18 @@ func WriteLog(d Decision, dir string) error {
 		// omitempty so older readers and non-identity dispatches keep
 		// working. Fingerprint is retained as the legacy alias for
 		// AgentFingerprint.
-		AgentInstanceID  string `json:"agent_instance_id,omitempty"`
-		AgentFingerprint string `json:"agent_fingerprint,omitempty"`
-		Driver           string `json:"driver,omitempty"`
-		Model            string `json:"model,omitempty"`
-		Role             string `json:"role,omitempty"`
-		ClaimedAuthority string `json:"claimed_authority,omitempty"`
-		Authority        string `json:"authority,omitempty"`
-		WorkflowID       string `json:"workflow_id,omitempty"`
-		Fingerprint      string `json:"fingerprint,omitempty"`
+		AgentInstanceID   string `json:"agent_instance_id,omitempty"`
+		AgentFingerprint  string `json:"agent_fingerprint,omitempty"`
+		Driver            string `json:"driver,omitempty"`
+		Model             string `json:"model,omitempty"`
+		Role              string `json:"role,omitempty"`
+		StationPromptHash string `json:"station_prompt_hash,omitempty"`
+		SkillsToolsHash   string `json:"skills_tools_hash,omitempty"`
+		SoulLens          string `json:"soul_lens,omitempty"`
+		ClaimedAuthority  string `json:"claimed_authority,omitempty"`
+		Authority         string `json:"authority,omitempty"`
+		WorkflowID        string `json:"workflow_id,omitempty"`
+		Fingerprint       string `json:"fingerprint,omitempty"`
 		// Router-heuristic signal metadata (audit Tier 6 cull,
 		// 2026-05-08). Stamped by router-hook when its policy is
 		// enabled and at least one signal is non-zero; absent on
@@ -94,6 +97,9 @@ func WriteLog(d Decision, dir string) error {
 		Driver:                   d.Driver,
 		Model:                    d.Model,
 		Role:                     d.Role,
+		StationPromptHash:        d.StationPromptHash,
+		SkillsToolsHash:          d.SkillsToolsHash,
+		SoulLens:                 d.SoulLens,
 		ClaimedAuthority:         d.ClaimedAuthority,
 		Authority:                d.Authority,
 		WorkflowID:               d.WorkflowID,

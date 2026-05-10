@@ -5,6 +5,7 @@
 ## Build, test, and lint commands
 
 - Install dependencies with `pnpm install`. CI uses Node 22 + pnpm 10. If `better-sqlite3` did not build during install, run `pnpm rebuild better-sqlite3`.
+- For a fresh git worktree, run `scripts/bootstrap-worktree.sh` before Nx commands. It reuses a shared pnpm store while keeping `node_modules` local to the worktree.
 - Build the Go kernel with `pnpm exec nx run execution-kernel:build`.
 - Run the CLI from source with `pnpm exec nx run @chitin/cli:run -- --help` (or `pnpm exec tsx apps/cli/src/main.ts`).
 - Run all TypeScript tests with `pnpm exec vitest run`.
