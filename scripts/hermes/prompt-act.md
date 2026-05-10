@@ -21,11 +21,10 @@ them, don't retry.
 Required sequence. Perform each step; stop on the first failure.
 
 1. Choose a branch name: `fix/<issue_number>-<slug-of-reason>`.
-2. `cd $HOME/workspace/chitin-<issue_number>` — creating the worktree
-   first if it does not exist:
-   `git -C $HOME/workspace/chitin worktree add $HOME/workspace/chitin-<N> -b <branch> origin/main`.
-3. Symlink node_modules:
-   `ln -sfn $HOME/workspace/chitin/node_modules $HOME/workspace/chitin-<N>/node_modules`.
+2. Create or reuse a linked worktree, then `cd` into it:
+   `cd $HOME/workspace/chitin && pnpm worktree -- --branch <branch> --path $HOME/workspace/chitin-<issue_number>`.
+   The helper hydrates local `node_modules` from the shared pnpm store.
+3. `cd $HOME/workspace/chitin-<issue_number>`.
 4. Apply the diff:
    `printf '%s' "$diff" | git apply -` (in the worktree). If it fails,
    log the stderr and stop.

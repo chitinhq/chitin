@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "license": "Apache-2.0",
   "scripts": {
-    "install-kernel": "pnpm nx build execution-kernel && bash scripts/install-kernel-symlink.sh"
+    "install-kernel": "pnpm nx build execution-kernel && bash scripts/install-kernel-symlink.sh",
+    "worktree": "bash scripts/create-worktree.sh"
   },
   "private": true,
   "pnpm": {
