@@ -1,0 +1,5 @@
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-shell","agent":"hermes","action_type":"shell.exec","action_target":"pnpm test","ts":"2026-05-09T01:00:00Z","chain_id":"chain-hermes","seq":1}
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-reads","agent":"hermes","action_type":"file.read","action_target":"docs/roadmap.md","ts":"2026-05-09T01:01:00Z","chain_id":"chain-hermes","seq":2}
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-kanban","agent":"hermes","action_type":"kanban.call","action_target":"show","ts":"2026-05-09T01:02:00Z","chain_id":"chain-hermes","seq":3}
+{"allowed":true,"mode":"monitor","rule_id":"router-heuristic:allow","agent":"codex","action_type":"router.signal","action_target":"Bash:go test ./...","ts":"2026-05-09T01:03:00Z","chain_id":"chain-codex","seq":1}
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-shell","agent":"codex","action_type":"shell.exec","action_target":"go test ./...","ts":"2026-05-09T01:04:00Z","chain_id":"chain-codex","seq":2}

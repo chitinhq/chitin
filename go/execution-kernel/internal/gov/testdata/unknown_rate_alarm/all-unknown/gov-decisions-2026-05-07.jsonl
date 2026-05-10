@@ -1,0 +1,4 @@
+{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"hermes","action_type":"unknown","action_target":"kanban_show","ts":"2026-05-07T10:00:00Z","chain_id":"chain-hermes","seq":7}
+{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"hermes","action_type":"unknown","action_target":"process","ts":"2026-05-07T10:01:00Z","chain_id":"chain-hermes","seq":8}
+{"allowed":false,"mode":"enforce","rule_id":"lockdown","agent":"hermes","action_type":"unknown","action_target":"kanban_show","ts":"2026-05-07T10:02:00Z","chain_id":"chain-hermes","seq":9}
+{"allowed":false,"mode":"enforce","rule_id":"lockdown","agent":"hermes","action_type":"unknown","action_target":"kanban_block","ts":"2026-05-07T10:03:00Z","chain_id":"chain-hermes","seq":10}
