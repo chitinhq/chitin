@@ -96,6 +96,41 @@ func TestCLI_DecisionsRecent_RejectsBadFlags(t *testing.T) {
 	}
 }
 
+func TestCLI_DecisionsWorktreeDiagnostics(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now().UTC()
+	date := now.Format("2006-01-02")
+	lines := []string{
+		`{"allowed":true,"mode":"guide","rule_id":"allow-write","agent":"codex","driver":"codex","action_type":"file.write","action_target":"src/main.go","ts":"` + now.Add(-2*time.Minute).Format(time.RFC3339) + `","worktree_diagnostic_rule_id":"worktree-required-diagnostic","worktree_status":"primary","worktree_reason":"side-effect action evaluated from primary git checkout"}`,
+		`{"allowed":true,"mode":"guide","rule_id":"allow-read","agent":"codex","driver":"codex","action_type":"file.read","action_target":"README.md","ts":"` + now.Add(-time.Minute).Format(time.RFC3339) + `"}`,
+	}
+	if err := os.WriteFile(filepath.Join(home, "gov-decisions-"+date+".jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home,
+		"decisions", "worktree-diagnostics", "--window-hours", "1", "--limit", "10")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	var got struct {
+		Total  int `json:"total"`
+		Recent []struct {
+			ActionType   string `json:"action_type"`
+			ActionTarget string `json:"action_target"`
+		} `json:"recent"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("parse stdout: %v\nstdout=%s", err, stdout)
+	}
+	if got.Total != 1 {
+		t.Fatalf("Total=%d want 1", got.Total)
+	}
+	if len(got.Recent) != 1 || got.Recent[0].ActionType != "file.write" || got.Recent[0].ActionTarget != "src/main.go" {
+		t.Fatalf("unexpected recent diagnostics: %+v", got.Recent)
+	}
+}
+
 // TestCLI_DecisionsRecent_UnknownSubcommand: chitin-kernel surfaces a
 // distinct error kind for unknown subcommands so callers can branch.
 func TestCLI_DecisionsRecent_UnknownSubcommand(t *testing.T) {
