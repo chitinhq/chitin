@@ -10,6 +10,7 @@ import { registerInstall } from './commands/install.js';
 import { registerHealth } from './commands/health.js';
 import { registerLedger } from './commands/ledger.js';
 import { registerReview } from './commands/review.js';
+import { registerInspect } from './commands/inspect.js';
 
 const program = new Command();
 program.name('chitin').description('Observability-first substrate for AI coding agents');
@@ -43,6 +44,7 @@ registerInstall(program);
 registerHealth(program);
 registerLedger(program);
 registerReview(program);
+registerInspect(program);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
