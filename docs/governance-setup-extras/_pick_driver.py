@@ -26,6 +26,24 @@ def main() -> None:
     caps_needed = set(classify.get("capabilities", []))
     cards_dir = os.path.expanduser("~/.openclaw/data/agent-cards")
 
+    # Smoke / test override: when FORCE_DRIVER is non-empty, skip capability
+    # matching and return the named driver verbatim. Used by
+    # scripts/smoke-hermes-clawta-chain.sh to exercise each frontier-coder
+    # card deterministically without depending on the classifier.
+    force = os.environ.get("FORCE_DRIVER", "").strip()
+    if force:
+        print(
+            json.dumps(
+                {
+                    "driver": force,
+                    "complexity": classify.get("complexity"),
+                    "caps_needed": sorted(caps_needed),
+                    "candidates_considered": 1,
+                }
+            )
+        )
+        return
+
     cards = []
     for f in glob.glob(f"{cards_dir}/*.json"):
         try:

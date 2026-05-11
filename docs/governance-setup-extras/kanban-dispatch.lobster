@@ -37,6 +37,14 @@ description: |
 args:
   ticket_id:
     description: hermes kanban ticket ID (e.g. t_8bda2f95). Required.
+  force_driver:
+    description: |
+      Optional driver override (e.g. "codex", "claude-code", "gemini",
+      "copilot"). When set, pick_driver bypasses capability matching and
+      returns this driver verbatim. Used by
+      scripts/smoke-hermes-clawta-chain.sh to exercise each frontier-coder
+      card deterministically. Empty in normal operation.
+    default: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────
@@ -83,7 +91,7 @@ steps:
   - id: pick_driver
     description: Deterministic matching of need to driver (reads agent cards)
     run: |
-      python3 /home/red/.openclaw/workflows/_pick_driver.py
+      FORCE_DRIVER="${force_driver}" python3 /home/red/.openclaw/workflows/_pick_driver.py
     stdin: $classify.stdout
 
   # ─────────────────────────────────────────────────────────────────────
