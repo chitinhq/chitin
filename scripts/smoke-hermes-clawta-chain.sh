@@ -50,7 +50,7 @@ LEDGER_DIR="${CHITIN_LEDGER_DIR:-$HOME/.chitin}"
 TODAY=$(date +%Y-%m-%d)
 LEDGER_FILE="$LEDGER_DIR/gov-decisions-$TODAY.jsonl"
 WORKFLOW_FILE="$HOME/.openclaw/workflows/kanban-dispatch.lobster"
-TINY_BODY="Print only the word OK and exit."
+TINY_BODY="Use your shell/Bash tool to run exactly this command and then stop: echo CHITIN_SMOKE_OK"
 
 # Track seeded ticket ids so we can attempt cleanup even on early exit.
 declare -a SEEDED_TICKETS=()
