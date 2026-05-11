@@ -1,0 +1,23 @@
+{
+  "id": "gemini",
+  "description": "Google Gemini CLI — local Gemma 2 → Gemini Pro escalation, picks model for situation. Multimodal capable.",
+  "auth": "google-gemini-subscription",
+  "capabilities": [
+    {"skill": "python", "depth": "strong"},
+    {"skill": "ts", "depth": "moderate"},
+    {"skill": "docs", "depth": "strong"},
+    {"skill": "ui", "depth": "strong"},
+    {"skill": "review", "depth": "moderate"}
+  ],
+  "models": [
+    {"id": "gemma-2-local", "tier": "T0", "premium_cost": 0.0},
+    {"id": "gemini-flash", "tier": "T1", "premium_cost": 0.1},
+    {"id": "gemini-2.5-pro", "tier": "T2", "premium_cost": 0.5},
+    {"id": "gemini-3", "tier": "T3", "premium_cost": 1.0}
+  ],
+  "invocation": {
+    "cmd": "gemini",
+    "args": ["-p", "{prompt}", "--model", "{model}"]
+  },
+  "notes": "$20/mo subscription. Auto-scales model up/down based on task. Multimodal use case is unusual for chitin but worth keeping for diagrams / UI work."
+}
