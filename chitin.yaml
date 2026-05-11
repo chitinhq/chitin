@@ -182,6 +182,24 @@ rules:
     suggestion: "Download first (`curl -fsSLo /tmp/x.sh <url>`), inspect, then run explicitly if safe"
     correctedCommand: "curl -fsSLo /tmp/script.sh <url> && less /tmp/script.sh"
 
+  # Hermes is the operator interface, not a frontier dispatcher. Direct
+  # invocation of codex/claude/gemini binaries from Hermes bypasses the
+  # OpenClaw + Lobster dispatch workflow. Hermes must request dispatch
+  # via `clawta` (which wraps openclaw agent --agent glm-agent ...).
+  # Allowed exception: copilot CLI as Hermes's sanity-check helper.
+  #
+  # Requires CHITIN_DRIVER stamped from --agent (added to chitin-router-
+  # hook 2026-05-11) so driver: hermes matches actions from hermes's
+  # PreToolUse hook.
+  - id: hermes-no-frontier-spawn
+    action: shell.exec
+    effect: deny
+    driver: hermes
+    target_regex: '(?:^|[;&|]\s*|\s)(?:[\w./-]+/)?(?:codex|claude|gemini)(?:\s|$)'
+    reason: "Hermes does not dispatch frontier coders directly. Use `clawta` to request dispatch via OpenClaw + Lobster."
+    suggestion: "clawta --text \"dispatch ticket t_X to <agent>\" — OpenClaw routes to the right worker."
+    escalation_weight: 2
+
   - id: default-allow-reads
     action: file.read
     effect: allow

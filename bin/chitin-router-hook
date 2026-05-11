@@ -10,6 +10,19 @@
 
 set -euo pipefail
 
+# Stamp CHITIN_DRIVER from the --agent flag so identity-aware policy
+# rules can match on driver (Rule.Driver field, line 38 of internal/gov/
+# policy.go). Without this, ctx.Driver is empty and rules like
+# "driver: hermes deny target_regex: codex|claude|gemini" do not fire.
+# Defers to a caller-set CHITIN_DRIVER if already exported.
+if [[ -z "${CHITIN_DRIVER:-}" ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      --agent=*) export CHITIN_DRIVER="${arg#--agent=}" ;;
+    esac
+  done
+fi
+
 # HOT-PATH BYPASS: if the operator hasn't enabled the router, skip
 # the TS pipeline entirely and call the kernel directly. Saves the
 # ~500ms-1s pnpm-tsx startup overhead per tool call. Operator opts
