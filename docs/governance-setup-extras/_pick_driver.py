@@ -22,7 +22,16 @@ import sys
 
 
 def main() -> None:
-    classify = json.load(sys.stdin)
+    # Tolerate prefix garbage from openclaw's plugin loader (e.g.,
+    # "[plugins] chitin-governance registering: ...") which gets routed to
+    # stdout by openclaw's subsystem logger and lands ahead of clawta's
+    # JSON reply when this step's stdin is wired to classify.stdout. Read
+    # all of stdin and locate the first '{' before handing to json.loads.
+    raw = sys.stdin.read()
+    start = raw.find("{")
+    if start < 0:
+        raise SystemExit("classify produced no JSON object")
+    classify = json.loads(raw[start:])
     caps_needed = set(classify.get("capabilities", []))
     cards_dir = os.path.expanduser("~/.openclaw/data/agent-cards")
 
