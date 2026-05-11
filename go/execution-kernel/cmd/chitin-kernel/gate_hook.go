@@ -12,6 +12,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/canon"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/cost"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/codex"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/gemini"
@@ -413,12 +414,11 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 	}
 	d := gate.Evaluate(action, agent, spendEnvelope)
 
-	body, code := claudecode.Format(d)
-	if len(body) > 0 {
-		_, _ = out.Write(body)
-		_, _ = out.Write([]byte{'\n'})
-	}
-	return code
+	// Per-driver hook response formatter. claude-code uses
+	// stdout-JSON only (its documented ABI); codex/gemini also
+	// require stderr text or they surface "no blocking reason"
+	// and proceed with the call. See internal/driver/formatselect.go.
+	return driver.FormatFor(agent)(d, out, errOut)
 }
 
 // chitinDir returns the chitin state dir. The CHITIN_HOME env var

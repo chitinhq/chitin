@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"io"
 	"strings"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -103,4 +104,17 @@ func formatLockdownStopReason(d gov.Decision) string {
 	}
 	return "chitin: agent in lockdown — session terminated. " +
 		"Reset with: chitin-kernel gate reset --agent=" + agent
+}
+
+// FormatWriter is the io.Writer-shaped variant used by the driver
+// dispatcher (internal/driver/formatselect.go). It calls Format and
+// writes the body to stdout (matching the historical hook ABI: JSON
+// on stdout, exit 2). stderr is unused for claude-code.
+func FormatWriter(d gov.Decision, stdout io.Writer, _ io.Writer) int {
+	body, code := Format(d)
+	if len(body) > 0 {
+		_, _ = stdout.Write(body)
+		_, _ = stdout.Write([]byte{'\n'})
+	}
+	return code
 }
