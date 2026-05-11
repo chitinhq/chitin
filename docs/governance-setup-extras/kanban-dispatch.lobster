@@ -135,6 +135,17 @@ steps:
   # spawning surface); the leaf CLI's own PreToolUse/BeforeTool hook
   # handles inner-hop chain events with driver=<cli>.
   #
+  # CHITIN_DRIVER stamp: the final exec is wrapped in
+  # `env CHITIN_DRIVER=clawta ...` so the spawn hop itself records
+  # driver=clawta in the chain ledger. The smoke's I2 invariant ("at
+  # least one event with actor=clawta") depends on this — without the
+  # stamp the spawn would inherit whatever the parent stamped (e.g.,
+  # hermes or claude-code) and clawta would be invisible in the
+  # ledger. Note the env var only stamps the exec'd child; the leaf
+  # CLI's own PreToolUse hook overrides CHITIN_DRIVER with its own id
+  # for inner tool calls, so the inner hop is still attributed
+  # correctly.
+  #
   # Quoting safety: the raw ticket JSON is fed to the step via stdin
   # (lobster's resolveShellStdin path, not template substitution), so
   # apostrophes/backticks/dollars in the ticket body cannot break shell
@@ -172,7 +183,7 @@ steps:
       # NUL-delimit so multi-line prompts survive intact; -r would split on \n.
       mapfile -d '' -t ARGV < <(echo "$ARGS_JSON" | jq -j '.[] | . + "\u0000"')
       echo "spawn_worker: exec $CMD ${ARGV[*]}" >&2
-      exec "$CMD" "${ARGV[@]}"
+      exec env CHITIN_DRIVER=clawta "$CMD" "${ARGV[@]}"
     stdin: $fetch_ticket.stdout
 
 # Future steps to add as we layer in:
