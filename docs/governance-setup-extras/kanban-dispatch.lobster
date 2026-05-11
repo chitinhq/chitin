@@ -183,6 +183,22 @@ steps:
         "$CARD_PATH")
       # NUL-delimit so multi-line prompts survive intact; -r would split on \n.
       mapfile -d '' -t ARGV < <(echo "$ARGS_JSON" | jq -j '.[] | . + "\u0000"')
+      # Emit a chain event attributing this spawn hop to clawta. Without
+      # this, the smoke's I2 invariant ("at least one event with
+      # driver=clawta") only finds the spawn if some downstream tool call
+      # bubbles back through the chitin hook before the exec replaces the
+      # process. Lobster doesn't expose a per-run id env var (verified in
+      # lobster 2026.4.6 dist), so we synthesize one from epoch+pid; the
+      # gate writes a `driver=clawta, agent=clawta` row into the daily
+      # ledger via OnDecision (gate_hook.go:386). The carrier is a benign
+      # Bash echo — the default-allow-shell rule passes it without any
+      # side effect (the gate evaluates the action; it doesn't run it).
+      # `|| true` keeps the spawn alive if the emission ever fails
+      # (gov.db locked, etc.); chain telemetry must never block the exec.
+      SPAWN_RUN_ID="clawta-spawn-$(date +%s)-$$"
+      printf '{"session_id":"%s","tool_name":"Bash","tool_input":{"command":"echo clawta-spawn-marker"}}' \
+        "$SPAWN_RUN_ID" \
+        | CHITIN_DRIVER=clawta chitin-kernel gate evaluate --hook-stdin --agent=clawta >/dev/null 2>&1 || true
       echo "spawn_worker: exec $CMD ${ARGV[*]}" >&2
       exec env CHITIN_DRIVER=clawta "$CMD" "${ARGV[@]}"
       BASH_SCRIPT
