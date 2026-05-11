@@ -157,7 +157,7 @@ steps:
   - id: spawn_worker
     description: Spawn the picked frontier-coder CLI with the ticket as prompt
     run: |
-      bash <<'BASH_SCRIPT'
+      bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       DRIVER='$pick_driver.json.driver'
       CARD_PATH="$HOME/.openclaw/data/agent-cards/$DRIVER.json"
@@ -186,6 +186,7 @@ steps:
       echo "spawn_worker: exec $CMD ${ARGV[*]}" >&2
       exec env CHITIN_DRIVER=clawta "$CMD" "${ARGV[@]}"
       BASH_SCRIPT
+      )"
     stdin: $fetch_ticket.stdout
 
 # Future steps to add as we layer in:
