@@ -1,6 +1,6 @@
 {
   "id": "gemini",
-  "description": "Google Gemini CLI — local Gemma 2 → Gemini Pro escalation, picks model for situation. Multimodal capable.",
+  "description": "Google Gemini CLI — Flash-Lite → Flash → 2.5-Pro escalation, picks model for situation. Multimodal capable.",
   "auth": "google-gemini-subscription",
   "capabilities": [
     {"skill": "python", "depth": "strong"},
@@ -10,14 +10,13 @@
     {"skill": "review", "depth": "moderate"}
   ],
   "models": [
-    {"id": "gemma-2-local", "tier": "T0", "premium_cost": 0.0},
-    {"id": "gemini-flash", "tier": "T1", "premium_cost": 0.1},
-    {"id": "gemini-2.5-pro", "tier": "T2", "premium_cost": 0.5},
-    {"id": "gemini-3", "tier": "T3", "premium_cost": 1.0}
+    {"id": "gemini-2.5-flash-lite", "tier": "T1", "premium_cost": 0.05},
+    {"id": "gemini-2.5-flash", "tier": "T2", "premium_cost": 0.1},
+    {"id": "gemini-2.5-pro", "tier": "T3", "premium_cost": 0.5}
   ],
   "invocation": {
     "cmd": "gemini",
-    "args": ["-p", "{prompt}", "--model", "{model}"]
+    "args": ["-y", "-p", "{prompt}", "--model", "{model}"]
   },
-  "notes": "$20/mo subscription. Auto-scales model up/down based on task. Multimodal use case is unusual for chitin but worth keeping for diagrams / UI work."
+  "notes": "$20/mo subscription. Auto-scales model up/down based on task. Multimodal use case is unusual for chitin but worth keeping for diagrams / UI work. Models verified against the gemini CLI on 2026-05-11: gemma-2-local, gemini-flash, and gemini-3 all return ModelNotFoundError (code 404); only the gemini-2.5-* family resolves. -y enables YOLO mode (auto-approve all tool calls); the old --skip-trust flag is insufficient for non-interactive runs."
 }

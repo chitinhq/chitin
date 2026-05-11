@@ -11,13 +11,11 @@
     {"skill": "review", "depth": "strong"}
   ],
   "models": [
-    {"id": "gpt-5.5", "tier": "T4", "premium_cost": 1.0},
-    {"id": "gpt-5.4", "tier": "T3", "premium_cost": 0.33},
-    {"id": "gpt-5.3", "tier": "T2", "premium_cost": 0.1}
+    {"id": "gpt-5.5", "tier": "T4", "premium_cost": 1.0}
   ],
   "invocation": {
     "cmd": "codex",
-    "args": ["--yolo", "--model", "{model}", "--message", "{prompt}"]
+    "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "{model}", "{prompt}"]
   },
-  "notes": "Spawn from a worktree under ~/.cache/chitin/swarm-worktrees/. Honors chitin gate hooks."
+  "notes": "Spawn from a worktree under ~/.cache/chitin/swarm-worktrees/. Honors chitin gate hooks. Only gpt-5.5 is supported with ChatGPT Pro account auth — gpt-5/gpt-5.3/gpt-5.4/gpt-5-codex return 'not supported when using Codex with a ChatGPT account' (verified 2026-05-11). Non-interactive mode requires `codex exec` subcommand; the old --message flag does not exist. --dangerously-bypass-approvals-and-sandbox replaces the now-removed --yolo flag."
 }
