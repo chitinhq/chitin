@@ -80,6 +80,35 @@ func TestGate_EscalationRecorded(t *testing.T) {
 	}
 }
 
+func TestGate_DenyCascadeLocksShellExecWithinWindow(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Policy.Escalation.DenyCascadeCount = 3
+	g.Policy.Escalation.DenyCascadeWindowSeconds = 60
+
+	for i := 0; i < 2; i++ {
+		d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+		if d.RuleID != "no-rm" {
+			t.Fatalf("iter %d: RuleID=%q want no-rm", i, d.RuleID)
+		}
+		if d.Escalation == "lockdown" {
+			t.Fatalf("iter %d: lockdown triggered before cascade threshold", i)
+		}
+	}
+
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+	if d.RuleID != "no-rm" {
+		t.Fatalf("third deny RuleID=%q want no-rm", d.RuleID)
+	}
+	if d.Escalation != "lockdown" {
+		t.Fatalf("third shell.exec deny should trigger cascade lockdown, escalation=%q", d.Escalation)
+	}
+
+	read := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if read.RuleID != "lockdown" {
+		t.Fatalf("post-cascade read RuleID=%q want lockdown", read.RuleID)
+	}
+}
+
 func TestGate_LockdownDeniesEverything(t *testing.T) {
 	g, _ := newTestGate(t)
 	g.Counter.Lockdown("agent1")

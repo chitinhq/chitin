@@ -27,6 +27,12 @@ func TestPolicy_LoadBaseline(t *testing.T) {
 	if p.Bounds.MaxFilesChanged != 25 {
 		t.Errorf("Bounds.MaxFilesChanged: got %d", p.Bounds.MaxFilesChanged)
 	}
+	if p.Escalation.DenyCascadeCount != 4 {
+		t.Errorf("Escalation.DenyCascadeCount: got %d want 4", p.Escalation.DenyCascadeCount)
+	}
+	if p.Escalation.DenyCascadeWindowSeconds != 300 {
+		t.Errorf("Escalation.DenyCascadeWindowSeconds: got %d want 300", p.Escalation.DenyCascadeWindowSeconds)
+	}
 	if len(p.Rules) != 5 {
 		t.Errorf("Rules count: got %d want 5", len(p.Rules))
 	}

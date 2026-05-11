@@ -34,6 +34,11 @@ func setupHookEnv(t *testing.T, policyYAML string) *hookTestEnv {
 
 func runHookCall(t *testing.T, env *hookTestEnv, payload map[string]any, envelopeFlag string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runHookCallAsAgent(t, env, "claude-code", payload, envelopeFlag)
+}
+
+func runHookCallAsAgent(t *testing.T, env *hookTestEnv, agent string, payload map[string]any, envelopeFlag string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 	if _, ok := payload["cwd"]; !ok {
 		payload["cwd"] = env.cwd
 	}
@@ -43,7 +48,7 @@ func runHookCall(t *testing.T, env *hookTestEnv, payload map[string]any, envelop
 	}
 	in := bytes.NewReader(body)
 	var out, errOut bytes.Buffer
-	exitCode = evalHookStdin(in, &out, &errOut, "claude-code", envelopeFlag, "", false, false)
+	exitCode = evalHookStdin(in, &out, &errOut, agent, envelopeFlag, "", false, false)
 	return out.String(), errOut.String(), exitCode
 }
 
@@ -69,6 +74,10 @@ rules:
     action: shell.exec
     effect: allow
     reason: shell ok
+  - id: allow-git-status
+    action: git.status
+    effect: allow
+    reason: git status ok
   - id: allow-http
     action: http.request
     effect: allow
@@ -115,6 +124,71 @@ func TestEvalHookStdin_DenyRmRfIsExit2BlockJSON(t *testing.T) {
 	// Suggestion + corrected propagate to the model.
 	if !strings.Contains(parsed["reason"], "git rm") {
 		t.Fatalf("reason missing suggestion/corrected: %q", parsed["reason"])
+	}
+}
+
+func TestEvalHookStdin_HermesExecuteCodeSubprocessRmRfDenied(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	stdout, _, code := runHookCallAsAgent(t, env, "hermes", map[string]any{
+		"tool_name": "execute_code",
+		"tool_input": map[string]any{
+			"code": `import subprocess
+subprocess.run(["rm", "-rf", "go/"])`,
+		},
+	}, "")
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (block)", code)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout)
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("decision=%q", parsed["decision"])
+	}
+	if !strings.Contains(parsed["reason"], "no rm -rf") {
+		t.Fatalf("reason missing rm-rf denial: %q", parsed["reason"])
+	}
+}
+
+func TestEvalHookStdin_HermesExecuteCodeShutilRmtreeDenied(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	stdout, _, code := runHookCallAsAgent(t, env, "hermes", map[string]any{
+		"tool_name": "execute_code",
+		"tool_input": map[string]any{
+			"code": `import shutil
+shutil.rmtree("go/")`,
+		},
+	}, "")
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (block)", code)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &parsed); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout)
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("decision=%q", parsed["decision"])
+	}
+	if !strings.Contains(parsed["reason"], "no rm -rf") {
+		t.Fatalf("reason missing rm-rf denial: %q", parsed["reason"])
+	}
+}
+
+func TestEvalHookStdin_HermesExecuteCodeGitStatusAllowed(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	stdout, _, code := runHookCallAsAgent(t, env, "hermes", map[string]any{
+		"tool_name": "execute_code",
+		"tool_input": map[string]any{
+			"code": `import subprocess
+subprocess.run(["git", "status"])`,
+		},
+	}, "")
+	if code != 0 {
+		t.Fatalf("exit=%d want 0 (allow), stdout=%q", code, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("allow stdout must be empty, got %q", stdout)
 	}
 }
 

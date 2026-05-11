@@ -230,6 +230,11 @@ Denials accumulate per-agent in `~/.chitin/gov.db`:
 | 7–9 | high | tighter restrictions (reserved for v2 policy features) |
 | 10+ | lockdown | agent-wide; all actions denied |
 
+The lifetime ladder is complemented by a short-window shell denial cascade:
+`escalation.deny_cascade_count` `shell.exec` denials inside
+`escalation.deny_cascade_window_seconds` seconds force the same sticky
+lockdown. The baseline policy uses 4 denials in 300 seconds.
+
 Lockdown is sticky across sessions. Only `gate reset` clears.
 
 ## CLI reference

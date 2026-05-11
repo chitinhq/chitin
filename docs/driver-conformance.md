@@ -25,6 +25,11 @@ in one of these outcomes:
 | OpenClaw | `before_tool_call` plugin via `apps/openclaw-plugin-governance` | Plugin bridge into `chitin-kernel gate evaluate` | Tool calls dispatched by OpenClaw's native pi-agent-core runtime | Does not gate standalone Claude/Codex/Gemini/Copilot processes; use their native driver integrations. |
 | VS Code Copilot | Repository instructions + `AGENTS.md` context | No execution normalizer | Uses repo guidance to steer agent behavior in the IDE | No pre-tool hook surface. Treat this as guidance only; route terminal-side agent execution through chitin-aware CLIs where enforcement is required. |
 
+Claude Code has no Hermes-style `execute_code` Python runner in the governed
+hook surface. Its host execution path is `Bash`, which routes through
+`gov.Normalize("terminal", ...)` and the existing shell/canonical command
+detectors.
+
 ## Near-term work
 
 1. Mine `default-deny` / `unknown` rows from `~/.chitin/gov-decisions-*.jsonl`

@@ -339,8 +339,11 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			// from the DB, so the row may be stale) so the caller gets a
 			// Decision; the operator sees the error on stderr and can
 			// repair the DB before the next call.
-			if err := g.Counter.RecordDenial(agent, a.Fingerprint(), weight); err != nil {
+			if err := g.Counter.RecordActionDenial(agent, string(a.Type), a.Fingerprint(), weight); err != nil {
 				fmt.Fprintf(os.Stderr, "gov: RecordDenial failed agent=%s rule=%s: %v\n", agent, d.RuleID, err)
+			}
+			if a.Type == ActShellExec && denyCascadeFired(g.Counter, agent, g.Policy.Escalation) {
+				g.Counter.Lockdown(agent)
 			}
 		}
 		d.Escalation = g.Counter.Level(agent)
@@ -376,6 +379,14 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// AFTER the function returns.
 	final = d
 	return
+}
+
+func denyCascadeFired(counter *Counter, agent string, cfg EscalationConfig) bool {
+	if counter == nil || cfg.DenyCascadeCount <= 0 || cfg.DenyCascadeWindowSeconds <= 0 {
+		return false
+	}
+	since := time.Now().UTC().Add(-time.Duration(cfg.DenyCascadeWindowSeconds) * time.Second).Unix()
+	return counter.CountActionDenialsSince(agent, string(ActShellExec), since) >= cfg.DenyCascadeCount
 }
 
 // stampEnvelope is the lockdown-path helper: it does its own classify +
