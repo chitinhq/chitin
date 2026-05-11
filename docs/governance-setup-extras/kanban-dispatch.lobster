@@ -38,22 +38,25 @@ steps:
   #     "needs_frontier": bool
   #   }
   # ─────────────────────────────────────────────────────────────────────
-  # TODO 2026-05-11 (smoke-test learning): currently a hardcoded stub.
-  # Originally tried `pipeline: llm.invoke --provider openclaw` but OpenClaw's
-  # gateway doesn't have the `llm-task` tool registered (404 not_found).
-  # Two paths to make this real:
-  #   (a) Enable llm-task tool in openclaw (would require finding how to
-  #       register it — `openclaw mcp set` is for channel bridging, not
-  #       agent tools; the right mechanism is somewhere else).
-  #   (b) Refactor to: `run: clawta --text "Classify this ticket: $(echo $fetch_ticket.stdout)..."`
-  #       This uses the proven clawta path (verified working via the
-  #       `Say OK` smoke test on 2026-05-10). Simpler; one fewer integration
-  #       to keep alive.
-  # Recommendation: (b). The whole point of clawta is to be the Hermes→Clawta wire.
+  # Classify the ticket via clawta (option (b) from the original TODO).
+  # The clawta wire is the proven Hermes→Clawta path; routing classification
+  # through it keeps the same single dispatch surface and avoids depending
+  # on an upstream `llm-task` tool that isn't registered in the gateway.
+  #
+  # NOTE: step-output interpolation ($fetch_ticket.stdout) is currently
+  # known-broken in shell run: blocks — Slice 3 of the finish-plan
+  # (Task 10/11) fixes it. Until then, the prompt sees the literal
+  # `$fetch_ticket.stdout` token and the classifier must tolerate it.
   - id: classify
-    description: Classify ticket (SCAFFOLD stub - hardcoded; see TODO above)
+    description: Classify ticket via clawta (glm-agent on glm-5.1:cloud)
     run: >
-      echo '{"complexity":"low","capabilities":["go","review"],"estimated_loc":15,"needs_frontier":false}'
+      clawta --text "Classify this ticket and reply with ONLY a JSON
+      object (no prose, no markdown fences):
+      {\"complexity\": \"low\" | \"med\" | \"high\",
+       \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"],
+       \"estimated_loc\": <integer>,
+       \"needs_frontier\": <true|false>}.
+      Ticket JSON: $fetch_ticket.stdout"
 
   # ─────────────────────────────────────────────────────────────────────
   # 3. Pick driver by matching classify output against agent capability cards
