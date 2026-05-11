@@ -12,6 +12,25 @@ description: |
     Clawta = backend dispatch authority (this workflow IS Clawta's brain for routing)
     Workers = codex / claude-code / copilot / gemini (the actual coders)
 
+  Interpolation syntax (per Lobster 2026.4.6, source at
+  node_modules/.pnpm/@clawdbot+lobster@2026.4.6/.../dist/src/workflows/file.js:560-580):
+
+    Args:        ${arg_name}                (BRACED — only form for args)
+    Step stdout: $<step_id>.stdout          (UNBRACED)
+    Step JSON:   $<step_id>.json.<field>    (UNBRACED, dot-notation)
+    Nested:      $<step_id>.json.a.b.c      (UNBRACED, supported)
+
+  Asymmetry trap: ${step.json.field} (braced step ref) is NOT supported —
+  it survives Lobster's regex as literal text, then shell-errors with
+  "Bad substitution" because POSIX shells reject dots inside ${...}.
+  Always use the UNBRACED form for step references; BRACED only for args.
+
+  Silent failure modes:
+  - Producing step's stdout isn't valid JSON → $step.json.X substitutes
+    empty string (parseJson returns undefined silently)
+  - Step ID typo or step skipped by when: → literal $step.json.X
+    survives into the shell command
+
   This is a SCAFFOLD — steps have correct shape but logic is stubbed.
   Each step has a TODO marker pointing at what needs real implementation.
 
@@ -43,10 +62,7 @@ steps:
   # through it keeps the same single dispatch surface and avoids depending
   # on an upstream `llm-task` tool that isn't registered in the gateway.
   #
-  # NOTE: step-output interpolation ($fetch_ticket.stdout) is currently
-  # known-broken in shell run: blocks — Slice 3 of the finish-plan
-  # (Task 10/11) fixes it. Until then, the prompt sees the literal
-  # `$fetch_ticket.stdout` token and the classifier must tolerate it.
+  # Uses $fetch_ticket.stdout (UNBRACED) — see header for syntax rules.
   - id: classify
     description: Classify ticket via clawta (glm-agent on glm-5.1:cloud)
     run: >
@@ -77,16 +93,8 @@ steps:
   # with a resume token. Hermes-side integration (TODO post-Discord) picks
   # it up and posts to the operator on Discord #clawta with the prompt.
   # Operator's reply triggers `lobster resume --token <X> --approve <yes|no>`.
-  #
-  # TODO 2026-05-11 (smoke-test learning): `${ticket_id}` and
-  # `$pick_driver.json.driver` were NOT interpolated in the approval prompt
-  # during smoke run — the literal text appeared. Need to find Lobster's
-  # actual syntax for interpolating args + step outputs into approval
-  # strings. The docs mention `stdin: $step.stdout` for chaining input but
-  # don't document interpolation in approval prompts or shell run blocks.
-  # Possibly needs JS template literal syntax, or a `parse:` step that
-  # projects fields into the workflow scope.
   # ─────────────────────────────────────────────────────────────────────
+  # Uses ${ticket_id} (arg, braced) + $pick_driver.json.* (step ref, UNBRACED).
   - id: confirm
     description: Operator confirms the dispatch decision
     approval: >
@@ -95,22 +103,8 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────
   # 5. Reassign the kanban ticket to the picked driver lane
-  #
-  # TODO 2026-05-11 (smoke-test learning): same `$pick_driver.json.driver`
-  # interpolation issue as step 4. During smoke run, bash threw
-  # "Bad substitution" because `$pick_driver.json.driver` is Lobster syntax
-  # that bash doesn't understand, not a shell variable. The args
-  # variable `${ticket_id}` DID substitute correctly — so the bug is
-  # specific to step-output references inside shell `run:` strings.
-  # Fix candidates:
-  #   - Use `$pick_driver.json` syntax (without braces) if Lobster supports
-  #     it inline
-  #   - Add a `parse:` step that explodes pick_driver.json into named
-  #     workflow-scope variables that ARE interpolated
-  #   - Read the value at command time: `JQ_DRIVER=$(echo "$STEP_PICK_DRIVER_STDOUT" | jq -r .driver)`
-  #     — if Lobster sets STEP_<id>_STDOUT env vars
-  #   - Investigate Lobster source for the actual mechanism
   # ─────────────────────────────────────────────────────────────────────
+  # Uses $pick_driver.json.driver (UNBRACED) — see header for syntax rules.
   - id: reassign
     description: Move ticket to the worker's lane on kanban
     run: hermes kanban --board chitin assign ${ticket_id} $pick_driver.json.driver
@@ -118,6 +112,7 @@ steps:
   # ─────────────────────────────────────────────────────────────────────
   # 6. Comment on the ticket for audit (which driver, why)
   # ─────────────────────────────────────────────────────────────────────
+  # Uses ${ticket_id} (arg) + $pick_driver.json.* (UNBRACED step refs).
   - id: audit_comment
     description: Comment on the ticket so the routing decision is durable on the board
     run: 'hermes kanban --board chitin comment ${ticket_id} --author clawta "Dispatched to $pick_driver.json.driver (classified $pick_driver.json.complexity complexity, capabilities $pick_driver.json.caps_needed) via kanban-dispatch workflow."'
@@ -139,15 +134,14 @@ steps:
 #   9. copilot judge step on completion (free GPT-4.1 — sanity-check the diff)
 #   10. final approval gate or auto-merge
 #
-# Known issues discovered during 2026-05-11 smoke run (preserved for the
-# next person picking this up):
-#   - llm.invoke --provider openclaw → 404 (llm-task tool not registered).
-#     See `classify` step TODO. Recommendation: refactor to clawta shell call.
-#   - ${step.field} interpolation in shell `run:` and `approval:` strings
-#     doesn't work — Lobster's interpolation syntax for step outputs is
-#     undocumented (or different). See `confirm` and `reassign` step TODOs.
-#   - args (e.g. ${ticket_id}) DO interpolate correctly in both `run:` and
-#     `approval:` — that's the working baseline.
+# Working syntax confirmed 2026-05-11 (Task 11 of the finish-plan):
+#   Task 10 read Lobster 2026.4.6 source (dist/src/workflows/file.js:560-580)
+#   and Task 11 ran a positive+negative smoke pair. The unbraced step-ref
+#   form ($pick_driver.json.driver) substitutes correctly in shell run:
+#   blocks; the braced form (${pick_driver.json.driver}) shell-errors with
+#   "Bad substitution". The earlier "Known issues" footer claimed step
+#   interpolation was broken — that was wrong about the syntax. See the
+#   "Interpolation syntax" block in the header description for the rules.
 #
 # Test the workflow:
 #   export OPENCLAW_URL=http://127.0.0.1:18789
