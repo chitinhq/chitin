@@ -29,7 +29,7 @@ export function registerInspect(program: Command): void {
     .command('live')
     .description('Show recent governance decisions')
     .option('--chitin-dir <dir>', 'state dir to read (default: resolved .chitin)')
-    .option('--workspace <dir>', 'workspace dir for .chitin resolution (default: cwd)')
+    .option('--workspace <dir>', 'optional workspace boundary for .chitin resolution')
     .option('--limit <n>', 'max rows', parseLimit, 50)
     .option('--driver <name>', 'filter by driver')
     .option('--agent <id>', 'filter by agent')
@@ -44,7 +44,7 @@ export function registerInspect(program: Command): void {
     .command('denials')
     .description('Show recent denied governance decisions')
     .option('--chitin-dir <dir>', 'state dir to read (default: resolved .chitin)')
-    .option('--workspace <dir>', 'workspace dir for .chitin resolution (default: cwd)')
+    .option('--workspace <dir>', 'optional workspace boundary for .chitin resolution')
     .option('--limit <n>', 'max rows', parseLimit, 50)
     .option('--driver <name>', 'filter by driver')
     .option('--agent <id>', 'filter by agent')
@@ -62,7 +62,7 @@ export function registerInspect(program: Command): void {
     .description('Show a chain/session timeline')
     .argument('<chain-id>', 'chain id to inspect')
     .option('--chitin-dir <dir>', 'state dir to read (default: resolved .chitin)')
-    .option('--workspace <dir>', 'workspace dir for .chitin resolution (default: cwd)')
+    .option('--workspace <dir>', 'optional workspace boundary for .chitin resolution')
     .action((chainId: string, opts: InspectOpts) => {
       const timeline = getSessionTimeline(resolveInspectDir(opts), chainId);
       process.stdout.write(renderSessionTimeline(timeline));
@@ -73,7 +73,7 @@ export function registerInspect(program: Command): void {
     .description('Show recent governance summary for one agent')
     .argument('<agent-id>', 'agent id to inspect')
     .option('--chitin-dir <dir>', 'state dir to read (default: resolved .chitin)')
-    .option('--workspace <dir>', 'workspace dir for .chitin resolution (default: cwd)')
+    .option('--workspace <dir>', 'optional workspace boundary for .chitin resolution')
     .action((agentId: string, opts: InspectOpts) => {
       process.stdout.write(renderAgentSummary(getAgentSummary(resolveInspectDir(opts), agentId)));
     });
@@ -82,7 +82,7 @@ export function registerInspect(program: Command): void {
     .command('rules')
     .description('Show most-hit governance rules')
     .option('--chitin-dir <dir>', 'state dir to read (default: resolved .chitin)')
-    .option('--workspace <dir>', 'workspace dir for .chitin resolution (default: cwd)')
+    .option('--workspace <dir>', 'optional workspace boundary for .chitin resolution')
     .option('--limit <n>', 'max rules', parseLimit, 20)
     .option('--driver <name>', 'filter by driver')
     .option('--agent <id>', 'filter by agent')

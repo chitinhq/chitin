@@ -168,7 +168,7 @@ return values:
 export interface DecisionFilters {
   readonly driver?: string;
   readonly agent?: string;
-  readonly decision?: 'allow' | 'deny' | 'monitor';
+  readonly decision?: 'allow' | 'deny';
   readonly since?: Date;
   readonly limit?: number;
 }
@@ -180,6 +180,9 @@ export async function listDecisions(
   // Open derived indexes through telemetry helpers; do not parse from CLI.
 }
 ```
+
+`monitor`, `enforce`, and `guide` are decision modes. They should be modeled
+as a separate `mode` filter if the console needs them later.
 
 CLI commands should format results only. They should not own indexing,
 normalization, policy interpretation, analysis algorithms, or chain

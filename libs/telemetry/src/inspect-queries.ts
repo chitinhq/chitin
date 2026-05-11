@@ -136,7 +136,9 @@ export function listDecisions(chitinDir: string, filters: DecisionFilters = {}):
     .sort()
     .reverse();
   const sinceMillis = filters.since?.getTime();
+  const sinceDate = filters.since?.toISOString().slice(0, 10);
   for (const name of names) {
+    if (sinceDate && decisionLogDate(name) < sinceDate) break;
     const content = readFileSync(join(chitinDir, name), 'utf8');
     const lines = content.split('\n');
     for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -340,4 +342,8 @@ function escalationLevel(totalDenials: number, locked: boolean): AgentStateSumma
   if (totalDenials >= 7) return 'high';
   if (totalDenials >= 3) return 'elevated';
   return 'normal';
+}
+
+function decisionLogDate(name: string): string {
+  return name.slice('gov-decisions-'.length, 'gov-decisions-YYYY-MM-DD'.length);
 }
