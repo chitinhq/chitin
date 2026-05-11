@@ -1,0 +1,21 @@
+{
+  "id": "codex",
+  "description": "OpenAI Codex CLI — deep code reasoning, Go expert, refactoring",
+  "auth": "openai-pro-oauth",
+  "capabilities": [
+    {"skill": "go", "depth": "expert"},
+    {"skill": "ts", "depth": "strong"},
+    {"skill": "python", "depth": "strong"},
+    {"skill": "refactor", "depth": "expert"},
+    {"skill": "debug", "depth": "expert"},
+    {"skill": "review", "depth": "strong"}
+  ],
+  "models": [
+    {"id": "gpt-5.5", "tier": "T4", "premium_cost": 1.0}
+  ],
+  "invocation": {
+    "cmd": "codex",
+    "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "{model}", "{prompt}"]
+  },
+  "notes": "Spawn from a worktree under ~/.cache/chitin/swarm-worktrees/. Honors chitin gate hooks. Only gpt-5.5 is supported with ChatGPT Pro account auth — gpt-5/gpt-5.3/gpt-5.4/gpt-5-codex return 'not supported when using Codex with a ChatGPT account' (verified 2026-05-11). Non-interactive mode requires `codex exec` subcommand; the old --message flag does not exist. --dangerously-bypass-approvals-and-sandbox replaces the now-removed --yolo flag."
+}

@@ -1,0 +1,13 @@
+id: test-hermes-no-frontier-spawn
+mode: enforce
+rules:
+  - id: hermes-no-frontier-spawn
+    action: shell.exec
+    effect: deny
+    driver: hermes
+    target_regex: '(?:^|[;&|]\s*|\s)(?:[\w./-]+/)?(?:codex|claude|gemini)(?:\s|$)'
+    reason: "Hermes does not dispatch frontier coders directly."
+  - id: allow-clawta-and-other-shell
+    action: shell.exec
+    effect: allow
+    target_regex: '.*'

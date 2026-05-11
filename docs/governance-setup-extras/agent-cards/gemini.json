@@ -1,0 +1,22 @@
+{
+  "id": "gemini",
+  "description": "Google Gemini CLI — Flash-Lite → Flash → 2.5-Pro escalation, picks model for situation. Multimodal capable.",
+  "auth": "google-gemini-subscription",
+  "capabilities": [
+    {"skill": "python", "depth": "strong"},
+    {"skill": "ts", "depth": "moderate"},
+    {"skill": "docs", "depth": "strong"},
+    {"skill": "ui", "depth": "strong"},
+    {"skill": "review", "depth": "moderate"}
+  ],
+  "models": [
+    {"id": "gemini-2.5-flash-lite", "tier": "T1", "premium_cost": 0.05},
+    {"id": "gemini-2.5-flash", "tier": "T2", "premium_cost": 0.1},
+    {"id": "gemini-2.5-pro", "tier": "T3", "premium_cost": 0.5}
+  ],
+  "invocation": {
+    "cmd": "gemini",
+    "args": ["-y", "-p", "{prompt}", "--model", "{model}"]
+  },
+  "notes": "$20/mo subscription. Auto-scales model up/down based on task. Multimodal use case is unusual for chitin but worth keeping for diagrams / UI work. Models verified against the gemini CLI on 2026-05-11: gemma-2-local, gemini-flash, and gemini-3 all return ModelNotFoundError (code 404); only the gemini-2.5-* family resolves. -y enables YOLO mode (auto-approve all tool calls); the old --skip-trust flag is insufficient for non-interactive runs."
+}

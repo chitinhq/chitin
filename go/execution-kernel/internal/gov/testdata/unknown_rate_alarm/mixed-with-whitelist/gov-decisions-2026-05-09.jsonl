@@ -1,0 +1,6 @@
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-shell","agent":"hermes","action_type":"shell.exec","action_target":"go test ./internal/gov","ts":"2026-05-09T12:00:00Z","chain_id":"chain-mixed","seq":1}
+{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"hermes","action_type":"unknown","action_target":"clarify","ts":"2026-05-09T12:01:00Z","chain_id":"chain-mixed","seq":2}
+{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"hermes","action_type":"unknown","action_target":"image_generate","ts":"2026-05-09T12:02:00Z","chain_id":"chain-mixed","seq":3}
+{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"hermes","action_type":"unknown","action_target":"skills_list","ts":"2026-05-09T12:03:00Z","chain_id":"chain-mixed","seq":4}
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-file-write","agent":"hermes","action_type":"file.write","action_target":"memory","ts":"2026-05-09T12:04:00Z","chain_id":"chain-mixed","seq":5}
+{"allowed":true,"mode":"enforce","rule_id":"default-allow-http","agent":"hermes","action_type":"http.request","action_target":"https://example.invalid","ts":"2026-05-09T12:05:00Z","chain_id":"chain-mixed","seq":6}
