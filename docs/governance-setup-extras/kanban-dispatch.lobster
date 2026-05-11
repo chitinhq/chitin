@@ -118,16 +118,54 @@ steps:
     run: 'hermes kanban --board chitin comment ${ticket_id} --author clawta "Dispatched to $pick_driver.json.driver (classified $pick_driver.json.complexity complexity, capabilities $pick_driver.json.caps_needed) via kanban-dispatch workflow."'
 
   # ─────────────────────────────────────────────────────────────────────
-  # 7. Spawn the actual worker (stubbed — needs per-driver invocation pattern)
+  # 7. Spawn the picked frontier-coder CLI as a worker.
   #
-  # TODO: real implementation reads card.invocation from the picked driver,
-  # spawns the worker subprocess with ticket_id as context, waits for PR.
-  # For scaffold, just logs.
+  # Reads ~/.openclaw/data/agent-cards/<driver>.json, picks the cheapest
+  # model (lowest premium_cost — matches _pick_driver.py's ranking),
+  # substitutes {model} and {prompt} into card.invocation.args, execs
+  # the leaf CLI. The exec is gated by chitin under driver=clawta (the
+  # spawning surface); the leaf CLI's own PreToolUse/BeforeTool hook
+  # handles inner-hop chain events with driver=<cli>.
+  #
+  # Quoting safety: the raw ticket JSON is fed to the step via stdin
+  # (lobster's resolveShellStdin path, not template substitution), so
+  # apostrophes/backticks/dollars in the ticket body cannot break shell
+  # parsing. Inside the step we read the JSON from /dev/stdin and pull
+  # the body with jq. The only template substitution that hits the run:
+  # string is $pick_driver.json.driver, which is a card id like "codex"
+  # (alphanumeric + dash, no quoting hazard).
   # ─────────────────────────────────────────────────────────────────────
   - id: spawn_worker
-    description: Start the worker
-    run: >
-      echo "SCAFFOLD: would spawn $pick_driver.json.driver worker for ${ticket_id} now"
+    description: Spawn the picked frontier-coder CLI with the ticket as prompt
+    run: |
+      set -euo pipefail
+      DRIVER="$pick_driver.json.driver"
+      CARD_PATH="$HOME/.openclaw/data/agent-cards/$DRIVER.json"
+      if [[ ! -f "$CARD_PATH" ]]; then
+        echo "spawn_worker: card not found for driver=$DRIVER at $CARD_PATH" >&2
+        exit 1
+      fi
+      # Read the full ticket JSON from stdin (safe from quote injection) and
+      # extract the body. `hermes kanban show --json` wraps the task as
+      # {task:{...},comments:[...],events:[...],...}, so we look at .task.body
+      # first; fall back to .body for the legacy/unwrapped shape; fall back to
+      # the raw stdin if neither path resolves.
+      TICKET_JSON=$(cat)
+      TICKET_BODY=$(printf '%s' "$TICKET_JSON" | jq -r '.task.body // .body // empty')
+      if [[ -z "$TICKET_BODY" ]]; then
+        TICKET_BODY="$TICKET_JSON"
+      fi
+      PROMPT="Implement the ticket: $TICKET_BODY"
+      MODEL=$(jq -r '[.models[]] | sort_by(.premium_cost) | .[0].id' "$CARD_PATH")
+      CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
+      ARGS_JSON=$(jq -c --arg model "$MODEL" --arg prompt "$PROMPT" \
+        '.invocation.args | map(if . == "{model}" then $model elif . == "{prompt}" then $prompt else . end)' \
+        "$CARD_PATH")
+      # NUL-delimit so multi-line prompts survive intact; -r would split on \n.
+      mapfile -d '' -t ARGV < <(echo "$ARGS_JSON" | jq -j '.[] | . + "\u0000"')
+      echo "spawn_worker: exec $CMD ${ARGV[*]}" >&2
+      exec "$CMD" "${ARGV[@]}"
+    stdin: $fetch_ticket.stdout
 
 # Future steps to add as we layer in:
 #   8. monitor PR / status (resumable poll)
