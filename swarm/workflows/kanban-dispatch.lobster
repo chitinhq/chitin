@@ -93,7 +93,7 @@ steps:
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
       OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
-      "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
+      "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
