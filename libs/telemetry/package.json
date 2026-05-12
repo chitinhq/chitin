@@ -17,6 +17,7 @@
     "test": "vitest run tests"
   },
   "nx": {
+    "sourceRoot": "libs/telemetry/src",
     "projectType": "library",
     "tags": ["type:lib", "scope:analytics", "layer:telemetry", "lang:ts"],
     "targets": {
