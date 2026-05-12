@@ -1,20 +1,20 @@
 ---
 name: programmer
-description: "Default worker role for code-change tickets. Claims ticket, creates a worktree + branch, makes the change, runs tests, opens a PR, records the PR url on the kanban ticket. Used by clawta dispatch when the ticket asks for an implementation, refactor, fix, or test."
+description: "Default worker role for code-change tickets. Edits code on a feature branch in a pre-prepared worktree, runs tests, commits. Lobster orchestrates the worktree creation, push, and PR open — the worker just makes the change."
 allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
 success_criteria:
-  - PR opened against main with the change
-  - CI green (or explicit "yellow CI, see comment" note if a flake is unrelated)
-  - Kanban ticket has a PR-url comment and a `pr_opened` task event (ticket stays in_progress; Hermes UI has no code_review column)
-  - Every status transition has both a comment and a task_events row
+  - Code change committed on the feature branch lobster prepared
+  - Tests run (or an explicit note in the commit message if untested)
+  - Commit message references the ticket id
+  - No `git push` or `gh pr create` calls — lobster does those after exit
 ---
 
 # Programmer role
 
-The default worker role for tickets that ship code. You are dispatched
-by Clawta when a ticket is sequenced for implementation. You own the
-ticket end-to-end through the SDLC until the PR is open and the URL
-is recorded on the kanban ticket.
+The default worker role for tickets that ship code. Clawta dispatches
+you to a ticket; lobster prepares a clean worktree on a feature branch
+and exec's you in it. **Your job: make the change, run tests, commit.
+Then exit.** Lobster handles everything else.
 
 ## When to apply
 
@@ -29,80 +29,70 @@ If the ticket is pure investigation with no PR expected, use the
 **researcher** role instead. If the ticket is reviewing someone else's
 PR, use the **reviewer** role.
 
-## Lifecycle you walk
+## What lobster did before exec'ing you
 
-```
-ready → in_progress (claim + work + PR open) → done (after merge)
-```
+By the time your prompt runs, lobster has:
 
-The ticket stays in `in_progress` through PR open, review, and merge.
-Hermes' kanban UI has no `code_review` column, so we deliberately do
-not flip the status — the PR's GitHub state is the review-phase truth.
-`kanban-flow pr <id> <url>` records the PR url as a comment and a
-`pr_opened` audit event without moving the ticket. After merge, the
-ticket is closed via `kanban-flow done <id> --result "..."`.
+- Created a worktree at `~/.cache/chitin/swarm-worktrees/swarm-<driver>-<ticket_id>/`
+- Branched it as `swarm/<driver>-<ticket-short>` off `origin/main`
+- `cd`'d into the worktree before exec'ing you
+- Flipped the kanban ticket to `in_progress`
+- Comment-stamped the dispatch on the board
+
+You do not need to repeat any of these steps.
 
 ## The recipe
 
-1. **Claim** — `hermes kanban --board chitin assign <id> <your-name>`.
-   If the ticket already has another assignee, abort: someone is already
-   on it.
+1. **Make the change.** Edit files. Use Read/Edit/Write/Bash/Grep/Glob.
+   Stay inside the worktree (`pwd` already places you there).
 
-2. **Worktree** — `scripts/create-worktree.sh --agent <your-name> --task
-   <slug>`. The branch is `<your-name>/<slug>`. Always work in a
-   worktree; never on main. Never use `git add -A` (operator-local skill
-   files leak).
+2. **Run tests** if the change touches code with tests. If untested,
+   note it in the commit message rather than skipping silently.
 
-3. **Start** — `kanban-flow start <id> --author <your-name> --worktree
-   <path>`. Flips ready→in_progress, comments "picking up at <ts>",
-   writes the audit event.
+3. **Commit.** Stage by name (`git add <files>`), not `git add -A`.
+   Commit message format: `<type>(<scope>): <short subject>`. The body
+   should reference the ticket id explicitly. Author identity is
+   inherited from chitin's git config (project-local).
 
-4. **Work** — make the change. Run tests. If you find that the ticket
-   isn't actually doable (missing dependency, broken assumption, etc.),
-   call `kanban-flow block <id> "<reason>"` and stop. Don't ship a half
-   implementation.
-
-5. **Commit** — author email is project-specific. For chitin, that's
-   `jpleva91@gmail.com`. Sign your name in `Co-Authored-By`.
-
-6. **Push + PR** — `git push -u origin <branch>` then `gh pr create`.
-   Title format: `<type>(<scope>): <short subject>`. Body links the
-   kanban ticket id.
-
-7. **Record the PR** — `kanban-flow pr <id> <pr-url> --author <your-name>`.
-   Comments the PR url + emits a `pr_opened` task event. Ticket stays
-   in `in_progress` (Hermes UI has no code_review column).
-
-8. **Hand off** — you're done. Reviewer (or clawta sequencing) will
-   handle the merge.
+4. **Exit.** Lobster's `finalize_dispatch` step takes over — it pushes
+   the branch, opens a PR with the commit's subject as title, and
+   records the PR url back on the kanban ticket via a `pr_opened`
+   event. No action needed from you.
 
 ## Anti-patterns
 
-- **Editing on main.** Hard rule: every code change starts with `git
-  checkout -b` BEFORE the first edit. If you find yourself on main,
-  stash, branch, then pop.
-- **`git add -A`.** Always stage by name. The operator's home dir has
-  global files that get swept up otherwise.
-- **Skipping `kanban-flow`.** Raw `UPDATE tasks SET status=…` breaks
-  the audit invariant.
-- **Closing the loop before merge.** Don't `kanban-flow done <id>`
-  until the PR has actually merged. The PR's GitHub state is the
-  review-phase truth; closing the kanban early loses audit signal.
+- **Running `git push` or `gh pr create`.** Lobster does these. If you
+  push, you'll race the finalize step; if you open a PR yourself, the
+  finalize step will try and find an existing PR for the branch and
+  re-use it — better than racing, but you've duplicated work.
+- **Creating another worktree.** You're already in one. The path is
+  `~/.cache/chitin/swarm-worktrees/swarm-<driver>-<ticket_id>/`.
+- **`git add -A`.** Stage by name. The chitin checkout has operator-
+  local files (`.claude/scheduled_tasks.lock`, `chitin.yaml.bak.*`, etc.)
+  that would leak.
+- **Calling `kanban-flow start` / `kanban-flow pr`.** Lobster does
+  these too. The worker is past the `start` point already and never
+  records its own `pr_opened` event.
 - **Scope creep.** If you discover related work mid-change, file a
-  separate ticket. Don't bundle.
+  separate ticket (`hermes kanban --board chitin create ... --triage`).
+  Don't bundle.
 
 ## When you fail
 
-If the work blocks on something outside your control:
+If the work blocks on something outside your control (missing
+dependency, broken assumption in the ticket, etc.):
 
 ```
-kanban-flow block <id> "<one-sentence reason>" --author <your-name>
+kanban-flow block <ticket-id> "<one-sentence reason>" --author <your-name>
 ```
 
 The blocker should be specific enough that whoever unblocks knows what
 to do. "external dep" is not enough; "waiting on PR #519 to merge so
 spec lands on main" is.
 
-If you crash mid-work or hit an unrecoverable error, leave the ticket
-in `in_progress` and post a comment explaining. The poller or operator
-will reset it to `ready` after triage.
+Then exit without committing. Lobster will see no commits and post the
+"no feature branch checked out" path on the audit trail.
+
+If you crash mid-work or hit an unrecoverable error, exit and let the
+finalize step report. The poller or operator will reset the ticket to
+`ready` after triage.

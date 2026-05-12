@@ -76,14 +76,24 @@ steps:
   # (which it always does). Read via stdin + variable assignment inside
   # a bash heredoc so the JSON never touches the shell parser as a
   # literal. Same pattern as spawn_worker.
+  # Why this calls `openclaw agent` directly instead of `clawta --text`:
+  # the `clawta` wrapper has unanchored pattern detection for dispatch
+  # intent — it matches any `t_xxxxxxxx` id and any dispatch-verb word
+  # anywhere in the prompt. The classify prompt embeds the full ticket
+  # JSON, which always contains a ticket id and frequently contains
+  # dispatch-verb words in the body. That misfires as a recursive
+  # dispatch call, runs the workflow on itself, and returns a failure
+  # envelope instead of classification JSON. Every dispatch on
+  # 2026-05-12 failed for this reason until the bypass landed (#529).
   - id: classify
-    description: Classify ticket via clawta (glm-agent on glm-5.1:cloud)
+    description: Classify ticket via glm-agent on glm-5.1:cloud (direct, no wrapper)
     run: |
       bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
-      clawta --text "$PROMPT"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
@@ -194,18 +204,59 @@ steps:
       if [[ -z "$TICKET_BODY" ]]; then
         TICKET_BODY="$TICKET_JSON"
       fi
-      # Slice D: inline role SKILL.md into the worker's system prompt.
-      # Role is set via ROLE env var (clawta-poller passes it; default
-      # 'programmer'). Falls back to no-prefix if the role file is missing.
-      # printf %s avoids the YAML-scanner-breaking multi-line bash string.
+      # Extract ticket id from the JSON rather than depending on
+      # lobster's ${ticket_id} substitution. Lobster substitutes
+      # unbraced step refs inside this single-quoted heredoc (the
+      # DRIVER='$pick_driver.json.driver' pattern works), but braced
+      # arg refs (${ticket_id}) don't — they survive as literal text
+      # and bash errors with `unbound variable` under set -u.
+      TICKET_ID=$(printf '%s' "$TICKET_JSON" | jq -r '.task.id // .id // empty')
+      if [[ -z "$TICKET_ID" ]]; then
+        echo "spawn_worker: could not extract ticket id from JSON" >&2
+        exit 1
+      fi
+      # Pre-create the swarm worktree at the path finalize_dispatch
+      # expects. Without this, workers either (a) commit on whatever
+      # branch they happened to be on in the chitin primary checkout,
+      # leaving nothing for finalize to find, or (b) call
+      # scripts/create-worktree.sh which defaults to ../chitin-<branch>/
+      # — a path finalize doesn't search. Lobster owns the worktree
+      # contract end-to-end now; the leaf CLI just edits and commits.
+      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/swarm-${DRIVER}-${TICKET_ID}"
+      TICKET_ID_SHORT="${TICKET_ID#t_}"
+      BRANCH="swarm/${DRIVER}-${TICKET_ID_SHORT}"
+      CHITIN_REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+      mkdir -p "$(dirname "$WORKTREE_DIR")"
+      if [[ ! -d "$WORKTREE_DIR" ]]; then
+        # Use git worktree add directly — scripts/create-worktree.sh
+        # has extra bootstrap logic we don't need here. If the branch
+        # already exists (re-dispatch case), check it out instead of
+        # erroring on duplicate.
+        git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/main 2>&1 \
+          || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
+      fi
+      cd "$WORKTREE_DIR"
+      # Inline role SKILL.md into the worker's system prompt. Role is
+      # set via ROLE env var (default 'programmer'). Falls back to
+      # no-prefix if the role file is missing. printf %s avoids the
+      # YAML-scanner-breaking multi-line bash string.
       ROLE="${ROLE:-programmer}"
       ROLE_SKILL="$HOME/.openclaw/roles/$ROLE/SKILL.md"
       if [[ -f "$ROLE_SKILL" ]]; then
-        ROLE_HEADER=$(printf '# Worker role: %s\n\n%s\n\n# Ticket\n\n' "$ROLE" "$(cat "$ROLE_SKILL")")
+        ROLE_HEADER=$(printf '# Worker role: %s\n\n%s\n\n' "$ROLE" "$(cat "$ROLE_SKILL")")
       else
         ROLE_HEADER=""
       fi
-      PROMPT="${ROLE_HEADER}Implement the ticket: $TICKET_BODY"
+      # The working-environment header makes the contract concrete:
+      # the worker is already in a worktree on a feature branch; it
+      # must NOT try to create another, push, or open a PR — lobster's
+      # finalize_dispatch step does those. Without these explicit DO
+      # NOTs, frontier LLMs read the role SKILL.md, attempt the full
+      # SDLC, and fail at the create-worktree step (path mismatch) or
+      # the push step (the worker has no GH_TOKEN).
+      ENV_HEADER=$(printf '# Working environment\n\nYou are already in a fresh git worktree at %s on branch %s (based on origin/main).\n\nDO NOT create another worktree or branch — you are in one.\nDO NOT run `git push` or `gh pr create` — lobster handles those after you exit.\n\nYour job: make the code change for the ticket, run any relevant tests, then commit with a clear message referencing %s. Then exit. That is it.\n\n# Ticket %s\n\n' \
+        "$WORKTREE_DIR" "$BRANCH" "$TICKET_ID" "$TICKET_ID")
+      PROMPT="${ROLE_HEADER}${ENV_HEADER}${TICKET_BODY}"
       MODEL=$(jq -r '[.models[]] | sort_by(.premium_cost) | .[0].id' "$CARD_PATH")
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
       ARGS_JSON=$(jq -c --arg model "$MODEL" --arg prompt "$PROMPT" \
