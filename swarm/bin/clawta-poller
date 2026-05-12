@@ -11,17 +11,19 @@ poller existed, nobody owned the polling for those tickets — they sat
 in `ready` forever.
 
 What it does. On each tick:
-  1. Demote any ready ticket whose assignee is NULL or not a terminal
-     lane — these are grooming-step gaps; surfacing them is loud-by-
-     design so they can't pile up silently in `ready` forever.
-  2. SELECT remaining ready tickets WHERE assignee IN {codex, copilot,
-     claude-code, gemini}
-  3. Sequence them via a frontier-LLM call (clawta CLI). The LLM
+  1. Route any ready/todo tickets assigned to the routing lane (clawta)
+     through _pick_driver, reassigning to a terminal lane.
+  2. Demote any remaining ready/todo ticket whose assignee is NULL or
+     not a terminal lane — these are grooming-step gaps; surfacing them
+     is loud-by-design so they can't pile up silently.
+  3. SELECT remaining ready/todo tickets WHERE assignee IN {codex,
+     copilot, claude-code, gemini}
+  4. Sequence them via a frontier-LLM call (openclaw agent). The LLM
      returns: which to dispatch (in order), which to demote back to
      triage (with reason).
-  4. Dispatch top-N via lobster (background). Cap concurrency.
-  5. Demote any flagged-not-ready with `kanban-flow demote`.
-  6. Comment + audit each transition. Kanban remains source of truth.
+  5. Dispatch top-N via lobster (background). Cap concurrency.
+  6. Demote any flagged-not-ready with `kanban-flow demote`.
+  7. Comment + audit each transition. Kanban remains source of truth.
 
 Invocation:
   clawta-poller --once          one tick, print plan, exit
@@ -33,6 +35,7 @@ Configured via env:
   KANBAN_DB                 default: ~/.hermes/kanban/boards/chitin/kanban.db
   POLL_SEC                  default: 120
   TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
+  ROUTING_LANE              assignee for routing-level tickets, default: clawta
   CLAWTA_BIN                default: clawta (must be on PATH)
   KANBAN_FLOW_BIN           default: kanban-flow
 
@@ -67,6 +70,7 @@ TERMINAL_LANES = tuple(
         "TERMINAL_LANES", "codex,copilot,claude-code,gemini"
     ).split(",") if s.strip()
 )
+ROUTING_LANE = os.environ.get("ROUTING_LANE", "clawta")
 CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
 # Direct openclaw client for the sequencer LLM call. The `clawta` wrapper
 # has unanchored regex pattern detection — any prompt containing a
@@ -82,9 +86,15 @@ OPENCLAW_BIN = os.environ.get(
 )
 SEQUENCER_AGENT = os.environ.get("SEQUENCER_AGENT", "clawta")
 KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
+DISPATCHABLE_STATUSES = ("ready", "todo")
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-poller.log"
 DISPATCH_TIMEOUT = int(os.environ.get("DISPATCH_TIMEOUT", "300"))
+PICK_DRIVER = Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"
+INVARIANT_BIN = Path(os.environ.get(
+    "CLAWTA_INVARIANT_BIN",
+    str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
+))
 AUTHOR = "clawta-poller"
 
 
@@ -99,50 +109,254 @@ def log(msg: str) -> None:
         pass
 
 
+
+# ---------------------------------------------------------------------------
+# Invariant repair — recover transient finalize failures before dispatching more
+# ---------------------------------------------------------------------------
+
+def run_invariant_repairs(dry_run: bool) -> dict[str, Any]:
+    if not INVARIANT_BIN.exists():
+        log(f"invariants: missing helper at {INVARIANT_BIN}; skipping")
+        return {"skipped": "missing-helper"}
+    cmd = [str(INVARIANT_BIN)]
+    if dry_run:
+        cmd.append("--dry-run")
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=90
+        )
+    except subprocess.TimeoutExpired:
+        log("invariants: timed out; skipping this tick")
+        return {"error": "timeout"}
+    if result.returncode != 0:
+        log(f"invariants: rc={result.returncode}; stderr={result.stderr[-300:]}")
+        return {"error": f"rc={result.returncode}"}
+    try:
+        parsed = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        log(f"invariants: non-json stdout={result.stdout[-300:]!r}")
+        return {"error": "non-json"}
+    repaired = parsed.get("repaired") or []
+    if repaired:
+        log(f"invariants: repaired {len(repaired)} ticket(s): {repaired}")
+    return parsed
+
+# ---------------------------------------------------------------------------
+# Query helpers
+# ---------------------------------------------------------------------------
+
 def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
-    """Return ready tickets whose assignee is a terminal lane."""
+    """Return ready/todo tickets whose assignee is a terminal lane.
+
+    Hermes' UI has historically used `todo` as the visible ready lane, while
+    clawta-poller originally selected only the internal `ready` status. Treat
+    both as dispatchable so Hermes/Ares promotions cannot strand work.
+    """
     placeholders = ",".join("?" * len(TERMINAL_LANES))
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
             SELECT id, title, body, assignee, priority, created_at
               FROM tasks
-             WHERE status = 'ready'
+             WHERE status IN ({status_placeholders})
                AND assignee IN ({placeholders})
              ORDER BY priority DESC, created_at ASC
             """,
-            TERMINAL_LANES,
+            (*DISPATCHABLE_STATUSES, *TERMINAL_LANES),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_routable() -> list[dict[str, Any]]:
+    """Return ready/todo tickets assigned to the routing lane (clawta by default).
+
+    These tickets need their assignee resolved to a terminal lane via the
+    LLM router (/_pick_driver) before they can be dispatched. The poller
+    routes them and reassigns to the chosen terminal lane.
+    """
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+               AND assignee = ?
+             ORDER BY priority DESC, created_at ASC
+            """,
+            (*DISPATCHABLE_STATUSES, ROUTING_LANE),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def fetch_ungroomed_ready() -> list[dict[str, Any]]:
-    """Return ready tickets that grooming missed — no assignee, or assignee
-    in a non-terminal lane the poller can't dispatch. Hermes is the groomer
-    and is supposed to attach a terminal-lane assignee when promoting
-    triage→ready; tickets that show up here bypassed that step (most often
-    because they were created directly with --status ready instead of going
-    through triage). Demoting them back to triage with a specific reason
-    keeps kanban honest about where work actually stands.
+    """Return ready/todo tickets that grooming missed — no assignee, or assignee
+    in a non-terminal, non-routing lane the poller can't dispatch.
+
+    Hermes is the groomer and is supposed to attach a terminal-lane assignee
+    (or the routing lane) when promoting triage→ready; tickets that show up
+    here bypassed that step (most often because they were created directly
+    with --status ready instead of going through triage). Demoting them back
+    to triage with a specific reason keeps kanban honest about where work
+    actually stands.
+
+    IMPORTANT: tickets assigned to the routing lane (clawta) are NOT
+    considered ungroomed — they go through route_ticket() instead.
     """
     placeholders = ",".join("?" * len(TERMINAL_LANES))
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
             SELECT id, title, assignee, priority, created_at
               FROM tasks
-             WHERE status = 'ready'
+             WHERE status IN ({status_placeholders})
                AND (assignee IS NULL
                     OR assignee = ''
-                    OR assignee NOT IN ({placeholders}))
+                    OR (assignee NOT IN ({placeholders})
+                        AND assignee != ?))
              ORDER BY priority DESC, created_at ASC
             """,
-            TERMINAL_LANES,
+            (*DISPATCHABLE_STATUSES, *TERMINAL_LANES, ROUTING_LANE),
         ).fetchall()
     return [dict(r) for r in rows]
 
+
+# ---------------------------------------------------------------------------
+# Routing step — resolve clawta-assigned tickets to a terminal lane
+# ---------------------------------------------------------------------------
+
+def classify_ticket_for_routing(ticket: dict[str, Any]) -> str:
+    """Classify a routing-lane ticket before passing it to _pick_driver.
+
+    _pick_driver expects a compact classification JSON object. Do not feed it
+    a hard-coded default: that erases the ticket's actual language/scope needs
+    and routes everything as generic medium work.
+    """
+    prompt = f"""Classify this Chitin kanban ticket for worker routing.
+Reply with ONLY a JSON object (no prose, no markdown fences):
+{{
+  "complexity": "low" | "med" | "high",
+  "capabilities": ["go" | "ts" | "python" | "refactor" | "debug" | "review"],
+  "estimated_loc": <integer>,
+  "needs_frontier": <true|false>
+}}
+
+Ticket JSON:
+{json.dumps(ticket, indent=2)}
+"""
+    result = subprocess.run(
+        [OPENCLAW_BIN, "agent", "--agent", SEQUENCER_AGENT, "--message", prompt],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"classification failed rc={result.returncode}: {result.stderr[-300:]}")
+    body = result.stdout or ""
+    match = re.search(r"\{.*\}", body, re.DOTALL)
+    if not match:
+        raise RuntimeError(f"classification returned no JSON: {body[:200]!r}")
+    parsed = json.loads(match.group(0))
+    # Normalize/validate the shape before routing.
+    complexity = str(parsed.get("complexity", "med")).lower()
+    if complexity == "medium":
+        complexity = "med"
+    if complexity not in ("low", "med", "high"):
+        complexity = "med"
+    caps = parsed.get("capabilities")
+    if not isinstance(caps, list):
+        caps = []
+    caps = [str(c) for c in caps if str(c) in {"go", "ts", "python", "refactor", "debug", "review"}]
+    try:
+        estimated_loc = int(parsed.get("estimated_loc", 50))
+    except (TypeError, ValueError):
+        estimated_loc = 50
+    needs_frontier = bool(parsed.get("needs_frontier", complexity == "high"))
+    return json.dumps({
+        "complexity": complexity,
+        "capabilities": caps,
+        "estimated_loc": max(1, estimated_loc),
+        "needs_frontier": needs_frontier,
+    })
+
+
+def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
+    """Route a clawta-assigned ticket through _pick_driver and reassign.
+
+    Returns the chosen terminal-lane assignee, or None on failure.
+    """
+    try:
+        classify_json = classify_ticket_for_routing(ticket)
+        result = subprocess.run(
+            [sys.executable, str(PICK_DRIVER)],
+            input=classify_json,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "ROUTER_MODE": "llm"},
+        )
+        if result.returncode != 0:
+            log(f"route_ticket({ticket['id']}): _pick_driver rc={result.returncode}; skipping")
+            return None
+        pick = json.loads(result.stdout.strip())
+        driver = pick.get("driver")
+        if driver not in TERMINAL_LANES:
+            log(f"route_ticket({ticket['id']}): _pick_driver chose {driver!r}, not a terminal lane; skipping")
+            return None
+        reasoning = pick.get("reasoning", "no reasoning provided")
+        if dry_run:
+            log(f"[dry-run] would route {ticket['id']} -> {driver}: {reasoning[:80]}")
+            return driver
+        # Reassign in kanban. Treat failures as routing failures so the
+        # ticket stays visible for a later retry instead of being counted as
+        # routed when kanban did not actually change.
+        subprocess.run(
+            ["hermes", "kanban", "--board", "chitin", "assign",
+             ticket["id"], driver],
+            timeout=15,
+            check=True,
+        )
+        subprocess.run(
+            ["hermes", "kanban", "--board", "chitin", "comment",
+             ticket["id"], "--author", AUTHOR,
+             f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
+            timeout=15,
+            check=True,
+        )
+        log(f"routed {ticket['id']} {ROUTING_LANE} -> {driver} ({reasoning[:60]})")
+        return driver
+    except Exception as e:
+        log(f"route_ticket({ticket['id']}): routing failed: {e}")
+        return None
+
+
+def route_clawta_assigned(dry_run: bool) -> list[str]:
+    """Route all clawta-assigned tickets through _pick_driver.
+
+    Returns list of ticket IDs that were successfully routed.
+    """
+    routable = fetch_routable()
+    if not routable:
+        return []
+    log(f"tick: {len(routable)} routing-lane ({ROUTING_LANE}) ticket(s) to resolve")
+    routed: list[str] = []
+    for t in routable:
+        driver = route_ticket(t, dry_run)
+        if driver:
+            routed.append(t["id"])
+        else:
+            log(f"tick: {t['id']} routing failed; leaving for next tick")
+    return routed
+
+
+# ---------------------------------------------------------------------------
+# Sequencer — ask LLM which tickets to dispatch and in what order
+# ---------------------------------------------------------------------------
 
 def sequence_with_llm(tickets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ask the frontier LLM how to sequence. Returns a list of action dicts.
@@ -257,6 +471,10 @@ Rules:
     return cleaned_dispatch + cleaned_demote
 
 
+# ---------------------------------------------------------------------------
+# Dispatch + demote actions
+# ---------------------------------------------------------------------------
+
 def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
     """Flip ready→in_progress, then spawn clawta dispatch in background."""
     if dry_run:
@@ -290,7 +508,7 @@ def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -
     except FileNotFoundError as e:
         log(f"dispatch_ticket({ticket_id}): clawta binary not found: {e}")
         return False
-    log(f"dispatched {ticket_id} → {assignee} (log: {log_path})")
+    log(f"dispatched {ticket_id} -> {assignee} (log: {log_path})")
     return True
 
 
@@ -311,13 +529,17 @@ def demote_ticket(ticket_id: str, reason: str, dry_run: bool) -> bool:
 
 
 def demote_ungroomed(dry_run: bool) -> list[str]:
-    """Demote any ready ticket whose assignee isn't a terminal lane.
+    """Demote any ready/todo ticket whose assignee isn't a terminal lane
+    and isn't the routing lane.
 
-    Hermes is the groomer; clawta is the enforcer. A ticket in `ready` with
-    no terminal-lane assignee is a grooming-step output we can't act on, so
-    we surface the gap by sending it back to triage with a comment that
-    names the exact missing piece. This is loud-by-design — better a noisy
-    triage backlog than tickets silently aging in `ready`.
+    Hermes is the groomer; clawta is the enforcer. A ticket in `ready` or
+    `todo` with no dispatchable assignee is a grooming-step output we can't
+    act on, so we surface the gap by sending it back to triage with a comment
+    that names the exact missing piece. This is loud-by-design — better a
+    noisy triage backlog than tickets silently aging in `ready`.
+
+    Tickets assigned to the routing lane (clawta) are NOT demoted — they
+    go through route_clawta_assigned() instead.
     """
     ungroomed = fetch_ungroomed_ready()
     if not ungroomed:
@@ -330,7 +552,8 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
         if not t["assignee"]:
             reason = (
                 f"missing assignee — grooming step must route to a terminal "
-                f"lane ({lanes}) before clawta-poller can dispatch"
+                f"lane ({lanes}) or the routing lane ({ROUTING_LANE}) before "
+                f"clawta-poller can dispatch"
             )
         else:
             reason = (
@@ -342,13 +565,25 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     return demoted
 
 
+# ---------------------------------------------------------------------------
+# Main tick loop
+# ---------------------------------------------------------------------------
+
 def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
+    # Step 0: Self-heal safe board/finalize invariants before starting new work
+    invariants = run_invariant_repairs(dry_run)
+
+    # Step 1: Route clawta-assigned tickets through _pick_driver
+    routed = route_clawta_assigned(dry_run)
+
+    # Step 2: Demote ungroomed tickets (no assignee or non-dispatchable)
     ungroomed_demoted = demote_ungroomed(dry_run)
 
+    # Step 3: Fetch tickets ready for dispatch (terminal-lane assigned)
     queue = fetch_ready_for_terminal_lanes()
     if not queue:
         log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
-        return {"dispatched": [], "demoted": ungroomed_demoted, "queue_size": 0}
+        return {"dispatched": [], "demoted": ungroomed_demoted, "routed": routed, "invariants": invariants, "queue_size": 0}
 
     log(f"tick: {len(queue)} ready tickets in terminal lanes")
     plan = sequence_with_llm(queue)
@@ -370,7 +605,7 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
             if demote_ticket(tid, action["reason"], dry_run):
                 demoted.append(tid)
 
-    return {"dispatched": dispatched, "demoted": demoted, "queue_size": len(queue)}
+    return {"dispatched": dispatched, "demoted": demoted, "routed": routed, "invariants": invariants, "queue_size": len(queue)}
 
 
 def main() -> int:
@@ -397,7 +632,7 @@ def main() -> int:
         return 0
 
     if args.loop:
-        log(f"loop start (poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)})")
+        log(f"loop start (poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lane={ROUTING_LANE})")
         while True:
             try:
                 tick(args.max_dispatch, dry_run=False)

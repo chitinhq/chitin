@@ -17,7 +17,7 @@
 #
 # Usage:
 #   kanban-flow start <id> [--author NAME] [--worktree PATH]
-#       triage|ready → in_progress. Comments "picking up at <ts>".
+#       triage|todo|ready → in_progress. Comments "picking up at <ts>".
 #
 #   kanban-flow pr <id> <pr-url> [--author NAME]
 #       in_progress stays. Comments with PR url + emits pr_opened event.
@@ -29,7 +29,7 @@
 #       blocked → ready.
 #
 #   kanban-flow demote <id> <reason...> [--author NAME]
-#       ready → triage. Comments with reason. Used by clawta when a
+#       ready|todo → triage. Comments with reason. Used by clawta when a
 #       ticket isn't actually ready to dispatch.
 #
 #   kanban-flow done <id> --result "<summary>" [--author NAME]
@@ -124,7 +124,7 @@ case "$cmd" in
   start)
     parse_flags "$@"
     id="${REST[0]:-}"; require_id "$id"
-    assert_status "$id" triage ready in_progress
+    assert_status "$id" triage todo ready in_progress
     from="$(ticket_status "$id")"
     body="Picking up at $(date -Iseconds)"
     [[ -n "$worktree" ]] && body="$body — worktree: $worktree"
@@ -178,11 +178,12 @@ case "$cmd" in
     id="${REST[0]:-}"; require_id "$id"
     reason="${REST[*]:1}"
     [[ -n "$reason" ]] || die "missing reason"
-    assert_status "$id" ready
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Demoted ready→triage: $reason" >/dev/null
+    assert_status "$id" ready todo
+    from="$(ticket_status "$id")"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Demoted ${from}→triage: $reason" >/dev/null
     flip_status "$id" triage 0 0
-    emit_transition "$id" ready triage "$author"
-    echo "$id: ready → triage ($reason)"
+    emit_transition "$id" "$from" triage "$author"
+    echo "$id: $from → triage ($reason)"
     ;;
   ready)
     parse_flags "$@"
