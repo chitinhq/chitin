@@ -1,46 +1,44 @@
-"""Template for no-shell-sudo. Proposes allow for known-safe commands or test envs."""
+"""Research template for no-shell-sudo. Never proposes sudo allow rules."""
 from __future__ import annotations
 from typing import Optional
 import re
 from analysis.templates import register
 from analysis.models import Pattern, PredictedImpact, RuleDraft
 
-SAFE_COMMANDS = [
+PACKAGE_INSTALL_COMMANDS = [
     re.compile(r"sudo\s+(apt-get install|yum install|dnf install|apk add)\s+")
 ]
 
-def _matches_safe(target: str) -> bool:
+def _matches_package_install(target: str) -> bool:
     if not target:
         return False
-    return any(p.search(target) for p in SAFE_COMMANDS)
+    return any(p.search(target) for p in PACKAGE_INSTALL_COMMANDS)
 
 def draft(pattern: Pattern) -> Optional[RuleDraft]:
     if not pattern.decisions:
         return None
-    safe_count = sum(1 for d in pattern.decisions if _matches_safe(d.action_target or ""))
-    if safe_count == 0:
-        return None
-    rule_yaml = (
-        "# Insert ABOVE the existing no-shell-sudo rule in chitin.yaml.\n"
-        "- id: no-shell-sudo-safe-commands\n"
-        "  action: shell.exec\n"
-        "  effect: allow\n"
-        "  target_regex: 'sudo (apt-get install|yum install|dnf install|apk add) '"\n"
-        "  reason: 'sudo allowed for known-safe install commands (analysis-suggested)'\n"
+    install_count = sum(
+        1 for d in pattern.decisions
+        if _matches_package_install(d.action_target or "")
     )
+    if install_count == 0:
+        return None
     impact = PredictedImpact(
         samples_evaluated=pattern.count,
-        would_allow=safe_count,
-        would_still_deny=pattern.count - safe_count,
-        method="regex-match-on-action_target",
+        would_allow=0,
+        would_still_deny=pattern.count,
+        method="diagnostic-only-package-install-match",
     )
     return RuleDraft(
-        kind="heuristic",
+        kind="research-prompt",
         template="no_shell_sudo",
-        confidence="medium",
-        rule_yaml=rule_yaml,
+        confidence="high",
+        rule_yaml="",
         predicted_impact=impact,
-        notes="Proposes exemption for sudo install commands only.",
+        notes=(
+            "Observed sudo package-install denies. Do not auto-allow privileged "
+            "system mutation; operator should review package, host, and task context."
+        ),
     )
 
 register("no-shell-sudo", draft)
