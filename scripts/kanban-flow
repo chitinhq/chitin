@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# kanban-flow — lifecycle helper for the swarm SDLC.
+#
+# The Hermes kanban CLI exposes assign/comment/complete but not the
+# in_progress / code_review / blocked transitions a real SDLC needs.
+# This wrapper fills the gap: every command does the status flip AND
+# the matching audit comment AND a task_events row.
+#
+# Usage:
+#   kanban-flow start <id> [--author NAME] [--worktree PATH]
+#       triage|ready → in_progress. Comments "picking up at <ts>".
+#
+#   kanban-flow pr <id> <pr-url> [--author NAME]
+#       in_progress → code_review. Comments with PR url.
+#
+#   kanban-flow review <id> <verdict> [--author NAME]
+#       code_review → in_progress (verdict=changes) or code_review → done (verdict=approved).
+#
+#   kanban-flow block <id> <reason...> [--author NAME]
+#       any → blocked. Comments with reason.
+#
+#   kanban-flow unblock <id> [--author NAME]
+#       blocked → ready.
+#
+#   kanban-flow demote <id> <reason...> [--author NAME]
+#       ready → triage. Comments with reason. Used by clawta when a
+#       ticket isn't actually ready to dispatch.
+#
+#   kanban-flow done <id> --result "<summary>" [--author NAME]
+#       code_review|in_progress → done. Comments with result.
+#
+#   kanban-flow status <id>
+#       Print current status + last 5 transition comments.
+#
+# Audit invariant: every status change emits both a task_comment AND a
+# task_events row. Read either to reconstruct the lifecycle.
+
+set -euo pipefail
+
+DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/chitin/kanban.db}"
+BOARD="${KANBAN_BOARD:-chitin}"
+AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
+
+die() { echo "kanban-flow: $*" >&2; exit 2; }
+
+usage() {
+  sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//; /^set -euo/d'
+}
+
+require_id() {
+  [[ "${1:-}" =~ ^t_[a-f0-9]+$ ]] || die "expected ticket id (t_XXXXXXXX), got: ${1:-<empty>}"
+}
+
+ticket_status() {
+  local id="$1"
+  sqlite3 "$DB" "SELECT status FROM tasks WHERE id='$id'"
+}
+
+assert_status() {
+  local id="$1"; shift
+  local cur; cur="$(ticket_status "$id")"
+  for s in "$@"; do
+    [[ "$cur" == "$s" ]] && return 0
+  done
+  die "$id status is '$cur'; expected one of: $*"
+}
+
+emit_transition() {
+  # Args: id from to author [extra_json]
+  # Uses parameterized SQL via sqlite3's -cmd .parameter to avoid
+  # quoting issues with the JSON extra payload.
+  local id="$1" from="$2" to="$3" author="$4" payload_extra="${5:-{\}}"
+  local now; now="$(date +%s)"
+  sqlite3 "$DB" \
+    -cmd ".parameter set :id '$id'" \
+    -cmd ".parameter set :from '$from'" \
+    -cmd ".parameter set :to '$to'" \
+    -cmd ".parameter set :by '$author'" \
+    -cmd ".parameter set :extra '$payload_extra'" \
+    -cmd ".parameter set :now $now" \
+    "INSERT INTO task_events (task_id, kind, payload, created_at) \
+     VALUES (:id, 'status_transition', \
+             json_object('from', :from, 'to', :to, 'by', :by, 'extra', json(:extra)), \
+             :now);"
+}
+
+flip_status() {
+  local id="$1" to="$2" set_started="${3:-0}" set_completed="${4:-0}"
+  local now; now="$(date +%s)"
+  local fields="status='$to'"
+  [[ "$set_started" -eq 1 ]] && fields="$fields, started_at=COALESCE(started_at, $now)"
+  [[ "$set_completed" -eq 1 ]] && fields="$fields, completed_at=$now"
+  sqlite3 "$DB" "UPDATE tasks SET $fields WHERE id='$id'"
+}
+
+cmd=${1:-}; shift || die "missing command (see kanban-flow --help)"
+case "$cmd" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+# Parse common flags
+author="$AUTHOR_DEFAULT"
+worktree=""
+parse_flags() {
+  local rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --author) author="$2"; shift 2 ;;
+      --worktree) worktree="$2"; shift 2 ;;
+      --result) result="$2"; shift 2 ;;
+      *) rest+=("$1"); shift ;;
+    esac
+  done
+  REST=("${rest[@]+"${rest[@]}"}")
+}
+
+case "$cmd" in
+  start)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    assert_status "$id" triage ready in_progress
+    from="$(ticket_status "$id")"
+    body="Picking up at $(date -Iseconds)"
+    [[ -n "$worktree" ]] && body="$body — worktree: $worktree"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null
+    flip_status "$id" in_progress 1 0
+    emit_transition "$id" "$from" in_progress "$author"
+    echo "$id: $from → in_progress"
+    ;;
+  pr)
+    parse_flags "$@"
+    id="${REST[0]:-}"; url="${REST[1]:-}"; require_id "$id"
+    [[ -n "$url" ]] || die "missing PR url"
+    assert_status "$id" in_progress
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "PR opened: $url" >/dev/null
+    flip_status "$id" code_review 0 0
+    emit_transition "$id" in_progress code_review "$author" "$(printf '{"pr_url":"%s"}' "$url")"
+    echo "$id: in_progress → code_review ($url)"
+    ;;
+  review)
+    parse_flags "$@"
+    id="${REST[0]:-}"; verdict="${REST[1]:-}"; require_id "$id"
+    [[ -n "$verdict" ]] || die "missing verdict (approved|changes)"
+    assert_status "$id" code_review
+    if [[ "$verdict" == approved ]]; then
+      hermes kanban --board "$BOARD" comment "$id" --author "$author" "Review: APPROVED" >/dev/null
+      flip_status "$id" done 0 1
+      emit_transition "$id" code_review done "$author"
+      echo "$id: code_review → done (approved)"
+    elif [[ "$verdict" == changes ]]; then
+      hermes kanban --board "$BOARD" comment "$id" --author "$author" "Review: changes requested — back to in_progress" >/dev/null
+      flip_status "$id" in_progress 0 0
+      emit_transition "$id" code_review in_progress "$author"
+      echo "$id: code_review → in_progress (changes requested)"
+    else
+      die "verdict must be 'approved' or 'changes', got: $verdict"
+    fi
+    ;;
+  block)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    reason="${REST[*]:1}"
+    [[ -n "$reason" ]] || die "missing reason"
+    from="$(ticket_status "$id")"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Blocked: $reason" >/dev/null
+    flip_status "$id" blocked 0 0
+    emit_transition "$id" "$from" blocked "$author"
+    echo "$id: $from → blocked ($reason)"
+    ;;
+  unblock)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    assert_status "$id" blocked
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Unblocked at $(date -Iseconds)" >/dev/null
+    flip_status "$id" ready 0 0
+    emit_transition "$id" blocked ready "$author"
+    echo "$id: blocked → ready"
+    ;;
+  demote)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    reason="${REST[*]:1}"
+    [[ -n "$reason" ]] || die "missing reason"
+    assert_status "$id" ready
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Demoted ready→triage: $reason" >/dev/null
+    flip_status "$id" triage 0 0
+    emit_transition "$id" ready triage "$author"
+    echo "$id: ready → triage ($reason)"
+    ;;
+  ready)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    from="$(ticket_status "$id")"
+    [[ "$from" == triage || "$from" == blocked ]] || die "$id is in '$from'; can only mark ready from triage|blocked"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
+    flip_status "$id" ready 0 0
+    emit_transition "$id" "$from" ready "$author"
+    echo "$id: $from → ready"
+    ;;
+  done)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    [[ -n "${result:-}" ]] || die "missing --result"
+    from="$(ticket_status "$id")"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Done: $result" >/dev/null
+    flip_status "$id" done 0 1
+    sqlite3 "$DB" "UPDATE tasks SET result='$(echo "$result" | sed "s/'/''/g")' WHERE id='$id'"
+    emit_transition "$id" "$from" done "$author"
+    echo "$id: $from → done"
+    ;;
+  status)
+    id="${1:-}"; require_id "$id"
+    cur="$(ticket_status "$id")"
+    echo "$id: $cur"
+    echo "Last 5 transitions:"
+    sqlite3 "$DB" "SELECT datetime(created_at,'unixepoch','localtime'), kind, payload FROM task_events WHERE task_id='$id' AND kind='status_transition' ORDER BY id DESC LIMIT 5"
+    ;;
+  *)
+    die "unknown command: $cmd (try kanban-flow --help)"
+    ;;
+esac
