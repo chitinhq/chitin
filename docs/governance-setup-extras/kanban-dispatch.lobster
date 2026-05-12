@@ -71,16 +71,22 @@ steps:
   # on an upstream `llm-task` tool that isn't registered in the gateway.
   #
   # Uses $fetch_ticket.stdout (UNBRACED) — see header for syntax rules.
+  # NOTE: ticket body inlined directly into a shell-quoted string breaks
+  # parsing the moment the ticket JSON contains embedded double quotes
+  # (which it always does). Read via stdin + variable assignment inside
+  # a bash heredoc so the JSON never touches the shell parser as a
+  # literal. Same pattern as spawn_worker.
   - id: classify
     description: Classify ticket via clawta (glm-agent on glm-5.1:cloud)
-    run: >
-      clawta --text "Classify this ticket and reply with ONLY a JSON
-      object (no prose, no markdown fences):
-      {\"complexity\": \"low\" | \"med\" | \"high\",
-       \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"],
-       \"estimated_loc\": <integer>,
-       \"needs_frontier\": <true|false>}.
-      Ticket JSON: $fetch_ticket.stdout"
+    run: |
+      bash -c "$(cat <<'BASH_SCRIPT'
+      set -euo pipefail
+      TICKET=$(cat)
+      PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
+      clawta --text "$PROMPT"
+      BASH_SCRIPT
+      )"
+    stdin: $fetch_ticket.stdout
 
   # ─────────────────────────────────────────────────────────────────────
   # 3. Pick driver by matching classify output against agent capability cards
@@ -120,10 +126,18 @@ steps:
   # ─────────────────────────────────────────────────────────────────────
   # 6. Comment on the ticket for audit (which driver, why)
   # ─────────────────────────────────────────────────────────────────────
-  # Uses ${ticket_id} (arg) + $pick_driver.json.* (UNBRACED step refs).
+  # Uses ${ticket_id} (arg) + $pick_driver.json.driver / .complexity
+  # (UNBRACED step refs). NOTE: do NOT inline JSON-array fields like
+  # $pick_driver.json.caps_needed into shell-quoted strings — Lobster
+  # substitutes the raw JSON value (with embedded double quotes) which
+  # breaks shell parsing (dash: "Syntax error: \"(\" unexpected").
+  # Capabilities are recoverable from the pick_driver step's chain
+  # event metadata; no need to repeat them in the announce message.
   - id: audit_comment
-    description: Comment on the ticket so the routing decision is durable on the board
-    run: 'hermes kanban --board chitin comment ${ticket_id} --author clawta "Dispatched to $pick_driver.json.driver (classified $pick_driver.json.complexity complexity, capabilities $pick_driver.json.caps_needed) via kanban-dispatch workflow."'
+    description: Announce dispatch on kanban + broadcast to Clawta's Discord channel
+    run: |
+      hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
+      openclaw message send --channel discord --account default --text "🦞 Starting ${ticket_id} to $pick_driver.json.driver | complexity $pick_driver.json.complexity" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
   # 7. Spawn the picked frontier-coder CLI as a worker.
@@ -204,6 +218,64 @@ steps:
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 8. Finalize — push branch, open PR, comment back to kanban + Discord.
+  #
+  # Runs after spawn_worker returns (leaf CLI exited). Locates the swarm
+  # worktree by ticket id, detects the feature branch the worker committed
+  # to, pushes it, opens a PR via gh, and announces the result on both
+  # surfaces. Every external call is `|| true` so a single failure (gh
+  # rate-limit, missing GH_TOKEN, etc.) never leaves the ticket without
+  # a final status comment — kanban comment is the load-bearing record.
+  # ─────────────────────────────────────────────────────────────────────
+  - id: finalize_dispatch
+    description: Push branch, open PR, comment + broadcast outcome
+    run: |
+      bash -c "$(cat <<'BASH_SCRIPT'
+      set -uo pipefail  # NOT -e: each step below is best-effort
+      DRIVER='$pick_driver.json.driver'
+      # Locate the most recent swarm worktree for this ticket. Pattern is
+      # ~/.cache/chitin/swarm-worktrees/swarm-<slug>-${ticket_id}/ — the
+      # leaf CLI creates it, slug varies by ticket title. Newest match wins
+      # if the worker re-tried.
+      WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/swarm-*-${ticket_id}*/ 2>/dev/null | head -1)
+      if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
+        MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
+        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      cd "$WORKTREE"
+      BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
+        MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
+        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      # Push (idempotent — git push on already-up-to-date is fine).
+      git push -u origin "$BRANCH" 2>&1 | tail -3 || true
+      # Open PR. Reuse if one already exists for this head.
+      EXISTING=$(gh pr list --head "$BRANCH" --json url --jq '.[0].url // empty' 2>/dev/null || echo "")
+      if [[ -n "$EXISTING" ]]; then
+        PR_URL="$EXISTING"
+      else
+        # gh pr create outputs the URL on success. Capture last line.
+        PR_URL=$(gh pr create \
+          --title "$(git log -1 --pretty=%s)" \
+          --body "Closes ticket ${ticket_id} (dispatched via clawta to $DRIVER). Auto-opened by kanban-dispatch.lobster finalize step. Branch $BRANCH." \
+          2>&1 | grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' | head -1 || echo "")
+      fi
+      if [[ -z "$PR_URL" ]]; then
+        MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed."
+      else
+        MSG="🦞 ${ticket_id}: done. Branch: $BRANCH. PR: $PR_URL"
+      fi
+      hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+      openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+      BASH_SCRIPT
+      )"
 
 # Future steps to add as we layer in:
 #   8. monitor PR / status (resumable poll)
