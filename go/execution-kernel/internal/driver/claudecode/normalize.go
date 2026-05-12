@@ -26,10 +26,11 @@ const mcpToolPrefix = "mcp__"
 // a 4-way split.
 //
 // Returns:
-//   ("server", "tool", true)  for "mcp__server__tool"
-//   ("server", "",     true)  for "mcp__server" (server-only call;
-//                              policy can still match on server)
-//   ("",       "",     false) for inputs without the mcp__ prefix
+//
+//	("server", "tool", true)  for "mcp__server__tool"
+//	("server", "",     true)  for "mcp__server" (server-only call;
+//	                           policy can still match on server)
+//	("",       "",     false) for inputs without the mcp__ prefix
 func parseMCPToolName(s string) (server, tool string, ok bool) {
 	if !strings.HasPrefix(s, mcpToolPrefix) {
 		return "", "", false
@@ -88,6 +89,10 @@ func SetWarnSink(w io.Writer) { warnSink = w }
 //	Glob, Grep, LS                      → file.read (browse-shaped, default-allow)
 //	TodoWrite                           → file.write target="todo"
 //	                                      (matches existing gov.Normalize convention)
+//	lowercase generic leak fallback     → re-normalized via gov.Normalize
+//	                                      for proven cross-driver leaks
+//	                                      like `read` and `exec`; warning
+//	                                      emitted so wiring gets fixed
 //	<unknown>                           → ActUnknown (fail-closed at policy)
 //
 // Issue #69: closed-enum coverage gap. Pre-fix, modern Claude Code
@@ -319,6 +324,15 @@ func Normalize(in HookInput) (gov.Action, error) {
 		}, nil
 	}
 
+	// Cross-driver leak detection: a few lowercase generic/openclaw-style
+	// tool names have shown up on the Claude hook in real chain rows
+	// (`read`, `exec`). Re-normalize via the shared gov layer so policy
+	// attribution stays correct (file.read vs rm-rf vs git push), and warn
+	// so the upstream dispatcher mis-route remains visible to the operator.
+	if a, ok := normalizeGenericLeak(in); ok {
+		return a, nil
+	}
+
 	// Forward-compat: future Claude Code tools we haven't seen go through
 	// as ActUnknown. Policy default-deny will reject them unless the
 	// operator adds a rule — fail-closed behavior.
@@ -328,6 +342,26 @@ func Normalize(in HookInput) (gov.Action, error) {
 		Path:   in.Cwd,
 		Params: in.ToolInput,
 	}, nil
+}
+
+func normalizeGenericLeak(in HookInput) (gov.Action, bool) {
+	switch in.ToolName {
+	case "read", "exec":
+	default:
+		return gov.Action{}, false
+	}
+
+	a, err := gov.Normalize(in.ToolName, in.ToolInput)
+	if err != nil || a.Type == gov.ActUnknown {
+		return gov.Action{}, false
+	}
+	a.Path = in.Cwd
+	if warnSink != nil {
+		fmt.Fprintf(warnSink,
+			"{\"warning\":\"cross_driver_tool_name\",\"driver\":\"claude-code\",\"tool\":%q,\"hint\":\"upstream dispatcher routed a generic/openclaw-style tool name to the claude-code hook; re-normalized via gov.Normalize so policy attribution is correct, but the wiring should be fixed\"}\n",
+			in.ToolName)
+	}
+	return a, true
 }
 
 // stringField extracts a string field from a tool_input map. Three
