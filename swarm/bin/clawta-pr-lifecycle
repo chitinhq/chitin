@@ -233,11 +233,12 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
 
 def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
     marker = f"{LIFECYCLE_MARKER} kind=ready-to-merge head={item['head']} -->"
+    auto_text = "yes" if item.get("auto_merge_ready") else "no"
     msg = (
         f"{marker}\n"
-        f"🦞 Lifecycle: PR #{item['pr']} is ready to merge. "
-        f"Review={item['review']}, checks={item['checks']}, ticket={item.get('ticket') or 'unknown'}. "
-        "Autonomous merge may follow if policy gates remain satisfied."
+        f"🦞 Lifecycle: PR #{item['pr']} is ready for operator review/merge. "
+        f"Review={item['review']}, checks={item['checks']}, ticket={item.get('ticket') or 'unknown'}, "
+        f"auto-merge-eligible={auto_text}."
     )
     if not apply:
         return
