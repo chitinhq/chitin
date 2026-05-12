@@ -8,7 +8,10 @@ Responsibilities, deliberately gated:
 - when a PR is already merged, mark its kanban ticket done
 - report cleanup candidates without deleting worktrees
 
-No merge operation is performed by this script. Merging remains operator-gated.
+By default, no merge operation is performed. With --auto-merge, the script
+squash-merges only PRs that are green, mergeable, and have a current-head
+non-blocking Clawta review. Failing checks, conflicts, drafts, stale reviews,
+and REQUEST_CHANGES are never merged.
 """
 
 from __future__ import annotations
@@ -154,8 +157,17 @@ def checks_state(pr_number: int) -> str:
     return "unknown"
 
 
-def is_review_nonblocking(review: dict[str, str] | None, head: str) -> bool:
+def review_matches_head(review: dict[str, str] | None, head: str) -> bool:
     if review is None:
+        return False
+    reviewed_head = review.get("head") or ""
+    return bool(reviewed_head and head and head.startswith(reviewed_head))
+
+
+def is_review_nonblocking(review: dict[str, str] | None, head: str, *, require_current_head: bool = False) -> bool:
+    if review is None:
+        return False
+    if require_current_head and not review_matches_head(review, head):
         return False
     if review.get("head") and head and not head.startswith(review["head"]):
         return False
@@ -175,16 +187,17 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
     ticket = infer_ticket(pr, comments_)
     status = ticket_status(ticket)
     merged = pr.get("state") == "MERGED" or bool(pr.get("mergedAt"))
-    ready = (
+    base_ready = (
         pr.get("state") == "OPEN"
         and not pr.get("isDraft")
         and pr.get("mergeable") == "MERGEABLE"
         and check_state in {"pass", "none", "unknown"}
         and is_review_nonblocking(review, head)
     )
+    auto_merge_ready = base_ready and check_state == "pass" and is_review_nonblocking(review, head, require_current_head=True)
     if merged:
         action = "mark-done" if ticket and status != "done" else "merged-noop"
-    elif ready:
+    elif base_ready:
         action = "ready-to-merge"
     elif pr.get("mergeable") == "CONFLICTING":
         action = "needs-rebase"
@@ -203,6 +216,8 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
         "mergeable": pr.get("mergeable"),
         "checks": check_state,
         "review": review.get("verdict") if review else "none",
+        "review_current_head": review_matches_head(review, head),
+        "auto_merge_ready": auto_merge_ready,
         "action": action,
     }
 
@@ -213,7 +228,7 @@ def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
         f"{marker}\n"
         f"🦞 Lifecycle: PR #{item['pr']} is ready to merge. "
         f"Review={item['review']}, checks={item['checks']}, ticket={item.get('ticket') or 'unknown'}. "
-        "No auto-merge performed."
+        "Autonomous merge may follow if policy gates remain satisfied."
     )
     if not apply:
         return
@@ -232,30 +247,53 @@ def mark_done(item: dict[str, Any], apply: bool) -> None:
     run(["kanban-flow", "done", item["ticket"], "--result", result, "--author", AUTHOR], timeout=30, check=True)
 
 
-def run_once(prefixes: tuple[str, ...], apply: bool) -> dict[str, Any]:
+def merge_pr(item: dict[str, Any], apply: bool) -> None:
+    if not item.get("auto_merge_ready"):
+        raise RuntimeError(f"PR #{item['pr']} does not satisfy auto-merge gates")
+    if not apply:
+        return
+    run([
+        "gh", "pr", "merge", item["pr"], "--repo", REPO,
+        "--squash", "--delete-branch",
+        "--subject", f"{item['branch']} (#{item['pr']})",
+    ], timeout=120, check=True)
+
+
+def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for pr in list_prs(prefixes):
         cs = comments(int(pr["number"]))
         item = classify(pr, cs)
-        if item["action"] == "ready-to-merge" and not has_lifecycle_marker(cs, "ready-to-merge", item["head"]):
-            post_ready_marker(item, apply)
-            item["applied"] = "ready-marker" if apply else "would-ready-marker"
-        elif item["action"] == "mark-done":
-            mark_done(item, apply)
-            item["applied"] = "done" if apply else "would-done"
-        else:
-            item["applied"] = "noop"
+        try:
+            if item["action"] == "ready-to-merge" and not has_lifecycle_marker(cs, "ready-to-merge", item["head"]):
+                post_ready_marker(item, apply)
+                item["applied"] = "ready-marker" if apply else "would-ready-marker"
+            else:
+                item["applied"] = "noop"
+            if auto_merge and item.get("auto_merge_ready"):
+                merge_pr(item, apply)
+                item["applied"] = "merged" if apply else "would-merge"
+            elif item["action"] == "mark-done":
+                mark_done(item, apply)
+                item["applied"] = "done" if apply else "would-done"
+        except Exception as e:
+            item["applied"] = "error"
+            item["error"] = str(e)[-500:]
+            log(f"PR #{item['pr']}: lifecycle action failed: {e}")
         items.append(item)
     cleanup_candidates = [i for i in items if i["state"] == "MERGED" and i.get("branch")]
-    return {"apply": apply, "items": items, "cleanup_candidates": cleanup_candidates}
+    return {"apply": apply, "auto_merge": auto_merge, "items": items, "cleanup_candidates": cleanup_candidates}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates; never merges")
+    ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates")
+    ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
     ap.add_argument("--prefix", action="append")
     args = ap.parse_args()
-    result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply)
+    if args.auto_merge and not args.apply:
+        ap.error("--auto-merge requires --apply")
+    result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply, args.auto_merge)
     print(json.dumps(result, indent=2))
     return 0
 
