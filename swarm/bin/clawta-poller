@@ -80,7 +80,7 @@ CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
 OPENCLAW_BIN = os.environ.get(
     "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
 )
-SEQUENCER_AGENT = os.environ.get("SEQUENCER_AGENT", "glm-agent")
+SEQUENCER_AGENT = os.environ.get("SEQUENCER_AGENT", "clawta")
 KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-poller.log"

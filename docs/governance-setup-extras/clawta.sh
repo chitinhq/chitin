@@ -22,7 +22,7 @@
 set -euo pipefail
 
 OPENCLAW_BIN="/home/red/.vite-plus/bin/openclaw"
-AGENT="glm-agent"
+AGENT="clawta"
 FORMAT="json"
 LOBSTER_WORKFLOW="${LOBSTER_WORKFLOW:-$HOME/.openclaw/workflows/kanban-dispatch.lobster}"
 LOBSTER_REPO="${LOBSTER_REPO:-$HOME/workspace/chitin}"
