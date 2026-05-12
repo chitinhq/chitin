@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""swarm-audit — operator-controlled daily audit of the chitin swarm.
+
+Reads the previous 24h of:
+  - chain ledger (~/.chitin/gov-decisions-*.jsonl) — denials, unknown
+    actions, governance gaps
+  - kanban (~/.hermes/kanban/.../kanban.db) — stale in_progress,
+    grooming-gap demotes, completions
+  - GitHub PRs — opened, merged, with review state
+  - Clawta autonomous activity — cron run history, invariants repairs,
+    PR-reviewer comments, direct-to-main commits
+
+Composes a structured facts blob, prompts a frontier model via openclaw
+to summarize into AT MOST 5 actionable bullets each tagged
+[fix-now]/[verify]/[watch]/[ok], and posts via Discord if a channel is
+configured.
+
+Intended for cron — run daily ~8am ET before the operator's day starts.
+
+Env:
+  SWARM_AUDIT_DISCORD_CHANNEL  Discord channel id to post the summary
+                               (omit to print to stdout only)
+  SWARM_AUDIT_AGENT            openclaw agent to call (default: clawta)
+  KANBAN_DB                    kanban sqlite path
+  CHITIN_LEDGER_DIR            ~/.chitin/ override
+  GITHUB_REPOSITORY            default: chitinhq/chitin
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from collections import Counter
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any
+
+DB_PATH = Path(
+    os.environ.get(
+        "KANBAN_DB",
+        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
+    )
+)
+LEDGER_DIR = Path(os.environ.get("CHITIN_LEDGER_DIR", str(Path.home() / ".chitin")))
+REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+DISCORD_CHANNEL = os.environ.get("SWARM_AUDIT_DISCORD_CHANNEL", "")
+AGENT = os.environ.get("SWARM_AUDIT_AGENT", "clawta")
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
+)
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "swarm-audit.log"
+
+
+def log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def iter_ledger_rows_since(cutoff_iso: str):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    for date in (yesterday, today):
+        p = LEDGER_DIR / f"gov-decisions-{date}.jsonl"
+        if not p.exists():
+            continue
+        with p.open() as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    if row.get("ts", "") >= cutoff_iso:
+                        yield row
+                except json.JSONDecodeError:
+                    continue
+
+
+def gather_chain_facts(cutoff_iso: str) -> dict[str, Any]:
+    denial_buckets: Counter[tuple[str, str, str]] = Counter()
+    unknown_actions: Counter[str] = Counter()
+    protected_branch_writes: list[dict[str, str]] = []
+    clawta_spawn_count = 0
+    total_rows = 0
+
+    for row in iter_ledger_rows_since(cutoff_iso):
+        total_rows += 1
+        agent = row.get("agent", "-")
+        action = row.get("action_type", "-")
+        target = row.get("action_target", "") or ""
+        allowed = row.get("allowed", True)
+        rule = row.get("rule_id", "")
+
+        if not allowed:
+            denial_buckets[(rule, action, agent)] += 1
+        # protected-branch detector — agent-only (operator is excluded);
+        # match `git commit` (not `git reset/diff/log/...`), exclude
+        # immediately-followed `git checkout -b` patterns (the safe form).
+        # This is intentionally heuristic: chain rows don't carry HEAD
+        # state, so we can't be exact. Tune via false-positives observed.
+        if (
+            action == "shell.exec"
+            and agent in ("clawta", "codex", "copilot", "gemini")
+            and "git commit" in target
+            and "checkout -b" not in target
+        ):
+            head_hint = target[:160]
+            protected_branch_writes.append(
+                {"agent": agent, "target": head_hint, "ts": row.get("ts", "?")}
+            )
+        if rule == "" and action == "unknown":
+            unknown_actions[target[:80]] += 1
+        if agent == "clawta" and "clawta-spawn-marker" in target:
+            clawta_spawn_count += 1
+
+    return {
+        "total_rows": total_rows,
+        "top_denials": [
+            {"rule": r, "action": a, "agent": ag, "count": c}
+            for (r, a, ag), c in denial_buckets.most_common(8)
+        ],
+        "unknown_action_targets": [
+            {"target": t, "count": c} for t, c in unknown_actions.most_common(5)
+        ],
+        "protected_branch_writes": protected_branch_writes[:5],
+        "clawta_spawn_count": clawta_spawn_count,
+    }
+
+
+def gather_kanban_facts(cutoff_unix: int) -> dict[str, Any]:
+    import sqlite3
+
+    facts: dict[str, Any] = {}
+    if not DB_PATH.exists():
+        return {"error": f"kanban db not found at {DB_PATH}"}
+
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        c = conn.cursor()
+        c.execute(
+            """SELECT status, COUNT(*) FROM tasks
+               WHERE status NOT IN ('done','archived')
+               GROUP BY status"""
+        )
+        facts["lane_counts"] = {row[0]: row[1] for row in c.fetchall()}
+        c.execute(
+            """SELECT id, assignee, started_at, substr(title, 1, 60)
+               FROM tasks
+              WHERE status = 'in_progress'
+                AND started_at < ?
+              ORDER BY started_at ASC""",
+            (cutoff_unix,),
+        )
+        facts["stale_in_progress"] = [
+            {
+                "id": r[0],
+                "assignee": r[1] or "-",
+                "stale_hours": round((time.time() - (r[2] or 0)) / 3600, 1),
+                "title": r[3],
+            }
+            for r in c.fetchall()
+        ]
+        c.execute(
+            """SELECT id, substr(title, 1, 70) FROM tasks
+               WHERE status = 'done'
+                 AND completed_at >= ?
+               ORDER BY completed_at DESC""",
+            (cutoff_unix,),
+        )
+        facts["recently_done"] = [{"id": r[0], "title": r[1]} for r in c.fetchall()]
+    return facts
+
+
+def gather_github_facts(cutoff_iso: str) -> dict[str, Any]:
+    try:
+        r = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                REPO,
+                "--state",
+                "all",
+                "--search",
+                f"created:>{cutoff_iso[:10]}",
+                "--limit",
+                "30",
+                "--json",
+                "number,title,state,createdAt,mergedAt,headRefName,reviewDecision",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        prs = json.loads(r.stdout) if r.stdout else []
+    except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+        return {"error": f"gh pr list failed: {e}"}
+    return {
+        "opened": [p for p in prs if p["state"] == "OPEN"],
+        "merged": [p for p in prs if p["state"] == "MERGED"],
+        "closed": [p for p in prs if p["state"] == "CLOSED"],
+    }
+
+
+def gather_clawta_facts() -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    poller_log = LOG_DIR / "clawta-poller.log"
+    if poller_log.exists():
+        with poller_log.open() as f:
+            lines = f.readlines()[-200:]
+        facts["recent_ticks"] = len([l for l in lines if "tick:" in l])
+        facts["dispatched_count"] = len([l for l in lines if "dispatched " in l])
+        facts["demoted_count"] = len([l for l in lines if "demoted " in l])
+    inv_log = LOG_DIR / "clawta-invariants.log"
+    if inv_log.exists():
+        with inv_log.open() as f:
+            lines = f.readlines()[-100:]
+        facts["invariant_repairs"] = len([l for l in lines if "repaired" in l.lower()])
+    rev_log = LOG_DIR / "clawta-pr-reviewer.log"
+    if rev_log.exists():
+        with rev_log.open() as f:
+            lines = f.readlines()[-200:]
+        facts["pr_reviews_posted"] = len([l for l in lines if "posted" in l.lower()])
+    return facts
+
+
+def build_prompt(facts: dict[str, Any]) -> str:
+    return f"""You are the operator's daily swarm-audit reporter. Last 24h of facts below. Produce AT MOST 5 actionable bullets, each tagged with one of:
+
+  [fix-now]   actionable now, real risk or blocker
+  [verify]    looks suspicious, operator should check
+  [watch]     anomaly to monitor over the next 24h
+  [ok]        notable but expected/healthy
+
+Reference specific ticket ids, PR numbers, rule_ids, ticket counts. No prose preamble. No restating the facts. Just the bullets, one per line, starting with the tag.
+
+Hard requirement: if `protected_branch_writes` is non-empty, the FIRST bullet must flag it with [fix-now] — that's the no-commit-to-main rule which chitin gate doesn't catch yet (see kanban t_6e6376b2).
+
+FACTS:
+{json.dumps(facts, indent=2, default=str)}
+
+OUTPUT:
+"""
+
+
+def call_model(prompt: str) -> str:
+    try:
+        r = subprocess.run(
+            [OPENCLAW_BIN, "agent", "--agent", AGENT, "--message", prompt],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        log(f"model call failed: {e}")
+        return f"(swarm-audit: model call failed: {e})"
+    if r.returncode != 0:
+        log(f"model rc={r.returncode}; stderr={r.stderr[-300:]}")
+        return f"(swarm-audit: model rc={r.returncode})"
+    return r.stdout.strip()
+
+
+def deliver(summary: str, dry_run: bool) -> None:
+    if dry_run or not DISCORD_CHANNEL:
+        print(summary)
+        return
+    body = f"📊 Swarm audit (last 24h):\n{summary}"
+    try:
+        subprocess.run(
+            [
+                OPENCLAW_BIN,
+                "message",
+                "send",
+                "--channel",
+                "discord",
+                "--account",
+                "default",
+                "--target",
+                f"channel:{DISCORD_CHANNEL}",
+                "--text",
+                body,
+            ],
+            timeout=30,
+            check=False,
+        )
+    except subprocess.SubprocessError as e:
+        log(f"Discord deliver failed: {e}")
+        print(summary)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--dry-run", action="store_true", help="print summary, do not post")
+    ap.add_argument(
+        "--hours",
+        type=int,
+        default=24,
+        help="window size in hours (default 24)",
+    )
+    args = ap.parse_args()
+
+    now = datetime.now(timezone.utc)
+    cutoff_iso = (now - timedelta(hours=args.hours)).isoformat()
+    cutoff_unix = int((now - timedelta(hours=args.hours)).timestamp())
+    log(f"swarm-audit: window {cutoff_iso} → now ({args.hours}h)")
+
+    facts = {
+        "window_hours": args.hours,
+        "chain": gather_chain_facts(cutoff_iso),
+        "kanban": gather_kanban_facts(cutoff_unix),
+        "github": gather_github_facts(cutoff_iso),
+        "clawta": gather_clawta_facts(),
+    }
+    log(f"facts gathered: {sum(1 for _ in facts)} top-level keys")
+
+    prompt = build_prompt(facts)
+    summary = call_model(prompt)
+    deliver(summary, args.dry_run)
+    log(f"swarm-audit: complete ({len(summary)} chars)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

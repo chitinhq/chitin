@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily swarm audit — 8am ET operator standup
+Documentation=https://github.com/chitinhq/chitin/blob/main/swarm/bin/swarm-audit
+
+[Timer]
+# Fire daily at 8am America/Detroit (set TZ in environment file).
+# Persistent=true means a missed run (sleeping laptop, restart) catches
+# up on next available wakeup instead of being silently skipped.
+OnCalendar=*-*-* 08:00:00 America/Detroit
+Persistent=true
+AccuracySec=1min
+Unit=swarm-audit.service
+
+[Install]
+WantedBy=timers.target
