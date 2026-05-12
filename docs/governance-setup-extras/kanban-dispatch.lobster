@@ -76,14 +76,26 @@ steps:
   # (which it always does). Read via stdin + variable assignment inside
   # a bash heredoc so the JSON never touches the shell parser as a
   # literal. Same pattern as spawn_worker.
+  #
+  # Why this calls `openclaw agent` directly instead of `clawta --text`:
+  # the `clawta` wrapper has unanchored pattern detection for dispatch
+  # intent — it matches any `t_xxxxxxxx` id and any dispatch-verb word
+  # anywhere in the prompt. The classify prompt embeds the full ticket
+  # JSON, which always contains a ticket id and frequently contains
+  # dispatch-verb words in the body. That misfires as a recursive
+  # dispatch call, runs the workflow on itself, and returns a failure
+  # envelope instead of classification JSON. Every dispatch on
+  # 2026-05-12 failed for this reason. The classify step is a pure
+  # LLM call and has no business going through the wrapper.
   - id: classify
-    description: Classify ticket via clawta (glm-agent on glm-5.1:cloud)
+    description: Classify ticket via glm-agent on glm-5.1:cloud (direct, no wrapper)
     run: |
       bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
-      clawta --text "$PROMPT"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
