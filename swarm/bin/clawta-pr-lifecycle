@@ -300,8 +300,6 @@ def main() -> int:
     ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
     ap.add_argument("--prefix", action="append")
     args = ap.parse_args()
-    if args.auto_merge and not args.apply:
-        ap.error("--auto-merge requires --apply")
     result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply, args.auto_merge)
     print(json.dumps(result, indent=2))
     return 0
