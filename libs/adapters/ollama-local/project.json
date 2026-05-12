@@ -3,5 +3,5 @@
   "$schema": "../../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "libs/adapters/ollama-local/src",
   "projectType": "library",
-  "tags": ["layer:adapter"]
+  "tags": ["type:adapter", "scope:plugin", "layer:adapter", "lang:ts"]
 }

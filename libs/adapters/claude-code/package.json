@@ -14,8 +14,12 @@
     "./package.json": "./package.json"
   },
   "nx": {
+    "projectType": "library",
     "tags": [
-      "layer:adapter"
+      "type:adapter",
+      "scope:plugin",
+      "layer:adapter",
+      "lang:ts"
     ]
   },
   "dependencies": {

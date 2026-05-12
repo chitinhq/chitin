@@ -17,7 +17,8 @@
     "test": "vitest run tests"
   },
   "nx": {
-    "tags": ["layer:telemetry"],
+    "projectType": "library",
+    "tags": ["type:lib", "scope:analytics", "layer:telemetry", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",
