@@ -68,11 +68,10 @@ def list_candidate_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
 def has_marker(pr_number: int) -> bool:
     comments = gh_json([
         "gh", "api", f"repos/{REPO}/issues/{pr_number}/comments",
-        "--jq", ".[].body",
     ])
-    if isinstance(comments, str):
-        return MARKER in comments
-    return MARKER in json.dumps(comments)
+    if not isinstance(comments, list):
+        return False
+    return any(MARKER in str(comment.get("body", "")) for comment in comments if isinstance(comment, dict))
 
 
 def fetch_pr_context(pr_number: int) -> tuple[dict[str, Any], str]:

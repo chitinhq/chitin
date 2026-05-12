@@ -312,17 +312,21 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         if dry_run:
             log(f"[dry-run] would route {ticket['id']} -> {driver}: {reasoning[:80]}")
             return driver
-        # Reassign in kanban
+        # Reassign in kanban. Treat failures as routing failures so the
+        # ticket stays visible for a later retry instead of being counted as
+        # routed when kanban did not actually change.
         subprocess.run(
             ["hermes", "kanban", "--board", "chitin", "assign",
              ticket["id"], driver],
             timeout=15,
+            check=True,
         )
         subprocess.run(
             ["hermes", "kanban", "--board", "chitin", "comment",
              ticket["id"], "--author", AUTHOR,
              f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
             timeout=15,
+            check=True,
         )
         log(f"routed {ticket['id']} {ROUTING_LANE} -> {driver} ({reasoning[:60]})")
         return driver
