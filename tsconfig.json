@@ -23,6 +23,9 @@
     },
     {
       "path": "./tools/lint"
+    },
+    {
+      "path": "./libs/router-plugin-api/typescript"
     }
   ]
 }

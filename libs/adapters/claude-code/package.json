@@ -14,9 +14,23 @@
     "./package.json": "./package.json"
   },
   "nx": {
+    "projectType": "library",
     "tags": [
-      "layer:adapter"
-    ]
+      "type:adapter",
+      "scope:plugin",
+      "layer:adapter",
+      "lang:ts",
+      "runtime:local"
+    ],
+    "targets": {
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run libs/adapters/claude-code/tests",
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
   },
   "dependencies": {
     "@chitin/contracts": "workspace:*"

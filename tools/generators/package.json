@@ -5,6 +5,7 @@
   "type": "module",
   "generators": "./generators.json",
   "nx": {
-    "tags": ["layer:tooling"]
+    "projectType": "library",
+    "tags": ["type:tooling", "scope:tooling", "layer:tooling", "lang:ts"]
   }
 }
