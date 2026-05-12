@@ -230,18 +230,68 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
 # Routing step — resolve clawta-assigned tickets to a terminal lane
 # ---------------------------------------------------------------------------
 
+def classify_ticket_for_routing(ticket: dict[str, Any]) -> str:
+    """Classify a routing-lane ticket before passing it to _pick_driver.
+
+    _pick_driver expects a compact classification JSON object. Do not feed it
+    a hard-coded default: that erases the ticket's actual language/scope needs
+    and routes everything as generic medium work.
+    """
+    prompt = f"""Classify this Chitin kanban ticket for worker routing.
+Reply with ONLY a JSON object (no prose, no markdown fences):
+{{
+  "complexity": "low" | "med" | "high",
+  "capabilities": ["go" | "ts" | "python" | "refactor" | "debug" | "review"],
+  "estimated_loc": <integer>,
+  "needs_frontier": <true|false>
+}}
+
+Ticket JSON:
+{json.dumps(ticket, indent=2)}
+"""
+    result = subprocess.run(
+        [OPENCLAW_BIN, "agent", "--agent", SEQUENCER_AGENT, "--message", prompt],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"classification failed rc={result.returncode}: {result.stderr[-300:]}")
+    body = result.stdout or ""
+    match = re.search(r"\{.*\}", body, re.DOTALL)
+    if not match:
+        raise RuntimeError(f"classification returned no JSON: {body[:200]!r}")
+    parsed = json.loads(match.group(0))
+    # Normalize/validate the shape before routing.
+    complexity = str(parsed.get("complexity", "med")).lower()
+    if complexity == "medium":
+        complexity = "med"
+    if complexity not in ("low", "med", "high"):
+        complexity = "med"
+    caps = parsed.get("capabilities")
+    if not isinstance(caps, list):
+        caps = []
+    caps = [str(c) for c in caps if str(c) in {"go", "ts", "python", "refactor", "debug", "review"}]
+    try:
+        estimated_loc = int(parsed.get("estimated_loc", 50))
+    except (TypeError, ValueError):
+        estimated_loc = 50
+    needs_frontier = bool(parsed.get("needs_frontier", complexity == "high"))
+    return json.dumps({
+        "complexity": complexity,
+        "capabilities": caps,
+        "estimated_loc": max(1, estimated_loc),
+        "needs_frontier": needs_frontier,
+    })
+
+
 def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
     """Route a clawta-assigned ticket through _pick_driver and reassign.
 
     Returns the chosen terminal-lane assignee, or None on failure.
     """
-    classify_json = json.dumps({
-        "complexity": "medium",
-        "capabilities": [],
-        "estimated_loc": 50,
-        "needs_frontier": False,
-    })
     try:
+        classify_json = classify_ticket_for_routing(ticket)
         result = subprocess.run(
             [sys.executable, str(PICK_DRIVER)],
             input=classify_json,

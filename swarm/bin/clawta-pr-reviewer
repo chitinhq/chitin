@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""clawta-pr-reviewer — comment-once automated reviews for swarm PRs.
+
+The script is intentionally conservative:
+- only reviews open PRs whose head branch starts with an allowed prefix
+- skips PRs that already contain the marker in an issue comment
+- posts a single summary comment, not line comments
+- limits how many PRs it handles per run
+
+It is suitable for cron: repeated runs are idempotent because of the marker.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+from typing import Any
+
+REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw"))
+REVIEW_AGENT = os.environ.get("CLAWTA_REVIEW_AGENT", "clawta")
+MARKER = "<!-- clawta-reviewer:v1 -->"
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "clawta-pr-reviewer.log"
+DEFAULT_PREFIXES = ("swarm/", "clawta/")
+MAX_DIFF_CHARS = int(os.environ.get("CLAWTA_REVIEW_MAX_DIFF_CHARS", "45000"))
+MAX_META_CHARS = 12000
+
+
+def log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def run(cmd: list[str], *, timeout: int = 60, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, text=True, input=input_text, capture_output=True, timeout=timeout)
+
+
+def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
+    out = run(cmd, timeout=timeout)
+    if out.returncode != 0:
+        raise RuntimeError(f"command failed: {' '.join(cmd)}\n{out.stderr[-800:]}")
+    return json.loads(out.stdout or "null")
+
+
+def list_candidate_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
+    prs = gh_json([
+        "gh", "pr", "list", "--repo", REPO, "--state", "open",
+        "--json", "number,title,headRefName,author,url,isDraft,updatedAt",
+        "--limit", "100",
+    ])
+    return [p for p in prs if any(str(p.get("headRefName", "")).startswith(prefix) for prefix in prefixes)]
+
+
+def has_marker(pr_number: int) -> bool:
+    comments = gh_json([
+        "gh", "api", f"repos/{REPO}/issues/{pr_number}/comments",
+        "--jq", ".[].body",
+    ])
+    if isinstance(comments, str):
+        return MARKER in comments
+    return MARKER in json.dumps(comments)
+
+
+def fetch_pr_context(pr_number: int) -> tuple[dict[str, Any], str]:
+    meta = gh_json([
+        "gh", "pr", "view", str(pr_number), "--repo", REPO,
+        "--json", "number,title,body,headRefName,baseRefName,author,additions,deletions,changedFiles,files,url",
+    ])
+    diff_out = run(["gh", "pr", "diff", str(pr_number), "--repo", REPO, "--patch"], timeout=120)
+    if diff_out.returncode != 0:
+        raise RuntimeError(f"gh pr diff failed for #{pr_number}: {diff_out.stderr[-800:]}")
+    diff = diff_out.stdout
+    if len(diff) > MAX_DIFF_CHARS:
+        diff = diff[:MAX_DIFF_CHARS] + "\n\n[diff truncated by clawta-pr-reviewer]"
+    return meta, diff
+
+
+def build_prompt(meta: dict[str, Any], diff: str) -> str:
+    meta_json = json.dumps(meta, indent=2)[:MAX_META_CHARS]
+    return f"""You are Clawta acting as an automated senior code reviewer for the Chitin swarm.
+Review this GitHub PR using the metadata and diff below.
+
+Output a concise GitHub comment in Markdown. Do not use tables.
+Use this exact structure:
+
+**Clawta automated review**
+
+**Verdict:** APPROVE | REQUEST_CHANGES | COMMENT
+
+**Summary**
+- ...
+
+**Findings**
+- Severity: high|medium|low — file/path or area — actionable finding
+- If no issues, write: No blocking issues found.
+
+**Validation notes**
+- Mention tests/checks you infer should run, and any gaps.
+
+Rules:
+- Be specific. Cite files/functions when possible.
+- Do not invent files not present in the diff.
+- If the diff is truncated, say coverage is partial.
+- Prefer COMMENT unless there is a clear correctness/security/test blocker.
+
+# PR metadata
+```json
+{meta_json}
+```
+
+# Diff
+```diff
+{diff}
+```
+"""
+
+
+def generate_review(meta: dict[str, Any], diff: str) -> str:
+    prompt = build_prompt(meta, diff)
+    out = run([OPENCLAW_BIN, "agent", "--agent", REVIEW_AGENT, "--message", prompt], timeout=300)
+    if out.returncode != 0:
+        raise RuntimeError(f"openclaw review failed: {out.stderr[-1000:]} {out.stdout[-1000:]}")
+    body = out.stdout.strip()
+    # Strip accidental JSON-ish wrapper from CLI modes if present, best effort.
+    if body.startswith("{"):
+        try:
+            parsed = json.loads(body)
+            body = str(parsed.get("message") or parsed.get("text") or parsed.get("output") or body)
+        except json.JSONDecodeError:
+            pass
+    return body
+
+
+def post_comment(pr_number: int, review: str, dry_run: bool) -> None:
+    body = f"{MARKER}\n{review.strip()}"
+    if dry_run:
+        print(f"--- DRY RUN PR #{pr_number} COMMENT ---\n{body}\n")
+        return
+    out = run(["gh", "pr", "comment", str(pr_number), "--repo", REPO, "--body", body], timeout=60)
+    if out.returncode != 0:
+        raise RuntimeError(f"gh pr comment failed for #{pr_number}: {out.stderr[-800:]}")
+
+
+def review_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool, include_drafts: bool) -> dict[str, Any]:
+    reviewed: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    candidates = list_candidate_prs(prefixes)
+    for pr in candidates:
+        if len(reviewed) >= max_prs:
+            break
+        n = int(pr["number"])
+        if pr.get("isDraft") and not include_drafts:
+            skipped.append({"pr": str(n), "reason": "draft"})
+            continue
+        try:
+            if has_marker(n):
+                skipped.append({"pr": str(n), "reason": "already-reviewed"})
+                continue
+            meta, diff = fetch_pr_context(n)
+            review = generate_review(meta, diff)
+            post_comment(n, review, dry_run)
+            reviewed.append({"pr": str(n), "url": pr.get("url", "")})
+            log(f"reviewed PR #{n} {pr.get('headRefName')}")
+        except Exception as e:
+            skipped.append({"pr": str(n), "reason": f"error: {e}"[:300]})
+            log(f"PR #{n}: review failed: {e}")
+    return {"reviewed": reviewed, "skipped": skipped, "candidate_count": len(candidates)}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--max-prs", type=int, default=2)
+    ap.add_argument("--prefix", action="append", help="head branch prefix to review; repeatable")
+    ap.add_argument("--include-drafts", action="store_true")
+    args = ap.parse_args()
+    prefixes = tuple(args.prefix or DEFAULT_PREFIXES)
+    result = review_once(prefixes, max(args.max_prs, 0), args.dry_run, args.include_drafts)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
