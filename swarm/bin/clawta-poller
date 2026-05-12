@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""clawta-poller — autonomous kanban dispatch loop.
+
+Slice C of the Swarm SDLC v1 epic (kanban t_26b840d1).
+
+What this is. The chitin swarm's missing piece: when a ticket is
+assigned to a terminal-lane worker (codex, copilot, claude-code,
+gemini), hermes' built-in dispatcher deliberately skips it as
+"non-spawnable terminal lane, OK" (kanban_db.py:3654-3675). Until this
+poller existed, nobody owned the polling for those tickets — they sat
+in `ready` forever.
+
+What it does. On each tick:
+  1. SELECT ready tickets WHERE assignee IN {codex, copilot,
+     claude-code, gemini}
+  2. Sequence them via a frontier-LLM call (clawta CLI). The LLM
+     returns: which to dispatch (in order), which to demote back to
+     triage (with reason).
+  3. Dispatch top-N via lobster (background). Cap concurrency.
+  4. Demote any flagged-not-ready with `kanban-flow demote`.
+  5. Comment + audit each transition. Kanban remains source of truth.
+
+Invocation:
+  clawta-poller --once          one tick, print plan, exit
+  clawta-poller --dry-run       one tick, print plan, no side effects
+  clawta-poller --loop           run continuously every POLL_SEC seconds
+  clawta-poller --max-dispatch N max tickets to dispatch per tick (default 2)
+
+Configured via env:
+  KANBAN_DB                 default: ~/.hermes/kanban/boards/chitin/kanban.db
+  POLL_SEC                  default: 120
+  TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
+  CLAWTA_BIN                default: clawta (must be on PATH)
+  KANBAN_FLOW_BIN           default: kanban-flow
+
+Author rule. Every comment + event row written by this script is
+authored as 'clawta-poller'. Operators reading the board should be
+able to distinguish poller actions from human actions at a glance.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+DB_PATH = Path(
+    os.environ.get(
+        "KANBAN_DB",
+        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
+    )
+)
+POLL_SEC = int(os.environ.get("POLL_SEC", "120"))
+TERMINAL_LANES = tuple(
+    s.strip() for s in os.environ.get(
+        "TERMINAL_LANES", "codex,copilot,claude-code,gemini"
+    ).split(",") if s.strip()
+)
+CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
+KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "clawta-poller.log"
+DISPATCH_TIMEOUT = int(os.environ.get("DISPATCH_TIMEOUT", "300"))
+AUTHOR = "clawta-poller"
+
+
+def log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
+    """Return ready tickets whose assignee is a terminal lane."""
+    placeholders = ",".join("?" * len(TERMINAL_LANES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at
+              FROM tasks
+             WHERE status = 'ready'
+               AND assignee IN ({placeholders})
+             ORDER BY priority DESC, created_at ASC
+            """,
+            TERMINAL_LANES,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sequence_with_llm(tickets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ask the frontier LLM how to sequence. Returns a list of action dicts.
+
+    Each entry: {"ticket_id": "...", "action": "dispatch"|"demote",
+                 "reason": "...", "rank": int (only for dispatch)}.
+    Falls back to FIFO dispatch if the LLM call fails or parses badly.
+    """
+    if not tickets:
+        return []
+
+    fallback = [
+        {"ticket_id": t["id"], "action": "dispatch", "reason": "fifo fallback (LLM unavailable)", "rank": i + 1}
+        for i, t in enumerate(tickets)
+    ]
+
+    queue_text = "\n\n".join(
+        f"## {t['id']}  (assignee={t['assignee']}, priority={t['priority']})\n"
+        f"Title: {t['title']}\n{(t['body'] or '')[:400]}"
+        for t in tickets
+    )
+
+    prompt = f"""You are the clawta dispatch sequencer. You see the current ready queue for the chitin swarm. Decide which tickets should be dispatched (in what order), and flag any that should be demoted back to triage because they are not actually ready (vague body, missing acceptance, blocked by an open question, scope creep, etc.).
+
+# Queue ({len(tickets)} tickets)
+
+{queue_text}
+
+# Output
+
+Reply with ONLY a JSON object (no prose, no markdown fence):
+{{
+  "actions": [
+    {{"ticket_id": "t_xxx", "action": "dispatch", "rank": 1, "reason": "<short>"}},
+    {{"ticket_id": "t_yyy", "action": "demote", "reason": "<specific reason: what's missing>"}}
+  ]
+}}
+
+Rules:
+- Every ticket in the queue MUST appear in actions exactly once.
+- ranks for dispatch are sequential 1..N, no gaps. Demotions have no rank.
+- "reason" for dispatch is a sentence on why this is the right order. "reason" for demote must cite the specific gap (e.g. "body lacks acceptance criteria", "depends on unmerged PR #519", "research question not narrow enough").
+- If everything looks dispatch-ready, demote nothing.
+"""
+
+    try:
+        result = subprocess.run(
+            [CLAWTA_BIN, "--text", prompt],
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"sequence_with_llm: clawta call failed ({e}); falling back to FIFO")
+        return fallback
+
+    if result.returncode != 0:
+        log(f"sequence_with_llm: clawta rc={result.returncode}; falling back to FIFO")
+        return fallback
+
+    body = result.stdout or ""
+    match = re.search(r"\{[^{}]*\"actions\"[^{}]*\[.*?\][^{}]*\}", body, re.DOTALL)
+    if not match:
+        match = re.search(r"\{.*\"actions\".*\}", body, re.DOTALL)
+    if not match:
+        log(f"sequence_with_llm: no JSON in clawta reply ({body[:200]!r}); falling back to FIFO")
+        return fallback
+
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        log(f"sequence_with_llm: JSON parse failed ({e}); falling back to FIFO")
+        return fallback
+
+    actions = parsed.get("actions")
+    if not isinstance(actions, list):
+        log(f"sequence_with_llm: missing 'actions' list; falling back to FIFO")
+        return fallback
+
+    valid_ids = {t["id"] for t in tickets}
+    cleaned = []
+    seen_ids = set()
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        tid = a.get("ticket_id")
+        act = a.get("action")
+        if tid not in valid_ids or tid in seen_ids:
+            continue
+        if act not in ("dispatch", "demote"):
+            continue
+        seen_ids.add(tid)
+        cleaned.append({
+            "ticket_id": tid,
+            "action": act,
+            "reason": str(a.get("reason", ""))[:400],
+            "rank": int(a.get("rank", 0)) if act == "dispatch" else None,
+        })
+
+    if seen_ids != valid_ids:
+        log(
+            f"sequence_with_llm: LLM didn't account for all tickets "
+            f"(missing: {sorted(valid_ids - seen_ids)}); falling back to FIFO"
+        )
+        return fallback
+
+    cleaned_dispatch = sorted(
+        [a for a in cleaned if a["action"] == "dispatch"],
+        key=lambda x: x["rank"] or 0,
+    )
+    cleaned_demote = [a for a in cleaned if a["action"] == "demote"]
+    return cleaned_dispatch + cleaned_demote
+
+
+def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
+    """Flip ready→in_progress, then spawn clawta dispatch in background."""
+    if dry_run:
+        log(f"[dry-run] would dispatch {ticket_id} to {assignee}: {reason[:80]}")
+        return True
+
+    comment = f"clawta-poller dispatching to {assignee}. Sequence reason: {reason}"
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "start", ticket_id, "--author", AUTHOR],
+            check=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"dispatch_ticket({ticket_id}): kanban-flow start failed: {e}")
+        return False
+
+    subprocess.run(
+        ["hermes", "kanban", "--board", "chitin", "comment",
+         ticket_id, "--author", AUTHOR, comment],
+        timeout=15,
+    )
+
+    log_path = LOG_DIR / f"dispatch-{ticket_id}.log"
+    try:
+        with log_path.open("a") as out:
+            subprocess.Popen(
+                [CLAWTA_BIN, f"dispatch ticket {ticket_id} to {assignee}"],
+                stdout=out, stderr=out,
+                start_new_session=True,
+            )
+    except FileNotFoundError as e:
+        log(f"dispatch_ticket({ticket_id}): clawta binary not found: {e}")
+        return False
+    log(f"dispatched {ticket_id} → {assignee} (log: {log_path})")
+    return True
+
+
+def demote_ticket(ticket_id: str, reason: str, dry_run: bool) -> bool:
+    if dry_run:
+        log(f"[dry-run] would demote {ticket_id}: {reason[:80]}")
+        return True
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "demote", ticket_id, reason, "--author", AUTHOR],
+            check=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"demote_ticket({ticket_id}): kanban-flow demote failed: {e}")
+        return False
+    log(f"demoted {ticket_id}: {reason[:80]}")
+    return True
+
+
+def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
+    queue = fetch_ready_for_terminal_lanes()
+    if not queue:
+        log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
+        return {"dispatched": [], "demoted": [], "queue_size": 0}
+
+    log(f"tick: {len(queue)} ready tickets in terminal lanes")
+    plan = sequence_with_llm(queue)
+
+    by_id = {t["id"]: t for t in queue}
+    dispatched: list[str] = []
+    demoted: list[str] = []
+
+    for action in plan:
+        tid = action["ticket_id"]
+        if action["action"] == "dispatch":
+            if len(dispatched) >= max_dispatch:
+                log(f"tick: cap reached ({max_dispatch}); deferring {tid}")
+                continue
+            assignee = by_id[tid]["assignee"]
+            if dispatch_ticket(tid, assignee, action["reason"], dry_run):
+                dispatched.append(tid)
+        elif action["action"] == "demote":
+            if demote_ticket(tid, action["reason"], dry_run):
+                demoted.append(tid)
+
+    return {"dispatched": dispatched, "demoted": demoted, "queue_size": len(queue)}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--once", action="store_true", help="run one tick, exit")
+    g.add_argument("--dry-run", action="store_true", help="run one tick, no side effects")
+    g.add_argument("--loop", action="store_true", help=f"loop every POLL_SEC ({POLL_SEC}s)")
+    ap.add_argument("--max-dispatch", type=int, default=2, help="max tickets to dispatch per tick (default 2)")
+    args = ap.parse_args()
+
+    if not DB_PATH.exists():
+        log(f"fatal: kanban DB not found at {DB_PATH}")
+        return 2
+
+    if args.dry_run:
+        result = tick(args.max_dispatch, dry_run=True)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.once:
+        result = tick(args.max_dispatch, dry_run=False)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.loop:
+        log(f"loop start (poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)})")
+        while True:
+            try:
+                tick(args.max_dispatch, dry_run=False)
+            except Exception as e:
+                log(f"tick crashed: {e}")
+            time.sleep(POLL_SEC)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
