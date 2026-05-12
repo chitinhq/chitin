@@ -69,7 +69,9 @@ install_openclaw_cron() {
 
   clawta-poller --once --max-dispatch 2
 
-Wait for it to complete. If it prints JSON with dispatched/demoted counts, you are done — no follow-up turn needed. If it fails, that is logged in ~/.openclaw/logs/clawta-poller.log; do not retry, do not investigate, just exit." \
+After the exec tool returns (whether the command has finished or is still running in the background), reply with exactly the word 'ok' and nothing else. Do not retry. Do not investigate failures — those are logged in ~/.openclaw/logs/clawta-poller.log.
+
+The closing 'ok' token is REQUIRED — without it the cron metrics report the run as 'couldn't generate a response' even though the dispatch fired correctly. Newer codex-backed models (gpt-5.4+) emit an empty final-answer block when the system prompt says 'just exit', which the cron run-tracker labels as an error." \
     >/dev/null
   echo "openclaw cron: 'clawta-kanban-poller' registered (every 2m)."
   echo "  inspect: openclaw cron show clawta-kanban-poller"
