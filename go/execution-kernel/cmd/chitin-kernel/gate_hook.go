@@ -66,28 +66,36 @@ func classifyChitinAdminCommand(a gov.Action) chitinAdminClass {
 		return chitinAdminNone
 	}
 
+	// Scan every segment: mutation in any chitin-kernel segment wins;
+	// a piped read (`decisions recent | head`) stays read because the
+	// non-chitin segments are skipped and the pipe-to-bash attack vector
+	// is caught by shell.exec + file.write rules.
 	pipeline := canon.ParseAST(strings.TrimSpace(a.Target))
-	var matched *canon.Command
+	result := chitinAdminNone
 	for i := range pipeline.Segments {
 		cmd := pipeline.Segments[i].Command
 		if !isChitinKernelCommand(cmd.Raw) {
 			continue
 		}
-		if len(pipeline.Segments) != 1 {
+		cls := classifyChitinKernelSegment(cmd)
+		if cls == chitinAdminMutation {
 			return chitinAdminMutation
 		}
-		matched = &cmd
-		break
+		if cls != chitinAdminNone {
+			result = cls
+		}
 	}
-	if matched == nil {
-		return chitinAdminNone
-	}
-	fields := chitinKernelFields(matched.Raw)
-	if len(fields) < 1 {
+	return result
+}
+
+func classifyChitinKernelSegment(cmd canon.Command) chitinAdminClass {
+	fields := chitinKernelFields(cmd.Raw)
+	if len(fields) < 2 {
 		return chitinAdminMutation
 	}
-	if len(fields) == 1 {
-		return chitinAdminMutation
+	// Bug 1: bare flags (--version, --help, -V, -h) are read-only.
+	if strings.HasPrefix(fields[1], "-") {
+		return chitinAdminRead
 	}
 	switch fields[1] {
 	case "gate":

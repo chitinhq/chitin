@@ -412,6 +412,37 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 	}
 }
 
+func TestClassifyChitinAdmin_VersionFlagsAreRead(t *testing.T) {
+	for _, flag := range []string{"--version", "--help", "-V", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := "chitin-kernel " + flag
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: cmd})
+			if got != chitinAdminRead {
+				t.Fatalf("classify(%q)=%q want %q", cmd, got, chitinAdminRead)
+			}
+		})
+	}
+}
+
+func TestClassifyChitinAdmin_PipedReadsStayRead(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"decisions recent | head", "chitin-kernel decisions recent | head"},
+		{"health | grep ok", "chitin-kernel health | grep ok"},
+		{"chain-info | jq", "chitin-kernel chain-info | jq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
+			if got != chitinAdminRead {
+				t.Fatalf("classify(%q)=%q want %q", tc.cmd, got, chitinAdminRead)
+			}
+		})
+	}
+}
+
 // TestEvalHookStdin_ChitinAdmin_NoEnvelopeSpend verifies that a
 // chitin-kernel command does NOT debit the envelope even when one is
 // healthy. Otherwise the agent could rack up spend on admin calls
