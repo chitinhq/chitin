@@ -220,7 +220,7 @@ def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
     run(["gh", "pr", "comment", item["pr"], "--repo", REPO, "--body", msg], timeout=60, check=True)
     if item.get("ticket"):
         run(["hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
-             f"Ready to merge: PR #{item['pr']} {item['url']} (review={item['review']}, checks={item['checks']})."], timeout=30)
+             f"Ready to merge: PR #{item['pr']} {item['url']} (review={item['review']}, checks={item['checks']})."], timeout=30, check=True)
 
 
 def mark_done(item: dict[str, Any], apply: bool) -> None:
@@ -229,7 +229,7 @@ def mark_done(item: dict[str, Any], apply: bool) -> None:
     result = f"Merged PR #{item['pr']}: {item['url']}"
     if not apply:
         return
-    run(["kanban-flow", "done", item["ticket"], "--result", result, "--author", AUTHOR], timeout=30)
+    run(["kanban-flow", "done", item["ticket"], "--result", result, "--author", AUTHOR], timeout=30, check=True)
 
 
 def run_once(prefixes: tuple[str, ...], apply: bool) -> dict[str, Any]:
