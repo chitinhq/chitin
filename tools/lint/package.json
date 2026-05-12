@@ -10,6 +10,7 @@
     "test": "vitest run tests"
   },
   "nx": {
+    "sourceRoot": "tools/lint",
     "projectType": "library",
     "tags": ["type:tooling", "scope:tooling", "layer:tooling", "lang:ts"],
     "targets": {

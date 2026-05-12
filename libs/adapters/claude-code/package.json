@@ -14,6 +14,7 @@
     "./package.json": "./package.json"
   },
   "nx": {
+    "sourceRoot": "libs/adapters/claude-code/src",
     "projectType": "library",
     "tags": [
       "type:adapter",

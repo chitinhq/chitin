@@ -22,6 +22,7 @@
     "test": "vitest run test/"
   },
   "nx": {
+    "sourceRoot": "apps/openclaw-plugin-governance/src",
     "projectType": "application",
     "tags": ["type:plugin", "scope:plugin", "layer:plugin", "lang:ts", "runtime:openclaw"],
     "targets": {
