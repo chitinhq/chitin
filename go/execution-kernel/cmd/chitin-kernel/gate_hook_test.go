@@ -395,6 +395,8 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 		{"envelope inspect", "env CHITIN_HOME=/tmp chitin-kernel envelope inspect e1", chitinAdminRead},
 		{"gate reset", "chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"gate lockdown", "chitin-kernel gate lockdown --agent a", chitinAdminMutation},
+		{"config before gate lockdown", "chitin-kernel --config /tmp/chitin.yaml gate lockdown", chitinAdminMutation},
+		{"verbose before decisions recent", "chitin-kernel --verbose decisions recent", chitinAdminRead},
 		{"envelope grant", "FOO=1 chitin-kernel envelope grant e1 --calls=+1", chitinAdminMutation},
 		{"install hook", "chitin-kernel install-hook --surface claude-code", chitinAdminMutation},
 		{"chained reset after read", "chitin-kernel gate status && chitin-kernel gate reset --agent a", chitinAdminMutation},
@@ -407,6 +409,37 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
 			if got != tc.want {
 				t.Fatalf("classify=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyChitinAdmin_VersionFlagsAreRead(t *testing.T) {
+	for _, flag := range []string{"--version", "--help", "-V", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := "chitin-kernel " + flag
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: cmd})
+			if got != chitinAdminRead {
+				t.Fatalf("classify(%q)=%q want %q", cmd, got, chitinAdminRead)
+			}
+		})
+	}
+}
+
+func TestClassifyChitinAdmin_PipedReadsStayRead(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"decisions recent | head", "chitin-kernel decisions recent | head"},
+		{"health | grep ok", "chitin-kernel health | grep ok"},
+		{"chain-info | jq", "chitin-kernel chain-info | jq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
+			if got != chitinAdminRead {
+				t.Fatalf("classify(%q)=%q want %q", tc.cmd, got, chitinAdminRead)
 			}
 		})
 	}

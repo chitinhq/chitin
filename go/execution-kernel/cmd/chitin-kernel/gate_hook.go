@@ -67,38 +67,46 @@ func classifyChitinAdminCommand(a gov.Action) chitinAdminClass {
 		return chitinAdminNone
 	}
 
+	// Scan every segment: mutation in any chitin-kernel segment wins;
+	// a piped read (`decisions recent | head`) stays read because the
+	// non-chitin segments are skipped and the pipe-to-bash attack vector
+	// is caught by shell.exec + file.write rules.
 	pipeline := canon.ParseAST(strings.TrimSpace(a.Target))
-	var matched *canon.Command
+	result := chitinAdminNone
 	for i := range pipeline.Segments {
 		cmd := pipeline.Segments[i].Command
 		if !isChitinKernelCommand(cmd.Raw) {
 			continue
 		}
-		if len(pipeline.Segments) != 1 {
+		cls := classifyChitinKernelSegment(cmd)
+		if cls == chitinAdminMutation {
 			return chitinAdminMutation
 		}
-		matched = &cmd
-		break
+		if cls != chitinAdminNone {
+			result = cls
+		}
 	}
-	if matched == nil {
-		return chitinAdminNone
-	}
-	fields := chitinKernelFields(matched.Raw)
-	if len(fields) < 1 {
+	return result
+}
+
+func classifyChitinKernelSegment(cmd canon.Command) chitinAdminClass {
+	fields := chitinKernelFields(cmd.Raw)
+	if len(fields) < 2 {
 		return chitinAdminMutation
 	}
-	if len(fields) == 1 {
-		return chitinAdminMutation
+	subcommandIndex := chitinKernelSubcommandIndex(fields)
+	if subcommandIndex >= len(fields) {
+		return chitinAdminRead
 	}
-	switch fields[1] {
+	switch fields[subcommandIndex] {
 	case "gate":
-		if len(fields) >= 3 && fields[2] == "status" {
+		if len(fields) > subcommandIndex+1 && fields[subcommandIndex+1] == "status" {
 			return chitinAdminRead
 		}
 		return chitinAdminMutation
 	case "envelope":
-		if len(fields) >= 3 {
-			switch fields[2] {
+		if len(fields) > subcommandIndex+1 {
+			switch fields[subcommandIndex+1] {
 			case "inspect", "list", "tail":
 				return chitinAdminRead
 			}
@@ -108,6 +116,48 @@ func classifyChitinAdminCommand(a gov.Action) chitinAdminClass {
 		return chitinAdminRead
 	default:
 		return chitinAdminMutation
+	}
+}
+
+func chitinKernelSubcommandIndex(fields []string) int {
+	i := 1
+	for i < len(fields) {
+		field := fields[i]
+		name := field
+		if before, _, ok := strings.Cut(field, "="); ok {
+			name = before
+		}
+		if chitinKernelGlobalFlagTakesValue(name) {
+			i++
+			if field == name && i < len(fields) {
+				i++
+			}
+			continue
+		}
+		if chitinKernelGlobalBoolFlag(name) {
+			i++
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+func chitinKernelGlobalBoolFlag(flag string) bool {
+	switch flag {
+	case "--help", "--version", "--verbose", "-h", "-V", "-v":
+		return true
+	default:
+		return false
+	}
+}
+
+func chitinKernelGlobalFlagTakesValue(flag string) bool {
+	switch flag {
+	case "--config":
+		return true
+	default:
+		return false
 	}
 }
 
