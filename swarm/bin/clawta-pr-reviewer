@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""clawta-pr-reviewer — comment-once automated reviews for swarm PRs.
+"""clawta-pr-reviewer — commit-aware automated reviews for swarm PRs.
 
 The script is intentionally conservative:
 - only reviews open PRs whose head branch starts with an allowed prefix
-- skips PRs that already contain the marker in an issue comment
+- skips PRs already reviewed at the current head SHA
+- re-reviews PRs when new commits land after the previous review
 - posts a single summary comment, not line comments
 - limits how many PRs it handles per run
 
-It is suitable for cron: repeated runs are idempotent because of the marker.
+It is suitable for cron: repeated runs are idempotent per PR head SHA.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw"))
 REVIEW_AGENT = os.environ.get("CLAWTA_REVIEW_AGENT", "clawta")
 MARKER = "<!-- clawta-reviewer:v1 -->"
+SHA_MARKER_RE = re.compile(r"<!--\s*clawta-reviewer:v1\s+head=([0-9a-f]{7,40})\s*-->")
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-pr-reviewer.log"
 DEFAULT_PREFIXES = ("swarm/", "clawta/")
@@ -59,25 +61,40 @@ def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
 def list_candidate_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
     prs = gh_json([
         "gh", "pr", "list", "--repo", REPO, "--state", "open",
-        "--json", "number,title,headRefName,author,url,isDraft,updatedAt",
+        "--json", "number,title,headRefName,headRefOid,author,url,isDraft,updatedAt",
         "--limit", "100",
     ])
     return [p for p in prs if any(str(p.get("headRefName", "")).startswith(prefix) for prefix in prefixes)]
 
 
-def has_marker(pr_number: int) -> bool:
-    comments = gh_json([
+def comments(pr_number: int) -> list[dict[str, Any]]:
+    data = gh_json([
         "gh", "api", f"repos/{REPO}/issues/{pr_number}/comments",
     ])
-    if not isinstance(comments, list):
+    return data if isinstance(data, list) else []
+
+
+def reviewed_head_shas(comments_: list[dict[str, Any]]) -> set[str]:
+    shas: set[str] = set()
+    for comment in comments_:
+        if not isinstance(comment, dict):
+            continue
+        body = str(comment.get("body", ""))
+        for match in SHA_MARKER_RE.finditer(body):
+            shas.add(match.group(1))
+    return shas
+
+
+def has_current_marker(pr_number: int, head_sha: str) -> bool:
+    if not head_sha:
         return False
-    return any(MARKER in str(comment.get("body", "")) for comment in comments if isinstance(comment, dict))
+    return head_sha in reviewed_head_shas(comments(pr_number))
 
 
 def fetch_pr_context(pr_number: int) -> tuple[dict[str, Any], str]:
     meta = gh_json([
         "gh", "pr", "view", str(pr_number), "--repo", REPO,
-        "--json", "number,title,body,headRefName,baseRefName,author,additions,deletions,changedFiles,files,url",
+        "--json", "number,title,body,headRefName,headRefOid,baseRefName,author,additions,deletions,changedFiles,files,url",
     ])
     diff_out = run(["gh", "pr", "diff", str(pr_number), "--repo", REPO, "--patch"], timeout=120)
     if diff_out.returncode != 0:
@@ -144,8 +161,9 @@ def generate_review(meta: dict[str, Any], diff: str) -> str:
     return body
 
 
-def post_comment(pr_number: int, review: str, dry_run: bool) -> None:
-    body = f"{MARKER}\n{review.strip()}"
+def post_comment(pr_number: int, head_sha: str, review: str, dry_run: bool) -> None:
+    marker = f"<!-- clawta-reviewer:v1 head={head_sha} -->"
+    body = f"{marker}\n{review.strip()}"
     if dry_run:
         print(f"--- DRY RUN PR #{pr_number} COMMENT ---\n{body}\n")
         return
@@ -166,14 +184,16 @@ def review_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool, include_
             skipped.append({"pr": str(n), "reason": "draft"})
             continue
         try:
-            if has_marker(n):
-                skipped.append({"pr": str(n), "reason": "already-reviewed"})
+            head_sha = str(pr.get("headRefOid") or "")
+            if has_current_marker(n, head_sha):
+                skipped.append({"pr": str(n), "reason": "already-reviewed-current-head"})
                 continue
             meta, diff = fetch_pr_context(n)
+            head_sha = str(meta.get("headRefOid") or head_sha)
             review = generate_review(meta, diff)
-            post_comment(n, review, dry_run)
-            reviewed.append({"pr": str(n), "url": pr.get("url", "")})
-            log(f"reviewed PR #{n} {pr.get('headRefName')}")
+            post_comment(n, head_sha, review, dry_run)
+            reviewed.append({"pr": str(n), "url": pr.get("url", ""), "head": head_sha[:12]})
+            log(f"reviewed PR #{n} {pr.get('headRefName')} head={head_sha[:12]}")
         except Exception as e:
             skipped.append({"pr": str(n), "reason": f"error: {e}"[:300]})
             log(f"PR #{n}: review failed: {e}")
