@@ -68,6 +68,19 @@ TERMINAL_LANES = tuple(
     ).split(",") if s.strip()
 )
 CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
+# Direct openclaw client for the sequencer LLM call. The `clawta` wrapper
+# has unanchored regex pattern detection — any prompt containing a
+# `t_xxxxxxxx` id and a dispatch-verb word is treated as a dispatch
+# request and recursively invokes lobster. The sequencer prompt embeds
+# all queued ticket ids and the word "dispatch", so calling `clawta` here
+# triggers an unintended dispatch of whichever ticket id appears first.
+# Fix #529 covered the lobster classify step; this covers the poller's
+# own LLM call. The sequencer is a pure-classification ask — there's no
+# reason for it to go through the dispatch-detection layer.
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
+)
+SEQUENCER_AGENT = os.environ.get("SEQUENCER_AGENT", "glm-agent")
 KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-poller.log"
@@ -177,17 +190,17 @@ Rules:
 
     try:
         result = subprocess.run(
-            [CLAWTA_BIN, "--text", prompt],
+            [OPENCLAW_BIN, "agent", "--agent", SEQUENCER_AGENT, "--message", prompt],
             capture_output=True,
             text=True,
             timeout=240,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log(f"sequence_with_llm: clawta call failed ({e}); falling back to FIFO")
+        log(f"sequence_with_llm: openclaw call failed ({e}); falling back to FIFO")
         return fallback
 
     if result.returncode != 0:
-        log(f"sequence_with_llm: clawta rc={result.returncode}; falling back to FIFO")
+        log(f"sequence_with_llm: openclaw rc={result.returncode}; falling back to FIFO")
         return fallback
 
     body = result.stdout or ""
