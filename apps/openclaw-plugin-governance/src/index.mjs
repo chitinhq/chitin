@@ -27,11 +27,20 @@ const plugin = {
     },
   }),
 
+  /**
+   * Plugin registration entry point called by the openclaw plugin loader.
+   *
+   * IMPORTANT: plugin code MUST NOT write to stdout. Openclaw and downstream
+   * consumers parse stdout as JSON (hook protocol / stdio transport). Any
+   * stdout write corrupts that stream. Use api.logger exclusively — .warn and
+   * .error route to stderr in the openclaw runtime; .info may route to stdout
+   * depending on loader version, so prefer .warn for all plugin diagnostics.
+   */
   register(api) {
     const cfg = resolveConfig(api.pluginConfig);
     const log = api.logger;
 
-    log.info(
+    log.warn(
       `chitin-governance registering: kernelPath=${cfg.kernelPath} mode=${cfg.mode} workerMode=${cfg.workerMode}`,
     );
 
@@ -61,7 +70,7 @@ const plugin = {
         return undefined;
       }
 
-      log.info(
+      log.warn(
         `chitin denied tool=${event.toolName} rule=${decision.ruleId ?? 'unknown'} reason=${decision.reason ?? '(none)'}`,
       );
       return {
@@ -80,7 +89,7 @@ const plugin = {
     // are all caught — the check is on the category, not one literal id.
     api.on('subagent_spawning', async (event, _ctx) => {
       if (isClaudeCodeAgent(event.agentId)) {
-        log.info(
+        log.warn(
           `chitin denied subagent spawn agent=${event.agentId} (Anthropic ToS — Claude Code is interactive-only, not a worker subagent)`,
         );
         return {
@@ -97,7 +106,7 @@ const plugin = {
       if (!cfg.workerMode) return undefined;
       const kind = event.request?.kind;
       if (kind === 'plugin-git') {
-        log.info(`chitin denied install kind=plugin-git in worker mode`);
+        log.warn(`chitin denied install kind=plugin-git in worker mode`);
         return {
           block: true,
           blockReason:
