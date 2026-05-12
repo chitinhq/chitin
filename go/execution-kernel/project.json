@@ -3,7 +3,7 @@
   "root": "go/execution-kernel",
   "sourceRoot": "go/execution-kernel",
   "projectType": "application",
-  "tags": ["layer:kernel"],
+  "tags": ["type:app", "scope:kernel", "layer:kernel", "lang:go", "runtime:local"],
   "targets": {
     "build": {
       "executor": "nx:run-commands",

@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "nx": {
-    "tags": ["layer:kernel"],
+    "projectType": "application",
+    "tags": ["type:app", "scope:kernel", "layer:kernel", "lang:go", "runtime:local"],
     "targets": {
       "build": {
         "executor": "nx:run-commands",

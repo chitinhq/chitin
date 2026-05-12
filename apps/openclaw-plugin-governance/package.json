@@ -22,7 +22,8 @@
     "test": "vitest run test/"
   },
   "nx": {
-    "tags": ["layer:app"],
+    "projectType": "application",
+    "tags": ["type:plugin", "scope:plugin", "layer:app", "lang:ts"],
     "targets": {
       "test": {
         "executor": "nx:run-commands",
