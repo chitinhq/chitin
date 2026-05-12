@@ -395,6 +395,8 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 		{"envelope inspect", "env CHITIN_HOME=/tmp chitin-kernel envelope inspect e1", chitinAdminRead},
 		{"gate reset", "chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"gate lockdown", "chitin-kernel gate lockdown --agent a", chitinAdminMutation},
+		{"config before gate lockdown", "chitin-kernel --config /tmp/chitin.yaml gate lockdown", chitinAdminMutation},
+		{"verbose before decisions recent", "chitin-kernel --verbose decisions recent", chitinAdminRead},
 		{"envelope grant", "FOO=1 chitin-kernel envelope grant e1 --calls=+1", chitinAdminMutation},
 		{"install hook", "chitin-kernel install-hook --surface claude-code", chitinAdminMutation},
 		{"chained reset after read", "chitin-kernel gate status && chitin-kernel gate reset --agent a", chitinAdminMutation},

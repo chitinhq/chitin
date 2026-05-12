@@ -93,19 +93,19 @@ func classifyChitinKernelSegment(cmd canon.Command) chitinAdminClass {
 	if len(fields) < 2 {
 		return chitinAdminMutation
 	}
-	// Bug 1: bare flags (--version, --help, -V, -h) are read-only.
-	if strings.HasPrefix(fields[1], "-") {
+	subcommandIndex := chitinKernelSubcommandIndex(fields)
+	if subcommandIndex >= len(fields) {
 		return chitinAdminRead
 	}
-	switch fields[1] {
+	switch fields[subcommandIndex] {
 	case "gate":
-		if len(fields) >= 3 && fields[2] == "status" {
+		if len(fields) > subcommandIndex+1 && fields[subcommandIndex+1] == "status" {
 			return chitinAdminRead
 		}
 		return chitinAdminMutation
 	case "envelope":
-		if len(fields) >= 3 {
-			switch fields[2] {
+		if len(fields) > subcommandIndex+1 {
+			switch fields[subcommandIndex+1] {
 			case "inspect", "list", "tail":
 				return chitinAdminRead
 			}
@@ -115,6 +115,48 @@ func classifyChitinKernelSegment(cmd canon.Command) chitinAdminClass {
 		return chitinAdminRead
 	default:
 		return chitinAdminMutation
+	}
+}
+
+func chitinKernelSubcommandIndex(fields []string) int {
+	i := 1
+	for i < len(fields) {
+		field := fields[i]
+		name := field
+		if before, _, ok := strings.Cut(field, "="); ok {
+			name = before
+		}
+		if chitinKernelGlobalFlagTakesValue(name) {
+			i++
+			if field == name && i < len(fields) {
+				i++
+			}
+			continue
+		}
+		if chitinKernelGlobalBoolFlag(name) {
+			i++
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+func chitinKernelGlobalBoolFlag(flag string) bool {
+	switch flag {
+	case "--help", "--version", "--verbose", "-h", "-V", "-v":
+		return true
+	default:
+		return false
+	}
+}
+
+func chitinKernelGlobalFlagTakesValue(flag string) bool {
+	switch flag {
+	case "--config":
+		return true
+	default:
+		return false
 	}
 }
 
