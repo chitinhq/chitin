@@ -126,9 +126,10 @@ describe('plugin.before_tool_call (calls evaluateRouter)', () => {
   function captureBeforeToolCall(scriptBody: string): { handler: Handler; cleanup: () => void } {
     const fake = makeFakeKernel(scriptBody);
     let handler: Handler | undefined;
+    const noop = (): void => undefined;
     const api = {
       pluginConfig: { kernelPath: fake.path, timeoutMs: 2000, mode: 'enforce' },
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      logger: { info: noop, warn: noop, error: noop },
       on: (event: string, fn: Handler) => {
         if (event === 'before_tool_call') handler = fn;
       },
