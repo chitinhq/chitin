@@ -1,11 +1,11 @@
 ---
 name: programmer
-description: "Default worker role for code-change tickets. Claims ticket, creates a worktree + branch, makes the change, runs tests, opens a PR, flips the kanban to code_review. Used by clawta dispatch when the ticket asks for an implementation, refactor, fix, or test."
+description: "Default worker role for code-change tickets. Claims ticket, creates a worktree + branch, makes the change, runs tests, opens a PR, records the PR url on the kanban ticket. Used by clawta dispatch when the ticket asks for an implementation, refactor, fix, or test."
 allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
 success_criteria:
   - PR opened against main with the change
   - CI green (or explicit "yellow CI, see comment" note if a flake is unrelated)
-  - Kanban ticket flipped to code_review with PR url comment
+  - Kanban ticket has a PR-url comment and a `pr_opened` task event (ticket stays in_progress; Hermes UI has no code_review column)
   - Every status transition has both a comment and a task_events row
 ---
 
@@ -13,7 +13,8 @@ success_criteria:
 
 The default worker role for tickets that ship code. You are dispatched
 by Clawta when a ticket is sequenced for implementation. You own the
-ticket end-to-end through the SDLC until the PR is in code_review.
+ticket end-to-end through the SDLC until the PR is open and the URL
+is recorded on the kanban ticket.
 
 ## When to apply
 
@@ -31,14 +32,15 @@ PR, use the **reviewer** role.
 ## Lifecycle you walk
 
 ```
-ready → in_progress → code_review (waiting for review)
-                     → done (after merge, fired by merge bot or reviewer)
+ready → in_progress (claim + work + PR open) → done (after merge)
 ```
 
-You never move a ticket directly to `done` from `in_progress` — code
-review is the gate. Exception: the rare ticket that doesn't produce a
-PR (e.g., a one-shot config change) uses `kanban-flow done <id>
---result "..."` and is documented as such in the ticket body.
+The ticket stays in `in_progress` through PR open, review, and merge.
+Hermes' kanban UI has no `code_review` column, so we deliberately do
+not flip the status — the PR's GitHub state is the review-phase truth.
+`kanban-flow pr <id> <url>` records the PR url as a comment and a
+`pr_opened` audit event without moving the ticket. After merge, the
+ticket is closed via `kanban-flow done <id> --result "..."`.
 
 ## The recipe
 
@@ -67,9 +69,9 @@ PR (e.g., a one-shot config change) uses `kanban-flow done <id>
    Title format: `<type>(<scope>): <short subject>`. Body links the
    kanban ticket id.
 
-7. **Transition** — `kanban-flow pr <id> <pr-url> --author <your-name>`.
-   Flips in_progress→code_review, comments the PR url, writes the audit
-   event.
+7. **Record the PR** — `kanban-flow pr <id> <pr-url> --author <your-name>`.
+   Comments the PR url + emits a `pr_opened` task event. Ticket stays
+   in `in_progress` (Hermes UI has no code_review column).
 
 8. **Hand off** — you're done. Reviewer (or clawta sequencing) will
    handle the merge.
@@ -83,9 +85,9 @@ PR (e.g., a one-shot config change) uses `kanban-flow done <id>
   global files that get swept up otherwise.
 - **Skipping `kanban-flow`.** Raw `UPDATE tasks SET status=…` breaks
   the audit invariant.
-- **Closing the loop early.** Don't `kanban-flow done <id>` from
-  in_progress unless the ticket was explicitly scoped as a PR-less
-  change. The default path is through `code_review`.
+- **Closing the loop before merge.** Don't `kanban-flow done <id>`
+  until the PR has actually merged. The PR's GitHub state is the
+  review-phase truth; closing the kanban early loses audit signal.
 - **Scope creep.** If you discover related work mid-change, file a
   separate ticket. Don't bundle.
 

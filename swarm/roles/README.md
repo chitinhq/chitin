@@ -37,9 +37,9 @@ or whether `claude-code/sonnet-4-6/researcher` outperforms
 
 | Role         | When                                | Output            | Lifecycle                  |
 |--------------|-------------------------------------|-------------------|----------------------------|
-| `programmer` | Code change tickets (feat/fix/refactor/test) | PR | ready → in_progress → code_review |
+| `programmer` | Code change tickets (feat/fix/refactor/test) | PR | ready → in_progress (through PR open + merge) → done |
 | `researcher` | Investigation tickets               | Findings comment  | ready → in_progress → done |
-| `reviewer`   | PR review tickets                   | PR review comment | ready → in_progress → done (their ticket); separately transitions the PR's ticket |
+| `reviewer`   | PR review tickets                   | PR review comment | ready → in_progress → done (the PR's own ticket stays in_progress regardless of verdict) |
 
 ## Deployment
 

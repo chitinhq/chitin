@@ -293,7 +293,9 @@ steps:
         kanban-flow block ${ticket_id} "branch $BRANCH pushed but gh pr create failed" --author clawta 2>/dev/null || true
       else
         MSG="🦞 ${ticket_id}: done. Branch: $BRANCH. PR: $PR_URL"
-        # Slice D: PR opened — flip to code_review with the PR url.
+        # PR opened — record the URL on the ticket. Ticket stays in
+        # in_progress (Hermes UI has no code_review column; the PR's
+        # GitHub state is the review-phase truth).
         kanban-flow pr ${ticket_id} "$PR_URL" --author clawta 2>/dev/null || true
       fi
       hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
