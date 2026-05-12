@@ -11,14 +11,17 @@ poller existed, nobody owned the polling for those tickets — they sat
 in `ready` forever.
 
 What it does. On each tick:
-  1. SELECT ready tickets WHERE assignee IN {codex, copilot,
+  1. Demote any ready ticket whose assignee is NULL or not a terminal
+     lane — these are grooming-step gaps; surfacing them is loud-by-
+     design so they can't pile up silently in `ready` forever.
+  2. SELECT remaining ready tickets WHERE assignee IN {codex, copilot,
      claude-code, gemini}
-  2. Sequence them via a frontier-LLM call (clawta CLI). The LLM
+  3. Sequence them via a frontier-LLM call (clawta CLI). The LLM
      returns: which to dispatch (in order), which to demote back to
      triage (with reason).
-  3. Dispatch top-N via lobster (background). Cap concurrency.
-  4. Demote any flagged-not-ready with `kanban-flow demote`.
-  5. Comment + audit each transition. Kanban remains source of truth.
+  4. Dispatch top-N via lobster (background). Cap concurrency.
+  5. Demote any flagged-not-ready with `kanban-flow demote`.
+  6. Comment + audit each transition. Kanban remains source of truth.
 
 Invocation:
   clawta-poller --once          one tick, print plan, exit
@@ -94,6 +97,33 @@ def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
               FROM tasks
              WHERE status = 'ready'
                AND assignee IN ({placeholders})
+             ORDER BY priority DESC, created_at ASC
+            """,
+            TERMINAL_LANES,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_ungroomed_ready() -> list[dict[str, Any]]:
+    """Return ready tickets that grooming missed — no assignee, or assignee
+    in a non-terminal lane the poller can't dispatch. Hermes is the groomer
+    and is supposed to attach a terminal-lane assignee when promoting
+    triage→ready; tickets that show up here bypassed that step (most often
+    because they were created directly with --status ready instead of going
+    through triage). Demoting them back to triage with a specific reason
+    keeps kanban honest about where work actually stands.
+    """
+    placeholders = ",".join("?" * len(TERMINAL_LANES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, assignee, priority, created_at
+              FROM tasks
+             WHERE status = 'ready'
+               AND (assignee IS NULL
+                    OR assignee = ''
+                    OR assignee NOT IN ({placeholders}))
              ORDER BY priority DESC, created_at ASC
             """,
             TERMINAL_LANES,
@@ -267,18 +297,52 @@ def demote_ticket(ticket_id: str, reason: str, dry_run: bool) -> bool:
     return True
 
 
+def demote_ungroomed(dry_run: bool) -> list[str]:
+    """Demote any ready ticket whose assignee isn't a terminal lane.
+
+    Hermes is the groomer; clawta is the enforcer. A ticket in `ready` with
+    no terminal-lane assignee is a grooming-step output we can't act on, so
+    we surface the gap by sending it back to triage with a comment that
+    names the exact missing piece. This is loud-by-design — better a noisy
+    triage backlog than tickets silently aging in `ready`.
+    """
+    ungroomed = fetch_ungroomed_ready()
+    if not ungroomed:
+        return []
+    log(f"tick: {len(ungroomed)} ungroomed ready ticket(s) to demote")
+    demoted: list[str] = []
+    lanes = "/".join(TERMINAL_LANES)
+    for t in ungroomed:
+        tid = t["id"]
+        if not t["assignee"]:
+            reason = (
+                f"missing assignee — grooming step must route to a terminal "
+                f"lane ({lanes}) before clawta-poller can dispatch"
+            )
+        else:
+            reason = (
+                f"assignee={t['assignee']!r} is not a terminal lane — "
+                f"grooming must route to one of: {lanes}"
+            )
+        if demote_ticket(tid, reason, dry_run):
+            demoted.append(tid)
+    return demoted
+
+
 def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
+    ungroomed_demoted = demote_ungroomed(dry_run)
+
     queue = fetch_ready_for_terminal_lanes()
     if not queue:
         log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
-        return {"dispatched": [], "demoted": [], "queue_size": 0}
+        return {"dispatched": [], "demoted": ungroomed_demoted, "queue_size": 0}
 
     log(f"tick: {len(queue)} ready tickets in terminal lanes")
     plan = sequence_with_llm(queue)
 
     by_id = {t["id"]: t for t in queue}
     dispatched: list[str] = []
-    demoted: list[str] = []
+    demoted: list[str] = list(ungroomed_demoted)
 
     for action in plan:
         tid = action["ticket_id"]
