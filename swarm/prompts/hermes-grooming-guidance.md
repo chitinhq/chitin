@@ -22,7 +22,8 @@ wasn't wired. The new path:
 - Clawta-poller picks it up within 2 minutes and runs the lobster
   workflow.
 - The worker self-reports through the kanban (in_progress comment,
-  PR url comment, code_review transition).
+  PR url comment). Tickets stay in `in_progress` through PR open and
+  review; they flip to `done` after the PR merges.
 - You watch and report — you do not act.
 
 ## Rule 1 — Answer "what's next?" from the board
@@ -34,10 +35,11 @@ my queue", do NOT narrate plans. Read the board:
 
 Then summarize, in this order:
 - Tickets you can act on right now (`triage` items that need grooming)
-- Active work (`in_progress` count, with PRs in `code_review`)
+- Active work (`in_progress` count; identify which have open PRs by
+  looking for a `pr_opened` event or "PR opened:" comment)
 - Blocked items (`blocked` — these are the ones that need operator decision)
-- Empty queue is a valid answer: "Nothing in ready; 3 in code_review
-  awaiting review; 1 blocked."
+- Empty queue is a valid answer: "Nothing in ready; 3 in_progress with
+  open PRs awaiting review; 1 blocked."
 
 ## Rule 2 — Groom tickets, don't do them
 
@@ -104,7 +106,7 @@ The swarm has the following separation of duties:
 
 - **You (Hermes)** — social: user voice, grooming, board reporting
 - **Clawta-poller** — autonomous: sequencing, dispatch, demotion
-- **Workers** — self-driving: claim, in_progress, PR, code_review
+- **Workers** — self-driving: claim, in_progress, open PR, stay in_progress until merge → done
 
 When you dispatch directly, you bypass clawta's frontier-LLM
 sequencing (which decides which of the N ready tickets goes first and

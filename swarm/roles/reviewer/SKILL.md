@@ -1,26 +1,25 @@
 ---
 name: reviewer
-description: "Worker role for reviewing an open PR. Reads the diff, checks the ticket's acceptance criteria, posts an adversarial review comment, then either approves (code_review→done) or requests changes (code_review→in_progress). Used by clawta dispatch when a ticket is a review ticket OR when a PR-bearing ticket is in code_review and needs a second pair of eyes."
+description: "Worker role for reviewing an open PR. Reads the diff, checks the ticket's acceptance criteria, posts an adversarial review comment on GitHub, then closes the review ticket. The PR's own ticket stays in_progress until merge (Hermes UI has no code_review column; the PR's GitHub state is the review-phase truth)."
 allowed_tools: [Read, Bash, Grep, Glob]
 success_criteria:
-  - PR review comment posted on GitHub
-  - Kanban ticket transitioned via kanban-flow review <id> approved|changes
+  - PR review comment posted on GitHub (APPROVE or REQUEST CHANGES)
+  - Reviewer's own ticket closed via `kanban-flow done` with verdict in the result
   - Verdict cites specific files / lines / commits — not vibes
-  - If approved, follow-up tickets filed for any non-blocking observations
+  - Follow-up tickets filed for any non-blocking observations
 ---
 
 # Reviewer role
 
 For tickets that explicitly ask for review, OR when clawta sequences
-a PR-bearing ticket in `code_review` and needs an adversarial second
-pair of eyes before approving the merge.
+an independent second pair of eyes on a PR-bearing ticket before merge.
 
 ## When to apply
 
 Use this role when:
 
 - Ticket title is "Review: <PR url or description>" — explicit review ticket
-- Clawta dispatches you to a ticket currently in `code_review` state
+- Clawta dispatches you to give a PR a second pair of eyes
 - An operator hands you a PR url and asks for an independent take
 
 If you'd be writing code, use **programmer** instead. If you'd be
@@ -28,18 +27,17 @@ investigating without a PR in scope, use **researcher**.
 
 ## Lifecycle you walk
 
-Two paths depending on verdict:
-
 ```
-ready → in_progress → code_review (the PR's ticket) → done    (approved)
-ready → in_progress → code_review (the PR's ticket) → in_progress  (changes)
+ready → in_progress (read PR, post review on GitHub) → done
 ```
 
-The first lifecycle column (`ready → in_progress`) is YOUR review
-ticket. The transition you make on the PR's ticket is in the third
-column. If you have your OWN review ticket (a ticket whose work IS the
-review), close it with `kanban-flow done` after posting the GitHub
-review.
+The PR's own ticket stays in `in_progress` regardless of your verdict.
+Hermes' kanban UI has no `code_review` column, so we do not move the
+PR's ticket on review — the PR's GitHub state is the review-phase
+truth. If you request changes, the programmer pushes more commits to
+the same PR; their ticket is still `in_progress`. If you approve, the
+PR merges and the merge-completion step (or operator) flips that
+ticket to `done`.
 
 ## The recipe
 
@@ -62,25 +60,20 @@ review.
    back. (Knuth heuristic.)
 
 6. **Post the review** — `gh pr review <num> --comment --body
-   "<review>"`. Structure:
+   "<review>"` (or `--approve` / `--request-changes` on the GitHub
+   side). Structure:
 
-   - **Verdict** — APPROVE or REQUEST CHANGES (the latter triggers
-     `kanban-flow review <id> changes`).
+   - **Verdict** — APPROVE or REQUEST CHANGES.
    - **Acceptance scorecard** — bullet per criterion, met/not.
    - **Boundary observations** — what edge cases are covered, which
      aren't.
    - **Non-blocking observations** — nits worth fixing later, but not
      blockers.
 
-7. **Transition** — for the PR's ticket:
-   `kanban-flow review <pr-ticket-id> approved` if APPROVE, else
-   `kanban-flow review <pr-ticket-id> changes`. The helper writes the
-   appropriate comment + audit event.
-
-8. **Close your own ticket if applicable** — if this work was a
-   dedicated review ticket (not the PR's own ticket),
-   `kanban-flow done <your-ticket> --result "Reviewed PR #<n>;
-   verdict: <approve|changes>"`.
+7. **Close your review ticket** — `kanban-flow done <your-ticket-id>
+   --result "Reviewed PR #<n>; verdict: <approve|changes>"`. The PR's
+   own ticket stays in `in_progress` either way — the PR's GitHub
+   state carries the review-phase truth.
 
 ## Anti-patterns
 

@@ -2,19 +2,25 @@
 # kanban-flow — lifecycle helper for the swarm SDLC.
 #
 # The Hermes kanban CLI exposes assign/comment/complete but not the
-# in_progress / code_review / blocked transitions a real SDLC needs.
-# This wrapper fills the gap: every command does the status flip AND
-# the matching audit comment AND a task_events row.
+# in_progress / blocked transitions a real SDLC needs. This wrapper
+# fills the gap: every status command does the flip AND the matching
+# audit comment AND a task_events row.
+#
+# We deliberately do NOT use a `code_review` status. Hermes' kanban UI
+# renders only triage/todo/ready/in_progress/blocked/done columns
+# (hardcoded in hermes-agent; not configurable). A ticket flipped to
+# code_review would vanish from the operator's board until merged,
+# breaking kanban-as-source-of-truth. Tickets stay in in_progress
+# while the PR is open; the PR's GitHub state is the review-phase
+# truth. `kanban-flow pr` records the URL as a comment + event but
+# does not move the ticket.
 #
 # Usage:
 #   kanban-flow start <id> [--author NAME] [--worktree PATH]
 #       triage|ready → in_progress. Comments "picking up at <ts>".
 #
 #   kanban-flow pr <id> <pr-url> [--author NAME]
-#       in_progress → code_review. Comments with PR url.
-#
-#   kanban-flow review <id> <verdict> [--author NAME]
-#       code_review → in_progress (verdict=changes) or code_review → done (verdict=approved).
+#       in_progress stays. Comments with PR url + emits pr_opened event.
 #
 #   kanban-flow block <id> <reason...> [--author NAME]
 #       any → blocked. Comments with reason.
@@ -27,7 +33,7 @@
 #       ticket isn't actually ready to dispatch.
 #
 #   kanban-flow done <id> --result "<summary>" [--author NAME]
-#       code_review|in_progress → done. Comments with result.
+#       in_progress → done. Comments with result.
 #
 #   kanban-flow status <id>
 #       Print current status + last 5 transition comments.
@@ -133,28 +139,19 @@ case "$cmd" in
     [[ -n "$url" ]] || die "missing PR url"
     assert_status "$id" in_progress
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "PR opened: $url" >/dev/null
-    flip_status "$id" code_review 0 0
-    emit_transition "$id" in_progress code_review "$author" "$(printf '{"pr_url":"%s"}' "$url")"
-    echo "$id: in_progress → code_review ($url)"
-    ;;
-  review)
-    parse_flags "$@"
-    id="${REST[0]:-}"; verdict="${REST[1]:-}"; require_id "$id"
-    [[ -n "$verdict" ]] || die "missing verdict (approved|changes)"
-    assert_status "$id" code_review
-    if [[ "$verdict" == approved ]]; then
-      hermes kanban --board "$BOARD" comment "$id" --author "$author" "Review: APPROVED" >/dev/null
-      flip_status "$id" done 0 1
-      emit_transition "$id" code_review done "$author"
-      echo "$id: code_review → done (approved)"
-    elif [[ "$verdict" == changes ]]; then
-      hermes kanban --board "$BOARD" comment "$id" --author "$author" "Review: changes requested — back to in_progress" >/dev/null
-      flip_status "$id" in_progress 0 0
-      emit_transition "$id" code_review in_progress "$author"
-      echo "$id: code_review → in_progress (changes requested)"
-    else
-      die "verdict must be 'approved' or 'changes', got: $verdict"
-    fi
+    # No status flip — Hermes UI has no code_review column, so we keep
+    # the ticket in in_progress and let the PR's GitHub state be the
+    # review-phase truth. Audit still records the PR via a pr_opened
+    # event for downstream tooling.
+    pr_now="$(date +%s)"
+    sqlite3 "$DB" \
+      -cmd ".parameter set :id '$id'" \
+      -cmd ".parameter set :by '$author'" \
+      -cmd ".parameter set :url '$url'" \
+      -cmd ".parameter set :now $pr_now" \
+      "INSERT INTO task_events (task_id, kind, payload, created_at) \
+       VALUES (:id, 'pr_opened', json_object('pr_url', :url, 'by', :by), :now);"
+    echo "$id: in_progress (PR opened: $url)"
     ;;
   block)
     parse_flags "$@"

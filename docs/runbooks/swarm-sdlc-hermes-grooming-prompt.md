@@ -62,8 +62,8 @@ DISPATCH_AND_TICKETING_GUIDANCE = (
     "\n"
     "## Rule 1 — answer 'what's next?' from the board\n"
     "Call `hermes kanban --board chitin list`. Summarize: triage items "
-    "you can groom now, in_progress count + code_review PRs, blocked "
-    "items needing operator decision.\n"
+    "you can groom now, in_progress count (those with open PRs vs. "
+    "actively coding), blocked items needing operator decision.\n"
     "\n"
     "## Rule 2 — file tickets on hermes kanban, never GitHub Issues\n"
     "    hermes kanban --board chitin create \"<title>\" --body \"<body>\" "
@@ -106,7 +106,7 @@ After restart, ask Hermes "what's next?" in Discord. Expected reply
 shape:
 
 > Board state: <triage count> in triage, <ready count> in ready,
-> <in_progress count> in_progress (PRs in code_review: <list>), 
+> <in_progress count> in_progress (with open PRs: <list>), 
 > <blocked count> blocked. Want me to groom any of the triage items?
 
 Anti-test: ask Hermes "dispatch t_e1d0e815 now". Expected reply:

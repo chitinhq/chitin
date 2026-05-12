@@ -11,11 +11,23 @@ truth — if a state change isn't visible there, it didn't happen.
 |---------------|----------------------------------------------------------|
 | `triage`      | Raw idea or auto-filed ticket. Body is rough.            |
 | `ready`       | Groomed; clear acceptance criteria; awaiting dispatch.   |
-| `in_progress` | A worker has claimed the ticket and started.             |
-| `code_review` | PR is open. Awaiting review verdict.                     |
+| `in_progress` | A worker has claimed the ticket and is working OR a PR is open and awaiting merge. |
 | `blocked`     | Cannot progress (external dep, decision needed).         |
 | `done`        | Merged + result recorded.                                |
 | `archived`    | Hidden from default views (cancelled, superseded).       |
+
+### Why no `code_review` status
+
+Hermes' kanban UI renders only triage/todo/ready/in_progress/blocked/done
+columns (hardcoded in hermes-agent; the kanban config block exposes only
+`dispatch_in_gateway`, `dispatch_interval_seconds`, and `failure_limit`).
+A ticket flipped to `code_review` would vanish from the operator's
+board until merged, breaking kanban-as-source-of-truth.
+
+Tickets stay in `in_progress` from the moment a worker claims them
+through PR open, review, and merge. The PR's GitHub state is the
+review-phase truth. `kanban-flow pr <id> <url>` records the URL as a
+comment + `pr_opened` task event without moving the ticket.
 
 ## Transitions
 
@@ -34,15 +46,17 @@ truth — if a state change isn't visible there, it didn't happen.
               │                       │ in_progress│◀────┘
               │                       └─────┬──────┘
               │                             │ worker opens PR
+              │                             │ (stays in_progress;
+              │                             │  pr_opened event +
+              │                             │  PR-url comment)
+              │                             │
               │                             ▼
-              │                       ┌────────────┐
-              │                       │ code_review│
-              │                       └─────┬──────┘
-              │                             │ reviewer
-              │     ┌───────────────────────┴────────┐
-              │     │ changes                approved │
-              │     ▼                                ▼
-              │  in_progress                       done
+              │                       PR merged on GitHub
+              │                             │
+              │                             ▼
+              │                          ┌─────┐
+              │                          │ done│
+              │                          └─────┘
               │
               └──── (any → blocked → ready)
 ```
@@ -54,15 +68,14 @@ truth — if a state change isn't visible there, it didn't happen.
 | `triage → ready`              | Hermes / operator | `kanban-flow ready <id>` or hermes grooming reply |
 | `ready → in_progress`         | Clawta poller     | dispatch path; `kanban-flow start <id>` from lobster |
 | `ready → triage` (demote)     | Clawta poller     | when sequence-check flags "not actually ready" |
-| `in_progress → code_review`   | Worker            | `kanban-flow pr <id> <url>` on PR open     |
-| `code_review → in_progress`   | Reviewer / clawta | `kanban-flow review <id> changes`          |
-| `code_review → done`          | Reviewer / merge  | `kanban-flow review <id> approved` or merge bot |
+| `in_progress → in_progress` (PR open) | Worker            | `kanban-flow pr <id> <url>` — no status flip, audit only |
+| `in_progress → done`          | Operator / merge bot | `kanban-flow done <id> --result "<txt>"` after PR merge |
 | `* → blocked`                 | Worker / clawta   | `kanban-flow block <id> <reason>`          |
 | `blocked → ready`             | Operator / hermes | `kanban-flow unblock <id>`                 |
 
-Non-canonical: `kanban-flow done <id> --result "<txt>"` is the catch-all
-that bypasses code review (use only for tickets that don't produce a PR,
-e.g. user-local config tweaks, decisions, research-with-no-PR).
+Recovery: `kanban-flow done` is the universal completion verb — accepts
+any `from` status. Use it after PR merge, or for tickets that don't
+produce a PR (research notes, decisions, config tweaks).
 
 ## Audit invariant
 
@@ -72,7 +85,11 @@ For every status change, two records exist:
 2. A row in `task_events` with `kind='status_transition'` and payload
    `{"from":"<status>","to":"<status>","by":"<author>"}`
 
-The `kanban-flow` helper enforces both. Direct SQL `UPDATE tasks SET
+For PR open (which is not a status change), a single `task_events` row
+with `kind='pr_opened'` and payload `{"pr_url":"<url>","by":"<author>"}`
+plus the comment.
+
+The `kanban-flow` helper enforces these. Direct SQL `UPDATE tasks SET
 status=…` without the matching comment + event is a bug — fix it by
 backfilling, not by ignoring.
 
@@ -89,10 +106,11 @@ Symptoms:
 - Ticket sits in `ready` with assignee set, no `task_runs` row → poller
   isn't picking it up (see Slice C — clawta autonomous poller).
 - Ticket in `in_progress` but no recent comments and no worker process →
-  worker crashed silently; either `kanban-flow block` it or reset to
-  `ready` after investigation.
-- Ticket in `code_review` after PR was merged → merge bot didn't fire;
-  promote to `done` manually with `kanban-flow review <id> approved`.
+  worker crashed silently OR PR is open and awaiting review. Check
+  GitHub PR state first; if no PR, either `kanban-flow block` it or
+  reset to `ready` after investigation.
+- Ticket in `in_progress` long after the PR merged → merge-completion
+  step missed; promote to `done` manually with `kanban-flow done`.
 
 Recovery rule: never mutate `status` via raw SQL without also writing
 the matching event + comment. The CLI is the cheap path; backfilling
