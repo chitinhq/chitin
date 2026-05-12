@@ -9,9 +9,10 @@ Responsibilities, deliberately gated:
 - report cleanup candidates without deleting worktrees
 
 By default, no merge operation is performed. With --auto-merge, the script
-squash-merges only PRs that are green, mergeable, and have a current-head
-non-blocking Clawta review. Failing checks, conflicts, drafts, stale reviews,
-and REQUEST_CHANGES are never merged.
+squash-merges only PRs that are green, mergeable, mapped to an in-progress
+kanban ticket, and have a current-head APPROVE Clawta review. Failing checks,
+conflicts, drafts, unmapped PRs, stale reviews, COMMENT, and REQUEST_CHANGES
+are never merged.
 """
 
 from __future__ import annotations
@@ -194,7 +195,15 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
         and check_state in {"pass", "none", "unknown"}
         and is_review_nonblocking(review, head)
     )
-    auto_merge_ready = base_ready and check_state == "pass" and is_review_nonblocking(review, head, require_current_head=True)
+    auto_merge_ready = (
+        base_ready
+        and check_state == "pass"
+        and bool(ticket)
+        and status == "in_progress"
+        and bool(review)
+        and review.get("verdict") == "APPROVE"
+        and is_review_nonblocking(review, head, require_current_head=True)
+    )
     if merged:
         action = "mark-done" if ticket and status != "done" else "merged-noop"
     elif base_ready:
@@ -254,7 +263,7 @@ def merge_pr(item: dict[str, Any], apply: bool) -> None:
         return
     run([
         "gh", "pr", "merge", item["pr"], "--repo", REPO,
-        "--squash", "--delete-branch",
+        "--squash",
         "--subject", f"{item['branch']} (#{item['pr']})",
     ], timeout=120, check=True)
 
