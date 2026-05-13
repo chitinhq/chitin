@@ -22,9 +22,11 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,62 @@ def log(msg: str) -> None:
 
 def run(cmd: list[str], *, timeout: int = 60, check: bool = False) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
+
+
+GATE_PER_INVARIANT_TIMEOUT = 30
+GATE_TOTAL_TIMEOUT = 180  # All invariants combined.
+
+
+def run_regression_gate(pr_number: int, head: str) -> tuple[int, str]:
+    """Fetch the PR's merged-state tree into a temp worktree and run
+    scripts/regression-gate.sh against it.
+
+    Returns:
+        (rc, stdout_tail) where:
+          rc = 0    → all invariants passed
+          rc = 1    → at least one invariant broken (invariant fail)
+          rc >= 2   → aggregator/tool error (fail-closed; do not merge)
+
+        stdout_tail is the last ~40 lines of aggregator output, suitable
+        for posting as a kanban comment.
+    """
+    workdir = tempfile.mkdtemp(prefix=f"regression-gate-pr-{pr_number}-")
+    try:
+        # Worktree the PR's merge ref into the temp dir. --detach because
+        # we don't need a branch and want to avoid name collisions.
+        wt = run(
+            ["git", "worktree", "add", "--detach", workdir,
+             f"refs/pull/{pr_number}/merge"],
+            timeout=60,
+        )
+        if wt.returncode != 0:
+            return (2, f"git worktree add failed:\n{wt.stderr or wt.stdout}")
+
+        # Run the aggregator against the merged-state tree.
+        result = subprocess.run(
+            ["bash", "scripts/regression-gate.sh"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=GATE_TOTAL_TIMEOUT,
+            env=dict(
+                os.environ,
+                REGRESSION_GATE_TIMEOUT=str(GATE_PER_INVARIANT_TIMEOUT),
+            ),
+        )
+        tail = "\n".join(result.stdout.splitlines()[-40:])
+        return (result.returncode, tail)
+    except subprocess.TimeoutExpired as e:
+        return (2, f"aggregator total timeout ({GATE_TOTAL_TIMEOUT}s):\n{e}")
+    except Exception as e:  # noqa: BLE001 — fail-closed on any orchestration error
+        return (2, f"regression-gate orchestration error:\n{e}")
+    finally:
+        # Always tear down the worktree; ignore errors (best-effort cleanup).
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", workdir],
+            capture_output=True, timeout=30,
+        )
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
