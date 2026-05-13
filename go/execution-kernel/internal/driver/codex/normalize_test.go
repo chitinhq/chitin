@@ -87,6 +87,28 @@ func TestNormalize_ReadFile(t *testing.T) {
 	}
 }
 
+func TestNormalize_DriverCorpusProducesZeroUnknown(t *testing.T) {
+	cases := []HookInput{
+		{ToolName: "Bash", ToolInput: map[string]any{"command": "git status"}, Cwd: "/work"},
+		{ToolName: "apply_patch", ToolInput: map[string]any{"input": "*** Update File: README.md"}, Cwd: "/work"},
+		{ToolName: "read_file", ToolInput: map[string]any{"file_path": "README.md"}, Cwd: "/work"},
+		{ToolName: "mcp__github__list_issues", ToolInput: map[string]any{"owner": "x"}, Cwd: "/work"},
+		{ToolName: "Write", ToolInput: map[string]any{"file_path": "/tmp/x"}, Cwd: "/work"},
+		{ToolName: "Read", ToolInput: map[string]any{"file_path": "/tmp/x"}, Cwd: "/work"},
+	}
+	for _, in := range cases {
+		t.Run(in.ToolName, func(t *testing.T) {
+			a, err := Normalize(in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type == gov.ActUnknown {
+				t.Fatalf("%s produced ActUnknown", in.ToolName)
+			}
+		})
+	}
+}
+
 func TestNormalize_MCPToolRoutesToMCPCall(t *testing.T) {
 	cases := []struct {
 		name       string

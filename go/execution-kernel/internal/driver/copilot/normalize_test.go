@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	copilotsdk "github.com/github/copilot-sdk/go"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
+	copilotsdk "github.com/github/copilot-sdk/go"
 )
 
 // ptr returns a pointer to the given string value.
@@ -389,6 +389,9 @@ func TestNormalize_AllDocumentedKindsReturnSomething(t *testing.T) {
 			got := Normalize(req, "/work")
 			if got.Type == "" {
 				t.Errorf("Kind %q produced empty Action.Type", k)
+			}
+			if got.Type == gov.ActUnknown {
+				t.Errorf("Kind %q produced ActUnknown", k)
 			}
 			if got.Path != "/work" {
 				t.Errorf("Kind %q: Path got %q, want /work", k, got.Path)

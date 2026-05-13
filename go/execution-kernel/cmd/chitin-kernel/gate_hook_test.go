@@ -103,6 +103,56 @@ func TestEvalHookStdin_AllowReadIsExit0EmptyStdout(t *testing.T) {
 	}
 }
 
+func TestEvalHookStdin_UnknownToolWritesUnknownToolsJSONL(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	stdout, stderr, code := runHookCallAsAgent(t, env, "hermes", map[string]any{
+		"tool_name":       "future_hermes_tool",
+		"hook_event_name": "PreToolUse",
+		"tool_input":      map[string]any{"x": "y"},
+	}, "")
+	if code == 0 {
+		t.Fatalf("unknown tool should be denied, got allow stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	body, err := os.ReadFile(filepath.Join(env.chitin, "unknown-tools.jsonl"))
+	if err != nil {
+		t.Fatalf("read unknown-tools.jsonl: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("unknown-tools lines=%d want 1; body=%q", len(lines), string(body))
+	}
+	var row map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &row); err != nil {
+		t.Fatalf("parse unknown-tools row: %v", err)
+	}
+	if row["driver"] != "hermes" || row["raw_tool_name"] != "future_hermes_tool" {
+		t.Fatalf("unexpected unknown tool row: %#v", row)
+	}
+	if row["action_target"] != "future_hermes_tool" {
+		t.Fatalf("action_target=%v want future_hermes_tool", row["action_target"])
+	}
+}
+
+func TestEvalHookStdin_NoRecordStillLogsUnknownTool(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "future_codex_tool",
+		"tool_input": map[string]any{"x": "y"},
+		"cwd":        env.cwd,
+	})
+	var out, errOut bytes.Buffer
+	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "codex", "", "", false, true)
+
+	got, err := os.ReadFile(filepath.Join(env.chitin, "unknown-tools.jsonl"))
+	if err != nil {
+		t.Fatalf("unknown tool should log even with --no-record: %v", err)
+	}
+	if !strings.Contains(string(got), `"raw_tool_name":"future_codex_tool"`) {
+		t.Fatalf("unknown-tools.jsonl missing raw tool: %q", string(got))
+	}
+}
+
 func TestEvalHookStdin_CodexInnerHopAppendsOneDecisionPerToolCall(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	t.Setenv("CHITIN_DRIVER", "codex")

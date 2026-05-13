@@ -423,6 +423,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		writeJSONLine(errOut, map[string]string{"error": "hook_normalize", "message": err.Error()})
 		return claudecode.ExitNonBlockError
 	}
+	reportUnknownToolLogError(errOut, logUnknownTool(chitinDir(), action, agent, agent, payload.ToolName, absCwd, payload.HookEventName))
 
 	// --policy-file (or $CHITIN_POLICY_FILE, both passed as policyFile by
 	// main.go cmdGateEvaluate) bypasses the cwd-walk inheritance lookup

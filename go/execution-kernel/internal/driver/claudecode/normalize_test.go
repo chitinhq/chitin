@@ -27,6 +27,7 @@ func TestNormalize_AllDocumentedToolsProduceNonEmptyType(t *testing.T) {
 		"EnterPlanMode", "ExitPlanMode",
 		"EnterWorktree", "ExitWorktree",
 		"PushNotification", "RemoteTrigger",
+		"Notification",
 		"CronCreate", "CronDelete", "CronList",
 		"ScheduleWakeup",
 	}
@@ -77,6 +78,7 @@ func TestNormalize_ModernClaudeCodeToolMappings(t *testing.T) {
 		{"ExitWorktree maps to git.worktree.remove", "ExitWorktree", map[string]any{"path": "/wt"}, gov.ActGitWorktreeRemove},
 		{"PushNotification maps to http.request", "PushNotification", map[string]any{"endpoint": "https://x"}, gov.ActHTTPRequest},
 		{"RemoteTrigger maps to http.request", "RemoteTrigger", map[string]any{"url": "https://x"}, gov.ActHTTPRequest},
+		{"Notification maps to http.request", "Notification", map[string]any{"message": "done"}, gov.ActHTTPRequest},
 		{"CronCreate maps to file.write target=cron", "CronCreate", map[string]any{}, gov.ActFileWrite},
 		{"CronDelete maps to file.delete target=cron", "CronDelete", map[string]any{}, gov.ActFileDelete},
 		{"CronList maps to file.read target=cron", "CronList", map[string]any{}, gov.ActFileRead},
@@ -90,6 +92,30 @@ func TestNormalize_ModernClaudeCodeToolMappings(t *testing.T) {
 			}
 			if a.Type != tc.wantType {
 				t.Errorf("Type = %q, want %q", a.Type, tc.wantType)
+			}
+		})
+	}
+}
+
+func TestNormalize_AuditCorpusProducesZeroUnknown(t *testing.T) {
+	cases := []HookInput{
+		{ToolName: "Bash", ToolInput: map[string]any{"command": "git status"}, Cwd: "/cwd"},
+		{ToolName: "exec", ToolInput: map[string]any{"command": "ls"}, Cwd: "/cwd"},
+		{ToolName: "read", ToolInput: map[string]any{"path": "/repo/README.md"}, Cwd: "/cwd"},
+		{ToolName: "glob", ToolInput: map[string]any{"pattern": "*.go"}, Cwd: "/cwd"},
+		{ToolName: "memory_search", ToolInput: map[string]any{"query": "x"}, Cwd: "/cwd"},
+		{ToolName: "memory_get", ToolInput: map[string]any{"path": "MEMORY.md"}, Cwd: "/cwd"},
+		{ToolName: "session_status", ToolInput: map[string]any{}, Cwd: "/cwd"},
+		{ToolName: "Notification", ToolInput: map[string]any{"message": "done"}, Cwd: "/cwd"},
+	}
+	for _, in := range cases {
+		t.Run(in.ToolName, func(t *testing.T) {
+			a, err := Normalize(in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type == gov.ActUnknown {
+				t.Fatalf("%s produced ActUnknown", in.ToolName)
 			}
 		})
 	}
