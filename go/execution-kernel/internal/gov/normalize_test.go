@@ -69,6 +69,48 @@ func TestNormalize_TerminalGitForcePush(t *testing.T) {
 	}
 }
 
+func TestNormalize_RecentGenericToolNameVariants(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolName   string
+		input      map[string]any
+		wantType   ActionType
+		wantTarget string
+	}{
+		{"Bash case variant maps to shell", "Bash", map[string]any{"command": "ls -la"}, ActShellExec, "ls -la"},
+		{"glob maps to read", "glob", map[string]any{"pattern": "*.go"}, ActFileRead, "*.go"},
+		{"Memory_Search case variant maps to read", "Memory_Search", map[string]any{"query": "policy"}, ActFileRead, "policy"},
+		{"session_status maps to read", "session_status", map[string]any{}, ActFileRead, "session_status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize(tc.toolName, tc.input)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Fatalf("Type=%q want %q", a.Type, tc.wantType)
+			}
+			if a.Target != tc.wantTarget {
+				t.Fatalf("Target=%q want %q", a.Target, tc.wantTarget)
+			}
+		})
+	}
+}
+
+func TestNormalize_WhitespaceToolNameStaysUnknown(t *testing.T) {
+	a, err := Normalize(" \t\n ", map[string]any{"command": "ls -la"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != ActUnknown {
+		t.Fatalf("Type=%q want %q", a.Type, ActUnknown)
+	}
+	if a.Target != " \t\n " {
+		t.Fatalf("Target=%q want original whitespace", a.Target)
+	}
+}
+
 // extractPushBranch must skip leading flag tokens (-u, --set-upstream, -q, etc.)
 // before consuming the remote arg. Closes #52 — agent that adds -u silently
 // shifts the branch capture onto the remote name.

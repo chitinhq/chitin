@@ -15,7 +15,11 @@ import (
 // execute_code "shutil.rmtree(X)" must all produce the same Action.Type.
 // This is the bypass closure — one policy rule catches all routes.
 func Normalize(toolName string, args map[string]any) (Action, error) {
-	switch toolName {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		return Action{Type: ActUnknown, Target: toolName, Params: args}, nil
+	}
+	switch strings.ToLower(name) {
 	case "terminal", "bash", "shell":
 		return normalizeShell(args)
 	case "exec", "process":
@@ -30,7 +34,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// already encodes that policy.
 	// "Write" is the Claude Code + Hermes tool name (capitalized); "write"
 	// is the lower-level alias. Both normalize identically.
-	case "write", "edit", "Write":
+	case "write", "edit":
 		return normalizeWriteFile(args)
 	case "read_file":
 		path := stringArg(args, "path")
@@ -64,7 +68,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// Session-read tools: list, transcript, status, end-turn. All side-
 	// effect-free from the policy's perspective.
 	case "sessions_list", "sessions_history", "sessions_yield", "session_status":
-		return Action{Type: ActFileRead, Target: toolName}, nil
+		return Action{Type: ActFileRead, Target: strings.ToLower(name)}, nil
 	// Session-mutate tools: spawn subagents, send to other sessions, manage
 	// subagents, schedule cron jobs. Cross-agent communication and scheduling
 	// → delegate.task. Bypass closure with `delegate_task`: any rule that
@@ -83,7 +87,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 			target = stringArg(args, "target")
 		}
 		if target == "" {
-			target = toolName
+			target = strings.ToLower(name)
 		}
 		return Action{Type: ActDelegateTask, Target: target}, nil
 	// cron: granular target is "<action>:<name>" so policy rules can
@@ -92,16 +96,16 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// to the prior target-then-name lookup so existing rules keep firing.
 	case "cron":
 		action := stringArg(args, "action")
-		name := stringArg(args, "name")
-		if action != "" && name != "" {
-			return Action{Type: ActDelegateTask, Target: action + ":" + name}, nil
+		jobName := stringArg(args, "name")
+		if action != "" && jobName != "" {
+			return Action{Type: ActDelegateTask, Target: action + ":" + jobName}, nil
 		}
 		target := stringArg(args, "target")
 		if target == "" {
-			target = stringArg(args, "name")
+			target = jobName
 		}
 		if target == "" {
-			target = toolName
+			target = strings.ToLower(name)
 		}
 		return Action{Type: ActDelegateTask, Target: target}, nil
 	// subagents: granular target is "<action>:<agentId>" so policy rules
@@ -118,7 +122,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 			target = stringArg(args, "agentId")
 		}
 		if target == "" {
-			target = toolName
+			target = strings.ToLower(name)
 		}
 		return Action{Type: ActDelegateTask, Target: target}, nil
 	// External-call tools: image analysis/generation, web search/fetch.
@@ -137,13 +141,13 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 			target = stringArg(args, "url")
 		}
 		if target == "" {
-			target = toolName
+			target = strings.ToLower(name)
 		}
 		return Action{Type: ActHTTPRequest, Target: target}, nil
 	case "image_generate":
 		target := stringArg(args, "prompt")
 		if target == "" {
-			target = toolName
+			target = strings.ToLower(name)
 		}
 		return Action{Type: ActHTTPRequest, Target: target}, nil
 	case "web_search", "ollama_web_search":
@@ -156,7 +160,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// because spawning a subagent is the same shape as delegating work: cede
 	// a tool budget to a subordinate agent. Target extraction follows the
 	// driver-layer pattern: description > subagent_type > agent_id > toolName.
-	case "Agent":
+	case "agent":
 		target := stringArg(args, "description")
 		if target == "" {
 			target = stringArg(args, "subagent_type")
@@ -170,12 +174,14 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 		return Action{Type: ActDelegateTask, Target: target}, nil
 	case "search_files":
 		return Action{Type: ActFileRead, Target: stringArg(args, "query")}, nil
+	case "glob":
+		return Action{Type: ActFileRead, Target: stringArg(args, "pattern")}, nil
 	case "skill_view":
 		return Action{Type: ActFileRead, Target: stringArg(args, "skill")}, nil
 	case "todo":
 		return Action{Type: ActFileWrite, Target: "todo"}, nil
 	}
-	return Action{Type: ActUnknown, Target: toolName, Params: args}, nil
+	return Action{Type: ActUnknown, Target: name, Params: args}, nil
 }
 
 func normalizeShell(args map[string]any) (Action, error) {

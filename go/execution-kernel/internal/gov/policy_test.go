@@ -379,6 +379,54 @@ func TestPolicy_BaselineDeniesCurlPipeBash(t *testing.T) {
 	}
 }
 
+func TestPolicy_BaselineGivesIntentionalUnknownsNamedDenyRules(t *testing.T) {
+	cwd, _ := os.Getwd()
+	for !fileExists(filepath.Join(cwd, "chitin.yaml")) {
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatal("chitin.yaml not found walking up")
+		}
+		cwd = parent
+	}
+	policy, _, err := LoadWithInheritance(cwd)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		a    Action
+		want string
+	}{
+		{
+			name: "claude code generic exec",
+			a:    Action{Type: ActCustomTool, Target: "claude-code/exec"},
+			want: "deny-claude-code-generic-exec-tool",
+		},
+		{
+			name: "hermes clarify",
+			a:    Action{Type: ActUnknown, Target: "clarify"},
+			want: "deny-hermes-clarify-unmodeled",
+		},
+		{
+			name: "clawta notification",
+			a:    Action{Type: ActUnknown, Target: "Notification"},
+			want: "deny-clawta-notification-unmodeled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := policy.Evaluate(tc.a)
+			if d.Allowed {
+				t.Fatalf("Allowed=true want deny")
+			}
+			if d.RuleID != tc.want {
+				t.Fatalf("RuleID=%q want %q", d.RuleID, tc.want)
+			}
+		})
+	}
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
