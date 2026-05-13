@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Stats — aggregate chain analytics keyed by an axis.
@@ -84,9 +85,19 @@ func ComputeStats(axis string) (*Stats, error) {
 // path exists for tests + advanced operator scenarios; production
 // CLI use should call ComputeStats.
 func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
+	return ComputeStatsInWindow(axis, chitinDir, 0, time.Time{})
+}
+
+// ComputeStatsInWindow is ComputeStatsIn with an optional age window.
+// windowHours <= 0 preserves all-time behavior. now is injectable for
+// deterministic tests; zero uses time.Now().UTC().
+func ComputeStatsInWindow(axis, chitinDir string, windowHours int, now time.Time) (*Stats, error) {
 	if !IsSupportedAxis(axis) {
 		return nil, fmt.Errorf("unsupported axis %q (want one of: %s)",
 			axis, strings.Join(SupportedAxes, ", "))
+	}
+	if windowHours < 0 {
+		return nil, fmt.Errorf("window_hours must be >= 0")
 	}
 	if chitinDir == "" {
 		home, err := os.UserHomeDir()
@@ -104,6 +115,14 @@ func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
 		Axis:        axis,
 		Buckets:     make(map[string]BucketStats),
 		Floundering: computeFlounderingCalibration(matches),
+	}
+	var cutoff time.Time
+	if windowHours > 0 {
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		cutoff = now.Add(-time.Duration(windowHours) * time.Hour)
+		stats.Window = fmt.Sprintf("%dh", windowHours)
 	}
 	for _, p := range matches {
 		// Note: we read the whole file and split on newlines for
@@ -123,6 +142,9 @@ func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
 			}
 			var ev map[string]interface{}
 			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				continue
+			}
+			if !eventWithinWindow(ev, cutoff) {
 				continue
 			}
 			etype, _ := ev["event_type"].(string)
@@ -156,6 +178,24 @@ func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
 		stats.Buckets[k] = b
 	}
 	return stats, nil
+}
+
+func eventWithinWindow(ev map[string]interface{}, cutoff time.Time) bool {
+	if cutoff.IsZero() {
+		return true
+	}
+	ts, _ := ev["ts"].(string)
+	if ts == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339, ts)
+	}
+	if err != nil {
+		return false
+	}
+	return !parsed.Before(cutoff)
 }
 
 func extractAxis(ev, payload map[string]interface{}, axis string) string {
