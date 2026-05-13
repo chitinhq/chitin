@@ -1,23 +1,61 @@
 # Spec: sticky-state recovery rotator for chitin gate
 
-Date: 2026-05-12
+Date: 2026-05-12 (revised 2026-05-13 after Copilot review)
 Status: spec — open
 Kanban: `t_c8307795` (priority 35, but raised in importance — see "Why now")
 Author: claude-code (operator-controlled, spec writer)
 
-## Why now
+## Revision note (2026-05-13)
 
-Chitin's deny-cascade lockdown has bit live operations at least three times in 2026:
+First draft of this spec described an `envelope-closed` cascade as the
+motivating incident and proposed a 5s polling detector against a
+hypothetical `denial_events` append-only table. Copilot's review on
+PR #554 caught **six substantive design errors**, all confirmed by
+reading `internal/gov/escalation.go` and `gate.go`:
 
-- **2026-05-04** — envelope-closed deny-cascade halted the swarm for 3h before operator could intervene. Memory `feedback_sticky_state_needs_recovery_automation.md` records this as the originating incident.
-- **2026-05-11 (#509)** — same family hit twice during one implementation session, each requiring operator reset.
-- **Implied by PR #513's Copilot findings** — `Counter.Reset()` doesn't clear `denial_events`, so even after operator reset, the next denial can re-trip immediately. That's a related-but-distinct sticky-state bug now tracked separately on `t_8dcac720`.
+1. The table is `denials` (aggregate count + first_ts/last_ts), not
+   `denial_events`. There is no append-only event stream to poll.
+2. `Counter.Reset()` already clears `denials` AND `agent_state` — the
+   "Reset doesn't clear" claim cited from PR #513's review was either
+   misremembered or referred to an earlier code state.
+3. All `envelope-*` rule IDs are **already exempt** from counter
+   increment (`gate.go`, commit 93cf4a7, "Milestone A primitives").
+   The 2026-05-04 envelope-closed cascade class is closed in code
+   today; the motivating example was obsolete.
+4. A 5s polling tick can lose the race against a burst that arrives
+   in under 5s — backoff decision lands after lockdown trips.
+5. Backoff store keyed `(agent, rule_id)` but pre-eval check uses
+   `agent` alone; rule_id isn't known pre-eval. Internally inconsistent.
+6. Spec referenced `gov.CountActionDenialsSince` — no such function.
 
-Pattern is consistent: **a single root failure produces a cascade of identical denies, each adding to the counter, until lockdown trips. Operator reset is the only recovery, but reset doesn't address the root cause, so the cascade re-fires.** This spec closes the recurring outage.
+This revision corrects all six. The rotator's purpose is unchanged
+(prevent same-rule cascades from accumulating into lockdown); the
+mechanism is reworked to use the chitin internals as they actually
+exist today.
 
-## Problem shape
+## Why still relevant after the envelope-* exemption
 
-Chitin's escalation today (from `chitin.yaml`):
+Envelope-* is exempt from the counter — that class of cascade is
+closed. But ANY OTHER deny rule can still cascade. Concrete pattern
+that triggers today (observed during this very session, 2026-05-12):
+
+- Operator runs `chitin-kernel --help` → denied with
+  `governance-mutation-authority-required` (the
+  `t_580bc20e` friction).
+- A worker in a tight retry loop hitting the same gov-authority
+  rule could climb the counter ladder in seconds. Workers don't
+  back off natively.
+- Same shape for any rule with a misclassification root cause:
+  a single broken upstream condition produces a chain of identical
+  denies, each incrementing the counter, until lockdown.
+
+The envelope-* fix shut one door. The rotator generalizes the
+defense: for ANY deny rule, recognize same-rule cascades and back
+off the agent before the counter reaches lockdown.
+
+## Problem shape (corrected)
+
+Chitin's escalation today (from `chitin.yaml` policy block):
 
 ```yaml
 elevated_threshold: 3
@@ -26,162 +64,307 @@ lockdown_threshold: 10
 max_retries_per_action: 3
 ```
 
-Plus the `denial_events` table in `internal/gov/escalation.go` records every denial.
+Storage (verified against `internal/gov/escalation.go`):
 
-What happens during a cascade:
+```sql
+CREATE TABLE denials (
+    agent TEXT NOT NULL,
+    action_fp TEXT NOT NULL,    -- action fingerprint (action-type + target hash)
+    count INTEGER NOT NULL DEFAULT 0,
+    first_ts TEXT NOT NULL,
+    last_ts TEXT NOT NULL,
+    PRIMARY KEY (agent, action_fp)
+);
+CREATE TABLE agent_state (
+    agent TEXT PRIMARY KEY,
+    total INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
+    locked_ts TEXT
+);
+```
 
-1. Some upstream condition fails (envelope closed, lock stale, transient I/O error, etc.).
-2. Every subsequent agent action evaluates against the same broken state and is denied with the same `rule_id`.
-3. Counter climbs through `elevated → high → lockdown` in seconds.
-4. Lockdown blocks ALL further actions, including the operator's read-only diagnostics (the bug separately filed as `t_580bc20e`).
-5. Operator manually resets. Cascade resumes if root cause persists.
+The per-(`agent`, `action_fp`) row aggregates count + last_ts. **This
+is sufficient for cascade detection** without a separate event
+stream: a row whose `count >= 5` and `last_ts` is recent (within last
+30s) is a cascading row. We don't need per-denial timestamps; we
+need "is this single fingerprint accumulating fast?"
 
-**The gap:** chitin has no mechanism to recognize "this is a cascade, not normal traffic, slow down upstream so the gate stops accumulating pressure."
+The `agent_state.total` rolls up across fingerprints and drives the
+lockdown ladder via `RecordDenial`.
 
 ## Decision
 
-Add a **rotator** — a small detection + backoff loop that runs alongside the gate and:
+Add a **rotator** that hooks into `Counter.RecordDenial` synchronously
+(not via polling) and:
 
-1. **Detects cascade patterns** in the live denial stream (same `rule_id` × same `agent` repeating within a short window).
-2. **Applies progressive backoff** to the cascading agent: refuses to dispatch new gate evaluations from that agent for an increasing window (30s → 5m → 30m). This is "pressure relief at the source" rather than "auto-reset the gate."
-3. **Never auto-resets lockdown.** Lockdown is the fail-closed end-state; only operator authority unlocks it. The rotator's job is to PREVENT lockdown, not to silently recover from it.
-4. **Surfaces to operator** when backoff is engaged: posts to `#ares` (Hermes-side channel) with the agent, rule, count, and current backoff window. So the operator can investigate the root cause while the swarm keeps making forward progress on non-cascading agents.
+1. **On each denial recorded**, inspects the row that was just
+   incremented. If `count >= cascade_active_count` and the previous
+   value was below the threshold (i.e., this denial crossed the line),
+   engage backoff for the agent.
+2. **Backs off the agent broadly** — pauses all gate evaluations
+   from that agent for an exponentially-growing window (30s → 5m
+   → 30m). The backoff is agent-level because most cascade root
+   causes are upstream state (lock, envelope, branch) that affect
+   all agent actions, not just one.
+3. **Marks `rotator:backoff` denials as counter-exempt**, alongside
+   envelope-*, so backoff responses don't themselves accumulate
+   toward lockdown. (The single most important fix from review.)
+4. **Never auto-resets lockdown.** Lockdown stays operator-only.
+   Rotator's job is to **prevent** lockdown, not bypass operator
+   authority once it's reached.
+5. **Surfaces to operator** via a chain event on backoff engage,
+   queryable via `chitin-kernel chain related --kind rotator.cascade_severe`.
 
 ## Architecture
 
-### Component 1: cascade detector
+### Hook point: `Counter.RecordDenial`
 
-A goroutine spawned by the gate at startup. Reads the `denial_events` table on a short tick (default 5s). Per (`agent`, `rule_id`) bucket in the last 60s window:
-
-- 3 denials → CASCADE_EMERGING (info-level log; no action yet)
-- 5 denials → CASCADE_ACTIVE (engage backoff for this agent)
-- 8 denials → CASCADE_SEVERE (escalate backoff, post to #ares)
-- 10 denials → STILL_HITS_LOCKDOWN (per existing threshold — operator must reset)
-
-Threshold values land in `chitin.yaml` under a new `rotator:` block so operators can tune per deployment:
-
-```yaml
-rotator:
-  detector_tick_seconds: 5
-  cascade_window_seconds: 60
-  cascade_emerging_count: 3
-  cascade_active_count: 5
-  cascade_severe_count: 8
-  backoff_initial_seconds: 30
-  backoff_max_seconds: 1800
-  backoff_growth: 5.0      # exponential factor
-  alert_channel: "ares"    # operator channel for cascade-severe posts
-```
-
-### Component 2: backoff store
-
-In-memory map: `(agent, rule_id) → BackoffState{ until_unix, attempts }`. Persists ONLY in-memory (rotator state is intentionally ephemeral; restart clears it, which is the right behavior for a transient-state guard).
-
-When the gate evaluates a new action, it consults the backoff store BEFORE running the rule matching:
+Modify `internal/gov/escalation.go::RecordDenial(agent, fp, weight)` to
+return cascade-detection info alongside its existing return value, or
+add a sibling method `RecordDenialAndCheck` that returns a
+`CascadeSignal` struct. Either way: no separate goroutine, no polling.
 
 ```go
-// pseudo-go
-func (g *Gate) Evaluate(req Request) Decision {
-    if state := g.rotator.Backoff(req.Agent); state != nil && time.Now().Before(state.Until) {
-        return Decision{
-            Allowed: false,
-            RuleID:  "rotator:backoff",
-            Reason:  fmt.Sprintf("rotator backoff active for agent=%s rule=%s until=%s; root cause likely persistent — investigate before retry", req.Agent, state.RuleID, state.Until),
-            Suggestion: "Operator: read 'chitin-kernel decisions recent' to find the cascading rule. Fix the root cause (lock cleanup, envelope re-open, etc.). Backoff expires automatically.",
-        }
-    }
-    // ... existing evaluation logic
+// pseudo-go — exact shape decided by implementer
+type CascadeSignal struct {
+    Detected    bool
+    Agent       string
+    ActionFP    string
+    CountInRow  int   // current row count
+    LastTs      time.Time
+    Recommendation string  // "back off" | "lockdown imminent"
+}
+
+func (c *Counter) RecordDenial(agent, fp string, weight int) (CascadeSignal, error) {
+    // existing logic: INSERT/UPDATE denials row, UPDATE agent_state.total
+    // new: after UPDATE, read back the row's new count + last_ts; if
+    // count crossed cascade_active_count threshold AND last_ts is
+    // recent (within cascade_window_seconds), return Detected=true.
 }
 ```
 
-The backoff deny is logged in `denial_events` like any other deny, but with `rule_id: "rotator:backoff"` so it's distinguishable in audit + queryable in `chitin-kernel chain stats`.
+The gate calls `RecordDenial`, gets `CascadeSignal`, and if
+`Detected=true` engages the rotator's backoff store.
 
-### Component 3: operator surface
+### Backoff store (in-memory, per-agent)
 
-Backoff state is observable via two new chitin-kernel subcommands:
+```go
+type BackoffState struct {
+    Until    time.Time
+    Attempts int   // how many cascade-severe events for this agent
+}
+
+// in-process map; rotator.New() initializes; cleared on process restart.
+var backoff sync.Map  // agent (string) -> BackoffState
+```
+
+Pre-eval check in `Gate.Evaluate`:
+
+```go
+if state, ok := backoff.Load(req.Agent); ok && time.Now().Before(state.Until) {
+    return Decision{
+        Allowed:    false,
+        RuleID:     "rotator:backoff",   // <-- exempt from counter, see below
+        Reason:     "rotator backoff active for agent — same-rule cascade detected; root cause likely persistent",
+        Suggestion: "Operator: chitin-kernel rotator status; chitin-kernel decisions recent | find the cascading rule; fix root cause. Backoff expires automatically.",
+    }
+}
+```
+
+Crucial: place this check BEFORE the existing rule evaluation, but
+AFTER envelope-budget evaluation, so:
+
+- Envelope-budget denies still fire normally (operator-imposed caps).
+- Rotator backoff applies to policy-deny territory.
+
+### Counter-exempt list: add `rotator:backoff`
+
+In `gate.go`, the existing exempt block:
+
+```go
+envelopeDeny := d.RuleID == "envelope-exhausted" ||
+    d.RuleID == "envelope-closed" ||
+    d.RuleID == "envelope-not-found"
+if !d.Allowed && !envelopeDeny && g.Counter != nil {
+    // record to counter
+}
+```
+
+becomes:
+
+```go
+exempt := d.RuleID == "envelope-exhausted" ||
+    d.RuleID == "envelope-closed" ||
+    d.RuleID == "envelope-not-found" ||
+    d.RuleID == "rotator:backoff"   // <-- new
+if !d.Allowed && !exempt && g.Counter != nil {
+    // record to counter
+}
+```
+
+Without this carve-out, backoff denies would themselves push the
+counter past lockdown — undermining the rotator's purpose. (This was
+review-finding #6.)
+
+### Backoff growth + clearing
+
+When a cascade signal fires for an agent:
+
+- First time: `until = now + backoff_initial_seconds (30s)`.
+- Subsequent fires while backoff is still active: nothing changes
+  (the existing window already covers it).
+- Subsequent fires AFTER expiry but within `cascade_window_seconds`:
+  `until = now + min(prev_window * backoff_growth, backoff_max_seconds)`.
+- A clean window with no cascades for `backoff_max_seconds` resets
+  `Attempts` to 0.
+
+Clearing: `chitin-kernel rotator clear --agent=<id>` (operator-authority
+gated).
+
+### Operator surface
+
+Two new chitin-kernel subcommands:
 
 ```bash
 chitin-kernel rotator status
-  → JSON: list of active backoff windows with (agent, rule, until_ts, attempts)
+  → JSON: active backoff windows: [{agent, until_ts, attempts, last_cascade_ts}]
 
-chitin-kernel rotator clear --agent=<id> [--rule-id=<id>]
-  → operator-authority command: clears one or all backoff windows for that agent.
-    Use when the root cause has been fixed and the operator wants to resume.
+chitin-kernel rotator clear --agent=<id>
+  → operator-authority command: removes the backoff window for that agent
 ```
 
-`rotator clear` is gated by chitin's existing operator-mutation-authority rule (mode = operator-authority required), same posture as gate reset.
+### Config block (chitin.yaml)
 
-### Component 4: alert path
+```yaml
+rotator:
+  cascade_window_seconds: 30        # "recent" definition for last_ts
+  cascade_active_count: 5           # row count threshold to engage backoff
+  cascade_severe_count: 8           # emits rotator.cascade_severe chain event
+  backoff_initial_seconds: 30
+  backoff_max_seconds: 1800
+  backoff_growth: 5.0
+```
 
-When CASCADE_SEVERE fires (8 denies in 60s), the rotator emits a chain event:
+Backwards-compatible — defaults apply if absent.
+
+### Chain event on severe cascade
+
+When `count >= cascade_severe_count`, emit:
 
 ```json
 {
   "kind": "rotator.cascade_severe",
   "v": 1,
   "ts": "<RFC3339>",
-  "agent": "...",
+  "agent": "<id>",
   "payload": {
-    "rule_id": "...",
-    "count_in_window": 8,
-    "window_seconds": 60,
+    "action_fp": "<fingerprint>",
+    "count_in_row": 8,
+    "last_ts": "<RFC3339>",
     "backoff_until": "<RFC3339>",
-    "sample_targets": ["…three sample action_target strings…"]
+    "backoff_attempts": 1
   }
 }
 ```
 
-This event lands in the chain ledger. Hermes' standup cron (per spec PR #549) picks it up via `chitin-kernel chain related --kind rotator.cascade_severe` and surfaces in the next standup. **No DM path required** (consistent with the amended Hermes+Clawta architecture, PR #545).
-
-For latency-sensitive cases (operator wants real-time, not next-standup), the rotator ALSO writes to `~/.openclaw/logs/rotator.log` for the existing journalctl-tailing operator pattern. Optional `--alert-channel` config writes to a Discord channel via `openclaw message send` (best-effort, never blocks the gate).
+Picked up by Hermes' next standup via `chitin-kernel chain related
+--kind rotator.cascade_severe` (the `--kind` flag added by spec #549).
 
 ## Acceptance
 
-1. **Reproduce the 2026-05-04 cascade pattern** via a test fixture: synthesize 10 envelope-closed denials within 5s for the same agent, against the pre-rotator gate. Verify lockdown trips. **Same fixture against the post-rotator gate** triggers backoff at the 5-denial mark and prevents lockdown.
-2. **`chitin-kernel rotator status`** returns the active backoff window with correct fields during a CASCADE_ACTIVE state.
-3. **Backoff expires automatically** when `time.Now() >= until_unix`. After expiry, normal evaluation resumes.
-4. **`chitin-kernel rotator clear`** is operator-authority gated and clears the named window. Worker agents calling it are denied with the existing operator-mutation-authority rule.
-5. **CASCADE_SEVERE emits a `rotator.cascade_severe` chain event** queryable via `chitin-kernel chain related --kind rotator.cascade_severe` (the `--kind` flag added by spec #549).
-6. **No false positives on healthy traffic.** A test fixture with 20 denials spread across 5 different rule_ids within 60s does NOT trigger backoff (the per-(agent, rule_id) bucketing prevents this).
-7. **Existing lockdown behavior preserved.** If somehow 10 denies still accumulate in the lockdown_threshold window (e.g., 10 different rule_ids), lockdown still fires. The rotator REDUCES the surface area but doesn't replace lockdown.
+1. **Reproduce a cascade against pre-rotator gate**: synthesize 10
+   denials for the same `(agent, action_fp)` within 3s. Verify
+   lockdown trips at the 10th. **Same fixture against the
+   post-rotator gate**: backoff engages at the 5th, agent's
+   subsequent evals are rejected with `rule_id=rotator:backoff`,
+   counter does NOT advance past 5, lockdown does NOT trip.
+2. **Backoff denies are counter-exempt**: synthesize 20 rotator:backoff
+   denials in a row; verify `agent_state.total` did not advance for
+   the affected agent.
+3. **`chitin-kernel rotator status`** returns the active backoff
+   window with correct fields during a cascade-active state.
+4. **Backoff expires automatically** at `until` time; subsequent
+   gate evaluations are no longer denied with `rotator:backoff`.
+5. **`chitin-kernel rotator clear`** is operator-authority gated;
+   worker invocations are denied with the existing
+   gov-mutation-authority rule.
+6. **`rotator.cascade_severe` chain event** is emitted when count
+   reaches 8 in the cascade window. Queryable via the `--kind`
+   flag from spec #549.
+7. **No false positives** on mixed traffic: 20 denials across 5
+   different `action_fp` values (4 each) do NOT trigger backoff
+   (per-fingerprint count threshold means single-fp cascades only).
+8. **Existing lockdown still fires** if denials genuinely spread
+   across many fingerprints in a way the rotator can't recognize —
+   rotator REDUCES the surface, doesn't replace lockdown.
 
 ## Out of scope
 
-- **Auto-reset of lockdown.** Lockdown is intentionally operator-only. The rotator prevents lockdown by relieving pressure earlier; it does not bypass operator authority when lockdown has nonetheless been reached.
-- **Cross-machine rotator coordination.** Single-operator-box deployment for now; the in-memory state per host is fine. When the swarm runs on multiple boxes, the rotator would need a shared backoff store (Redis / SQLite over NFS / etc.) — separate ticket.
-- **Predictive ML-based cascade detection.** The threshold-based detector is deterministic and auditable. ML adds opacity for marginal recall gains. Out unless the deterministic detector shows real false-positive issues in production.
-- **Root-cause auto-remediation.** The rotator pauses the cascade but doesn't FIX whatever broke upstream (envelope closure, lock contention, etc.). Root-cause fixing is a different layer; operator or a dedicated remediation worker handles it.
-- **Fixing `Counter.Reset()` to clear `denial_events`.** Separate ticket: `t_8dcac720` (PR #513 followup). Wired tangentially because once that's fixed, the rotator's data source is cleaner.
+- **Auto-reset of lockdown.** Lockdown is intentionally operator-only.
+- **Cross-machine rotator coordination.** In-memory state per host is
+  fine for single-operator-box deployment. Multi-host needs a shared
+  backoff store — separate ticket.
+- **Predictive ML cascade detection.** The threshold-based detector
+  is deterministic and auditable.
+- **Root-cause auto-remediation.** Rotator pauses the cascade; doesn't
+  fix the upstream (lock cleanup, etc.).
+- **A separate detector goroutine / polling loop.** Synchronous hook
+  inside `RecordDenial` avoids the race the first-draft polling
+  design suffered from (review finding #4).
+- **Per-fingerprint backoff.** Backoff is per-agent only (review
+  finding #5 — rule_id isn't available pre-eval); using the
+  fingerprint as the cascade detector but the agent as the backoff
+  key is the right asymmetry.
 
 ## Implementation pointers for the worker
 
-- **Detector + backoff** live in `internal/gov/rotator/` (new package). Goroutine spawned from `gate_hook.go` startup. The detector reads via `gov.CountActionDenialsSince` (already exists per PR #513's introduction) or directly against the `denial_events` SQLite table.
-- **Config block** in `chitin.yaml`: add the `rotator:` map. Default values land if the block is absent (backward-compatible).
-- **CLI subcommands** in `cmd/chitin-kernel/`: new file `rotator.go` with `cmdRotatorStatus` and `cmdRotatorClear`. Add the dispatch in `main.go` next to `case "decisions":`.
-- **Chain event emission** uses the existing `chitin-kernel emit` path (or directly via the in-process `gov.WriteLog`).
-- **Test fixtures** in `internal/gov/rotator/rotator_test.go` cover the acceptance scenarios. Reuse the `denial_events` fixture pattern from existing escalation_test.go.
+- **Hook point**: `internal/gov/escalation.go::RecordDenial`. Add the
+  cascade-signal return shape; existing call sites need to handle the
+  new return value (or use a sibling method to keep call sites that
+  don't care unchanged).
+- **Backoff store**: new file `internal/gov/rotator.go` (NOT a separate
+  package — sits next to the Counter so it can access the same DB
+  handle if it grows beyond in-memory in a future revision).
+- **Gate hook**: `internal/gov/gate.go::Evaluate` — pre-eval backoff
+  check + counter-exempt list update.
+- **CLI subcommands**: new file `cmd/chitin-kernel/rotator.go`, mirror
+  the patterns in `decisions.go` and `replay_cmd.go`.
+- **Chain event emission**: use the existing `WriteLog` path that
+  produces JSONL rows in `~/.chitin/gov-decisions-*.jsonl`.
+- **Tests**: `internal/gov/rotator_test.go` covering all 8 acceptance
+  cases. Reuse the existing `escalation_test.go` fixture patterns
+  (synthetic agent, in-memory SQLite).
+- **Config**: extend the YAML parser to accept the `rotator:` block.
+  Defaults defined as package-level constants so absent block →
+  default values, no warning.
 
-## Companion runbook
+## Companion runbook (`docs/runbooks/sticky-state-recovery.md`)
 
-After implementation, add `docs/runbooks/sticky-state-recovery.md` covering:
+After implementation, add a short operator runbook:
 
-- How to read `chitin-kernel rotator status` during a swarm-stall episode
-- When to `chitin-kernel rotator clear` (and when NOT to — if the root cause isn't fixed, clearing just re-fires the cascade)
-- How to find the root cause via `chitin-kernel decisions recent --window-hours 1 --limit 200 | jq 'group_by(.rule_id) | …'`
-- Reference: this spec + the originating incident memory
-
-## Why the rotator is upstream of lockdown, not a replacement for it
-
-Lockdown is the fail-closed end-state. It's the kernel's last-ditch protection against "we genuinely can't tell what's happening; refuse all action until human verifies." That's the right behavior under true uncertainty.
-
-Cascades are NOT true uncertainty — they're a recognizable pattern (same rule, same agent, in a short window). The rotator handles that pattern at the layer where it's actually detectable (the deny-event stream), letting the kernel stop accumulating fear-pressure into lockdown for what's really a single recoverable upstream issue.
-
-In short: **lockdown still guards real unknowns. The rotator just stops single-root-cause cascades from masquerading as unknowns.**
+- How to read `chitin-kernel rotator status` during a swarm-stall
+  episode.
+- When to `chitin-kernel rotator clear --agent=<id>` (after root
+  cause is fixed) vs when NOT to (clearing without fixing just
+  restarts the cascade).
+- How to find the root cause via `chitin-kernel decisions recent
+  --window-hours 1 --limit 200 | jq 'group_by(.rule_id) | …'`.
 
 ## Related
 
-- Memory `feedback_sticky_state_needs_recovery_automation.md` (2026-05-04) — the originating prediction this spec finally addresses.
-- `t_8dcac720` — PR #513 followup on `Counter.Reset()` not clearing `denial_events` (related sticky-state bug; rotator data quality benefits when that lands).
-- `t_580bc20e` — separate triage ticket about read-only diagnostics being blocked by gov-mutation-authority; relevant because once lockdown is active today, operator can't even READ the diagnostics they need.
-- Spec PR #547 (no-commit-to-protected) — same "pre-empt the bad outcome at the right layer" pattern; both rules close gov-side gaps.
-- Spec PR #549 (swarm observability via chitin CLI) — the rotator's chain events are queryable via the CLI surfaces that spec aligns.
+- Memory `feedback_sticky_state_needs_recovery_automation.md` —
+  originating prediction (2026-05-04). Note: that specific incident's
+  rule class is now exempt; the rotator generalizes the defense.
+- `t_8dcac720` — PR #513 followup on Counter.Reset semantics. The
+  earlier review finding cited there ("Counter.Reset doesn't clear
+  denial_events") doesn't match current code; that ticket should
+  also be revisited under reality of `denials` + `agent_state`
+  schema with `DELETE FROM` in `Reset`. Probably a no-op now or
+  scope-narrowed.
+- `t_580bc20e` — read-only diagnostics blocked by gov-mutation-
+  authority during lockdown; rotator reduces the chance of getting
+  to lockdown.
+- Spec PR #549 (swarm observability via chitin CLI) — chain event
+  flow used here.
+- Spec PR #548 (no-gov-self-mod-via-shell) — same "pre-empt the bad
+  outcome at the right layer" pattern.
