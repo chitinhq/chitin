@@ -71,6 +71,13 @@ func blastRadiusAxes(input HookInput) (axes map[string]float64, reason string) {
 
 	// Bash — shape by command pattern
 	if input.ToolName == "Bash" {
+		// Allowlist: chitin-kernel gate reset/evaluate are always safe
+		if regexp.MustCompile(`^\s*(?:\./)?chitin-kernel\s+gate\s+(reset|evaluate)\b`).MatchString(command) {
+			return map[string]float64{
+				"reversibility": 1.0, "scope": 0.0,
+				"visibility": 0.0, "counterparties": 0.0,
+			}, "allowlisted-chitin-kernel-gate"
+		}
 		if regexp.MustCompile(`\brm\s+(-[rfRF]+\s+|--recursive\s+)`).MatchString(command) {
 			return map[string]float64{
 				"reversibility": 0.0, "scope": 1.0,
