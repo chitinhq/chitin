@@ -108,6 +108,72 @@ class PickDriverTest(unittest.TestCase):
         self.assertEqual(payload["router_mode"], "deterministic")
         self.assertIn("invalid model", payload["reasoning"])
 
+    def test_deterministic_model_selection_uses_complexity(self):
+        cards = {
+            "claude-code.json": json.dumps(
+                {
+                    "id": "claude-code",
+                    "capabilities": [{"skill": "python"}],
+                    "models": [
+                        {"id": "claude-haiku-4-5", "premium_cost": 0.15},
+                        {"id": "claude-sonnet-4-6", "premium_cost": 0.5},
+                        {"id": "claude-opus-4-7", "premium_cost": 1.0},
+                    ],
+                }
+            )
+        }
+
+        low = self.run_picker(
+            {"complexity": "low", "capabilities": ["python"]},
+            cards,
+            llm_json={"driver": "missing", "model": "x", "reasoning": "bad"},
+        )
+        med = self.run_picker(
+            {"complexity": "med", "capabilities": ["python"]},
+            cards,
+            llm_json={"driver": "missing", "model": "x", "reasoning": "bad"},
+        )
+        high = self.run_picker(
+            {"complexity": "high", "capabilities": ["python"]},
+            cards,
+            llm_json={"driver": "missing", "model": "x", "reasoning": "bad"},
+        )
+
+        self.assertEqual(json.loads(low.stdout)["model"], "claude-haiku-4-5")
+        self.assertEqual(json.loads(med.stdout)["model"], "claude-sonnet-4-6")
+        self.assertEqual(json.loads(high.stdout)["model"], "claude-opus-4-7")
+
+    def test_llm_model_choice_has_complexity_floor(self):
+        classify = {"complexity": "med", "capabilities": ["docs"]}
+        cards = {
+            "copilot.json": json.dumps(
+                {
+                    "id": "copilot",
+                    "capabilities": [{"skill": "docs"}],
+                    "models": [
+                        {"id": "gpt-4.1", "premium_cost": 0.0},
+                        {"id": "claude-haiku-4.5", "premium_cost": 0.33},
+                        {"id": "gpt-5.4", "premium_cost": 1.0},
+                    ],
+                }
+            )
+        }
+
+        result = self.run_picker(
+            classify,
+            cards,
+            llm_json={
+                "driver": "copilot",
+                "model": "gpt-4.1",
+                "reasoning": "cheap docs",
+            },
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["router_mode"], "llm")
+        self.assertEqual(payload["model"], "claude-haiku-4.5")
+
     def test_corrupt_cards_are_reported(self):
         classify = {"complexity": "low", "capabilities": ["ts"]}
         cards = {
