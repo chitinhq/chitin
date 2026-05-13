@@ -141,5 +141,33 @@ class ToolErrorTests(unittest.TestCase):
         self.assertIn("check-crash.sh", result.stdout)
 
 
+class TimeoutTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write_check(self, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"check-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_timeout_kills_hung_invariant(self) -> None:
+        self._write_check("hang",
+            "#!/usr/bin/env bash\nsleep 5\nexit 0\n")
+        env = dict(os.environ, REGRESSION_GATE_TIMEOUT="2")
+        result = subprocess.run(
+            ["bash", "scripts/regression-gate.sh"],
+            cwd=self.sandbox,
+            capture_output=True, text=True,
+            env=env,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout)
+        self.assertIn("check-hang.sh", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
