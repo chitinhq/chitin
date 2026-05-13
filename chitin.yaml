@@ -290,6 +290,24 @@ rules:
     effect: allow
     reason: "Hermes process tool — runtime worker plumbing"
 
+  - id: deny-claude-code-generic-exec-tool
+    action: tool.custom
+    target: "claude-code/exec"
+    effect: deny
+    reason: "Claude Code generic exec is not a native Claude Code tool; keep it denied with an explicit rule instead of hiding it as unknown."
+
+  - id: deny-hermes-clarify-unmodeled
+    action: unknown
+    target: "clarify"
+    effect: deny
+    reason: "Hermes clarify is chat/control flow with no stable host-action contract; keep fail-closed intentionally."
+
+  - id: deny-clawta-notification-unmodeled
+    action: unknown
+    target: "Notification"
+    effect: deny
+    reason: "Clawta Notification has no canonical action contract yet; keep fail-closed intentionally."
+
   - id: default-deny-unknown
     action: unknown
     effect: deny

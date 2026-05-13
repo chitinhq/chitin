@@ -17,7 +17,7 @@ in one of these outcomes:
 
 | Driver | Integration | Normalizer | Coverage | Current gaps |
 |---|---|---|---|---|
-| Claude Code | `PreToolUse` hook via `chitin-kernel install --surface claude-code --global` | `internal/driver/claudecode` | Bash, read/write/edit, web, MCP, task/delegate, task-state, worktree, cron/schedule, browse tools, todo, generic `read`/`exec` leak fallback | Future Anthropic tools intentionally hit `unknown` until mapped. |
+| Claude Code | `PreToolUse` hook via `chitin-kernel install --surface claude-code --global` | `internal/driver/claudecode` | Bash, read/write/edit, web, MCP, task/delegate, task-state, worktree, cron/schedule, browse tools, todo, lower-case read/browse, memory read, session status, explicit custom classification for generic `exec` | Future Anthropic tools intentionally hit `unknown` until mapped. |
 | Codex CLI | `PreToolUse` hook via `scripts/install-codex-hook.sh` | `internal/driver/codex` | Bash, `apply_patch`, `read_file`, MCP, Claude-tool leak fallback | Narrow native enum; any new Codex tool should be added from live hook captures before policy loosening. |
 | Gemini CLI | `BeforeTool` hook via `scripts/install-gemini-hook.sh` | `internal/driver/gemini` | Shell, read/list/search, edit/replace/write, web/search, memory/topic, Claude-tool leak fallback | Last tool-registry check in comments was Gemini CLI `0.40.1`; reverify on upgrade. |
 | Hermes | `pre_tool_call` shell hook via `scripts/install-hermes-hook.sh` | `internal/driver/hermes` | Terminal/code, file, patch/search, web/browser, delegation, skills, kanban plumbing, process, MCP, Claude-tool leak fallback | `image_generate`, `text_to_speech`, `vision_analyze`, `cronjob`, and `clarify` are intentionally unmapped. Decide canonical types before allowing them. |
@@ -29,8 +29,8 @@ in one of these outcomes:
 
 1. Mine `default-deny` / `unknown` rows from `~/.chitin/gov-decisions-*.jsonl`
    by `(agent, tool_name, action_target)` and map the highest-volume real
-   tools first. Last local Hermes pass: 2026-05-12; see
-   "Hermes unknown and lockdown classification" below.
+   tools first. Last local cross-driver pass: 2026-05-13; see
+   "Recent unknown-action mine" below.
 2. Add a fixture and normalizer test for each mapped tool before changing
    `chitin.yaml`.
 3. For Hermes modality tools, decide whether the canonical vocabulary needs
@@ -51,6 +51,40 @@ in one of these outcomes:
   and `chat.useAgentsMdFile` settings for these instruction surfaces.
 - None of those instruction files are a security boundary. They improve
   behavior but do not replace chitin's gate.
+
+## Recent unknown-action mine
+
+Local chain mining over `~/.chitin/gov-decisions-*.jsonl` from
+2026-05-06 through 2026-05-13 found the following denied
+`action_type=unknown` rows with `rule_id` in
+`default-deny-unknown|default-deny`, grouped by observed driver/agent and
+target:
+
+| Driver / agent | Target | Count | Last seen | Resolution |
+|---|---|---:|---|---|
+| `hermes` | `Write` | 6 | 2026-05-06T18:03:16Z | Existing Hermes Claude-leak path maps this on current code. |
+| `hermes` | `process` | 5 | 2026-05-07T04:45:53Z | Existing Hermes `process` maps to `hermes.process`. |
+| `hermes` | `kanban_show` | 4 | 2026-05-07T04:45:55Z | Existing Hermes `kanban_*` maps to `kanban.call`. |
+| `hermes` | `skills_list` | 3 | 2026-05-09T00:26:19Z | Existing Hermes skills read mapping. |
+| `hermes` | `memory` | 2 | 2026-05-09T00:26:13Z | Existing Hermes memory write mapping. |
+| `hermes` | `clarify` | 2 | 2026-05-09T13:18:02Z | Intentionally denied by `deny-hermes-clarify-unmodeled`. |
+| `glm-agent` | `exec` | 2 | 2026-05-09T06:20:56Z | Shared generic normalizer maps `exec` by spelling; Claude Code generic `exec` is `tool.custom` and denied by `deny-claude-code-generic-exec-tool`. |
+| `glm-agent` | `Bash` | 1 | 2026-05-09T06:19:43Z | Shared generic normalizer now treats case variants as shell aliases. |
+| `glm-agent` | `read` | 1 | 2026-05-09T06:20:56Z | Shared generic normalizer maps to `file.read`. |
+| `glm-agent` | `glob` | 1 | 2026-05-09T06:20:56Z | Shared generic normalizer maps to `file.read`. |
+| `clawta` | `Notification` | 1 | 2026-05-11T20:22:41Z | Intentionally denied by `deny-clawta-notification-unmodeled`. |
+| `claude-code` | `memory_search` | 2 | 2026-05-11T23:41:39Z | Claude Code normalizer maps to `file.read`. |
+| `claude-code` | `exec` | 2 | 2026-05-11T23:41:20Z | Claude Code normalizer maps to `tool.custom` and policy denies with `deny-claude-code-generic-exec-tool`. |
+| `claude-code` | `read` | 1 | 2026-05-11T23:41:27Z | Claude Code normalizer maps lower-case read to `file.read`. |
+| `claude-code` | `memory_get` | 1 | 2026-05-11T23:41:35Z | Claude Code normalizer maps to `file.read`. |
+| `claude-code` | `session_status` | 1 | 2026-05-11T23:41:42Z | Claude Code normalizer maps to `file.read`. |
+
+Fixture replay equivalent: the normalizer and baseline-policy tests cover the
+named targets above, including whitespace tool names, case variants such as
+`Memory_Search`, driver-local semantics for Hermes `process`, and explicit
+deny rule IDs for intentionally unmodeled tools. For the named Claude Code and
+generic legitimate targets, the expected post-change `default-deny-unknown`
+count is 0.
 
 ## Hermes unknown and lockdown classification
 

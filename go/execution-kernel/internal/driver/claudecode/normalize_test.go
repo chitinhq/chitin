@@ -1,8 +1,6 @@
 package claudecode
 
 import (
-	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -170,6 +168,66 @@ func TestNormalize_FileReadFromRead(t *testing.T) {
 	}
 }
 
+func TestNormalize_RecentLowercaseReadSessionMemoryTools(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolName   string
+		toolInput  map[string]any
+		wantType   gov.ActionType
+		wantTarget string
+	}{
+		{"lowercase read maps to file.read", "read", map[string]any{"path": "/repo/README.md"}, gov.ActFileRead, "/repo/README.md"},
+		{"memory_search maps to file.read", "memory_search", map[string]any{"query": "unknown action"}, gov.ActFileRead, "unknown action"},
+		{"memory_get maps to file.read", "memory_get", map[string]any{"path": "MEMORY.md"}, gov.ActFileRead, "MEMORY.md"},
+		{"session_status maps to file.read", "session_status", map[string]any{}, gov.ActFileRead, "session_status"},
+		{"case variant Memory_Search maps like memory_search", "Memory_Search", map[string]any{"query": "unknown action"}, gov.ActFileRead, "unknown action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize(HookInput{ToolName: tc.toolName, ToolInput: tc.toolInput, Cwd: "/cwd"})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Fatalf("Type=%q want %q", a.Type, tc.wantType)
+			}
+			if a.Target != tc.wantTarget {
+				t.Fatalf("Target=%q want %q", a.Target, tc.wantTarget)
+			}
+		})
+	}
+}
+
+func TestNormalize_WhitespaceToolNameRemainsUnknown(t *testing.T) {
+	a, err := Normalize(HookInput{ToolName: " \t\n ", ToolInput: map[string]any{"file_path": "/repo/README.md"}, Cwd: "/cwd"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != gov.ActUnknown {
+		t.Fatalf("Type=%q want %q", a.Type, gov.ActUnknown)
+	}
+	if a.Target != " \t\n " {
+		t.Fatalf("Target=%q want original whitespace", a.Target)
+	}
+}
+
+func TestNormalize_GenericExecIsExplicitCustomTool(t *testing.T) {
+	a, err := Normalize(HookInput{
+		ToolName:  "exec",
+		ToolInput: map[string]any{"command": "ls -la"},
+		Cwd:       "/cwd",
+	})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != gov.ActCustomTool {
+		t.Fatalf("Type=%q want %q", a.Type, gov.ActCustomTool)
+	}
+	if a.Target != "claude-code/exec" {
+		t.Fatalf("Target=%q want claude-code/exec", a.Target)
+	}
+}
+
 func TestNormalize_FileWriteFromEditWriteNotebook(t *testing.T) {
 	for _, tool := range []string{"Edit", "Write"} {
 		a, _ := Normalize(HookInput{
@@ -267,11 +325,7 @@ func TestNormalize_TodoWriteIsFileWriteWithTodoTarget(t *testing.T) {
 	}
 }
 
-func TestNormalize_GenericToolLeak_reNormalizesAndWarns(t *testing.T) {
-	buf := &bytes.Buffer{}
-	SetWarnSink(buf)
-	t.Cleanup(func() { SetWarnSink(nil) })
-
+func TestNormalize_LowercaseBrowseToolsMapDirectly(t *testing.T) {
 	cases := []struct {
 		name       string
 		toolName   string
@@ -279,12 +333,11 @@ func TestNormalize_GenericToolLeak_reNormalizesAndWarns(t *testing.T) {
 		wantType   gov.ActionType
 		wantTarget string
 	}{
-		{"lowercase read maps via gov normalize", "read", map[string]any{"path": "/tmp/x"}, gov.ActFileRead, "/tmp/x"},
-		{"lowercase exec maps via gov normalize", "exec", map[string]any{"cmd": "git status"}, gov.ActGitStatus, "git status"},
+		{"lowercase read maps to file.read", "read", map[string]any{"file_path": "/tmp/x"}, gov.ActFileRead, "/tmp/x"},
+		{"lowercase glob maps to file.read", "glob", map[string]any{"pattern": "*.go"}, gov.ActFileRead, "*.go"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf.Reset()
 			a, err := Normalize(HookInput{ToolName: tc.toolName, ToolInput: tc.toolInput, Cwd: "/cwd"})
 			if err != nil {
 				t.Fatalf("Normalize: %v", err)
@@ -297,12 +350,6 @@ func TestNormalize_GenericToolLeak_reNormalizesAndWarns(t *testing.T) {
 			}
 			if a.Path != "/cwd" {
 				t.Errorf("Path = %q, want /cwd", a.Path)
-			}
-			if !strings.Contains(buf.String(), `"warning":"cross_driver_tool_name"`) {
-				t.Errorf("expected cross_driver_tool_name warn, got: %q", buf.String())
-			}
-			if !strings.Contains(buf.String(), `"driver":"claude-code"`) {
-				t.Errorf("warn missing driver=claude-code: %q", buf.String())
 			}
 		})
 	}

@@ -322,3 +322,20 @@ func TestNormalize_hermesInternalTools(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalize_ProcessStaysHermesProcessDespiteGenericExecMapping(t *testing.T) {
+	a, err := Normalize(HookInput{
+		ToolName:  "process",
+		ToolInput: map[string]any{"action": "list", "command": "ls -la"},
+		Cwd:       "/cwd",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.Type != gov.ActHermesProcess {
+		t.Fatalf("Type=%q want %q", a.Type, gov.ActHermesProcess)
+	}
+	if a.Target != "list" {
+		t.Fatalf("Target=%q want list", a.Target)
+	}
+}

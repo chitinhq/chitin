@@ -108,8 +108,19 @@ func SetWarnSink(w io.Writer) { warnSink = w }
 // pre-existing v2 normalize convention so policy rules need only one
 // "allow if target=todo" entry.
 func Normalize(in HookInput) (gov.Action, error) {
-	switch in.ToolName {
-	case "Bash":
+	toolName := strings.TrimSpace(in.ToolName)
+	if toolName == "" {
+		return gov.Action{
+			Type:   gov.ActUnknown,
+			Target: in.ToolName,
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
+	}
+	toolKey := strings.ToLower(toolName)
+
+	switch toolKey {
+	case "bash":
 		// gov.Normalize handles terminal → re-classification (rm, git push,
 		// gh pr create, etc.). Pass the raw command string through under
 		// the "command" key, matching the existing gov.normalizeShell shape.
@@ -121,14 +132,18 @@ func Normalize(in HookInput) (gov.Action, error) {
 		a.Path = in.Cwd
 		return a, nil
 
-	case "Read":
+	case "read":
+		target := stringField(in.ToolInput, "file_path")
+		if target == "" {
+			target = stringField(in.ToolInput, "path")
+		}
 		return gov.Action{
 			Type:   gov.ActFileRead,
-			Target: stringField(in.ToolInput, "file_path"),
+			Target: target,
 			Path:   in.Cwd,
 		}, nil
 
-	case "Edit", "Write", "NotebookEdit":
+	case "edit", "write", "notebookedit":
 		path := stringField(in.ToolInput, "file_path")
 		if path == "" {
 			path = stringField(in.ToolInput, "notebook_path")
@@ -139,21 +154,21 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "WebFetch":
+	case "webfetch":
 		return gov.Action{
 			Type:   gov.ActHTTPRequest,
 			Target: stringField(in.ToolInput, "url"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "WebSearch":
+	case "websearch":
 		return gov.Action{
 			Type:   gov.ActHTTPRequest,
 			Target: stringField(in.ToolInput, "query"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "Task", "Agent", "Skill":
+	case "task", "agent", "skill":
 		// Subagent delegation OR skill invocation. Both cede a tool
 		// budget to a subordinate agent — same policy shape. Target
 		// is the human-readable intent (description / subagent_type /
@@ -172,7 +187,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "TaskStop":
+	case "taskstop":
 		// Terminating an earlier delegation — same delegate-task
 		// policy shape. Target is the task id being stopped.
 		return gov.Action{
@@ -181,7 +196,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "TaskCreate", "TaskUpdate":
+	case "taskcreate", "taskupdate":
 		// Mutate a task-list entry. file.write target="task-state"
 		// matches the convention TodoWrite uses (single-target write
 		// the operator can scope-allow with one rule).
@@ -191,16 +206,16 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "TaskGet", "TaskList", "TaskOutput", "ToolSearch", "AskUserQuestion":
+	case "taskget", "tasklist", "taskoutput", "toolsearch", "askuserquestion":
 		// Browse-shape; no external side effect. Default-allow under
 		// the existing read policy.
 		return gov.Action{
 			Type:   gov.ActFileRead,
-			Target: in.ToolName,
+			Target: toolName,
 			Path:   in.Cwd,
 		}, nil
 
-	case "Monitor":
+	case "monitor":
 		// Spawns a subprocess + streams events. shell.exec shape so
 		// the operator can scope-allow with the existing exec rules.
 		return gov.Action{
@@ -209,29 +224,29 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "EnterPlanMode", "ExitPlanMode":
+	case "enterplanmode", "exitplanmode":
 		// Mode toggle — no host-visible side effect. Browse-shape.
 		return gov.Action{
 			Type:   gov.ActFileRead,
-			Target: in.ToolName,
+			Target: toolName,
 			Path:   in.Cwd,
 		}, nil
 
-	case "EnterWorktree":
+	case "enterworktree":
 		return gov.Action{
 			Type:   gov.ActGitWorktreeAdd,
 			Target: stringField(in.ToolInput, "branch"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "ExitWorktree":
+	case "exitworktree":
 		return gov.Action{
 			Type:   gov.ActGitWorktreeRemove,
 			Target: stringField(in.ToolInput, "path"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "PushNotification", "RemoteTrigger":
+	case "pushnotification", "remotetrigger":
 		// Outbound network — http.request shape. Operator can
 		// allowlist by target host through the existing net rules.
 		target := stringField(in.ToolInput, "url")
@@ -239,7 +254,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 			target = stringField(in.ToolInput, "endpoint")
 		}
 		if target == "" {
-			target = in.ToolName
+			target = toolName
 		}
 		return gov.Action{
 			Type:   gov.ActHTTPRequest,
@@ -247,28 +262,28 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "CronCreate":
+	case "croncreate":
 		return gov.Action{
 			Type:   gov.ActFileWrite,
 			Target: "cron",
 			Path:   in.Cwd,
 		}, nil
 
-	case "CronDelete":
+	case "crondelete":
 		return gov.Action{
 			Type:   gov.ActFileDelete,
 			Target: "cron",
 			Path:   in.Cwd,
 		}, nil
 
-	case "CronList":
+	case "cronlist":
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: "cron",
 			Path:   in.Cwd,
 		}, nil
 
-	case "ScheduleWakeup":
+	case "schedulewakeup":
 		// Schedules a future agent-loop iteration — write-shape state
 		// mutation. Target = the wakeup id (delaySeconds + reason
 		// could go in payload but Target is the policy hook).
@@ -278,32 +293,48 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "Glob":
+	case "glob":
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: stringField(in.ToolInput, "pattern"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "Grep":
+	case "grep":
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: stringField(in.ToolInput, "pattern"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "LS":
+	case "ls":
 		return gov.Action{
 			Type:   gov.ActFileRead,
 			Target: stringField(in.ToolInput, "path"),
 			Path:   in.Cwd,
 		}, nil
 
-	case "TodoWrite":
+	case "todowrite":
 		return gov.Action{
 			Type:   gov.ActFileWrite,
 			Target: "todo",
 			Path:   in.Cwd,
+		}, nil
+
+	case "memory_search", "memory_get", "session_status":
+		a, err := gov.Normalize(toolKey, in.ToolInput)
+		if err != nil {
+			return gov.Action{}, fmt.Errorf("normalize %s: %w", toolName, err)
+		}
+		a.Path = in.Cwd
+		return a, nil
+
+	case "exec":
+		return gov.Action{
+			Type:   gov.ActCustomTool,
+			Target: "claude-code/exec",
+			Path:   in.Cwd,
+			Params: in.ToolInput,
 		}, nil
 	}
 
@@ -311,7 +342,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 	// with target="server/tool" matching the Copilot SDK driver's
 	// shape. Without this, every MCP call falls to ActUnknown and
 	// gets blocked by default-deny-unknown.
-	if server, tool, ok := parseMCPToolName(in.ToolName); ok {
+	if server, tool, ok := parseMCPToolName(toolName); ok {
 		target := server
 		if tool != "" {
 			target = server + "/" + tool
@@ -338,7 +369,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 	// operator adds a rule — fail-closed behavior.
 	return gov.Action{
 		Type:   gov.ActUnknown,
-		Target: in.ToolName,
+		Target: toolName,
 		Path:   in.Cwd,
 		Params: in.ToolInput,
 	}, nil
