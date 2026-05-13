@@ -49,6 +49,34 @@ rules:
 	}
 }
 
+func TestIntegration_TempCleanupRecursiveDeleteStillDenied(t *testing.T) {
+	g, _ := newIntegrationGate(t, `
+id: test
+mode: guide
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "blocked"
+`)
+	a, err := Normalize("terminal", map[string]any{
+		"command": `tmp=$(mktemp -d); touch "$tmp/file"; rm -rf "$tmp"`,
+	})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != ActFileRecursiveDelete {
+		t.Fatalf("Type=%q want %q", a.Type, ActFileRecursiveDelete)
+	}
+	d := g.Evaluate(a, "worker", nil)
+	if d.Allowed {
+		t.Fatalf("expected temp cleanup deny, got %+v", d)
+	}
+	if d.RuleID != "no-rm-recursive" {
+		t.Fatalf("RuleID=%q want no-rm-recursive", d.RuleID)
+	}
+}
+
 // Flow B: execute_code subprocess.run bypass produces the same denial.
 // Both terminal `rm -rf` and execute_code-via-subprocess flow through
 // the same canon detector and land on the same Action class — one rule
