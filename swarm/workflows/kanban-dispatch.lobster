@@ -343,7 +343,7 @@ steps:
           args: $args,
           env: {
             "CHITIN_DRIVER": "clawta",
-            "CHITIN_BUDGET_ENVELOPE": $env.NEW_ENV
+            "CHITIN_BUDGET_ENVELOPE": $NEW_ENV
           }
         }' \
         --arg NEW_ENV "$NEW_ENV")
