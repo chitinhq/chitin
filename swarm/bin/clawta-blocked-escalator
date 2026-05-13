@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/red/workspace/chitin
+changed=()
+while IFS=$'\t' read -r id assignee title; do
+  [[ -n "${id:-}" ]] || continue
+  hermes kanban --board chitin assign "$id" red >/dev/null
+  hermes kanban --board chitin comment "$id" --author clawta \
+    "Escalating blocked ticket to red: blocked swarm work should be operator-owned until unblocked, re-groomed, or manually repaired. Previous assignee: ${assignee:-unassigned}." >/dev/null || true
+  changed+=("$id (${assignee:-unassigned}) — $title")
+done < <(sqlite3 -tabs /home/red/.hermes/kanban/boards/chitin/kanban.db \
+  "SELECT id, coalesce(assignee,''), title FROM tasks WHERE status='blocked' AND coalesce(assignee,'') != 'red' ORDER BY priority DESC, created_at ASC;")
+
+if (( ${#changed[@]} )); then
+  {
+    echo "🦞 Blocked-ticket escalator moved ${#changed[@]} ticket(s) to red:"
+    printf -- '- `%s`\n' "${changed[@]}"
+  } | /home/red/.vite-plus/bin/openclaw message send --channel discord --account default --text-file - >/dev/null 2>&1 || true
+fi
+
+printf 'blocked escalator: %d changed\n' "${#changed[@]}"

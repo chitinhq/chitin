@@ -1190,3 +1190,44 @@ func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
 		}
 	}
 }
+
+func TestIsClawtaDriveCarveout(t *testing.T) {
+	cases := []struct {
+		name   string
+		agent  string
+		cmd    string
+		atype  gov.ActionType
+		want   bool
+	}{
+		// Allowed: agent=clawta + chitin-kernel drive <lane>
+		{"clawta drive copilot", "clawta", "chitin-kernel drive copilot --model gpt-4.1 'do work'", gov.ActShellExec, true},
+		{"clawta drive codex", "clawta", "chitin-kernel drive codex 'do work'", gov.ActShellExec, true},
+		{"clawta drive with absolute path", "clawta", "/home/red/.local/bin/chitin-kernel drive copilot 'x'", gov.ActShellExec, true},
+		{"clawta drive with env stamp", "clawta", "env CHITIN_DRIVER=clawta chitin-kernel drive copilot 'x'", gov.ActShellExec, true},
+		{"clawta drive after global flag", "clawta", "chitin-kernel --config /tmp/p.yaml drive copilot 'x'", gov.ActShellExec, true},
+		// Denied: wrong agent
+		{"claude-code drive", "claude-code", "chitin-kernel drive copilot 'x'", gov.ActShellExec, false},
+		{"hermes drive", "hermes", "chitin-kernel drive codex 'x'", gov.ActShellExec, false},
+		{"empty agent", "", "chitin-kernel drive copilot 'x'", gov.ActShellExec, false},
+		{"clawta-suffix not exact", "clawta-poller", "chitin-kernel drive copilot 'x'", gov.ActShellExec, false},
+		// Denied: clawta but wrong subcommand (carve-out is narrow)
+		{"clawta envelope grant", "clawta", "chitin-kernel envelope grant e1 --calls=+1", gov.ActShellExec, false},
+		{"clawta gate lockdown", "clawta", "chitin-kernel gate lockdown --agent a", gov.ActShellExec, false},
+		{"clawta gate reset", "clawta", "chitin-kernel gate reset --agent a", gov.ActShellExec, false},
+		{"clawta emit", "clawta", "chitin-kernel emit --action shell.exec --target x", gov.ActShellExec, false},
+		{"clawta install-hook", "clawta", "chitin-kernel install-hook --surface claude-code", gov.ActShellExec, false},
+		// Denied: not a chitin-kernel command at all
+		{"clawta arbitrary shell", "clawta", "echo hello", gov.ActShellExec, false},
+		{"clawta lookalike", "clawta", "echo chitin-kernel drive copilot", gov.ActShellExec, false},
+		// Wrong action type
+		{"clawta drive but file.read action", "clawta", "chitin-kernel drive copilot 'x'", gov.ActFileRead, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isClawtaDriveCarveout(gov.Action{Type: tc.atype, Target: tc.cmd}, tc.agent)
+			if got != tc.want {
+				t.Errorf("isClawtaDriveCarveout(%q, agent=%q) = %v, want %v", tc.cmd, tc.agent, got, tc.want)
+			}
+		})
+	}
+}

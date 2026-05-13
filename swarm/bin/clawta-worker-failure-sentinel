@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Alert on new swarm worker failures so broken lanes do not fail silently."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import time
+from pathlib import Path
+
+DB = Path("/home/red/.hermes/kanban/boards/chitin/kanban.db")
+STATE = Path("/home/red/.openclaw/state/clawta-worker-failure-sentinel.json")
+STATE.parent.mkdir(parents=True, exist_ok=True)
+CHANNEL = "channel:1503439202719760405"
+LOOKBACK_SECONDS = int(os.environ.get("CLAWTA_FAILURE_LOOKBACK_SECONDS", "86400"))
+QUARANTINE_THRESHOLD = int(os.environ.get("CLAWTA_FAILURE_QUARANTINE_THRESHOLD", "3"))
+QUARANTINE_WINDOW = int(os.environ.get("CLAWTA_FAILURE_QUARANTINE_WINDOW", "7200"))
+PATTERNS = [
+    re.compile(r"gh pr create failed", re.I),
+    re.compile(r"worker failed", re.I),
+    re.compile(r"worker session timed out", re.I),
+    re.compile(r"no worktree", re.I),
+    re.compile(r"failed before committing", re.I),
+    re.compile(r"worker returned unknown status", re.I),
+]
+DRIVER_PATTERNS = [
+    re.compile(r"swarm/([a-z0-9-]+)-[0-9a-f]{8}", re.I),
+    re.compile(r"Starting dispatch to ([a-z0-9-]+)", re.I),
+    re.compile(r"dispatching to ([a-z0-9-]+)", re.I),
+    re.compile(r"-> ([a-z0-9-]+)", re.I),
+]
+TERMINAL = {"codex", "claude-code", "copilot", "gemini"}
+
+
+def load_state() -> dict:
+    if STATE.exists():
+        try:
+            return json.loads(STATE.read_text())
+        except Exception:
+            pass
+    return {"last_comment_id": 0, "quarantined": []}
+
+
+def save_state(state: dict) -> None:
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+    tmp.replace(STATE)
+
+
+def infer_driver(body: str, task_id: str, conn: sqlite3.Connection) -> str:
+    for pat in DRIVER_PATTERNS:
+        m = pat.search(body)
+        if m:
+            candidate = m.group(1).lower()
+            if candidate in TERMINAL:
+                return candidate
+    # Look backward on the same ticket for routing/start comments.
+    rows = conn.execute(
+        """
+        SELECT body FROM task_comments
+        WHERE task_id=? AND (body LIKE '%Starting dispatch to%' OR body LIKE '%dispatching to%' OR body LIKE '%Routed by clawta-poller%')
+        ORDER BY id DESC LIMIT 8
+        """,
+        (task_id,),
+    ).fetchall()
+    for (prev,) in rows:
+        for pat in DRIVER_PATTERNS:
+            m = pat.search(prev or "")
+            if m:
+                candidate = m.group(1).lower()
+                if candidate in TERMINAL:
+                    return candidate
+    return "unknown"
+
+
+def send_discord(text: str) -> None:
+    subprocess.run(
+        [
+            "/home/red/.vite-plus/bin/openclaw",
+            "message",
+            "send",
+            "--channel",
+            "discord",
+            "--account",
+            "default",
+            "--target",
+            CHANNEL,
+            "--text",
+            text,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def quarantine_copilot() -> bool:
+    src = Path("/home/red/.openclaw/data/agent-cards/copilot.json")
+    disabled = Path("/home/red/.openclaw/data/agent-cards/disabled")
+    disabled.mkdir(parents=True, exist_ok=True)
+    if not src.exists():
+        return False
+    dst = disabled / f"copilot.json.disabled-{time.strftime('%Y%m%d-%H%M%S')}"
+    src.rename(dst)
+    return True
+
+
+def main() -> int:
+    state = load_state()
+    last = int(state.get("last_comment_id", 0))
+    now = int(time.time())
+    since = now - LOOKBACK_SECONDS
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT c.id, c.task_id, c.body, c.created_at, t.title, t.status, t.assignee
+        FROM task_comments c JOIN tasks t ON t.id=c.task_id
+        WHERE c.id > ? AND c.created_at >= ?
+        ORDER BY c.id ASC
+        """,
+        (last, since),
+    ).fetchall()
+
+    failures = []
+    max_id = last
+    for row in rows:
+        max_id = max(max_id, int(row["id"]))
+        body = row["body"] or ""
+        if not any(p.search(body) for p in PATTERNS):
+            continue
+        driver = infer_driver(body, row["task_id"], conn)
+        failures.append({
+            "id": int(row["id"]),
+            "task": row["task_id"],
+            "driver": driver,
+            "title": row["title"],
+            "body": body,
+            "created_at": int(row["created_at"]),
+        })
+
+    # Advance even when no failures, so old noise is not re-alerted forever.
+    state["last_comment_id"] = max_id
+
+    if failures:
+        by_driver: dict[str, list[dict]] = {}
+        for f in failures:
+            by_driver.setdefault(f["driver"], []).append(f)
+
+        lines = ["🚨 Swarm worker failure sentinel detected new failure(s):"]
+        for driver, items in sorted(by_driver.items()):
+            lines.append(f"- **{driver}**: {len(items)} new failure(s)")
+            for f in items[:5]:
+                snippet = re.sub(r"\s+", " ", f["body"]).strip()[:180]
+                lines.append(f"  - `{f['task']}` — {f['title']} — {snippet}")
+
+        # Quarantine Copilot automatically if repeated recent failures are observed.
+        recent_copilot = conn.execute(
+            """
+            SELECT c.id, c.body FROM task_comments c
+            WHERE c.created_at >= ? AND (c.body LIKE '%swarm/copilot-%' OR c.body LIKE '%Starting dispatch to copilot%' OR c.body LIKE '%dispatching to copilot%' OR c.body LIKE '%-> copilot%')
+            ORDER BY c.id DESC
+            """,
+            (now - QUARANTINE_WINDOW,),
+        ).fetchall()
+        copilot_fail_count = sum(1 for r in recent_copilot if any(p.search(r["body"] or "") for p in PATTERNS))
+        quarantined = set(state.get("quarantined", []))
+        if copilot_fail_count >= QUARANTINE_THRESHOLD and "copilot" not in quarantined:
+            moved = quarantine_copilot()
+            quarantined.add("copilot")
+            state["quarantined"] = sorted(quarantined)
+            lines.append(f"- **copilot quarantine:** {copilot_fail_count} failures in the last {QUARANTINE_WINDOW//60}m; runtime card {'moved out of routing' if moved else 'already absent'}.")
+            lines.append("- Poller should run with `TERMINAL_LANES=codex,claude-code,gemini` until cleared.")
+
+        send_discord("\n".join(lines))
+
+    save_state(state)
+    print(f"worker failure sentinel: {len(failures)} new failure(s), last_comment_id={state['last_comment_id']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

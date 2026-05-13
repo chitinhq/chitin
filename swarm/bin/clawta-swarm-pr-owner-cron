@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set +e
+cd /home/red/workspace/chitin || exit 1
+
+git pull --ff-only origin main >/tmp/clawta-pr-owner-pull.log 2>&1
+pull_rc=$?
+./swarm/bin/clawta-pr-reviewer --max-prs 3 >/tmp/clawta-pr-owner-reviewer.json 2>/tmp/clawta-pr-owner-reviewer.err
+review_rc=$?
+if ./swarm/bin/clawta-pr-lifecycle --help 2>&1 | grep -q -- '--escalate-to'; then
+  ./swarm/bin/clawta-pr-lifecycle --apply --auto-merge --escalate-to red >/tmp/clawta-pr-owner-lifecycle.json 2>/tmp/clawta-pr-owner-lifecycle.err
+else
+  ./swarm/bin/clawta-pr-lifecycle --apply --auto-merge >/tmp/clawta-pr-owner-lifecycle.json 2>/tmp/clawta-pr-owner-lifecycle.err
+fi
+life_rc=$?
+
+PULL_RC=$pull_rc REVIEW_RC=$review_rc LIFE_RC=$life_rc python3 - <<'PY'
+import json, os, pathlib
+pull_rc = int(os.environ.get('PULL_RC', '1'))
+review_rc = int(os.environ.get('REVIEW_RC', '1'))
+life_rc = int(os.environ.get('LIFE_RC', '1'))
+print('🦞 swarm PR owner cron')
+if pull_rc:
+    print(f'- pull failed rc={pull_rc}: ' + pathlib.Path('/tmp/clawta-pr-owner-pull.log').read_text(errors='ignore')[-300:].replace('\n',' '))
+try:
+    r=json.load(open('/tmp/clawta-pr-owner-reviewer.json'))
+    reviewed=r.get('reviewed') or []
+    if reviewed:
+        print('- reviewed: ' + ', '.join('#'+x.get('pr','?') for x in reviewed))
+    elif review_rc:
+        print(f'- reviewer failed rc={review_rc}: ' + pathlib.Path('/tmp/clawta-pr-owner-reviewer.err').read_text(errors='ignore')[-300:].replace('\n',' '))
+except Exception as e:
+    print(f'- reviewer summary unavailable: {e}')
+try:
+    l=json.load(open('/tmp/clawta-pr-owner-lifecycle.json'))
+    actions=[]
+    for i in l.get('items',[]):
+        applied=i.get('applied')
+        if applied and applied!='noop':
+            actions.append(f"#{i.get('pr')} {applied} ({i.get('action')}, ticket={i.get('ticket') or 'none'})")
+        elif i.get('action') in ('needs-fix','needs-rebase'):
+            actions.append(f"#{i.get('pr')} {i.get('action')}")
+    if actions:
+        print('- lifecycle: ' + '; '.join(actions[:12]))
+    elif life_rc:
+        print(f'- lifecycle failed rc={life_rc}: ' + pathlib.Path('/tmp/clawta-pr-owner-lifecycle.err').read_text(errors='ignore')[-300:].replace('\n',' '))
+    else:
+        print('- lifecycle: no actions')
+except Exception as e:
+    print(f'- lifecycle summary unavailable: {e}')
+PY
