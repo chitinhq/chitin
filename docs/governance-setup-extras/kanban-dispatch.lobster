@@ -76,7 +76,6 @@ steps:
   # (which it always does). Read via stdin + variable assignment inside
   # a bash heredoc so the JSON never touches the shell parser as a
   # literal. Same pattern as spawn_worker.
-  #
   # Why this calls `openclaw agent` directly instead of `clawta --text`:
   # the `clawta` wrapper has unanchored pattern detection for dispatch
   # intent — it matches any `t_xxxxxxxx` id and any dispatch-verb word
@@ -85,8 +84,7 @@ steps:
   # dispatch-verb words in the body. That misfires as a recursive
   # dispatch call, runs the workflow on itself, and returns a failure
   # envelope instead of classification JSON. Every dispatch on
-  # 2026-05-12 failed for this reason. The classify step is a pure
-  # LLM call and has no business going through the wrapper.
+  # 2026-05-12 failed for this reason until the bypass landed (#529).
   - id: classify
     description: Classify ticket via glm-agent on glm-5.1:cloud (direct, no wrapper)
     run: |
@@ -95,7 +93,7 @@ steps:
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
       OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
-      "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
+      "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
@@ -187,9 +185,14 @@ steps:
   # Capabilities are recoverable from the pick_driver step's chain
   # event metadata; no need to repeat them in the announce message.
   - id: audit_comment
-    description: Announce dispatch on kanban + broadcast to Clawta's Discord channel
+    description: Announce dispatch + flip ready→in_progress + broadcast to Discord
     run: |
       hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
+      # Slice D: lifecycle discipline. Flip to in_progress so the board
+      # reflects reality. kanban-flow is idempotent when the ticket is
+      # already in_progress (e.g. clawta-poller flipped it before this
+      # workflow ran), so failure here is benign.
+      kanban-flow start ${ticket_id} --author clawta 2>/dev/null || true
       openclaw message send --channel discord --account default --text "🦞 Starting ${ticket_id} to $pick_driver.json.driver | complexity $pick_driver.json.complexity" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
@@ -242,7 +245,62 @@ steps:
       if [[ -z "$TICKET_BODY" ]]; then
         TICKET_BODY="$TICKET_JSON"
       fi
-      PROMPT="Implement the ticket: $TICKET_BODY"
+      # Extract ticket id from the JSON rather than depending on
+      # lobster's ${ticket_id} substitution. Lobster substitutes
+      # unbraced step refs inside this single-quoted heredoc (the
+      # DRIVER='$pick_driver.json.driver' pattern works), but braced
+      # arg refs (${ticket_id}) don't — they survive as literal text
+      # and bash errors with `unbound variable` under set -u.
+      TICKET_ID=$(printf '%s' "$TICKET_JSON" | jq -r '.task.id // .id // empty')
+      if [[ -z "$TICKET_ID" ]]; then
+        echo "spawn_worker: could not extract ticket id from JSON" >&2
+        exit 1
+      fi
+      # Pre-create the swarm worktree at the path finalize_dispatch
+      # expects. Without this, workers either (a) commit on whatever
+      # branch they happened to be on in the chitin primary checkout,
+      # leaving nothing for finalize to find, or (b) call
+      # scripts/create-worktree.sh which defaults to ../chitin-<branch>/
+      # — a path finalize doesn't search. Lobster owns the worktree
+      # contract end-to-end now; the leaf CLI just edits and commits.
+      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/swarm-${DRIVER}-${TICKET_ID}"
+      TICKET_ID_SHORT="${TICKET_ID#t_}"
+      BRANCH="swarm/${DRIVER}-${TICKET_ID_SHORT}"
+      CHITIN_REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+      mkdir -p "$(dirname "$WORKTREE_DIR")"
+      if [[ ! -d "$WORKTREE_DIR" ]]; then
+        # Use git worktree add directly — scripts/create-worktree.sh
+        # has extra bootstrap logic we don't need here. If the branch
+        # already exists (re-dispatch case), check it out instead of
+        # erroring on duplicate.
+        git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/main 2>&1 \
+          || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
+      fi
+      if ! cd "$WORKTREE_DIR"; then
+        echo "spawn_worker: failed to enter worktree $WORKTREE_DIR" >&2
+        exit 1
+      fi
+      # Inline role SKILL.md into the worker's system prompt. Role is
+      # set via ROLE env var (default 'programmer'). Falls back to
+      # no-prefix if the role file is missing. printf %s avoids the
+      # YAML-scanner-breaking multi-line bash string.
+      ROLE="${ROLE:-programmer}"
+      ROLE_SKILL="$HOME/.openclaw/roles/$ROLE/SKILL.md"
+      if [[ -f "$ROLE_SKILL" ]]; then
+        ROLE_HEADER=$(printf '# Worker role: %s\n\n%s\n\n' "$ROLE" "$(cat "$ROLE_SKILL")")
+      else
+        ROLE_HEADER=""
+      fi
+      # The working-environment header makes the contract concrete:
+      # the worker is already in a worktree on a feature branch; it
+      # must NOT try to create another, push, or open a PR — lobster's
+      # finalize_dispatch step does those. Without these explicit DO
+      # NOTs, frontier LLMs read the role SKILL.md, attempt the full
+      # SDLC, and fail at the create-worktree step (path mismatch) or
+      # the push step (the worker has no GH_TOKEN).
+      ENV_HEADER=$(printf '# Working environment\n\nYou are already in a fresh git worktree at %s on branch %s (based on origin/main).\n\nDO NOT create another worktree or branch — you are in one.\nDO NOT run `git push` or `gh pr create` — lobster handles those after you exit.\n\nYour job: make the code change for the ticket, run any relevant tests, then commit with a clear message referencing %s. Then exit. That is it.\n\n# Ticket %s\n\n' \
+        "$WORKTREE_DIR" "$BRANCH" "$TICKET_ID" "$TICKET_ID")
+      PROMPT="${ROLE_HEADER}${ENV_HEADER}${TICKET_BODY}"
       MODEL=$(jq -r '[.models[]] | sort_by(.premium_cost) | .[0].id' "$CARD_PATH")
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
       ARGS_JSON=$(jq -c --arg model "$MODEL" --arg prompt "$PROMPT" \
@@ -296,12 +354,15 @@ steps:
       if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        # Slice D: failure path — block the ticket so it isn't silently lost.
+        kanban-flow block ${ticket_id} "worker completed but produced no worktree" --author clawta 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
       if ! cd "$WORKTREE"; then
         MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        kanban-flow block ${ticket_id} "worker worktree could not be entered" --author clawta 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
@@ -309,6 +370,8 @@ steps:
       if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        # Slice D: failure path — block, don't leave in_progress with no PR.
+        kanban-flow block ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
@@ -327,11 +390,41 @@ steps:
       fi
       if [[ -z "$PR_URL" ]]; then
         MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed."
+        # Slice D: PR failed — block so it gets human attention.
+        kanban-flow block ${ticket_id} "branch $BRANCH pushed but gh pr create failed" --author clawta 2>/dev/null || true
       else
         MSG="🦞 ${ticket_id}: done. Branch: $BRANCH. PR: $PR_URL"
+        # PR opened — record the URL on the ticket. Ticket stays in
+        # in_progress (Hermes UI has no code_review column; the PR's
+        # GitHub state is the review-phase truth).
+        kanban-flow pr ${ticket_id} "$PR_URL" --author clawta 2>/dev/null || true
       fi
       hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+      # Broadcast to Clawta's default channel (operator-facing log).
       openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+      # Reply back to Hermes in #ares with @-mention so the peer-comm
+      # loop closes visibly. Hermes (with DISCORD_ALLOW_BOTS=mentions)
+      # picks up the @-mention and can summarize for the operator.
+      # Channel id 1503438297597350062 is #ares; user 1503231892865024030
+      # is the Ares (Hermes) bot. Best-effort: failure never blocks.
+      openclaw message send --channel discord --account default \
+        --target channel:1503438297597350062 \
+        --text "<@1503231892865024030> $MSG" 2>/dev/null || true
+      # Slice 5: post-PR judge writes ELO. Fire only when a real PR
+      # url exists AND driver/model are populated. Background + short
+      # timeout — judge results are observable later via swarm-elo CLI;
+      # we don't block the dispatch return on its completion.
+      DRIVER='$pick_driver.json.driver'
+      MODEL='$pick_driver.json.model'
+      if [[ -n "$PR_URL" && -n "$DRIVER" && -n "$MODEL" && "$DRIVER" != "unassigned" ]]; then
+        (timeout 180 python3 "$HOME/.openclaw/workflows/judge.py" \
+          --ticket ${ticket_id} \
+          --pr-url "$PR_URL" \
+          --driver "$DRIVER" \
+          --model "$MODEL" \
+          >> "$HOME/.openclaw/logs/judge.log" 2>&1 || true) &
+        disown
+      fi
       BASH_SCRIPT
       )"
 
