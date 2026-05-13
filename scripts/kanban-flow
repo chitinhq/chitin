@@ -183,12 +183,9 @@ case "$cmd" in
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Unblocked at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
 
-    # Handle assignee: default to clawta unless terminal lane is already set or explicit override given
+    # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
-      current_assignee="$(sqlite3 "$DB" "SELECT assignee FROM tasks WHERE id='$id'")"
-      if [[ -z "$current_assignee" ]] || ! is_terminal_lane "$current_assignee"; then
-        sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
-      fi
+      sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
     elif [[ -n "$assignee_override" ]]; then
       sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
     fi
@@ -205,6 +202,8 @@ case "$cmd" in
     from="$(ticket_status "$id")"
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Demoted ${from}→triage: $reason" >/dev/null
     flip_status "$id" triage 0 0
+    # Reset assignee to routing lane on demotion so re-promotion routes through clawta
+    sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
     emit_transition "$id" "$from" triage "$author"
     echo "$id: $from → triage ($reason)"
     ;;
@@ -216,12 +215,9 @@ case "$cmd" in
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
 
-    # Handle assignee: default to clawta unless terminal lane is already set or explicit override given
+    # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
-      current_assignee="$(sqlite3 "$DB" "SELECT assignee FROM tasks WHERE id='$id'")"
-      if [[ -z "$current_assignee" ]] || ! is_terminal_lane "$current_assignee"; then
-        sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
-      fi
+      sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
     elif [[ -n "$assignee_override" ]]; then
       sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
     fi
