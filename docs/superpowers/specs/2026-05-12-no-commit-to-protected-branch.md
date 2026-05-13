@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_6e6376b2
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Spec: no-commit-to-protected-branch policy + openclaw exec coverage
 
 Date: 2026-05-12

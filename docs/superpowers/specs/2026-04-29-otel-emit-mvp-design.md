@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-29'
+effective_to: null
+---
+
 # F4 — OTEL Emit MVP Design
 
 **Date:** 2026-04-29

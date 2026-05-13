@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-22'
+effective_to: null
+---
+
 # Hermes Staged Tick v1 — Design
 
 **Date:** 2026-04-22

@@ -1,12 +1,18 @@
 ---
 status: superseded
-superseded_on: 2026-05-08
+owner: claude-code
+kanban: null
+implementation_pr: null
 superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
-reason: |
-  The compatibility_seed / operator_matrix / refresh_stale modules and
+effective_from: '2026-05-06'
+effective_to: 2026-05-08
+reason: 'The compatibility_seed / operator_matrix / refresh_stale modules and
+
   their search_backends consumers have been removed from chitin; the
+
   stale-seed-refresh loop ran on dispatch-side rails and lives outside
-  chitin per the 2026-05-06 scope-narrow decision.
+
+  chitin per the 2026-05-06 scope-narrow decision.'
 ---
 
 > **SUPERSEDED 2026-05-08.** The Python modules this design drives —

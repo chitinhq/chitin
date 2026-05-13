@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-25'
+effective_to: null
+---
+
 # Copilot SDK Feasibility Spike — Findings
 
 **Date completed:** 2026-04-24T01:13:31Z

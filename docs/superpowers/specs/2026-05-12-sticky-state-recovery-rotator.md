@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_c8307795
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Spec: sticky-state recovery rotator for chitin gate
 
 Date: 2026-05-12 (revised 2026-05-13 after Copilot review)

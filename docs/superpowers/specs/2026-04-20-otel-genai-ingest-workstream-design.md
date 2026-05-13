@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-20'
+effective_to: null
+---
+
 # OTEL-Transport Ingest Workstream — Meta-Spec
 
 > **⚠ SUPERSEDED 2026-04-29.** Direction reversed by C2 framing v1: chitin **emits** OTEL spans as a one-way projection of the canonical event chain, it does **not** ingest. See [`2026-04-29-otel-emit-mvp-design.md`](./2026-04-29-otel-emit-mvp-design.md) for the active spec. This document is retained for historical context — the four-station architecture, the OTLP-at-the-boundary framing, and the openclaw vendor-namespace findings remain useful prior art for any future ingest-side workstream (e.g. post-hoc audit of non-instrumented surfaces). Do not implement against this spec.

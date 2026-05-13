@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-07'
+effective_to: null
+---
+
 # Operator-approval escalation effect
 
 Status: design (validated 2026-05-07 in collaborative brainstorm).

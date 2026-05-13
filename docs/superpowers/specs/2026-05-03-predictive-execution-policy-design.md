@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-03'
+effective_to: null
+---
+
 # Predictive Execution Policy + Audited Counterfactuals — Design
 
 **Date:** 2026-05-03

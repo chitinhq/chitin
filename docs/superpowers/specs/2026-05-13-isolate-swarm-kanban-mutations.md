@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_77f5b407
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-13'
+effective_to: null
+---
+
 # Spec: route all swarm kanban mutations through one wrapper
 
 Date: 2026-05-13

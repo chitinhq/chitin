@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_75c8c8c1
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-13'
+effective_to: null
+---
+
 # Spec: classify scripts/ and move runtime-critical logic out
 
 Date: 2026-05-13

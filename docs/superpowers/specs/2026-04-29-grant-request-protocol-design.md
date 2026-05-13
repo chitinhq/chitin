@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-29'
+effective_to: null
+---
+
 # Grant-Request Protocol — Design
 
 **Status:** spec draft — Milestone G of cost-governance kernel v3, deferred to post-talk (after 2026-05-07).

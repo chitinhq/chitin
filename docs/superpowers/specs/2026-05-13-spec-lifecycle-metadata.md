@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_5f50f6a8
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-13'
+effective_to: null
+---
+
 # Spec: spec lifecycle metadata + index
 
 Date: 2026-05-13

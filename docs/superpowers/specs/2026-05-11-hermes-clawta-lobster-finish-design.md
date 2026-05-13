@@ -1,3 +1,13 @@
+---
+status: open
+owner: jared
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-11'
+effective_to: null
+---
+
 # Hermes → Clawta → Lobster → Frontier-Coder CLI — finish design
 
 Date: 2026-05-11

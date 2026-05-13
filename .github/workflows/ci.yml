@@ -136,3 +136,14 @@ jobs:
 
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
+
+      - name: Spec front-matter + INDEX.md drift check
+        run: |
+          # Enforces the lifecycle schema from
+          # docs/superpowers/specs/2026-05-13-spec-lifecycle-metadata.md:
+          # every spec has a 6-field YAML front-matter block, status is
+          # in the closed enum, and the committed INDEX.md matches what
+          # the generator produces. See docs/runbooks/spec-lifecycle.md.
+          python3 -m pip install --quiet --user pyyaml
+          python3 scripts/check-spec-frontmatter.py
+          python3 scripts/regen-spec-index.py --check
