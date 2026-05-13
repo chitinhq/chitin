@@ -37,7 +37,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 		if path == "" {
 			path = stringArg(args, "file_path")
 		}
-		if path == "" {
+		if strings.TrimSpace(path) == "" {
 			return Action{}, ErrMissingTarget("read_file")
 		}
 		return Action{Type: ActFileRead, Target: path}, nil
@@ -46,7 +46,7 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 		if path == "" {
 			path = stringArg(args, "file_path")
 		}
-		if path == "" {
+		if strings.TrimSpace(path) == "" {
 			return Action{}, ErrMissingTarget("read")
 		}
 		return Action{Type: ActFileRead, Target: path}, nil
@@ -206,7 +206,7 @@ func normalizeWriteFile(args map[string]any) (Action, error) {
 	if path == "" {
 		path = stringArg(args, "file_path")
 	}
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return Action{}, ErrMissingTarget("write_file/write/edit/patch")
 	}
 	return Action{Type: ActFileWrite, Target: path}, nil

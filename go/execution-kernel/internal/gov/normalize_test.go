@@ -373,6 +373,9 @@ func TestNormalize_RejectsMissingTarget(t *testing.T) {
 		{"patch missing file_path", "patch", map[string]any{"content": "x"}},
 		{"read_file missing path", "read_file", map[string]any{}},
 		{"read missing file_path", "read", map[string]any{}},
+		{"write_file whitespace path", "write_file", map[string]any{"path": "   "}},
+		{"read whitespace path", "read", map[string]any{"path": "\t\n"}},
+		{"read_file whitespace file_path", "read_file", map[string]any{"file_path": "  "}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
