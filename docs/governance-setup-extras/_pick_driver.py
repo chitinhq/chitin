@@ -1,115 +1,309 @@
 #!/usr/bin/env python3
 """Pick driver step for kanban-dispatch.lobster.
 
-Reads classify output from stdin (JSON with capabilities, complexity,
-needs_frontier). Reads all agent capability cards from
-~/.openclaw/data/agent-cards/*.json. Filters candidates that cover the
-required capabilities. Ranks by cheapest model cost. Outputs JSON.
+Hybrid LLM + deterministic routing. The LLM makes the first routing
+judgment when ROUTER_MODE is unset or "llm"; deterministic
+capability/cost ranking remains the fallback whenever the LLM call fails
+or returns an unsafe pair.
 
-Output shape:
+Inputs:
+  stdin   - JSON from classify step: {complexity, capabilities, estimated_loc, needs_frontier}
+  env     - FORCE_DRIVER (smoke override; if set, skip LLM + deterministic both)
+  env     - ROUTER_MODE (default "llm"; set to "deterministic" to skip LLM)
+  env     - OPENCLAW_AGENT_CARDS_DIR (test/operator override for card directory)
+  files   - ~/.openclaw/data/agent-cards/*.json
+
+Output schema (stdout JSON):
   {
-    "driver": "<agent id>" | "unassigned",
-    "model": "<model id>" | "",
-    "complexity": "<echo of classify>",
-    "caps_needed": ["<echo of classify>"],
-    "candidates_considered": <int>
+    "driver":               <agent id> | "unassigned",
+    "model":                <model id> | null,
+    "complexity":           <echo>,
+    "caps_needed":          <echo>,
+    "candidates_considered": <int>,
+    "router_mode":          "llm" | "deterministic" | "forced",
+    "elo_consulted":        false,
+    "reasoning":            "<one-line justification>",
+    "card_load_errors":      <int>
   }
 """
 
 import glob
 import json
 import os
+import re
+import subprocess
 import sys
 
 
-def cheapest_model(card: dict) -> str:
-    models = card.get("models", [])
-    if not isinstance(models, list) or not models:
-        return ""
-    pick = min(
-        (m for m in models if isinstance(m, dict)),
-        key=lambda m: m.get("premium_cost", 99.0),
-        default={},
+CARDS_DIR = os.path.expanduser(
+    os.environ.get("OPENCLAW_AGENT_CARDS_DIR", "~/.openclaw/data/agent-cards")
+)
+LLM_TIMEOUT_SECONDS = 60
+
+
+def load_cards(cards_dir: str = CARDS_DIR) -> tuple[list[dict], list[str]]:
+    cards = []
+    errors = []
+    paths = sorted(glob.glob(f"{cards_dir}/*.json"))
+    if not paths:
+        errors.append(f"{cards_dir}: no agent card JSON files found")
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                card = json.load(f)
+        except Exception as e:
+            errors.append(f"{path}: {e}")
+            continue
+        if not isinstance(card, dict):
+            errors.append(f"{path}: card root must be a JSON object")
+            continue
+        cards.append(card)
+    for error in errors:
+        print(f"_pick_driver: failed to load agent card: {error}", file=sys.stderr)
+    return cards, errors
+
+
+def card_capabilities(card: dict) -> set[str]:
+    return {
+        x["skill"]
+        for x in card.get("capabilities", [])
+        if isinstance(x, dict) and isinstance(x.get("skill"), str)
+    }
+
+
+def model_ids(card: dict) -> set[str]:
+    return {
+        m["id"]
+        for m in card.get("models", [])
+        if isinstance(m, dict) and isinstance(m.get("id"), str)
+    }
+
+
+def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[dict]]:
+    """Capability-filter + cheapest-model rank. Returns (picked_card, candidates)."""
+    caps_needed = set(classify.get("capabilities", []))
+    candidates = [c for c in cards if caps_needed.issubset(card_capabilities(c))]
+
+    ranked = sorted(
+        candidates,
+        key=lambda c: min(
+            (
+                m.get("premium_cost", 99.0)
+                for m in c.get("models", [])
+                if isinstance(m, dict)
+            ),
+            default=99.0,
+        ),
     )
-    return str(pick.get("id", ""))
+    pick = ranked[0] if ranked else {"id": "unassigned"}
+    return pick, candidates
+
+
+def cheapest_model(card: dict) -> str | None:
+    models = sorted(
+        (m for m in card.get("models", []) if isinstance(m, dict)),
+        key=lambda m: m.get("premium_cost", 99.0),
+    )
+    return models[0].get("id") if models else None
+
+
+def cards_summary_for_llm(cards: list[dict]) -> list[dict]:
+    """Trim agent cards to the fields the LLM needs to make a routing call."""
+    out = []
+    for c in cards:
+        out.append(
+            {
+                "id": c.get("id"),
+                "description": c.get("description", "")[:200],
+                "capabilities": [
+                    {"skill": x.get("skill"), "depth": x.get("depth")}
+                    for x in c.get("capabilities", [])
+                    if isinstance(x, dict)
+                ],
+                "models": [
+                    {
+                        "id": m.get("id"),
+                        "tier": m.get("tier"),
+                        "premium_cost": m.get("premium_cost"),
+                    }
+                    for m in c.get("models", [])
+                    if isinstance(m, dict)
+                ],
+            }
+        )
+    return out
+
+
+def llm_pick(classify: dict, cards: list[dict]) -> dict | None:
+    """Call Clawta for routing judgment; return parsed result or None."""
+    cards_brief = cards_summary_for_llm(cards)
+    prompt = (
+        "You are Clawta, the swarm dispatcher. Route this ticket to the best "
+        "frontier-coder agent + model based on the classification and the "
+        "available agent cards.\n\n"
+        f"Classification: {json.dumps(classify)}\n\n"
+        f"Available agents: {json.dumps(cards_brief)}\n\n"
+        "Decision rules:\n"
+        "- Choose only an agent id present in Available agents.\n"
+        "- Choose only a model id present on that agent card.\n"
+        "- Capability fit is mandatory; never choose an agent missing a required capability.\n"
+        "- Higher complexity prefers stronger model (higher tier / premium_cost) even if more expensive.\n"
+        "- For low-complexity tasks, pick the cheapest agent that covers the capabilities.\n\n"
+        "Reply with ONLY a JSON object (no prose, no markdown):\n"
+        '{"driver": "<agent id>", "model": "<model id>", "reasoning": "<one-sentence why>"}'
+    )
+
+    try:
+        result = subprocess.run(
+            ["clawta", "--text", prompt],
+            capture_output=True,
+            text=True,
+            timeout=LLM_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    body = result.stdout or ""
+    match = re.search(r"\{[^{}]*\"driver\"[^{}]*\}", body, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed.get("driver"), str):
+        return None
+    if parsed.get("model") is not None and not isinstance(parsed.get("model"), str):
+        return None
+    return parsed
+
+
+def validate_llm_pick(
+    llm_result: dict | None, cards: list[dict], caps_needed: set[str]
+) -> tuple[dict | None, str | None]:
+    if not llm_result:
+        return None, "LLM routing unavailable or returned unparsable output"
+
+    driver_id = llm_result["driver"]
+    chosen_card = next((c for c in cards if c.get("id") == driver_id), None)
+    if chosen_card is None:
+        return None, f"LLM chose unknown driver {driver_id!r}"
+
+    missing_caps = sorted(caps_needed - card_capabilities(chosen_card))
+    if missing_caps:
+        return None, (
+            f"LLM chose {driver_id!r} but it lacks required capabilities: "
+            f"{', '.join(missing_caps)}"
+        )
+
+    model = llm_result.get("model")
+    if model and model not in model_ids(chosen_card):
+        return None, (
+            f"LLM chose invalid model {model!r} for driver {driver_id!r}"
+        )
+
+    return chosen_card, None
+
+
+def emit_result(
+    *,
+    driver: str | None,
+    model: str | None,
+    classify: dict,
+    caps_needed: set[str],
+    candidates_considered: int,
+    router_mode: str,
+    reasoning: str,
+    card_load_errors: int,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "driver": driver,
+                "model": model,
+                "complexity": classify.get("complexity"),
+                "caps_needed": sorted(caps_needed),
+                "candidates_considered": candidates_considered,
+                "router_mode": router_mode,
+                "elo_consulted": False,
+                "reasoning": reasoning,
+                "card_load_errors": card_load_errors,
+            }
+        )
+    )
 
 
 def main() -> None:
-    # Tolerate prefix garbage from openclaw's plugin loader (e.g.,
-    # "[plugins] chitin-governance registering: ...") which gets routed to
-    # stdout by openclaw's subsystem logger and lands ahead of clawta's
-    # JSON reply when this step's stdin is wired to classify.stdout. Read
-    # all of stdin and locate the first '{' before handing to json.loads.
     raw = sys.stdin.read()
     start = raw.find("{")
     if start < 0:
         raise SystemExit("classify produced no JSON object")
     classify = json.loads(raw[start:])
     caps_needed = set(classify.get("capabilities", []))
-    cards_dir = os.path.expanduser("~/.openclaw/data/agent-cards")
+    cards, load_errors = load_cards()
 
-    # Smoke / test override: when FORCE_DRIVER is non-empty, skip capability
-    # matching and return the named driver verbatim. Used by
-    # scripts/smoke-hermes-clawta-chain.sh to exercise each frontier-coder
-    # card deterministically without depending on the classifier.
+    # Smoke / test override.
     force = os.environ.get("FORCE_DRIVER", "").strip()
     if force:
-        forced_card = {}
-        forced_path = os.path.join(cards_dir, f"{force}.json")
-        try:
-            with open(forced_path, encoding="utf-8") as f:
-                forced_card = json.load(f)
-        except Exception:
-            pass
-        print(
-            json.dumps(
-                {
-                    "driver": force,
-                    "model": cheapest_model(forced_card),
-                    "complexity": classify.get("complexity"),
-                    "caps_needed": sorted(caps_needed),
-                    "candidates_considered": 1,
-                }
-            )
+        forced_card = next((c for c in cards if c.get("id") == force), {})
+        emit_result(
+            driver=force,
+            model=cheapest_model(forced_card),
+            classify=classify,
+            caps_needed=caps_needed,
+            candidates_considered=1,
+            router_mode="forced",
+            reasoning="FORCE_DRIVER env var bypassed routing logic",
+            card_load_errors=len(load_errors),
         )
         return
 
-    cards = []
-    for f in glob.glob(f"{cards_dir}/*.json"):
-        try:
-            cards.append(json.load(open(f)))
-        except Exception:
-            pass
+    router_mode = os.environ.get("ROUTER_MODE", "llm").strip().lower()
 
-    candidates = []
-    for c in cards:
-        card_caps = {
-            x["skill"]
-            for x in c.get("capabilities", [])
-            if isinstance(x, dict) and "skill" in x
-        }
-        if caps_needed.issubset(card_caps):
-            candidates.append(c)
+    llm_rejection = None
+    if router_mode == "llm":
+        llm_result = llm_pick(classify, cards)
+        chosen_card, llm_rejection = validate_llm_pick(llm_result, cards, caps_needed)
+        if chosen_card is not None:
+            emit_result(
+                driver=llm_result["driver"],
+                model=llm_result.get("model") or cheapest_model(chosen_card),
+                classify=classify,
+                caps_needed=caps_needed,
+                candidates_considered=len(cards),
+                router_mode="llm",
+                reasoning=llm_result.get("reasoning", ""),
+                card_load_errors=len(load_errors),
+            )
+            return
 
-    ranked = sorted(
-        candidates,
-        key=lambda c: min(
-            (m.get("premium_cost", 99.0) for m in c.get("models", [])),
-            default=99.0,
-        ),
-    )
-    pick = ranked[0] if ranked else {"id": "unassigned"}
+    pick, candidates = deterministic_pick(classify, cards)
+    picked = pick.get("id")
+    model = cheapest_model(pick) if picked != "unassigned" else None
+    if picked == "unassigned":
+        reasoning = "no candidates covered required capabilities"
+    elif llm_rejection:
+        reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + cheapest-cost rank"
+    else:
+        reasoning = "deterministic capability-filter + cheapest-cost rank"
+    if load_errors:
+        reasoning = f"{reasoning}; {len(load_errors)} card load error(s)"
 
-    print(
-        json.dumps(
-            {
-                "driver": pick.get("id"),
-                "model": cheapest_model(pick),
-                "complexity": classify.get("complexity"),
-                "caps_needed": sorted(caps_needed),
-                "candidates_considered": len(candidates),
-            }
-        )
+    emit_result(
+        driver=picked,
+        model=model,
+        classify=classify,
+        caps_needed=caps_needed,
+        candidates_considered=len(candidates),
+        router_mode="deterministic",
+        reasoning=reasoning,
+        card_load_errors=len(load_errors),
     )
 
 

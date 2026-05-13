@@ -92,7 +92,7 @@ steps:
       set -euo pipefail
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
-      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
       )"
@@ -133,7 +133,7 @@ steps:
       In 2 sentences, explain why this driver and model are the right pick. Ground the answer in the ticket's code complexity, language or stack, ticket type, required capabilities, and cost tradeoff. Return plain text only.
       PROMPT_TEXT
       )
-      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
       BASH_SCRIPT
       )"
@@ -276,7 +276,10 @@ steps:
         git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/main 2>&1 \
           || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
       fi
-      cd "$WORKTREE_DIR"
+      if ! cd "$WORKTREE_DIR"; then
+        echo "spawn_worker: failed to enter worktree $WORKTREE_DIR" >&2
+        exit 1
+      fi
       # Inline role SKILL.md into the worker's system prompt. Role is
       # set via ROLE env var (default 'programmer'). Falls back to
       # no-prefix if the role file is missing. printf %s avoids the
@@ -356,7 +359,13 @@ steps:
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
-      cd "$WORKTREE"
+      if ! cd "$WORKTREE"; then
+        MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
+        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        kanban-flow block ${ticket_id} "worker worktree could not be entered" --author clawta 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
       BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."

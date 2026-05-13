@@ -17,12 +17,13 @@
 #   clawta --agent <name> "<instruction>"             # override chat agent
 #   clawta --help                                     # this message
 #
-# Talks to: OpenClaw gateway @ ws://127.0.0.1:18789 via the openclaw CLI client.
+# Talks to: OpenClaw gateway @ ${OPENCLAW_URL:-http://127.0.0.1:18789}
+# via the openclaw CLI client.
 # Gateway must be running.
 
 set -euo pipefail
 
-OPENCLAW_BIN="/home/red/.vite-plus/bin/openclaw"
+OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
 AGENT="clawta"
 FORMAT="json"
 LOBSTER_WORKFLOW="${LOBSTER_WORKFLOW:-$HOME/.openclaw/workflows/kanban-dispatch.lobster}"
