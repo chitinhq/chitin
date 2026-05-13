@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# architecture-audit — weekly architecture audit of the chitin stack.
+#
+# Design (post-smoke iteration, 2026-05-13):
+#
+#   1. Local Bash gathers structured facts about chitin + sibling repos
+#      (module structure, recent commits, cross-surface overlap, etc.).
+#   2. A single `clawta --text` call synthesizes the report from the facts.
+#   3. Script parses the report's "Top 3-5 actionable findings" section
+#      and files kanban tickets.
+#   4. Commits report on a feature branch, pushes, opens a PR.
+#
+# Why not `claude --print`? The headless mode wedged silently in two
+# smoke runs (no TCP socket, threads in futex_do_wait) under our usage
+# pattern. clawta --text mirrors the working swarm-audit pattern — known
+# good async LLM invocation for unattended cron-driven runs.
+#
+# Runs unattended on a systemd timer (Sunday 6am ET). Safe under
+# unattended execution: read-only fact gather, writes only to
+# docs/audits/, opens a PR for operator review (never auto-merges).
+#
+# Env overrides (set in ~/.config/chitin/architecture-audit.env):
+#   ARCH_AUDIT_AGENT            openclaw agent (default: clawta)
+#   ARCH_AUDIT_WORKSPACE_DIR    where sibling repos live (default ~/workspace)
+#   ARCH_AUDIT_REPO_DIR         primary chitin checkout (default ~/workspace/chitin)
+#   ARCH_AUDIT_SKIP_PR          if 1, write the report but don't open a PR
+#   ARCH_AUDIT_SKIP_TICKETS     if 1, write the report but don't create kanban tickets
+
+set -euo pipefail
+
+DATE="$(date +%Y-%m-%d)"
+LOG_DIR="$HOME/.openclaw/logs"
+LOG_FILE="$LOG_DIR/architecture-audit.log"
+WORKSPACE_DIR="${ARCH_AUDIT_WORKSPACE_DIR:-$HOME/workspace}"
+REPO_DIR="${ARCH_AUDIT_REPO_DIR:-$HOME/workspace/chitin}"
+AGENT="${ARCH_AUDIT_AGENT:-clawta}"
+WORKTREE="$HOME/.cache/chitin/audit-worktrees/audit-$DATE"
+BRANCH="audit/architecture-$DATE"
+REPORT_REL="docs/audits/$DATE-architecture-audit.md"
+
+mkdir -p "$LOG_DIR" "$(dirname "$WORKTREE")"
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2
+}
+
+die() {
+  log "FATAL: $*"
+  exit 1
+}
+
+log "=== architecture-audit start (date=$DATE) ==="
+
+# ── Preconditions ─────────────────────────────────────────────────────
+KANBAN_DB="$HOME/.hermes/kanban/boards/chitin/kanban.db"
+if [[ ! -f "$KANBAN_DB" ]]; then
+  log "WARN: kanban DB not found at $KANBAN_DB; will skip ticket creation"
+  export ARCH_AUDIT_SKIP_TICKETS=1
+fi
+
+if ! timeout 5s curl -fsS http://127.0.0.1:18789/health >/dev/null 2>&1; then
+  log "WARN: openclaw gateway not responding on :18789; skipping ticket creation AND clawta call cannot succeed"
+  die "openclaw gateway is unhealthy — clawta --text would hang. Aborting."
+fi
+
+command -v clawta >/dev/null 2>&1 || die "clawta not found in PATH"
+command -v hermes >/dev/null 2>&1 || log "WARN: hermes not in PATH; ticket creation will fail"
+
+# ── Audit worktree setup ──────────────────────────────────────────────
+if [[ -d "$WORKTREE" ]]; then
+  log "removing stale worktree $WORKTREE"
+  git -C "$REPO_DIR" worktree remove --force "$WORKTREE" 2>/dev/null || true
+fi
+
+log "fetching latest origin/main"
+git -C "$REPO_DIR" fetch origin main --quiet
+
+log "creating worktree $WORKTREE on $BRANCH"
+git -C "$REPO_DIR" worktree add -b "$BRANCH" "$WORKTREE" origin/main
+
+mkdir -p "$WORKTREE/docs/audits"
+
+# ── Sibling repo discovery ────────────────────────────────────────────
+PRIMARY_ORIGIN="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "")"
+SIBLING_DIRS=()
+WORKTREE_SUMMARY=""
+while IFS= read -r dir; do
+  [[ -e "$dir/.git" ]] || continue
+  origin="$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")"
+  if [[ -n "$PRIMARY_ORIGIN" && "$origin" == "$PRIMARY_ORIGIN" ]]; then
+    branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+    last_commit="$(git -C "$dir" log -1 --pretty='%h %s' 2>/dev/null | head -c 100 || echo "?")"
+    WORKTREE_SUMMARY+=$'\n'"- \`$(basename "$dir")\` (branch: \`$branch\`) → $last_commit"
+  else
+    SIBLING_DIRS+=("$dir")
+  fi
+done < <(find "$WORKSPACE_DIR" -maxdepth 1 -mindepth 1 -type d \( -name 'chitin-*' -o -name 'openclaw' -o -name 'hermes-agent' -o -name 'lobster' \) 2>/dev/null)
+
+log "discovered ${#SIBLING_DIRS[@]} distinct sibling repos + $(printf '%s' "$WORKTREE_SUMMARY" | grep -c '^-' || echo 0) active worktrees of primary"
+
+# ── Fact gathering ────────────────────────────────────────────────────
+# Output: $FACTS, a markdown blob embedded in the clawta prompt.
+
+gather_facts() {
+  # Output target: ~1.5KB. Larger prompts wedge gpt-5.5 (reasoning model
+  # exhausts output budget). The 1.5KB smoke produced a useful audit, so
+  # keep it tight: high-signal tables only.
+  cd "$WORKTREE"
+
+  printf 'HEAD: %s\n' "$(git log -1 --pretty='%h %s (%ar)')"
+
+  printf '\n## Surface inventory\n\n'
+  printf '| Surface | Files |\n|---|---|\n'
+  for surface in go python apps libs scripts swarm docs; do
+    [[ -d "$surface" ]] || continue
+    files=$(find "$surface" -type f -not -path '*/.*' 2>/dev/null | wc -l)
+    printf '| %s/ | %d |\n' "$surface" "$files"
+  done
+
+  printf '\n## Recent commit activity (7d, per surface)\n\n'
+  printf '| Surface | Commits |\n|---|---|\n'
+  for surface in go python apps libs scripts swarm docs; do
+    [[ -d "$surface" ]] || continue
+    commits=$(git log --since='7 days ago' --oneline -- "$surface" 2>/dev/null | wc -l)
+    [[ $commits -gt 0 ]] && printf '| %s/ | %d |\n' "$surface" "$commits"
+  done
+
+  printf '\n## Cross-surface keyword overlap (rg -l counts)\n\n'
+  printf '| Keyword | go | python | apps | scripts | swarm |\n|---|---|---|---|---|---|\n'
+  for kw in kanban gate router governance hook clawta hermes openclaw; do
+    row="| $kw "
+    for s in go python apps scripts swarm; do
+      if [[ -d "$s" ]]; then
+        c=$(rg -l "$kw" "$s" 2>/dev/null | wc -l)
+      else
+        c=0
+      fi
+      row+="| $c "
+    done
+    row+="|"
+    printf '%s\n' "$row"
+  done
+
+  printf '\n## Recent commits to main (last 10)\n\n'
+  git log --oneline -10 main 2>/dev/null || git log --oneline -10
+
+  # Compact one-liners for context — no per-item detail
+  if [[ -n "$WORKTREE_SUMMARY" ]]; then
+    wt_count=$(printf '%s' "$WORKTREE_SUMMARY" | grep -c '^-')
+    branches=$(printf '%s' "$WORKTREE_SUMMARY" | grep -oE 'branch: `[^/]+' | sed 's|.*`||' | sort -u | tr '\n' ',' | sed 's/,$//')
+    printf '\n## In-flight branches\n%d local worktrees on prefixes: %s\n' "$wt_count" "$branches"
+  fi
+
+  prior=$(find docs/audits -type f -name '*-architecture-audit.md' 2>/dev/null | sort -r | head -1)
+  if [[ -n "$prior" ]]; then
+    printf '\n## Prior audit\nMost recent: %s\n' "$(basename "$prior")"
+  fi
+}
+
+log "gathering facts..."
+FACTS="$(gather_facts)"
+FACT_BYTES=$(printf '%s' "$FACTS" | wc -c)
+log "gathered facts: $FACT_BYTES bytes"
+
+# ── LLM synthesis via clawta ──────────────────────────────────────────
+PROMPT=$(cat <<PROMPT_EOF
+Write an architecture audit report for the chitin codebase. You see only the facts below — no file access. Be opinionated; admit gaps where facts are thin.
+
+## Facts
+
+$FACTS
+
+## Focus
+
+Look across the facts for: tight coupling between surfaces, duplicated concerns (same keyword owning files across surfaces), abstraction debt, AI-navigation cost (unclear naming/layout), and invariant drift (governance in chitin.yaml vs go/ vs apps/).
+
+## Required output structure (plain markdown, no code fences around the whole thing)
+
+# Architecture audit — $DATE
+
+## Executive summary
+3 to 5 bullets scannable in 30 seconds.
+
+## Findings
+Group by severity. Use "### High", "### Medium", "### Low" subheadings. Each finding is one bullet, 1-2 sentences, cite the surface. Omit severities with no findings.
+
+## Top 3-5 actionable findings
+Use this EXACT format for each so the script can parse them:
+
+### 1. Short title
+
+**Problem.** 2-3 sentences with specific evidence from facts.
+
+**Suggested next step.** One concrete action.
+
+**Effort.** S, M, or L.
+
+### 2. Short title
+
+...and so on for up to 5.
+
+## Trends since previous audit
+If a prior audit is listed in facts, note continuity vs regression. Otherwise: "First audit — no prior baseline."
+
+## Output rules
+Begin output with "# Architecture audit — $DATE". No preamble, no commentary about the task, no wrapping the whole report in a fenced block.
+PROMPT_EOF
+)
+
+log "invoking clawta --text (agent=$AGENT, prompt bytes=$(printf '%s' "$PROMPT" | wc -c))"
+
+# clawta --text emits a "chitin-governance registering" startup line on
+# stderr — captured separately and dropped. stdout is the report body.
+REPORT_PATH="$WORKTREE/$REPORT_REL"
+set +e
+REPORT="$(clawta --agent "$AGENT" --text "$PROMPT" 2>>"$LOG_FILE")"
+CLAWTA_EXIT=$?
+set -e
+
+log "clawta exited with status $CLAWTA_EXIT (report bytes=$(printf '%s' "$REPORT" | wc -c))"
+
+if [[ $CLAWTA_EXIT -ne 0 || -z "$REPORT" ]]; then
+  log "FATAL: clawta failed or returned empty output"
+  log "cleaning up worktree"
+  git -C "$REPO_DIR" worktree remove --force "$WORKTREE" 2>/dev/null || true
+  exit 1
+fi
+
+# Strip any accidental code-fence wrappers the model may have added.
+REPORT="$(printf '%s' "$REPORT" | sed -E '1{/^```(markdown)?$/d}; ${/^```$/d}')"
+
+printf '%s\n' "$REPORT" > "$REPORT_PATH"
+log "wrote report to $REPORT_PATH ($(wc -c < "$REPORT_PATH") bytes)"
+
+# ── Kanban tickets for top findings ───────────────────────────────────
+create_tickets() {
+  local count=0
+  # Parse the "Top 3-5 actionable findings" section. Each finding is a
+  # `### <N>. <title>` heading followed by **Problem.**, **Suggested
+  # next step.**, **Effort.** paragraphs.
+  python3 - "$REPORT_PATH" "$DATE" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+date = sys.argv[2]
+text = report_path.read_text()
+
+# Extract the "Top 3-5 actionable findings" section.
+m = re.search(r'## Top 3-5 actionable findings\n(.*?)(?=\n## |\Z)', text, re.DOTALL)
+if not m:
+    print("no actionable findings section found", file=sys.stderr)
+    sys.exit(0)
+
+body = m.group(1)
+
+# Split into findings by `### <N>. <title>`.
+findings = re.split(r'\n### \d+\. ', body)
+findings = [f.strip() for f in findings if f.strip()]
+# First chunk before the first `### 1.` is preamble; drop it.
+if findings and not re.match(r'^\d+\. ', findings[0]) and '**Problem' not in findings[0]:
+    pass  # keep — first ### 1. heading was matched, so findings[0] is the first finding body w/o the heading
+
+created = 0
+for i, f in enumerate(findings):
+    if created >= 5:
+        break
+    # First line is the title.
+    lines = f.splitlines()
+    title = lines[0].strip().rstrip('.').rstrip(':')
+    body_md = '\n'.join(lines[1:]).strip()
+    if not title or not body_md:
+        continue
+    # Slug for idempotency key
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:40]
+    key = f"arch-audit-{date}-{slug}"
+    ticket_title = f"Architecture audit ({date}): {title[:80]}"
+    ticket_body = body_md + f"\n\n_Source: docs/audits/{date}-architecture-audit.md (Top finding {i+1})_"
+    cmd = [
+        'hermes', 'kanban', '--board', 'chitin', 'create',
+        '--triage', '--priority', '25', '--assignee', 'red',
+        '--created-by', 'audit-cron',
+        '--idempotency-key', key,
+        '--body', ticket_body,
+        ticket_title,
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=30)
+        print(f"created: {out.strip()}")
+        created += 1
+    except subprocess.CalledProcessError as e:
+        print(f"FAILED ticket {i+1}: {e.output}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(f"TIMEOUT ticket {i+1}", file=sys.stderr)
+        break
+
+print(f"created {created} tickets")
+PY
+}
+
+if [[ "${ARCH_AUDIT_SKIP_TICKETS:-0}" == "1" ]]; then
+  log "ARCH_AUDIT_SKIP_TICKETS=1; skipping kanban ticket creation"
+else
+  log "creating kanban tickets..."
+  create_tickets 2>&1 | tee -a "$LOG_FILE"
+fi
+
+# ── Commit + push + PR ────────────────────────────────────────────────
+if [[ "${ARCH_AUDIT_SKIP_PR:-0}" == "1" ]]; then
+  log "ARCH_AUDIT_SKIP_PR=1; report written to $REPORT_PATH but not committed"
+else
+  log "committing + pushing + opening PR"
+  cd "$WORKTREE"
+  git add "$REPORT_REL"
+  git -c user.email=audit-cron@chitin -c user.name='audit-cron' \
+    commit -m "audit: weekly architecture audit $DATE" \
+    -m "Generated by swarm/bin/architecture-audit. See $REPORT_REL." >/dev/null
+  git push -u origin "$BRANCH" 2>&1 | tail -5 | tee -a "$LOG_FILE"
+  gh pr create --repo chitinhq/chitin \
+    --title "audit: architecture audit $DATE" \
+    --body "Weekly architecture audit (auto-generated). See \`$REPORT_REL\`. Kanban tickets for top findings have been filed in triage; reply on the ticket to engage." \
+    2>&1 | tee -a "$LOG_FILE"
+fi
+
+# ── Cleanup ───────────────────────────────────────────────────────────
+# When SKIP_PR=1 (smoke test), preserve the worktree so the operator can
+# inspect the generated report. Only clean up after a successful PR push.
+if [[ "${ARCH_AUDIT_SKIP_PR:-0}" == "1" ]]; then
+  log "SKIP_PR=1: preserving worktree at $WORKTREE for inspection"
+  log "  report: $REPORT_PATH"
+  log "  to clean up later: git -C $REPO_DIR worktree remove --force $WORKTREE && git -C $REPO_DIR branch -D $BRANCH"
+else
+  log "cleaning up worktree + branch"
+  git -C "$REPO_DIR" worktree remove --force "$WORKTREE" 2>/dev/null || true
+  git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
+fi
+
+log "=== architecture-audit complete ==="
