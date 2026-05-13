@@ -466,14 +466,22 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 	}{
 		{"gate status", "chitin-kernel gate status --agent a", chitinAdminRead},
 		{"decisions recent", "chitin-kernel decisions recent --json", chitinAdminRead},
+		{"decisions worktree diagnostics", "chitin-kernel decisions worktree-diagnostics --limit 5", chitinAdminRead},
+		{"chain stats", "chitin-kernel chain stats --json", chitinAdminRead},
+		{"chain recommend tier", "chitin-kernel chain recommend-tier --action-type=shell.exec", chitinAdminRead},
 		{"envelope inspect", "env CHITIN_HOME=/tmp chitin-kernel envelope inspect e1", chitinAdminRead},
 		{"gate reset", "chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"gate lockdown", "chitin-kernel gate lockdown --agent a", chitinAdminMutation},
+		{"gate evaluate records", "chitin-kernel gate evaluate --tool Bash --agent a", chitinAdminMutation},
+		{"gate evaluate no record", "chitin-kernel gate evaluate --tool Bash --agent a --no-record", chitinAdminRead},
+		{"router evaluate records", "chitin-kernel router evaluate --hook-stdin", chitinAdminMutation},
+		{"router evaluate no record", "chitin-kernel router evaluate --hook-stdin --no-record", chitinAdminRead},
 		{"config before gate lockdown", "chitin-kernel --config /tmp/chitin.yaml gate lockdown", chitinAdminMutation},
 		{"verbose before decisions recent", "chitin-kernel --verbose decisions recent", chitinAdminRead},
 		{"envelope grant", "FOO=1 chitin-kernel envelope grant e1 --calls=+1", chitinAdminMutation},
 		{"install hook", "chitin-kernel install-hook --surface claude-code", chitinAdminMutation},
 		{"chained reset after read", "chitin-kernel gate status && chitin-kernel gate reset --agent a", chitinAdminMutation},
+		{"pipeline reset after read", "chitin-kernel decisions recent | chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"command wrapper", "command chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"path prefixed", "/usr/local/bin/chitin-kernel gate reset --agent a", chitinAdminMutation},
 		{"lookalike", "echo chitin-kernel gate reset --agent a", chitinAdminNone},
@@ -483,6 +491,50 @@ func TestClassifyChitinAdminCommand(t *testing.T) {
 			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
 			if got != tc.want {
 				t.Fatalf("classify=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyChitinAdmin_ReadOnlyWithMutationFlagsRequiresAuthority(t *testing.T) {
+	for _, flag := range []string{"--repair", "--write", "--apply"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := "chitin-kernel decisions worktree-diagnostics " + flag
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: cmd})
+			if got != chitinAdminMutation {
+				t.Fatalf("classify(%q)=%q want %q", cmd, got, chitinAdminMutation)
+			}
+		})
+	}
+}
+
+func TestClassifyChitinAdmin_FailClosedBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{
+			name: "read command with apply flag is mixed",
+			cmd:  "chitin-kernel chain replay --session=latest --apply",
+		},
+		{
+			name: "unknown decisions subcommand",
+			cmd:  "chitin-kernel decisions recnet",
+		},
+		{
+			name: "unknown envelope alias",
+			cmd:  "chitin-kernel envelope ls",
+		},
+		{
+			name: "unknown root subcommand",
+			cmd:  "chitin-kernel gov decisions list",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyChitinAdminCommand(gov.Action{Type: gov.ActShellExec, Target: tc.cmd})
+			if got != chitinAdminMutation {
+				t.Fatalf("classify(%q)=%q want %q", tc.cmd, got, chitinAdminMutation)
 			}
 		})
 	}
@@ -575,6 +627,37 @@ func TestEvalHookStdin_ChitinAdmin_WorkerCanReadStatus(t *testing.T) {
 	st, _ := e2.Inspect()
 	if st.SpentCalls != 0 {
 		t.Fatalf("SpentCalls=%d want 0 — read-only governance command debited envelope", st.SpentCalls)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_WorkerCanReadDecisionDiagnostics(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "chitin-kernel decisions worktree-diagnostics --window-hours 1 --limit 10",
+		},
+	}, "")
+	if code != 0 {
+		t.Fatalf("decisions worktree-diagnostics exit=%d want 0; stdout=%q", code, stdout)
+	}
+}
+
+func TestEvalHookStdin_ChitinAdmin_WorkerCannotUseMutationFlagOnDiagnostics(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, _, code := runHookCall(t, env, map[string]any{
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "chitin-kernel decisions worktree-diagnostics --write",
+		},
+	}, "")
+	if code != 2 {
+		t.Fatalf("decisions worktree-diagnostics --write exit=%d want 2; stdout=%q", code, stdout)
+	}
+	if !strings.Contains(stdout, "governance-mutation-authority-required") {
+		t.Fatalf("stdout missing authority rule id: %q", stdout)
 	}
 }
 

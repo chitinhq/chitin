@@ -60,6 +60,90 @@ const (
 	chitinAdminMutation chitinAdminClass = "mutation"
 )
 
+type chitinAdminCommandSpec struct {
+	class       chitinAdminClass
+	subcommands map[string]chitinAdminClass
+}
+
+// chitinAdminCommandTable is the mutation-authority boundary for the
+// kernel's own operator surface. A command is read-only only when this
+// table says it cannot write governed state: chitin.yaml, gov.db,
+// gov-decisions-*.jsonl, chain JSONL, chain indexes, current-envelope, or
+// driver hook config. Unknown commands and known commands with unknown
+// write-shaped flags fail closed as mutation-required.
+//
+// Current command inventory:
+//   - read-only diagnostics: gate status; envelope inspect/list/tail;
+//     decisions recent/worktree-diagnostics; health; chain-info;
+//     chain-verify; chain replay/summarize/related/snapshot/stats/
+//     recommend-tier; simulate; gate/router evaluate only with --no-record.
+//   - mutations or mixed read/write: init, emit, ingest-*, sweep-transcripts,
+//     install*, uninstall*, gate evaluate/lockdown/reset, envelope
+//     create/use/grant/close, router evaluate, drive.
+var chitinAdminCommandTable = map[string]chitinAdminCommandSpec{
+	"chain": {
+		subcommands: map[string]chitinAdminClass{
+			"replay":         chitinAdminRead,
+			"summarize":      chitinAdminRead,
+			"related":        chitinAdminRead,
+			"snapshot":       chitinAdminRead,
+			"stats":          chitinAdminRead,
+			"recommend-tier": chitinAdminRead,
+		},
+	},
+	"chain-info":   {class: chitinAdminRead},
+	"chain-verify": {class: chitinAdminRead},
+	"decisions": {
+		subcommands: map[string]chitinAdminClass{
+			"recent":               chitinAdminRead,
+			"worktree-diagnostics": chitinAdminRead,
+		},
+	},
+	"drive": {class: chitinAdminMutation},
+	"emit":  {class: chitinAdminMutation},
+	"envelope": {
+		subcommands: map[string]chitinAdminClass{
+			"create":  chitinAdminMutation,
+			"use":     chitinAdminMutation,
+			"inspect": chitinAdminRead,
+			"list":    chitinAdminRead,
+			"grant":   chitinAdminMutation,
+			"close":   chitinAdminMutation,
+			"tail":    chitinAdminRead,
+		},
+	},
+	"gate": {
+		subcommands: map[string]chitinAdminClass{
+			"evaluate": chitinAdminMutation,
+			"status":   chitinAdminRead,
+			"lockdown": chitinAdminMutation,
+			"reset":    chitinAdminMutation,
+		},
+	},
+	"health":            {class: chitinAdminRead},
+	"ingest-hermes":     {class: chitinAdminMutation},
+	"ingest-otel":       {class: chitinAdminMutation},
+	"ingest-transcript": {class: chitinAdminMutation},
+	"init":              {class: chitinAdminMutation},
+	"install":           {class: chitinAdminMutation},
+	"install-hook":      {class: chitinAdminMutation},
+	"router": {
+		subcommands: map[string]chitinAdminClass{
+			"evaluate": chitinAdminMutation,
+		},
+	},
+	"simulate":          {class: chitinAdminRead},
+	"sweep-transcripts": {class: chitinAdminMutation},
+	"uninstall":         {class: chitinAdminMutation},
+	"uninstall-hook":    {class: chitinAdminMutation},
+}
+
+var chitinAdminMutationFlags = map[string]struct{}{
+	"--apply":  {},
+	"--repair": {},
+	"--write":  {},
+}
+
 func classifyChitinAdminCommand(a gov.Action) chitinAdminClass {
 	switch a.Type {
 	case gov.ActShellExec, gov.ActFileRecursiveDelete:
@@ -98,25 +182,60 @@ func classifyChitinKernelSegment(cmd canon.Command) chitinAdminClass {
 	if subcommandIndex >= len(fields) {
 		return chitinAdminRead
 	}
-	switch fields[subcommandIndex] {
-	case "gate":
-		if len(fields) > subcommandIndex+1 && fields[subcommandIndex+1] == "status" {
-			return chitinAdminRead
-		}
-		return chitinAdminMutation
-	case "envelope":
-		if len(fields) > subcommandIndex+1 {
-			switch fields[subcommandIndex+1] {
-			case "inspect", "list", "tail":
-				return chitinAdminRead
-			}
-		}
-		return chitinAdminMutation
-	case "decisions", "chain", "health", "chain-info", "chain-verify", "router", "simulate":
-		return chitinAdminRead
-	default:
+	if chitinKernelHasMutationFlag(fields[subcommandIndex+1:]) {
 		return chitinAdminMutation
 	}
+	spec, ok := chitinAdminCommandTable[fields[subcommandIndex]]
+	if !ok {
+		return chitinAdminMutation
+	}
+	if spec.subcommands == nil {
+		return spec.class
+	}
+	if len(fields) <= subcommandIndex+1 {
+		return chitinAdminMutation
+	}
+	cls, ok := spec.subcommands[fields[subcommandIndex+1]]
+	if !ok {
+		return chitinAdminMutation
+	}
+	if cls == chitinAdminMutation && chitinKernelEvaluateIsNoRecord(fields[subcommandIndex:]) {
+		return chitinAdminRead
+	}
+	return cls
+}
+
+func chitinKernelHasMutationFlag(fields []string) bool {
+	for _, field := range fields {
+		name := field
+		if before, _, ok := strings.Cut(field, "="); ok {
+			name = before
+		}
+		if _, ok := chitinAdminMutationFlags[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func chitinKernelEvaluateIsNoRecord(fields []string) bool {
+	if len(fields) < 2 {
+		return false
+	}
+	switch fields[0] {
+	case "gate", "router":
+	default:
+		return false
+	}
+	if fields[1] != "evaluate" {
+		return false
+	}
+	for _, field := range fields[2:] {
+		if field == "--no-record" {
+			return true
+		}
+	}
+	return false
 }
 
 func chitinKernelSubcommandIndex(fields []string) int {
