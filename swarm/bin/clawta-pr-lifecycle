@@ -344,7 +344,11 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
                 mark_done(item, apply)
                 item["applied"] = "done" if apply else "would-done"
             elif escalate_to_operator(item, escalate_to, apply):
-                item["applied"] = "escalated" if apply else "would-escalate"
+                escalation_applied = "escalated" if apply else "would-escalate"
+                if item.get("applied") and item["applied"] != "noop":
+                    item["applied"] = f"{item['applied']}+{escalation_applied}"
+                else:
+                    item["applied"] = escalation_applied
         except Exception as e:
             item["applied"] = "error"
             item["error"] = str(e)[-500:]
