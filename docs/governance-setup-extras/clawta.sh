@@ -11,6 +11,7 @@
 #
 # Usage:
 #   clawta "dispatch ticket t_XXXXX to claude-code"   # dispatch path
+#   clawta "why did you dispatch t_XXXXX to codex?"   # routing explanation
 #   clawta "Summarize PRs from the last 24h"          # chat path
 #   clawta --text "<instruction>"                     # plain-text output
 #   clawta --agent <name> "<instruction>"             # override chat agent
@@ -65,6 +66,26 @@ if [[ $# -eq 0 ]]; then
 fi
 
 MESSAGE="$*"
+
+# Routing Q&A must run before dispatch detection because the question
+# contains the word "dispatch" plus a ticket id.
+if [[ "$MESSAGE" =~ [Ww]hy[[:space:]].*[Dd]ispatch[^[:space:]]*[[:space:]]+(ticket[[:space:]]+)?(t_[a-z0-9]+)([[:space:]]+to[[:space:]]+([a-zA-Z0-9_-]+))? ]]; then
+  TICKET_ID="${BASH_REMATCH[2]}"
+  DRIVER_FILTER="${BASH_REMATCH[4]:-}"
+  if [[ "$FORMAT" == "json" ]]; then
+    if [[ -n "$DRIVER_FILTER" ]]; then
+      exec python3 "$HOME/.openclaw/workflows/clawta_decisions.py" latest --ticket-id "$TICKET_ID" --driver "$DRIVER_FILTER" --json
+    else
+      exec python3 "$HOME/.openclaw/workflows/clawta_decisions.py" latest --ticket-id "$TICKET_ID" --json
+    fi
+  else
+    if [[ -n "$DRIVER_FILTER" ]]; then
+      exec python3 "$HOME/.openclaw/workflows/clawta_decisions.py" latest --ticket-id "$TICKET_ID" --driver "$DRIVER_FILTER"
+    else
+      exec python3 "$HOME/.openclaw/workflows/clawta_decisions.py" latest --ticket-id "$TICKET_ID"
+    fi
+  fi
+fi
 
 # Dispatch-pattern detection. Captures:
 #   $2 = ticket id (e.g., t_9e427360)

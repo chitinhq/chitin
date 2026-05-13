@@ -9,6 +9,7 @@ required capabilities. Ranks by cheapest model cost. Outputs JSON.
 Output shape:
   {
     "driver": "<agent id>" | "unassigned",
+    "model": "<model id>" | "",
     "complexity": "<echo of classify>",
     "caps_needed": ["<echo of classify>"],
     "candidates_considered": <int>
@@ -19,6 +20,18 @@ import glob
 import json
 import os
 import sys
+
+
+def cheapest_model(card: dict) -> str:
+    models = card.get("models", [])
+    if not isinstance(models, list) or not models:
+        return ""
+    pick = min(
+        (m for m in models if isinstance(m, dict)),
+        key=lambda m: m.get("premium_cost", 99.0),
+        default={},
+    )
+    return str(pick.get("id", ""))
 
 
 def main() -> None:
@@ -41,10 +54,18 @@ def main() -> None:
     # card deterministically without depending on the classifier.
     force = os.environ.get("FORCE_DRIVER", "").strip()
     if force:
+        forced_card = {}
+        forced_path = os.path.join(cards_dir, f"{force}.json")
+        try:
+            with open(forced_path, encoding="utf-8") as f:
+                forced_card = json.load(f)
+        except Exception:
+            pass
         print(
             json.dumps(
                 {
                     "driver": force,
+                    "model": cheapest_model(forced_card),
                     "complexity": classify.get("complexity"),
                     "caps_needed": sorted(caps_needed),
                     "candidates_considered": 1,
@@ -83,6 +104,7 @@ def main() -> None:
         json.dumps(
             {
                 "driver": pick.get("id"),
+                "model": cheapest_model(pick),
                 "complexity": classify.get("complexity"),
                 "caps_needed": sorted(caps_needed),
                 "candidates_considered": len(candidates),
