@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { ensureIndexed, getEventsBySession } from '@chitin/telemetry';
 
 export interface EventRow {
   chain_id: string;
@@ -35,7 +36,8 @@ export function buildTree(events: EventRow[]): Tree {
   }
   const roots: ChainNode[] = [];
   for (const e of events) {
-    const node = byChain.get(e.chain_id)!;
+    const node = byChain.get(e.chain_id);
+    if (!node) continue;
     if (e.parent_chain_id === null) {
       if (!roots.includes(node)) roots.push(node);
     } else {
@@ -68,7 +70,6 @@ export function registerEventsTree(events: Command): void {
     .argument('<session_id>', 'session id to render')
     .option('--chitin-dir <path>', 'chitin state dir', './.chitin')
     .action(async (sessionID: string, opts: { chitinDir: string }) => {
-      const { ensureIndexed, getEventsBySession } = await import('@chitin/telemetry');
       ensureIndexed(opts.chitinDir);
       const rows = await getEventsBySession(opts.chitinDir, sessionID);
       const tree = buildTree(rows as EventRow[]);

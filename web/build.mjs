@@ -86,7 +86,9 @@ function renderPlaceholder() {
 let sha = 'local';
 try {
   sha = execSync('git rev-parse --short HEAD', { cwd: repoRoot, encoding: 'utf8' }).trim();
-} catch {}
+} catch {
+  // Keep the local fallback when git metadata is unavailable.
+}
 if (process.env.GITHUB_SHA) sha = process.env.GITHUB_SHA.slice(0, 7);
 const dateStamp = new Date().toISOString().slice(0, 10);
 

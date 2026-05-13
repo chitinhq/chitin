@@ -137,7 +137,7 @@ export function findCoverageGaps(
 
 /**
  * Walk a workspace root for package.json AND project.json files
- * under `apps/`, `libs/`, `tools/`, and `go/`, skipping node_modules
+ * under `apps/`, `libs/`, `tools/`, `go/`, and `python/`, skipping node_modules
  * and dist. Returns parsed JSON keyed by repo-relative path.
  *
  * Both file shapes are walked because Nx accepts tags in either:
@@ -147,10 +147,11 @@ export function findCoverageGaps(
  */
 export function loadWorkspacePackageJsons(rootDir: string): PackageJsonShape[] {
   // Top-level dirs that can contain workspace projects. Includes
-  // `tools/` (this lib lives there) and `go/` (the Go kernel carries
-  // an Nx project.json with layer:kernel; otherwise that tag is
-  // mis-reported as orphaned).
-  const targets = ['apps', 'libs', 'tools', 'go'];
+  // `tools/` (this lib lives there), `go/` (the Go kernel carries
+  // an Nx project.json with layer:kernel), and `python/` (the analysis
+  // library carries layer:analysis); otherwise those tags are
+  // mis-reported as orphaned.
+  const targets = ['apps', 'libs', 'tools', 'go', 'python'];
   const out: PackageJsonShape[] = [];
   for (const top of targets) {
     const topPath = join(rootDir, top);

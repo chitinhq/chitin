@@ -23,11 +23,11 @@ export default [
           depConstraints: [
             { sourceTag: 'layer:contracts',  onlyDependOnLibsWithTags: [] },
             { sourceTag: 'layer:telemetry',  onlyDependOnLibsWithTags: ['layer:contracts'] },
+            { sourceTag: 'layer:analysis',   onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
             { sourceTag: 'layer:plugin-api', onlyDependOnLibsWithTags: ['layer:contracts'] },
             { sourceTag: 'layer:adapter',    onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry', 'layer:plugin-api'] },
             { sourceTag: 'layer:plugin',     onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry', 'layer:plugin-api', 'layer:adapter'] },
             { sourceTag: 'layer:cli',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry', 'layer:adapter'] },
-            { sourceTag: 'layer:app',        onlyDependOnLibsWithTags: ['layer:contracts', 'layer:telemetry'] },
             { sourceTag: 'layer:tooling',    onlyDependOnLibsWithTags: ['layer:contracts'] },
             { sourceTag: 'layer:kernel',     onlyDependOnLibsWithTags: [] },
           ],

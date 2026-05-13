@@ -1,0 +1,6 @@
+{
+  "name": "chitin-analysis",
+  "projectType": "library",
+  "sourceRoot": "python/analysis",
+  "tags": ["type:lib", "scope:analytics", "layer:analysis", "lang:python"]
+}
