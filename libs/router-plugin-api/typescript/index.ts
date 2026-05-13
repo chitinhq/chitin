@@ -174,6 +174,10 @@ export async function gateAction(input: GateActionInput): Promise<GateDecision> 
       }
     });
 
+    child.stdin.on('error', () => {
+      // EPIPE on a dead pipe is expected when spawn fails with ENOENT;
+      // child.on('error') already records the spawn failure and fails open.
+    });
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   });
