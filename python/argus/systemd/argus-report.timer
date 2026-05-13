@@ -3,7 +3,6 @@ Description=Daily Argus Observatory Report Timer
 Requires=argus-report.service
 
 [Timer]
-OnCalendar=daily
 OnCalendar=07:00
 Persistent=true
 

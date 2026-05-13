@@ -6,21 +6,27 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from argus.indexer import tail_all_decisions
+from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
 
 
 def cmd_index(args) -> int:
-    """Index all gov-decisions JSONL files from decisions_dir."""
+    """Index gov-decisions JSONL files from decisions_dir."""
     decisions_dir = Path(args.decisions_dir)
     if not decisions_dir.exists():
         print(f"Error: decisions_dir not found: {decisions_dir}", file=sys.stderr)
         return 1
 
     try:
+        if args.follow:
+            print(f"Following {decisions_dir} into {Path.home() / '.argus' / 'index.db'}", file=sys.stderr)
+            follow_all_decisions(decisions_dir, poll_seconds=args.poll_seconds)
+            return 0
         db_path = tail_all_decisions(decisions_dir)
         print(f"Indexed to {db_path}", file=sys.stderr)
         return 0
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         print(f"Error indexing: {e}", file=sys.stderr)
         return 2
@@ -80,13 +86,14 @@ def cmd_query(args) -> int:
             print(f"Error from qwen: {result.stderr}", file=sys.stderr)
             return 2
 
-        sql = result.stdout.strip()
+        sql = _sanitize_readonly_select(result.stdout)
         if not sql:
-            print("qwen returned empty query", file=sys.stderr)
+            print("qwen returned no safe read-only SELECT query", file=sys.stderr)
             return 2
 
-        # Execute query
-        conn = sqlite3.connect(str(db_path))
+        # Execute query on a read-only SQLite connection.
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.execute("PRAGMA query_only = ON")
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(sql).fetchall()
@@ -107,6 +114,27 @@ def cmd_query(args) -> int:
         return 3
 
 
+
+def _sanitize_readonly_select(raw_sql: str) -> str | None:
+    """Return a single read-only SELECT statement, or None if unsafe."""
+    sql = raw_sql.strip()
+    if sql.startswith("```"):
+        sql = sql.strip("`").strip()
+        if sql.lower().startswith("sql"):
+            sql = sql[3:].strip()
+    if sql.endswith(";"):
+        sql = sql[:-1].strip()
+    lowered = sql.lower()
+    if not lowered.startswith("select "):
+        return None
+    if ";" in sql:
+        return None
+    forbidden = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "replace ", "attach ", "detach ", "pragma ", "vacuum ")
+    padded = f" {lowered} "
+    if any(token in padded for token in forbidden):
+        return None
+    return sql
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     p = argparse.ArgumentParser(prog="argus", description="Observatory: tail, index, detect, report.")
@@ -120,6 +148,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     index_p.add_argument("--decisions-dir",
                          default=str(Path.home() / ".chitin"),
                          help="Directory containing gov-decisions-*.jsonl")
+    index_p.add_argument("--follow", action="store_true",
+                         help="Stay running and index appended lines/date-rollover files")
+    index_p.add_argument("--poll-seconds", type=float, default=1.0,
+                         help="Polling interval for --follow")
 
     # report subcommand
     report_p = subparsers.add_parser("report", help="Generate daily digest report")

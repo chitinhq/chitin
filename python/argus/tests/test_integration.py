@@ -46,5 +46,5 @@ def test_end_to_end_workflow():
 
         assert report_path.exists()
         content = report_path.read_text()
-        assert "Argus Observatory Report" in content
+        assert "Argus Research" in content
         assert "5" in content or "Total decisions" in content

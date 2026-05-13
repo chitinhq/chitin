@@ -151,4 +151,24 @@ class TestGenerateDailyReport:
 
             # Should have ISO date in filename
             assert "2026-05-13" in report_path.name or "digest.md" in report_path.name
-            assert report_path.suffix == ".md"
+            assert report_path.suffix == ".html"
+
+
+def test_generate_report_writes_dark_html_latest_contract():
+    """Daily report writes date-stamped HTML and latest HTML copy."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        report_dir = Path(tmpdir) / "reports"
+        conn = init_db(db_path)
+        _insert_event(conn, "2026-05-13T08:00:00Z", False, "test-rule")
+        conn.close()
+
+        report_path = generate_daily_report(str(db_path), report_dir)
+        latest = report_dir / "argus-research-latest.html"
+
+        assert report_path.name.endswith("-argus-research.html")
+        assert latest.exists()
+        html = report_path.read_text()
+        assert "Argus Research" in html
+        assert "color-scheme: dark" in html
+        assert latest.read_text() == html

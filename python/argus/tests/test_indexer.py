@@ -217,3 +217,30 @@ class TestIndexJsonlFile:
             assert row["cost_usd"] == 0.05
             assert row["model"] == "claude-opus"
             conn.close()
+
+
+def test_index_jsonl_from_offset_indexes_appended_lines_and_rollover():
+    """Follower primitive indexes appended lines and newly discovered date-rollover files."""
+    from argus.indexer import _decision_files, index_jsonl_file_from_offset
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        db_path = root / "test.db"
+        decisions = root / "decisions"
+        decisions.mkdir()
+        day1 = decisions / "gov-decisions-2026-05-13.jsonl"
+        day2 = decisions / "gov-decisions-2026-05-14.jsonl"
+        day1.write_text('{"ts":"2026-05-13T08:00:00Z","allowed":false,"rule_id":"r1"}\n')
+
+        conn = init_db(db_path)
+        offsets = {}
+        for f in _decision_files(decisions):
+            _, _, offsets[f] = index_jsonl_file_from_offset(conn, f, offsets.get(f, 0))
+
+        day1.write_text(day1.read_text() + '{"ts":"2026-05-13T08:00:01Z","allowed":true,"rule_id":"r2"}\n')
+        day2.write_text('{"ts":"2026-05-14T00:00:00Z","allowed":false,"rule_id":"r3"}\n')
+        for f in _decision_files(decisions):
+            _, _, offsets[f] = index_jsonl_file_from_offset(conn, f, offsets.get(f, 0))
+
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+        conn.close()

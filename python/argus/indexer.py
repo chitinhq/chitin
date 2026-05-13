@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -83,25 +84,41 @@ def _parse_ts_unix(ts_str: str) -> Optional[int]:
         return None
 
 
-def index_jsonl_file(conn: sqlite3.Connection, file_path: Path) -> tuple[int, int]:
-    """Index a gov-decisions JSONL file. Returns (inserted, skipped_duplicates)."""
-    inserted = 0
-    skipped = 0
 
+def _decision_files(decisions_dir: Path) -> list[Path]:
+    """Return known gov decision JSONL files in deterministic order."""
+    import re
+
+    if not decisions_dir.exists():
+        return []
+    pattern = re.compile(r"^gov-decisions-\d{4}-\d{2}-\d{2}\.jsonl$")
+    return sorted([
+        f for f in decisions_dir.iterdir()
+        if pattern.match(f.name) and f.is_file()
+    ])
+
+
+def index_jsonl_file_from_offset(
+    conn: sqlite3.Connection, file_path: Path, offset: int = 0
+) -> tuple[int, int, int]:
+    """Index newly appended lines from offset; return (inserted, skipped, next_offset)."""
     if not file_path.exists():
-        return inserted, skipped
+        return 0, 0, offset
 
     with file_path.open("r") as f:
+        f.seek(offset)
+        inserted = 0
+        skipped = 0
         for line in f:
-            line = line.rstrip("\n")
-            if not line.strip():
+            raw = line.rstrip("\n")
+            if not raw.strip():
                 continue
 
-            d = parse_decision_line(line)
+            d = parse_decision_line(raw)
             if d is None:
                 continue
 
-            lh = _line_hash(line)
+            lh = _line_hash(raw)
             ts_unix = _parse_ts_unix(d.ts.isoformat())
             if ts_unix is None:
                 continue
@@ -123,36 +140,41 @@ def index_jsonl_file(conn: sqlite3.Connection, file_path: Path) -> tuple[int, in
                 ))
                 inserted += 1
             except sqlite3.IntegrityError:
-                # Duplicate line_hash; skip (idempotent)
                 skipped += 1
             except Exception:
-                # Other errors (malformed data); skip
                 continue
-
+        next_offset = f.tell()
     conn.commit()
-    return inserted, skipped
+    return inserted, skipped, next_offset
 
+def index_jsonl_file(conn: sqlite3.Connection, file_path: Path) -> tuple[int, int]:
+    """Index a gov-decisions JSONL file. Returns (inserted, skipped_duplicates)."""
+    inserted, skipped, _ = index_jsonl_file_from_offset(conn, file_path, 0)
+    return inserted, skipped
 
 def tail_all_decisions(decisions_dir: Path) -> Path:
     """Create index.db in ~/.argus/ from all gov-decisions-*.jsonl files."""
-    import re
-
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
 
-    pattern = re.compile(r"^gov-decisions-\d{4}-\d{2}-\d{2}\.jsonl$")
-    files = sorted([
-        f for f in decisions_dir.iterdir()
-        if pattern.match(f.name) and f.is_file()
-    ])
-
-    total_inserted = 0
-    total_skipped = 0
-
-    for f in files:
-        inserted, skipped = index_jsonl_file(conn, f)
-        total_inserted += inserted
-        total_skipped += skipped
+    for f in _decision_files(decisions_dir):
+        index_jsonl_file(conn, f)
 
     conn.close()
+    return db_path
+
+
+def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path:
+    """Continuously index existing and appended gov decision lines, including date rollover."""
+    db_path = Path.home() / ".argus" / "index.db"
+    conn = init_db(db_path)
+    offsets: dict[Path, int] = {}
+    try:
+        while True:
+            for f in _decision_files(decisions_dir):
+                inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, f, offsets.get(f, 0))
+                offsets[f] = next_offset
+            time.sleep(poll_seconds)
+    finally:
+        conn.close()
     return db_path
