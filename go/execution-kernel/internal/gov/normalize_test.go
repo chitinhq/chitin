@@ -316,7 +316,10 @@ func TestNormalize_RemoteCodeExec(t *testing.T) {
 }
 
 func TestNormalize_TerminalReadOnly(t *testing.T) {
-	cases := []struct{ cmd string; want ActionType }{
+	cases := []struct {
+		cmd  string
+		want ActionType
+	}{
 		{"ls -la", ActShellExec},
 		{"cat /etc/passwd", ActShellExec},
 		{"git status", ActGitStatus},
@@ -354,6 +357,35 @@ func TestNormalize_ReadFile_FilePathAlias(t *testing.T) {
 //
 // Invariant: an exec/process call with the same command as a terminal call
 // produces the same Action — one rule catches all routes (bypass closure).
+
+func TestNormalize_RejectsMissingTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{"empty shell command", "terminal", map[string]any{"command": "   "}},
+		{"empty exec command", "exec", map[string]any{"cmd": ""}},
+		{"empty process command", "process", map[string]any{"command": ""}},
+		{"write_file missing path", "write_file", map[string]any{"content": "x"}},
+		{"write missing file_path", "write", map[string]any{"content": "x"}},
+		{"edit missing path", "edit", map[string]any{"content": "x"}},
+		{"patch missing file_path", "patch", map[string]any{"content": "x"}},
+		{"read_file missing path", "read_file", map[string]any{}},
+		{"read missing file_path", "read", map[string]any{}},
+		{"write_file whitespace path", "write_file", map[string]any{"path": "   "}},
+		{"read whitespace path", "read", map[string]any{"path": "\t\n"}},
+		{"read_file whitespace file_path", "read_file", map[string]any{"file_path": "  "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize(tc.tool, tc.args)
+			if err == nil {
+				t.Errorf("expected error for %s, got nil (Action: %+v)", tc.name, a)
+			}
+		})
+	}
+}
 
 func TestNormalize_OpenclawExec(t *testing.T) {
 	// Same shape as terminal: passes cmd, lands on shell.exec.
