@@ -49,5 +49,26 @@ class EmptyRegistryTests(unittest.TestCase):
         self.assertIn("All 0 invariants preserved", result.stdout)
 
 
+class PassingInvariantTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write_check(self, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"check-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_single_passing_invariant(self) -> None:
+        self._write_check("ok", "#!/usr/bin/env bash\nexit 0\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+        self.assertIn("check-ok.sh", result.stdout)
+        self.assertIn("All 1 invariants preserved", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
