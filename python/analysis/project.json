@@ -10,14 +10,14 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "python/analysis",
-        "command": "uv run --extra dev pytest -q"
+        "command": "if command -v uv >/dev/null 2>&1; then uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && python3 -m pytest -q; fi"
       }
     },
     "compile": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": "python/analysis",
-        "command": "uv run python -m compileall -q ."
+        "command": "python3 -m compileall -q ."
       }
     }
   }
