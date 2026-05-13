@@ -32,7 +32,9 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// modifies in-place. Both end at file.write because both are mutations
 	// from the policy's perspective — the existing `write_file` mapping
 	// already encodes that policy.
-	case "write", "edit":
+	// "Write" is the Claude Code + Hermes tool name (capitalized); "write"
+	// is the lower-level alias. Both normalize identically.
+	case "write", "edit", "Write":
 		return normalizeWriteFile(args), nil
 	case "read_file":
 		path := stringArg(args, "path")
@@ -149,6 +151,22 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 		return Action{Type: ActHTTPRequest, Target: stringArg(args, "url")}, nil
 	case "delegate_task":
 		return Action{Type: ActDelegateTask, Target: stringArg(args, "goal")}, nil
+	// Agent is the Claude Code + Hermes agent-spawn tool. Maps to delegate.task
+	// because spawning a subagent is the same shape as delegating work: cede
+	// a tool budget to a subordinate agent. Target extraction follows the
+	// driver-layer pattern: description > subagent_type > agent_id > toolName.
+	case "Agent":
+		target := stringArg(args, "description")
+		if target == "" {
+			target = stringArg(args, "subagent_type")
+		}
+		if target == "" {
+			target = stringArg(args, "agent_id")
+		}
+		if target == "" {
+			target = "Agent"
+		}
+		return Action{Type: ActDelegateTask, Target: target}, nil
 	case "search_files":
 		return Action{Type: ActFileRead, Target: stringArg(args, "query")}, nil
 	case "skill_view":

@@ -719,3 +719,57 @@ func TestNormalize_OpenclawChatDomain_NoneUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalize_CapitalizedWrite(t *testing.T) {
+	// Capitalized "Write" (Claude Code tool) maps to file.write.
+	// Closes: deny cluster analysis showing 23+ hermes/claude-code Write
+	// calls denied as unknown actions.
+	a, err := Normalize("Write", map[string]any{"file_path": "/tmp/test"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != ActFileWrite {
+		t.Errorf("Type: got %q want file.write", a.Type)
+	}
+	if a.Target != "/tmp/test" {
+		t.Errorf("Target: got %q want /tmp/test", a.Target)
+	}
+}
+
+func TestNormalize_Agent(t *testing.T) {
+	// Capitalized "Agent" (Claude Code + Hermes tool) maps to delegate.task.
+	// Closes: deny cluster analysis showing 17+ claude-code Agent calls
+	// denied as unknown actions.
+	a, err := Normalize("Agent", map[string]any{"description": "search the repo"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != ActDelegateTask {
+		t.Errorf("Type: got %q want delegate.task", a.Type)
+	}
+	if a.Target != "search the repo" {
+		t.Errorf("Target: got %q want 'search the repo'", a.Target)
+	}
+}
+
+func TestNormalize_Agent_TargetExtraction(t *testing.T) {
+	// Agent target extraction: description > subagent_type > agent_id.
+	cases := []struct {
+		name       string
+		input      map[string]any
+		wantTarget string
+	}{
+		{"description wins", map[string]any{"description": "search", "subagent_type": "Explore"}, "search"},
+		{"subagent_type wins", map[string]any{"subagent_type": "Explore", "agent_id": "ag1"}, "Explore"},
+		{"agent_id alone", map[string]any{"agent_id": "ag1"}, "ag1"},
+		{"empty payload", map[string]any{}, "Agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := Normalize("Agent", tc.input)
+			if a.Target != tc.wantTarget {
+				t.Errorf("Target = %q, want %q", a.Target, tc.wantTarget)
+			}
+		})
+	}
+}
