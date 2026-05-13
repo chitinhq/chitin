@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""clawta-pr-lifecycle — PR/kanban closure controller for the Chitin swarm.
+
+Responsibilities, deliberately gated:
+- map swarm/clawta PRs back to kanban tickets
+- classify PRs as ready-to-merge / needs-fix / conflicted / merged
+- comment once when a PR is ready-to-merge (no auto-merge)
+- when a PR is already merged, mark its kanban ticket done
+- report cleanup candidates without deleting worktrees
+
+By default, no merge operation is performed. With --auto-merge, the script
+squash-merges only PRs that are green, mergeable, mapped to an in-progress
+kanban ticket, and have a current-head APPROVE Clawta review. Failing checks,
+conflicts, drafts, unmapped PRs, stale reviews, COMMENT, and REQUEST_CHANGES
+are never merged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+DB_PATH = Path(os.environ.get("KANBAN_DB", str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db")))
+BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "clawta-pr-lifecycle.log"
+AUTHOR = "clawta-pr-lifecycle"
+DEFAULT_PREFIXES = ("swarm/", "clawta/")
+REVIEW_MARKER_RE = re.compile(r"<!--\s*clawta-reviewer:v1(?:\s+head=([0-9a-f]{7,40}))?\s*-->")
+LIFECYCLE_MARKER = "<!-- clawta-lifecycle:v1"
+TICKET_RE = re.compile(r"t_[a-f0-9]{8}")
+VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(APPROVE|REQUEST_CHANGES|COMMENT)", re.I)
+
+
+def log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def run(cmd: list[str], *, timeout: int = 60, check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
+
+
+def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
+    out = run(cmd, timeout=timeout)
+    if out.returncode != 0:
+        raise RuntimeError(f"command failed: {' '.join(cmd)}\n{out.stderr[-800:]}")
+    return json.loads(out.stdout or "null")
+
+
+def list_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
+    prs = gh_json([
+        "gh", "pr", "list", "--repo", REPO, "--state", "all",
+        "--json", "number,title,headRefName,headRefOid,baseRefName,state,mergeable,mergedAt,url,body,isDraft,updatedAt",
+        "--limit", "100",
+    ])
+    return [
+        p for p in prs
+        if p.get("state") != "CLOSED"
+        and any(str(p.get("headRefName", "")).startswith(prefix) for prefix in prefixes)
+    ]
+
+
+def comments(pr_number: int) -> list[dict[str, Any]]:
+    data = gh_json(["gh", "api", f"repos/{REPO}/issues/{pr_number}/comments"], timeout=60)
+    return data if isinstance(data, list) else []
+
+
+def latest_review(comments_: list[dict[str, Any]]) -> dict[str, str] | None:
+    latest: dict[str, str] | None = None
+    for c in comments_:
+        body = str(c.get("body", ""))
+        marker = REVIEW_MARKER_RE.search(body)
+        if not marker:
+            continue
+        verdict_match = VERDICT_RE.search(body)
+        verdict = verdict_match.group(1).upper() if verdict_match else "COMMENT"
+        latest = {"body": body, "head": marker.group(1) or "", "verdict": verdict}
+    return latest
+
+
+def has_lifecycle_marker(comments_: list[dict[str, Any]], kind: str, head: str) -> bool:
+    needle = f"{LIFECYCLE_MARKER} kind={kind}"
+    for c in comments_:
+        body = str(c.get("body", ""))
+        if needle in body and (not head or f"head={head}" in body):
+            return True
+    return False
+
+
+def infer_ticket(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> str | None:
+    # Use only trusted PR-owned fields. Do NOT infer from arbitrary comments:
+    # lifecycle/reviewer comments can mention unrelated tickets and would mark
+    # the wrong kanban item done after merge.
+    branch = str(pr.get("headRefName", ""))
+    body_title = "\n".join([str(pr.get("title", "")), str(pr.get("body", ""))])
+
+    # Branch convention: swarm/<driver>-<ticket-suffix>. This is the safest
+    # swarm mapping because dispatcher-created PR branches carry the ticket id.
+    m2 = re.search(r"-([a-f0-9]{8})(?:$|[^a-f0-9])", branch)
+    if m2:
+        return "t_" + m2.group(1)
+
+    # Explicit PR body/title references are accepted only when they look like
+    # the PR's own ticket linkage, not incidental mentions in a repair summary.
+    explicit = re.search(
+        r"(?i)(?:closes|fixes|resolves|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
+        body_title,
+    )
+    if explicit:
+        return explicit.group(1)
+    return None
+
+
+def ticket_status(ticket_id: str | None) -> str | None:
+    if not ticket_id or not DB_PATH.exists():
+        return None
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id=?", (ticket_id,)).fetchone()
+        return str(row[0]) if row else None
+
+
+def checks_state(pr_number: int) -> str:
+    out = run(["gh", "pr", "checks", str(pr_number), "--repo", REPO, "--json", "name,state,workflow"], timeout=60)
+    if out.returncode != 0:
+        text = (out.stderr + out.stdout).lower()
+        if "no checks" in text or "no check" in text:
+            return "none"
+        return "unknown"
+    try:
+        checks = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        return "unknown"
+    if not checks:
+        return "none"
+    states = {str(c.get("state", "")).upper() for c in checks}
+    if any(s in {"FAILURE", "FAILED", "ERROR", "CANCELLED", "ACTION_REQUIRED", "TIMED_OUT"} for s in states):
+        return "fail"
+    if any(s in {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"} for s in states):
+        return "pending"
+    if all(s in {"SUCCESS", "SKIPPED", "NEUTRAL"} for s in states):
+        return "pass"
+    return "unknown"
+
+
+def review_matches_head(review: dict[str, str] | None, head: str) -> bool:
+    if review is None:
+        return False
+    reviewed_head = review.get("head") or ""
+    return bool(reviewed_head and head and head.startswith(reviewed_head))
+
+
+def is_review_nonblocking(review: dict[str, str] | None, head: str, *, require_current_head: bool = False) -> bool:
+    if review is None:
+        return False
+    if require_current_head and not review_matches_head(review, head):
+        return False
+    if review.get("head") and head and not head.startswith(review["head"]):
+        return False
+    verdict = review.get("verdict")
+    body = review.get("body", "")
+    if verdict == "APPROVE":
+        return True
+    if verdict == "COMMENT" and "No blocking issues found" in body:
+        return True
+    return False
+
+
+def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, Any]:
+    head = str(pr.get("headRefOid") or "")
+    review = latest_review(comments_)
+    check_state = checks_state(int(pr["number"])) if pr.get("state") == "OPEN" else "n/a"
+    ticket = infer_ticket(pr, comments_)
+    status = ticket_status(ticket)
+    merged = pr.get("state") == "MERGED" or bool(pr.get("mergedAt"))
+    base_ready = (
+        pr.get("state") == "OPEN"
+        and not pr.get("isDraft")
+        and pr.get("mergeable") == "MERGEABLE"
+        and check_state in {"pass", "none", "unknown"}
+        and is_review_nonblocking(review, head)
+    )
+    auto_merge_ready = (
+        base_ready
+        and check_state == "pass"
+        and bool(ticket)
+        and status == "in_progress"
+        and bool(review)
+        and review.get("verdict") == "APPROVE"
+        and is_review_nonblocking(review, head, require_current_head=True)
+    )
+    if merged:
+        action = "mark-done" if ticket and status != "done" else "merged-noop"
+    elif base_ready:
+        action = "ready-to-merge"
+    elif pr.get("mergeable") == "CONFLICTING":
+        action = "needs-rebase"
+    elif review and review.get("verdict") == "REQUEST_CHANGES":
+        action = "needs-fix"
+    else:
+        action = "wait"
+    return {
+        "pr": str(pr["number"]),
+        "url": pr.get("url", ""),
+        "head": head,
+        "branch": pr.get("headRefName", ""),
+        "ticket": ticket,
+        "ticket_status": status,
+        "state": pr.get("state"),
+        "mergeable": pr.get("mergeable"),
+        "checks": check_state,
+        "review": review.get("verdict") if review else "none",
+        "review_current_head": review_matches_head(review, head),
+        "auto_merge_ready": auto_merge_ready,
+        "action": action,
+    }
+
+
+def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
+    marker = f"{LIFECYCLE_MARKER} kind=ready-to-merge head={item['head']} -->"
+    auto_text = "yes" if item.get("auto_merge_ready") else "no"
+    msg = (
+        f"{marker}\n"
+        f"🦞 Lifecycle: PR #{item['pr']} is ready for operator review/merge. "
+        f"Review={item['review']}, checks={item['checks']}, ticket={item.get('ticket') or 'unknown'}, "
+        f"auto-merge-eligible={auto_text}."
+    )
+    if not apply:
+        return
+    run(["gh", "pr", "comment", item["pr"], "--repo", REPO, "--body", msg], timeout=60, check=True)
+    if item.get("ticket"):
+        run(["hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
+             f"Ready to merge: PR #{item['pr']} {item['url']} (review={item['review']}, checks={item['checks']})."], timeout=30, check=True)
+
+
+def mark_done(item: dict[str, Any], apply: bool) -> None:
+    if not item.get("ticket"):
+        return
+    result = f"Merged PR #{item['pr']}: {item['url']}"
+    if not apply:
+        return
+    run(["kanban-flow", "done", item["ticket"], "--result", result, "--author", AUTHOR], timeout=30, check=True)
+
+
+def merge_pr(item: dict[str, Any], apply: bool) -> None:
+    if not item.get("auto_merge_ready"):
+        raise RuntimeError(f"PR #{item['pr']} does not satisfy auto-merge gates")
+    if not apply:
+        return
+    run([
+        "gh", "pr", "merge", item["pr"], "--repo", REPO,
+        "--squash",
+        "--subject", f"{item['branch']} (#{item['pr']})",
+    ], timeout=120, check=True)
+
+
+def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for pr in list_prs(prefixes):
+        cs = comments(int(pr["number"]))
+        item = classify(pr, cs)
+        try:
+            if item["action"] == "ready-to-merge" and not has_lifecycle_marker(cs, "ready-to-merge", item["head"]):
+                post_ready_marker(item, apply)
+                item["applied"] = "ready-marker" if apply else "would-ready-marker"
+            else:
+                item["applied"] = "noop"
+            if auto_merge and item.get("auto_merge_ready"):
+                merge_pr(item, apply)
+                item["applied"] = "merged" if apply else "would-merge"
+            elif item["action"] == "mark-done":
+                mark_done(item, apply)
+                item["applied"] = "done" if apply else "would-done"
+        except Exception as e:
+            item["applied"] = "error"
+            item["error"] = str(e)[-500:]
+            log(f"PR #{item['pr']}: lifecycle action failed: {e}")
+        items.append(item)
+    cleanup_candidates = [i for i in items if i["state"] == "MERGED" and i.get("branch")]
+    return {"apply": apply, "auto_merge": auto_merge, "items": items, "cleanup_candidates": cleanup_candidates}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates")
+    ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
+    ap.add_argument("--prefix", action="append")
+    args = ap.parse_args()
+    result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply, args.auto_merge)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
