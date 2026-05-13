@@ -169,5 +169,34 @@ class TimeoutTests(unittest.TestCase):
         self.assertIn("check-hang.sh", result.stdout)
 
 
+class WarnOnlyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write(self, prefix: str, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"{prefix}-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_warn_exit_one_does_not_fail_aggregator(self) -> None:
+        self._write("warn", "drift",
+            "#!/usr/bin/env bash\necho 'WARN: 8 legacy worktrees still in tree'\nexit 1\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("WARN: 8 legacy worktrees still in tree", result.stdout)
+
+    def test_warn_does_not_appear_in_gate_summary(self) -> None:
+        self._write("check", "ok", "#!/usr/bin/env bash\nexit 0\n")
+        self._write("warn",  "info", "#!/usr/bin/env bash\necho 'info'\nexit 0\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0)
+        summary_section = result.stdout.split("═══ regression-gate summary ═══", 1)[-1]
+        self.assertIn("check-ok.sh", summary_section)
+        self.assertNotIn("warn-info.sh", summary_section)
+
+
 if __name__ == "__main__":
     unittest.main()
