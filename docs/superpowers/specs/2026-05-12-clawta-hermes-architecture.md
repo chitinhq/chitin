@@ -1,8 +1,12 @@
 # Hermes + Clawta Architecture — 5-slice spec
 
 Date: 2026-05-12
-Status: spec — under discussion
+Status: spec — amended 2026-05-12 to reflect actual built architecture (see Amendment Log)
 Author: Jared + Claude (collaborative)
+
+## Amendment Log
+
+- **2026-05-12 (afternoon)** — Slice 2 rewritten + Hard Rules 1, 5, 6 narrowed. Forcing function: Discord blocks bot-to-bot DMs at the platform level, so the spec's DM-based peer-comm was never viable in production. The implementation pivoted to **shared-channel @-mention + kanban-as-source-of-truth + autonomous poller** — accidentally a strictly better fit for operator-visibility-first UX (one feed, durable across bot restarts, queryable history). Spec amended to make that the canonical model. Companion ticket: `t_940d1b57`. See `wiki/entities/clawta-hermes-spec-drift.md` for slice-by-slice drift analysis.
 
 ## Goal
 
@@ -12,7 +16,7 @@ Two-agent operator architecture with a clean separation of concerns:
 - **Clawta** (Clawta bot) — swarm manager, dispatch executor, manages leaf-CLI workers
 - **Workers** — claude-code / codex / gemini / copilot CLIs, pure executors with no decision authority
 
-The two agents communicate peer-to-peer via Discord DM. The user talks to Hermes primarily; talks to Clawta only when asking questions ("why did you dispatch X to codex?", "show swarm health"). Chitin gates every hop, so the chain ledger is the canonical telemetry plane.
+The two agents coordinate through **shared Discord channels + the kanban DB as source of truth**, not via direct peer DMs (Discord rejects bot-to-bot DMs at the platform level). The user talks to Hermes primarily; talks to Clawta only when asking questions ("why did you dispatch X to codex?", "show swarm health"). Chitin gates every hop, so the chain ledger is the canonical telemetry plane.
 
 ## Target architecture
 
@@ -21,31 +25,47 @@ The two agents communicate peer-to-peer via Discord DM. The user talks to Hermes
                                │
        primary chat ───────────┤────────── questions only
                                ▼                    ▼
-       ┌─────────────────── HERMES ◄──── DM ────► CLAWTA ───────────────┐
-       │  orchestrator                            swarm manager          │
-       │  • owns kanban + grooming                • owns dispatch        │
-       │  • prioritization                        • picks agent + model  │
-       │  • research + ingestion                  • explains routing     │
-       │  • watches GitHub                        • short + long memory  │
-       │  • cron: highest-leverage-next           • ELO leaderboard      │
-       │  • escalates to operator                 • escalates to Hermes  │
-       └──────────────────┬───────────────────────────┬─────────────────┘
-                                                      │
-                                                      ▼
-                                                 LOBSTER WORKFLOW
-                                                      │
-                                                      ▼
-                                      LEAF CLIs (pure executors)
-                                      claude-code · codex · gemini · copilot
-                                                      │
-                                                      ▼
-                                                 WORK PRODUCT (PR)
-                                                      │
-                                                      ▼
-                                                 JUDGE LLM (frontier)
-                                                      │
-                                                      ▼
-                                                 ELO LEDGER ──► routing feedback
+       ┌─────────────────── HERMES         CLAWTA ───────────────────────┐
+       │  orchestrator                     swarm manager                 │
+       │  • owns kanban + grooming         • owns dispatch               │
+       │  • prioritization                 • picks agent + model         │
+       │  • research + ingestion           • explains routing            │
+       │  • watches GitHub                 • short + long memory         │
+       │  • cron: highest-leverage-next    • ELO leaderboard             │
+       │  • escalates to operator          • posts to #ares + #clawta    │
+       └──────────────────────────┬─────────────────┬───────────────────┘
+                                  │                 │
+                                  ▼                 ▼
+                            ┌──────────────────────────────┐
+                            │  KANBAN DB (source of truth) │
+                            │  ~/.hermes/kanban/.../*.db   │
+                            └────────────┬─────────────────┘
+                                         │ poller reads every 2m
+                                         ▼
+                                    CLAWTA-POLLER
+                                  (autonomous tick)
+                                         │
+                                         ▼
+                                    LOBSTER WORKFLOW
+                                         │
+                                         ▼
+                              LEAF CLIs (pure executors)
+                              claude-code · codex · gemini · copilot
+                                         │
+                                         ▼
+                                    WORK PRODUCT (PR)
+                                         │
+                                         ▼
+                                    JUDGE LLM (frontier)
+                                         │
+                                         ▼
+                                    ELO LEDGER ──► routing feedback
+
+       Shared Discord channels (#ares, #clawta) carry the operator-visible
+       narration — every dispatch announces, every PR open broadcasts.
+       Hermes and Clawta DO NOT DM each other (Discord forbids bot↔bot
+       DMs). They coordinate through the kanban DB; the channels are
+       for the operator's awareness.
 ```
 
 Telemetry plane = chitin (chain ledger across every hop, every Discord post, every tool call).
@@ -61,18 +81,18 @@ Telemetry plane = chitin (chain ledger across every hop, every Discord post, eve
 | Decide what to do next (highest-leverage) | Hermes | Runs cron; surfaces to user |
 | Decide *which agent + model* to dispatch | Clawta | Reads ticket, picks driver, justifies |
 | Run the lobster workflow | Clawta | spawn_worker → leaf CLI |
-| Escalate dispatch errors | Clawta → Hermes via DM | Hermes translates to user |
+| Escalate dispatch errors | Clawta → kanban-flow block + #ares broadcast | Operator sees via shared channel; Hermes summarizes on next standup |
 | Score work product (ELO judge) | Clawta | Frontier-model judge per PR |
 | Persist long-term memory | Both | Hermes for board state; Clawta for routing decisions |
 
 ## Hard rules (invariants)
 
-1. **No subprocess invocation between agents.** Hermes does not exec `clawta`. Clawta does not exec `hermes`. They speak via Discord. The `clawta` CLI wrapper stays for operator manual use.
+1. **No LLM-to-LLM subprocess invocation between agents.** Hermes does not exec a model-loop that pretends to be Clawta; Clawta does not exec a model-loop that pretends to be Hermes. Single-purpose CLI wrappers (e.g., `clawta` CLI dispatching one ticket through `kanban-dispatch.lobster`) ARE allowed — they're controlled, audited via chitin, and pass through the same gateway as any other tool call. The rule guards against rogue LLM-spawning-LLM cycles, not against deterministic tool wrappers.
 2. **Workers never decide.** Leaf CLIs (claude-code, codex, gemini, copilot) execute. They never pick the next ticket, never re-dispatch, never escalate to user.
-3. **One operator thread.** User, Hermes, and Clawta all post in the same Discord thread/channel. No fragmented narration across channels.
+3. **Kanban is source of truth across agents.** Hermes and Clawta read/write the same SQLite kanban DB. Discord posts narrate state changes for operator visibility; they do not carry authoritative state. If a Discord message says one thing and the kanban says another, the kanban is right.
 4. **Chitin telemetry covers every hop.** Every shell exec, every Discord post (via openclaw plugin), every tool call routes through the chain ledger with `driver` + `agent` stamps.
-5. **Clawta never DMs the user unsolicited.** User initiates Q&A; Clawta replies. Hermes is the only agent that can DM the user proactively.
-6. **Failures escalate up the chain.** Worker fails → Clawta sees it → Clawta DMs Hermes → Hermes decides whether to re-dispatch, ask user, or close.
+5. **Neither agent DMs the user in a personal channel without invitation.** Posts to shared channels (#ares for Hermes, #clawta for Clawta) where the operator chose to subscribe are NOT DMs and are encouraged for visibility. Hermes may proactively send the daily standup to a configured channel; Clawta may post dispatch/finalize/review broadcasts to its channel. Neither writes to the operator's personal DM thread unsolicited.
+6. **Failures escalate via kanban + the shared channel.** Worker fails → `kanban-flow block` records the reason → Clawta posts to #ares mentioning Hermes → operator sees both on the board and in the feed. Hermes summarizes blocks in its next standup. No agent-to-agent DM is required.
 
 ## Phase ordering + dependencies
 
@@ -124,45 +144,37 @@ Slices 3, 4, 5 can run in parallel after Slice 2 lands. Slice 1 is the gating ve
 
 ---
 
-## Slice 2 — Hermes ↔ Clawta Discord DM peer comm
+## Slice 2 — Shared-channel coordination + autonomous poller
 
-**Goal:** Hermes and Clawta communicate via Discord DM instead of CLI subprocess. Both bots post in the same operator thread; user sees the full conversation under each bot's identity.
+**Goal:** Hermes and Clawta coordinate by reading and writing the same kanban DB and narrating state changes in shared Discord channels (#ares for Hermes, #clawta for Clawta). The operator sees the full swarm activity in one feed per channel. No agent-to-agent DM is needed because:
 
-**Components in scope:**
-- Hermes-side tool: `dispatch_via_clawta` (or extend an existing send_message tool) that DMs Clawta on Discord
-- Clawta-side trigger: detect dispatch-shaped DMs and run the lobster workflow
-- Operator-thread routing: confirm both bots are active in the same Discord channel/thread
-- `clawta` CLI wrapper stays as-is (still works for operator manual invocation)
+> **Forcing function (2026-05-12):** Discord rejects bot-to-bot DMs at the platform level. The original spec's DM peer-comm path was never viable in production. The pivot to shared-channel + kanban-as-source-of-truth turned out strictly better for operator-visibility-first UX — one feed instead of N DMs, durable across bot restarts (kanban is queryable), and trivially auditable in chitin.
 
-**Sub-problems:**
-- **Clawta-side trigger.** Openclaw's glm-agent currently responds to @-mentions with text. We need a programmatic intercept: when an incoming Discord message matches `/dispatch (ticket )?(t_[a-z0-9]+)/i`, route directly to lobster (not to glm-agent's LLM). Two paths:
-  - (a) Add a Clawta-specific skill that pattern-matches and shells out to `clawta` (the CLI wrapper) — reuses Slice 1's plumbing
-  - (b) Build an openclaw plugin that intercepts before glm-agent — cleaner but more code
-  - Recommend (a) for minimum surface area.
-- **Hermes-side send.** Hermes already has terminal tool, so `openclaw message send --channel discord --account default --to <clawta-handle> --text "dispatch ticket t_X to codex"` works today. Need to know Clawta's user/handle and confirm the message reaches Clawta's listener.
-- **Reply path.** When Clawta finishes, it DMs Hermes back: `🦞 t_X done. PR: <url>`. Hermes detects the DM, summarizes to user. Need Hermes's user/handle for the reply target.
-- **Identity discovery.** Use `openclaw directory self` or `openclaw channels list` to get bot handles. Document in the operator-runbook.
+**Components actually built:**
+- `clawta-poller` (chitin `swarm/bin/clawta-poller`) — Python daemon, autonomously polls kanban for `ready+terminal-lane` tickets every 2 minutes via openclaw cron, sequences via glm-agent LLM, dispatches top-N through the `clawta` CLI wrapper into `kanban-dispatch.lobster`. Also demotes ungroomed `ready` tickets back to `triage` (grooming-gap enforcement, PR #528).
+- `clawta-invariants` (chitin `swarm/bin/clawta-invariants`, PR #541) — board self-healing; recovers tickets stuck in blocked-with-orphan-branch state by re-attaching PR URL or retrying `gh pr create`. Runs as Step 0 of every poller tick.
+- `kanban-flow` (chitin `scripts/kanban-flow`) — lifecycle helper used by both Hermes and Clawta for status transitions with audit-events.
+- Discord channel posts: dispatch start (`🦞 Starting dispatch...`) and finalize (`🦞 t_X: done. PR: <url>`) are broadcast to #clawta + @-mentioned to #ares for Hermes to summarize.
 
-**Tasks:**
-1. Discover Clawta's and Hermes's Discord user ids / handles via `openclaw directory`.
-2. Update `DISPATCH_AND_TICKETING_GUIDANCE` in `agent/prompt_builder.py`: replace "use `clawta` CLI" with "send a Discord DM to @Clawta". Include the exact handle.
-3. Add a Clawta-side trigger skill or plugin that pattern-matches incoming Discord DMs and runs `clawta "dispatch ticket t_X to <driver>"` (the wrapper handles auto-approve from Slice 1).
-4. Add Clawta-side reply: at the end of the workflow (or in finalize_dispatch), post a Discord DM to Hermes with the result.
-5. Smoke: user @Hermes ("dispatch t_X") → Hermes DMs @Clawta → Clawta runs lobster → Clawta DMs @Hermes ("done, PR <url>") → Hermes summarizes to user.
+**What's intentionally NOT built (and why):**
+- `dispatch_via_clawta` Hermes tool — Discord platform restriction kills bot-DM model.
+- Clawta-side dispatch-pattern intercept skill — superseded by poller (more durable than message intercept).
+- Hermes-as-dispatcher prompt — Hermes is now groomer-only (`DISPATCH_AND_TICKETING_GUIDANCE` in `agent/prompt_builder.py` says "you DO NOT dispatch"; clawta-poller is the only dispatcher). Mirrored to chitin `swarm/prompts/hermes-grooming-guidance.md`.
+
+**Smoke (verified live 2026-05-12):**
+- t_33dfc315 smoke ticket → `ready` → poller picked up → lobster dispatched → codex made the change in a swarm worktree → finalize pushed branch + opened PR #532 → kanban audit event recorded. Zero DMs involved.
 
 **Acceptance:**
-- User dispatches by messaging Hermes; Hermes does NOT exec clawta CLI; Hermes DMs Clawta on Discord
-- Clawta receives the DM, runs lobster, narrates progress on Discord
-- Clawta DMs Hermes when done; Hermes relays to user
-- No CLI subprocess between Hermes and Clawta during dispatch
-- Full conversation visible in the operator Discord thread under three identities (user, Hermes/Ares, Clawta)
+- Operator dispatches by marking a triage ticket `ready` (manually or via Hermes grooming); poller fires within 2 minutes.
+- Clawta narrates dispatch start + finalize in #clawta with @Hermes mention.
+- No subprocess between Hermes and Clawta during dispatch. Each agent talks to the kanban DB directly.
+- Full activity visible in #clawta (dispatches) + #ares (Hermes standup summaries). Kanban DB carries authoritative state.
 
 **Dependencies:** Slice 1 (dispatch path must work first)
 
-**Open questions:**
-- DMs vs single channel: if both bots have a shared channel they post in (vs each pair DMing), the user sees one threaded conversation. Recommend shared operator channel.
-- Does openclaw glm-agent's Discord listener forward all incoming messages to the LLM, or can a plugin intercept? Need to verify before picking the trigger approach.
-- Hermes already uses Discord — how does it currently differentiate between user messages and bot-DM messages? May need a sender-filter in Hermes's inbound handler.
+**Open questions (largely resolved):**
+- Hermes daily standup channel/cadence — answered: `hermes cron` job to Discord, schedule operator-configurable (currently every 6h to operator's main channel).
+- Glm-agent Discord-listener intercept — moot; poller bypasses Discord routing entirely.
 
 ---
 
@@ -332,24 +344,39 @@ CREATE TABLE swarm_dispatch_scores (
 - **Replacing OpenClaw's workflow engine.** We sit above as policy + orchestration; we don't rebuild Lobster.
 - **Replacing chitin's gate.** The gate stays the authoritative side-effect adjudicator. New flows route through it; they don't bypass it.
 
+## Companion runbooks (built outside this spec)
+
+The SDLC hardening work shipped 2026-05-12 (Slices A–F of a parallel epic) produced significant production-grade plumbing that this spec does not enumerate slice-by-slice. The canonical references live in chitin under `docs/runbooks/`:
+
+- `swarm-sdlc-status-machine.md` — kanban state machine + audit invariant
+- `swarm-sdlc-hermes-grooming-prompt.md` — Hermes prompt deploy runbook (groomer-only mode)
+- `swarm-sdlc-mock-worker-dogfood.md` — dogfood validation
+- plus `swarm/roles/{programmer,researcher,reviewer}/SKILL.md` for the role taxonomy injected into worker prompts at dispatch time
+
+When the next operator inherits this swarm, read this spec for the why and the runbooks for the how. If a runbook content becomes canonical (rather than time-bound), promote it into this spec and add a line to the Amendment Log.
+
 ## Where things live (file paths + conventions)
 
 | Component | Path | Owner |
 |---|---|---|
 | Hermes operator code | `/home/red/.hermes/hermes-agent/` | hermes-agent repo |
-| Hermes system prompt | `agent/prompt_builder.py` | KANBAN_GUIDANCE, DISPATCH_AND_TICKETING_GUIDANCE |
+| Hermes system prompt | `agent/prompt_builder.py` | KANBAN_GUIDANCE, DISPATCH_AND_TICKETING_GUIDANCE (groomer-only mode) |
 | Hermes skills | `skills/devops/{kanban-worker,kanban-orchestrator}/SKILL.md` | hermes-agent repo |
-| Clawta CLI wrapper | `/home/red/.local/bin/clawta` | operator-local |
-| Clawta agent config | `~/.openclaw/agents/glm-agent/` | openclaw operator state |
-| Dispatch workflow | `~/.openclaw/workflows/kanban-dispatch.lobster` | operator-local; mirror in chitin repo |
-| Dispatch workflow mirror | `docs/governance-setup-extras/kanban-dispatch.lobster` | chitin repo, audit trail |
-| Agent cards | `~/.openclaw/data/agent-cards/*.json` | operator-local; mirror in chitin repo |
+| Clawta agent | `~/.openclaw/agents/clawta/` (renamed from glm-agent 2026-05-12) | openclaw operator state |
+| Clawta CLI wrapper | `/home/red/.local/bin/clawta` | operator-local; chitin source at `docs/governance-setup-extras/clawta.sh` |
+| Clawta poller | `swarm/bin/clawta-poller` (chitin) | symlinked to `~/.local/bin/clawta-poller`; openclaw cron job `clawta-kanban-poller` (every 2m) |
+| Clawta invariants helper | `swarm/bin/clawta-invariants` (chitin, PR #541) | runs as Step 0 of every poller tick |
+| Clawta PR reviewer | `swarm/bin/clawta-pr-reviewer` (chitin) | openclaw cron job `clawta-pr-reviewer` (every 10m) |
+| Kanban lifecycle helper | `scripts/kanban-flow` (chitin) | symlinked to `~/.local/bin/kanban-flow` |
+| Dispatch workflow | `~/.openclaw/workflows/kanban-dispatch.lobster` | operator-local; chitin source at `swarm/workflows/kanban-dispatch.lobster` |
+| Worker role taxonomy | `swarm/roles/{programmer,researcher,reviewer}/SKILL.md` (chitin) | inlined into worker prompts by `spawn_worker` step |
+| Agent cards | `~/.openclaw/data/agent-cards/*.json` | operator-local; mirror in chitin repo (per ticket `t_266ad899`) |
 | Chitin gate code | `go/execution-kernel/internal/gov/` | chitin repo |
 | Chain ledger | `~/.chitin/gov-decisions-<date>.jsonl` | operator-local persistent |
-| ELO + decision storage (new) | `~/.openclaw/data/clawta.db` | operator-local; SQLite |
-| pr-judge workflow (new) | `~/.openclaw/workflows/pr-judge.lobster` | mirrored to repo |
-| Hermes cron jobs (new) | `~/.hermes/cron.yaml` or `hermes cron add` | operator-local |
-| Audit ruleset (new) | `docs/runbooks/hermes-board-audit.md` | chitin repo |
+| ELO + decision storage | `~/.openclaw/data/clawta.db` (SQLite `swarm_elo` + `swarm_dispatch_scores` tables) | operator-local |
+| Judge | `~/.openclaw/workflows/judge.py` (inline Python, not yet a separate lobster workflow) | operator-local |
+| Hermes cron jobs | `hermes cron add ...` | operator-local |
+| Daily operator audit | `swarm/bin/swarm-audit` (chitin, PR #543) | systemd timer, 08:00 ET daily |
 
 ## Plugin recommendations
 
