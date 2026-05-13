@@ -13,7 +13,7 @@ package canon
 
 // Command is the canonical representation of a single shell command.
 type Command struct {
-	Tool   string            `json:"tool"`           // Canonical tool: "git", "read", "grep", "docker", etc.
+	Tool   string            `json:"tool"`             // Canonical tool: "git", "read", "grep", "docker", etc.
 	Action string            `json:"action,omitempty"` // Subcommand: "status", "log", "diff", etc.
 	Flags  map[string]string `json:"flags,omitempty"`  // Normalized flags (long form, sorted by key).
 	Args   []string          `json:"args,omitempty"`   // Positional arguments (paths, patterns, etc.).
@@ -36,11 +36,11 @@ type Segment struct {
 type ChainOp string
 
 const (
-	OpNone  ChainOp = ""
-	OpPipe  ChainOp = "|"
-	OpAnd   ChainOp = "&&"
-	OpOr    ChainOp = "||"
-	OpSeq   ChainOp = ";"
+	OpNone ChainOp = ""
+	OpPipe ChainOp = "|"
+	OpAnd  ChainOp = "&&"
+	OpOr   ChainOp = "||"
+	OpSeq  ChainOp = ";"
 )
 
 // toolAliases maps raw command names to canonical tool names.
@@ -90,13 +90,15 @@ var toolAliases = map[string]string{
 	"uv":   "uv",
 
 	// Build tools
-	"cargo":  "cargo",
-	"go":     "go",
-	"make":   "make",
-	"tsc":    "tsc",
-	"python": "python",
+	"cargo":   "cargo",
+	"go":      "go",
+	"make":    "make",
+	"tsc":     "tsc",
+	"python":  "python",
 	"python3": "python",
-	"node":   "node",
+	"node":    "node",
+	"ruby":    "ruby",
+	"perl":    "perl",
 
 	// GitHub CLI
 	"gh": "gh",
@@ -142,7 +144,7 @@ var flagAliases = map[string]string{
 	"grep:-C": "context",
 
 	// git log
-	"git.log:-n":       "max-count",
+	"git.log:-n":        "max-count",
 	"git.log:--oneline": "format=oneline",
 
 	// read (head/tail/cat)
@@ -155,8 +157,8 @@ var flagAliases = map[string]string{
 	"ls:-R": "recursive",
 
 	// find
-	"find:-name":  "name",
-	"find:-type":  "type",
+	"find:-name":     "name",
+	"find:-type":     "type",
 	"find:-maxdepth": "maxdepth",
 
 	// docker

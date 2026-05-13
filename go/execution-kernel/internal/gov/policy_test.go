@@ -313,6 +313,94 @@ rules:
 	}
 }
 
+func TestPolicy_BaselineDeniesNormalizedInlineInterpreterGovSelfMod(t *testing.T) {
+	cwd, _ := os.Getwd()
+	for !fileExists(filepath.Join(cwd, "chitin.yaml")) {
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatal("chitin.yaml not found walking up")
+		}
+		cwd = parent
+	}
+	policy, _, err := LoadWithInheritance(cwd)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	cases := []string{
+		`python3 -c "open('chitin.yaml','w').write('x')"`,
+		`node -e "const fs = require('fs'); fs.writeFileSync('chitin.yaml', 'x')"`,
+		`bash -c "echo x > chitin.yaml"`,
+		`ruby -e "File.write('chitin.yaml', 'x')"`,
+		`perl -e "open(my $fh, '>', 'chitin.yaml'); print $fh 'x';"`,
+	}
+	for _, command := range cases {
+		t.Run(command, func(t *testing.T) {
+			action, err := Normalize("terminal", map[string]any{"command": command})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			d := policy.Evaluate(action)
+			if d.Allowed {
+				t.Fatalf("inline interpreter gov-path write should be denied")
+			}
+			if d.RuleID != "no-gov-self-mod-via-shell" {
+				t.Fatalf("RuleID=%q want no-gov-self-mod-via-shell; action=%+v", d.RuleID, action)
+			}
+			if !strings.Contains(d.Suggestion, "Saved-script bypass") {
+				t.Fatalf("suggestion should document saved-script limitation, got %q", d.Suggestion)
+			}
+		})
+	}
+}
+
+func TestPolicy_BaselineLegitimateEditorWriteUsesDirectSelfModRule(t *testing.T) {
+	cwd, _ := os.Getwd()
+	for !fileExists(filepath.Join(cwd, "chitin.yaml")) {
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatal("chitin.yaml not found walking up")
+		}
+		cwd = parent
+	}
+	policy, _, err := LoadWithInheritance(cwd)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	d := policy.Evaluate(Action{Type: ActFileWrite, Target: "chitin.yaml"})
+	if d.Allowed {
+		t.Fatalf("direct file.write to chitin.yaml should still be denied")
+	}
+	if d.RuleID != "no-governance-self-modification" {
+		t.Fatalf("RuleID=%q want no-governance-self-modification; params matcher should prevent double-fire", d.RuleID)
+	}
+}
+
+func TestPolicy_BaselineSavedScriptGovSelfModRemainsKnownLimitation(t *testing.T) {
+	cwd, _ := os.Getwd()
+	for !fileExists(filepath.Join(cwd, "chitin.yaml")) {
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatal("chitin.yaml not found walking up")
+		}
+		cwd = parent
+	}
+	policy, _, err := LoadWithInheritance(cwd)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+
+	action, err := Normalize("terminal", map[string]any{"command": "python3 /tmp/write_chitin.py"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	d := policy.Evaluate(action)
+	if !d.Allowed {
+		t.Fatalf("saved-script invocation is a documented limitation and should not be denied by the inline rule, got rule=%q", d.RuleID)
+	}
+}
+
 func TestPolicy_BaselineDeniesTerraformDestroy(t *testing.T) {
 	// Load the baseline chitin.yaml from repo root. This test runs from
 	// the gov package dir, so walk upward.
@@ -681,6 +769,21 @@ rules:
     reason: "x"
 `,
 			wantSub: "identity matcher list must not be empty",
+		},
+		{
+			name: "empty params value",
+			yaml: `
+id: t
+mode: enforce
+rules:
+  - id: bad-params
+    action: file.write
+    effect: deny
+    params:
+      via: ""
+    reason: "x"
+`,
+			wantSub: "bad-params",
 		},
 	}
 	for _, tc := range cases {

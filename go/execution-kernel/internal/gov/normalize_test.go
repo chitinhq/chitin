@@ -192,6 +192,71 @@ func TestNormalize_WriteFileGovernanceSelfMod(t *testing.T) {
 	}
 }
 
+func TestNormalize_InlineInterpreterGovSelfMod(t *testing.T) {
+	cases := []struct {
+		name       string
+		command    string
+		wantTarget string
+	}{
+		{
+			name:       "python open write",
+			command:    `python3 -c "open('chitin.yaml','w').write('x')"`,
+			wantTarget: "chitin.yaml",
+		},
+		{
+			name:       "node fs write",
+			command:    `node -e "const fs = require('fs'); fs.writeFileSync('/home/red/.chitin/gov.db', 'x')"`,
+			wantTarget: "/home/red/.chitin/gov.db",
+		},
+		{
+			name:       "bash redirect one-liner",
+			command:    `bash -c "echo x > .hermes/plugins/chitin-governance/plugin.yaml"`,
+			wantTarget: ".hermes/plugins/chitin-governance/plugin.yaml",
+		},
+		{
+			name:       "ruby file write",
+			command:    `ruby -e "File.write('chitin.yaml', 'x')"`,
+			wantTarget: "chitin.yaml",
+		},
+		{
+			name:       "perl open write",
+			command:    `perl -e "open(my $fh, '>', 'chitin.yaml'); print $fh 'x';"`,
+			wantTarget: "chitin.yaml",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Normalize("terminal", map[string]any{"command": tc.command})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type != ActFileWrite {
+				t.Fatalf("Type=%q want %q", a.Type, ActFileWrite)
+			}
+			if a.Target != tc.wantTarget {
+				t.Fatalf("Target=%q want %q", a.Target, tc.wantTarget)
+			}
+			if got := a.Params["via"]; got != "inline-interpreter" {
+				t.Fatalf("Params[via]=%v want inline-interpreter; params=%v", got, a.Params)
+			}
+		})
+	}
+}
+
+func TestNormalize_SavedScriptGovSelfModKnownLimitation(t *testing.T) {
+	a, err := Normalize("terminal", map[string]any{"command": "python3 /tmp/write_chitin.py"})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type != ActShellExec {
+		t.Fatalf("saved-script invocation should remain shell.exec, got %q", a.Type)
+	}
+	if a.Target != "python3 /tmp/write_chitin.py" {
+		t.Fatalf("Target=%q", a.Target)
+	}
+}
+
 func TestNormalize_DelegateTask(t *testing.T) {
 	a, _ := Normalize("delegate_task", map[string]any{"goal": "review"})
 	if a.Type != ActDelegateTask {

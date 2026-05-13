@@ -32,6 +32,7 @@ escalation:
 
 invariantModes:
   no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
   no-rm-recursive: guide
   no-destructive-rm: guide
   no-force-push: enforce
@@ -141,6 +142,16 @@ rules:
     target_regex: '(?:(?:^|[\s;&|`])(?:sudo\s+)?tee\b(?:\s+-\S+)*\s+|(?:^|[\s;&|`])(?:sudo\s+)?dd\s+(?:[a-zA-Z]+=\S+\s+)*of=|>>?\s*)(?:/etc/|/boot/|/usr/lib/systemd/|/usr/lib/sudo/|/private/etc/|/private/var/|/Library/LaunchDaemons/|/System/|(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.kube/|\.docker/|\.azure/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.bash_profile|\.zprofile|\.netrc|\.pgpass|\.npmrc|\.pypirc))'
     reason: "Shell command writes to a protected system or credential path"
     suggestion: "Use the operator's interactive shell for legitimate system mutations"
+    escalation_weight: 2
+
+  - id: no-gov-self-mod-via-shell
+    action: file.write
+    effect: deny
+    params:
+      via: inline-interpreter
+    target_regex: '(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)'
+    reason: "Inline gov-path mutation in shell-spawned interpreter is blocked"
+    suggestion: "This rule catches inline gov-path writes from script interpreters. Saved-script bypass requires operator workflow (chattr +i) + Phase 2 signed-policy work — see docs/runbooks/governance-self-mod-defense.md."
     escalation_weight: 2
 
   - id: no-governance-self-modification
