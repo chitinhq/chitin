@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
 )
 
 // hookTestEnv stages a CHITIN_HOME + chitin.yaml in cwd so evalHookStdin
@@ -99,6 +100,135 @@ func TestEvalHookStdin_AllowReadIsExit0EmptyStdout(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Fatalf("allow stdout must be empty, got %q", stdout)
+	}
+}
+
+func TestEvalHookStdin_CodexInnerHopAppendsOneDecisionPerToolCall(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	t.Setenv("CHITIN_DRIVER", "codex")
+	t.Setenv("CHITIN_AGENT_INSTANCE_ID", "codex-inner-hop-agent")
+
+	sessionID := "codex-inner-hop-session"
+	turnID := "codex-turn-1"
+	calls := []struct {
+		toolName   string
+		toolUseID  string
+		toolInput  map[string]any
+		actionType string
+		target     string
+	}{
+		{
+			toolName:   "read_file",
+			toolUseID:  "tool-use-read",
+			toolInput:  map[string]any{"file_path": "README.md"},
+			actionType: string(gov.ActFileRead),
+			target:     "README.md",
+		},
+		{
+			toolName:  "apply_patch",
+			toolUseID: "tool-use-patch",
+			toolInput: map[string]any{"input": strings.Join([]string{
+				"*** Begin Patch",
+				"*** Update File: README.md",
+				"@@",
+				"*** End Patch",
+			}, "\n")},
+			actionType: string(gov.ActFileWrite),
+			target:     "README.md",
+		},
+		{
+			toolName:   "Bash",
+			toolUseID:  "tool-use-shell",
+			toolInput:  map[string]any{"command": "echo codex-inner-hop"},
+			actionType: string(gov.ActShellExec),
+			target:     "echo codex-inner-hop",
+		},
+	}
+
+	for i, call := range calls {
+		stdout, stderr, code := runHookCallAsAgent(t, env, "codex", map[string]any{
+			"session_id":      sessionID,
+			"turn_id":         turnID,
+			"tool_use_id":     call.toolUseID,
+			"hook_event_name": "PreToolUse",
+			"tool_name":       call.toolName,
+			"tool_input":      call.toolInput,
+		}, "")
+		if code != 0 {
+			t.Fatalf("call %d (%s): exit=%d want 0; stdout=%q stderr=%q", i, call.toolName, code, stdout, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("call %d (%s): allow stdout must be empty, got %q", i, call.toolName, stdout)
+		}
+	}
+
+	eventsPath := filepath.Join(env.chitin, "events-"+sessionID+".jsonl")
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read codex session events: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != len(calls) {
+		t.Fatalf("decision chain lines=%d want %d:\n%s", len(lines), len(calls), data)
+	}
+	for i, line := range lines {
+		var ev struct {
+			EventType string          `json:"event_type"`
+			RunID     string          `json:"run_id"`
+			SessionID string          `json:"session_id"`
+			Surface   string          `json:"surface"`
+			ChainID   string          `json:"chain_id"`
+			Seq       int             `json:"seq"`
+			Labels    map[string]any  `json:"labels"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("line %d: unmarshal event: %v\n%s", i, err, line)
+		}
+		if ev.EventType != "decision" {
+			t.Fatalf("line %d: event_type=%q want decision", i, ev.EventType)
+		}
+		if ev.RunID != sessionID || ev.SessionID != sessionID || ev.ChainID != sessionID {
+			t.Fatalf("line %d: event not appended to codex session chain: run_id=%q session_id=%q chain_id=%q",
+				i, ev.RunID, ev.SessionID, ev.ChainID)
+		}
+		if ev.Surface != "codex" {
+			t.Fatalf("line %d: surface=%q want codex", i, ev.Surface)
+		}
+		if ev.Seq != i {
+			t.Fatalf("line %d: seq=%d want %d", i, ev.Seq, i)
+		}
+		if ev.Labels["driver"] != "codex" {
+			t.Fatalf("line %d: labels.driver=%v want codex", i, ev.Labels["driver"])
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+			t.Fatalf("line %d: unmarshal payload: %v", i, err)
+		}
+		if payload["decision"] != "allow" {
+			t.Fatalf("line %d: decision=%v want allow", i, payload["decision"])
+		}
+		if payload["action_type"] != calls[i].actionType {
+			t.Fatalf("line %d: action_type=%v want %s", i, payload["action_type"], calls[i].actionType)
+		}
+		if payload["action_target"] != calls[i].target {
+			t.Fatalf("line %d: action_target=%v want %s", i, payload["action_target"], calls[i].target)
+		}
+	}
+
+	stats, err := replay.ComputeStatsIn("action_type", env.chitin)
+	if err != nil {
+		t.Fatalf("ComputeStatsIn: %v", err)
+	}
+	if stats.Total != len(calls) {
+		t.Fatalf("stats total=%d want %d (chain stats must not double-count hook decisions)", stats.Total, len(calls))
+	}
+	for _, call := range calls {
+		b := stats.Buckets[call.actionType]
+		if b.Decisions != 1 || b.Allows != 1 || b.Denies != 0 {
+			t.Fatalf("stats bucket %s=%+v want one allow", call.actionType, b)
+		}
 	}
 }
 
