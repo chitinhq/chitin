@@ -70,5 +70,28 @@ class PassingInvariantTests(unittest.TestCase):
         self.assertIn("All 1 invariants preserved", result.stdout)
 
 
+class FailingInvariantTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write_check(self, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"check-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_single_failing_invariant(self) -> None:
+        self._write_check("broken",
+            "#!/usr/bin/env bash\necho 'violation: thing X broke'\nexit 1\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout)
+        self.assertIn("check-broken.sh", result.stdout)
+        self.assertIn("1/1 invariant(s) broken", result.stdout)
+        self.assertIn("violation: thing X broke", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
