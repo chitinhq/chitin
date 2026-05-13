@@ -308,22 +308,6 @@ steps:
         "$CARD_PATH")
       # NUL-delimit so multi-line prompts survive intact; -r would split on \n.
       mapfile -d '' -t ARGV < <(echo "$ARGS_JSON" | jq -j '.[] | . + "\u0000"')
-      # Emit a chain event attributing this spawn hop to clawta. Without
-      # this, the smoke's I2 invariant ("at least one event with
-      # driver=clawta") only finds the spawn if some downstream tool call
-      # bubbles back through the chitin hook before the exec replaces the
-      # process. Lobster doesn't expose a per-run id env var (verified in
-      # lobster 2026.4.6 dist), so we synthesize one from epoch+pid; the
-      # gate writes a `driver=clawta, agent=clawta` row into the daily
-      # ledger via OnDecision (gate_hook.go:386). The carrier is a benign
-      # Bash echo — the default-allow-shell rule passes it without any
-      # side effect (the gate evaluates the action; it doesn't run it).
-      # `|| true` keeps the spawn alive if the emission ever fails
-      # (gov.db locked, etc.); chain telemetry must never block the exec.
-      SPAWN_RUN_ID="clawta-spawn-$(date +%s)-$$"
-      printf '{"session_id":"%s","tool_name":"Bash","tool_input":{"command":"echo clawta-spawn-marker"}}' \
-        "$SPAWN_RUN_ID" \
-        | CHITIN_DRIVER=clawta chitin-kernel gate evaluate --hook-stdin --agent=clawta >/dev/null 2>&1 || true
       # Per-dispatch envelope: each worker gets its own spent_calls
       # counter. Without this, the worker inherits the parent's
       # CHITIN_BUDGET_ENVELOPE (which beats the ~/.chitin/current-envelope
@@ -331,8 +315,52 @@ steps:
       # agent dispatched under the same parent — one cap hit locks
       # whichever agent calls next.
       NEW_ENV=$(chitin-kernel envelope create --calls=10000 --bytes=33554432 --usd=2.0)
-      echo "spawn_worker: exec $CMD ${ARGV[*]} (envelope=$NEW_ENV)" >&2
-      exec env CHITIN_DRIVER=clawta CHITIN_BUDGET_ENVELOPE="$NEW_ENV" "$CMD" "${ARGV[@]}"
+      echo "spawn_worker: spawning $CMD ${ARGV[*]} (envelope=$NEW_ENV)" >&2
+
+      # Spawn worker as subprocess with output capture instead of exec.
+      # This enables: output capture, result observation, and parent-child
+      # session tracking via parent_chain_id in chain ledger.
+      SPAWN_CONFIG=$(jq -n \
+        --arg driver "$DRIVER" \
+        --arg model "$MODEL" \
+        --arg worktree "$WORKTREE_DIR" \
+        --arg branch "$BRANCH" \
+        --arg cmd "$CMD" \
+        --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
+        '{
+          driver: $driver,
+          model: $model,
+          worktree: $worktree,
+          branch: $branch,
+          cmd: $cmd,
+          args: $args,
+          env: {
+            "CHITIN_DRIVER": "clawta",
+            "CHITIN_BUDGET_ENVELOPE": $env.NEW_ENV
+          }
+        }' \
+        --arg NEW_ENV "$NEW_ENV")
+
+      WORKER_RESULT=$(printf '%s' "$SPAWN_CONFIG" | python3 "$HOME/.openclaw/workflows/spawn_worker_subprocess.py")
+      WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
+      WORKER_RETURNCODE=$(echo "$WORKER_RESULT" | jq -r '.returncode // -1')
+      WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
+
+      echo "spawn_worker: completed with status=$WORKER_STATUS returncode=$WORKER_RETURNCODE" >&2
+
+      # Store result for finalize_dispatch to retrieve
+      RESULT_FILE="/tmp/dispatch-worker-result-${TICKET_ID}.json"
+      printf '%s' "$WORKER_RESULT" > "$RESULT_FILE"
+
+      # Return appropriate exit code based on worker result
+      if [[ "$WORKER_STATUS" != "completed" ]]; then
+        echo "spawn_worker: worker failed with status=$WORKER_STATUS" >&2
+        exit 1
+      fi
+      if [[ "$WORKER_RETURNCODE" -ne 0 ]]; then
+        echo "spawn_worker: worker returned non-zero exit code: $WORKER_RETURNCODE" >&2
+        exit 1
+      fi
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
@@ -353,6 +381,41 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -uo pipefail  # NOT -e: each step below is best-effort
       DRIVER='$pick_driver.json.driver'
+
+      # Check worker result from spawn_worker step
+      RESULT_FILE="/tmp/dispatch-worker-result-${ticket_id}.json"
+      if [[ -f "$RESULT_FILE" ]]; then
+        WORKER_RESULT=$(cat "$RESULT_FILE")
+        WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
+        WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
+
+        case "$WORKER_STATUS" in
+          timeout)
+            MSG="🦞 ${ticket_id}: worker session timed out after 1 hour. No changes committed."
+            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            kanban-flow block ${ticket_id} "worker timeout" --author clawta 2>/dev/null || true
+            openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+            exit 0
+            ;;
+          failed)
+            MSG="🦞 ${ticket_id}: worker failed: $WORKER_ERROR"
+            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            kanban-flow block ${ticket_id} "worker failed" --author clawta 2>/dev/null || true
+            openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+            exit 0
+            ;;
+          completed)
+            # Worker succeeded, proceed to PR logic below
+            ;;
+          *)
+            MSG="🦞 ${ticket_id}: worker returned unknown status: $WORKER_STATUS"
+            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            kanban-flow block ${ticket_id} "unknown worker status" --author clawta 2>/dev/null || true
+            exit 0
+            ;;
+        esac
+      fi
+
       # Locate the most recent swarm worktree for this ticket. Pattern is
       # ~/.cache/chitin/swarm-worktrees/swarm-<slug>-${ticket_id}/ — the
       # leaf CLI creates it, slug varies by ticket title. Newest match wins
