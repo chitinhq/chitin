@@ -16,9 +16,10 @@ import (
 // current policy at cwd; prints diffs.
 //
 // Flags:
-//   --session=<id>   session_id to replay (or "latest" for most recent)
-//   --json           emit JSON report instead of human-readable
-//   --policy-cwd=<d> cwd for policy resolution (default: $PWD)
+//
+//	--session=<id>   session_id to replay (or "latest" for most recent)
+//	--json           emit JSON report instead of human-readable
+//	--policy-cwd=<d> cwd for policy resolution (default: $PWD)
 func cmdChainReplay(args []string) {
 	sessionID := ""
 	jsonOut := false
@@ -273,6 +274,16 @@ Default: tool_name.`)
 	}
 	fmt.Printf("chitin chain stats — by %s\n", axis)
 	fmt.Printf("  total decisions: %d\n\n", stats.Total)
+	if stats.Floundering != nil {
+		f := stats.Floundering
+		fmt.Printf("  floundering calibration (%d sessions):\n", f.Sessions)
+		fmt.Printf("    fixed:    precision %.3f  recall %.3f  false_positive_rate %.3f  false_negative_rate %.3f\n",
+			f.FixedPrecision, f.FixedRecall, f.FixedFalsePositiveRate, f.FixedFalseNegativeRate)
+		fmt.Printf("    adaptive: precision %.3f  recall %.3f  false_positive_rate %.3f  false_negative_rate %.3f\n",
+			f.AdaptivePrecision, f.AdaptiveRecall, f.AdaptiveFalsePositiveRate, f.AdaptiveFalseNegativeRate)
+		fmt.Printf("    false_positive_reduction %.1f%%  loop_misfire_increase %.3f\n\n",
+			f.FalsePositiveReduction*100, f.LoopMisfireIncrease)
+	}
 	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "bucket", "decisions", "allows", "denies", "success%")
 	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "------", "---------", "------", "------", "--------")
 	for _, k := range stats.SortedBucketKeys() {

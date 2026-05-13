@@ -46,6 +46,9 @@ func TestComputeStatsIn_BucketCountsAndSuccessRate(t *testing.T) {
 	if read.Decisions != 1 || read.Allows != 1 {
 		t.Errorf("Read bucket=%+v", read)
 	}
+	if s.Floundering == nil {
+		t.Fatal("expected floundering calibration metrics")
+	}
 }
 
 func TestComputeStatsIn_UnknownAxisErrors(t *testing.T) {
@@ -82,6 +85,44 @@ func TestComputeStatsIn_EmptyDirYieldsEmptyStats(t *testing.T) {
 	}
 	if s.Total != 0 || len(s.Buckets) != 0 {
 		t.Errorf("expected empty stats, got %+v", s)
+	}
+	if s.Floundering == nil || s.Floundering.Sessions != 0 {
+		t.Errorf("expected empty floundering stats, got %+v", s.Floundering)
+	}
+}
+
+func TestComputeStatsIn_FlounderingFalsePositiveRates(t *testing.T) {
+	tmp := t.TempDir()
+	writeChain(t, tmp, "legit-edit",
+		`{"event_type":"decision","payload":{"tool_name":"file.write","action_type":"file.write","action_target":"/repo/a.go","decision":"allow"}}`+"\n"+
+			`{"event_type":"decision","payload":{"tool_name":"file.write","action_type":"file.write","action_target":"/repo/a.go","decision":"allow"}}`+"\n"+
+			`{"event_type":"decision","payload":{"tool_name":"git.commit","action_type":"git.commit","action_target":"git commit","decision":"allow"}}`+"\n",
+	)
+	writeChain(t, tmp, "terminal-file-read",
+		`{"event_type":"decision","payload":{"tool_name":"file.read","action_type":"file.read","action_target":"/repo/a.go","decision":"allow"}}`+"\n"+
+			`{"event_type":"decision","payload":{"tool_name":"file.read","action_type":"file.read","action_target":"/repo/a.go","decision":"allow"}}`+"\n",
+	)
+	writeChain(t, tmp, "terminal-loop",
+		`{"event_type":"decision","payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"ollama ps || true","decision":"allow"}}`+"\n"+
+			`{"event_type":"decision","payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"ollama ps || true","decision":"allow"}}`+"\n",
+	)
+
+	s, err := ComputeStatsIn("tool_name", tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.Floundering
+	if f == nil {
+		t.Fatal("expected floundering stats")
+	}
+	if f.FixedFalsePositiveRate <= f.AdaptiveFalsePositiveRate {
+		t.Fatalf("adaptive false-positive rate did not improve: fixed=%v adaptive=%v", f.FixedFalsePositiveRate, f.AdaptiveFalsePositiveRate)
+	}
+	if f.AdaptiveFalseNegativeRate != f.FixedFalseNegativeRate {
+		t.Fatalf("adaptive false-negative rate changed: fixed=%v adaptive=%v", f.FixedFalseNegativeRate, f.AdaptiveFalseNegativeRate)
+	}
+	if f.FalsePositiveReduction < 0.2 {
+		t.Fatalf("false-positive reduction=%v want >= 0.2", f.FalsePositiveReduction)
 	}
 }
 
