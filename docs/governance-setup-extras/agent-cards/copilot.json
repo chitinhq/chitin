@@ -1,23 +1,61 @@
 {
   "id": "copilot",
-  "description": "GitHub Copilot CLI — free GPT-4.1 tier. Cheap, fast, used liberally as worker AND judge.",
+  "description": "GitHub Copilot CLI \u2014 invoked via chitin-kernel drive copilot (Go SDK driver) so every tool call passes through gov.Gate.Evaluate inline. Byte-equivalent to the PreToolUse hooks used by codex/gemini/claude-code; just in-process instead of stdin-piped.",
   "auth": "github-copilot-subscription",
   "capabilities": [
-    {"skill": "ts", "depth": "strong"},
-    {"skill": "python", "depth": "strong"},
-    {"skill": "go", "depth": "moderate"},
-    {"skill": "docs", "depth": "strong"},
-    {"skill": "review", "depth": "strong"},
-    {"skill": "refactor", "depth": "moderate"}
+    {
+      "skill": "ts",
+      "depth": "strong"
+    },
+    {
+      "skill": "python",
+      "depth": "strong"
+    },
+    {
+      "skill": "go",
+      "depth": "moderate"
+    },
+    {
+      "skill": "docs",
+      "depth": "strong"
+    },
+    {
+      "skill": "review",
+      "depth": "strong"
+    },
+    {
+      "skill": "refactor",
+      "depth": "moderate"
+    }
   ],
   "models": [
-    {"id": "gpt-4.1", "tier": "T1", "premium_cost": 0.0},
-    {"id": "claude-haiku-4.5", "tier": "T2", "premium_cost": 0.33},
-    {"id": "gpt-5.4", "tier": "T3", "premium_cost": 1.0}
+    {
+      "id": "gpt-4.1",
+      "tier": "T1",
+      "premium_cost": 0.0
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "tier": "T2",
+      "premium_cost": 0.33
+    },
+    {
+      "id": "gpt-5.4",
+      "tier": "T3",
+      "premium_cost": 1.0
+    }
   ],
   "invocation": {
-    "cmd": "copilot",
-    "args": ["--allow-all", "--model", "{model}", "-p", "{prompt}"]
+    "cmd": "/home/red/.local/bin/chitin-kernel",
+    "args": [
+      "drive",
+      "copilot",
+      "--model",
+      "{model}",
+      "--cwd",
+      ".",
+      "{prompt}"
+    ]
   },
-  "notes": "GPT-4.1 is free per Copilot subscription. Use this tier liberally for low-stakes work and as a judge / sanity-check helper. Hermes is allowed to invoke copilot directly (per hermes-no-frontier-spawn rule exception). --allow-all replaces the non-existent --dangerously-skip-permissions; it is equivalent to --allow-all-tools + --allow-all-paths + --allow-all-urls. Model name uses dot form `claude-haiku-4.5` — the dash form `claude-haiku-4-5` is rejected by the copilot CLI (verified 2026-05-11)."
+  "notes": "Routed through `chitin-kernel drive copilot` (Go SDK driver at go/execution-kernel/internal/driver/copilot/) so each tool call lands `gov.Gate.Evaluate()` inline. The bare copilot CLI's --allow-all flag is NOT needed; the SDK driver handles permissions via the inline gate. Model name uses dot form `claude-haiku-4.5` \u2014 the dash form `claude-haiku-4-5` is rejected by the copilot CLI (verified 2026-05-11). Authority: this card invocation succeeds because gate_hook.go's `isClawtaDriveCarveout` allows agent=clawta + `chitin-kernel drive <lane>` without supervisor authority (the launched session's tool calls remain fully gated). Pre-2026-05-13 invocation was bare /home/red/.vite-plus/bin/copilot with --allow-all (bypassed chitin entirely); rolled forward in this PR. Model routing policy: GPT-4.1 is only the low-complexity/cheap lane; medium Copilot tasks should use claude-haiku-4.5 or better, and high/needs_frontier Copilot tasks should use gpt-5.4. _pick_driver enforces this as a model floor even if the LLM router asks for the cheaper model."
 }

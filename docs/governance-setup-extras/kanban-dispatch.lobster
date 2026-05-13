@@ -187,19 +187,19 @@ steps:
   - id: audit_comment
     description: Announce dispatch + flip ready→in_progress + broadcast to Discord
     run: |
-      hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
+      hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
       # Slice D: lifecycle discipline. Flip to in_progress so the board
       # reflects reality. kanban-flow is idempotent when the ticket is
       # already in_progress (e.g. clawta-poller flipped it before this
       # workflow ran), so failure here is benign.
       kanban-flow start ${ticket_id} --author clawta 2>/dev/null || true
-      openclaw message send --channel discord --account default --text "🦞 Starting ${ticket_id} to $pick_driver.json.driver | complexity $pick_driver.json.complexity" 2>/dev/null || true
+      openclaw message send --channel discord --account default --text "🦞 Starting ${ticket_id} to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
   # 8. Spawn the picked frontier-coder CLI as a worker.
   #
-  # Reads ~/.openclaw/data/agent-cards/<driver>.json, picks the cheapest
-  # model (lowest premium_cost — matches _pick_driver.py's ranking),
+  # Reads ~/.openclaw/data/agent-cards/<driver>.json and honors the
+  # model selected by _pick_driver.py (complexity-aware and ELO-ready).
   # substitutes {model} and {prompt} into card.invocation.args, execs
   # the leaf CLI. The exec is gated by chitin under driver=clawta (the
   # spawning surface); the leaf CLI's own PreToolUse/BeforeTool hook
@@ -301,7 +301,14 @@ steps:
       ENV_HEADER=$(printf '# Working environment\n\nYou are already in a fresh git worktree at %s on branch %s (based on origin/main).\n\nDO NOT create another worktree or branch — you are in one.\nDO NOT run `git push` or `gh pr create` — lobster handles those after you exit.\n\nYour job: make the code change for the ticket, run any relevant tests, then commit with a clear message referencing %s. Then exit. That is it.\n\n# Ticket %s\n\n' \
         "$WORKTREE_DIR" "$BRANCH" "$TICKET_ID" "$TICKET_ID")
       PROMPT="${ROLE_HEADER}${ENV_HEADER}${TICKET_BODY}"
-      MODEL=$(jq -r '[.models[]] | sort_by(.premium_cost) | .[0].id' "$CARD_PATH")
+      MODEL='$pick_driver.json.model'
+      if [[ -z "$MODEL" || "$MODEL" == "null" || "$MODEL" == '$pick_driver.json.model' ]]; then
+        MODEL=$(jq -r '[.models[]] | sort_by(.premium_cost) | .[0].id' "$CARD_PATH")
+      fi
+      if ! jq -e --arg model "$MODEL" '.models[]? | select(.id == $model)' "$CARD_PATH" >/dev/null; then
+        echo "spawn_worker: selected model $MODEL is not present on driver=$DRIVER card" >&2
+        exit 1
+      fi
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
       ARGS_JSON=$(jq -c --arg model "$MODEL" --arg prompt "$PROMPT" \
         '.invocation.args | map(if . == "{model}" then $model elif . == "{prompt}" then $prompt else . end)' \

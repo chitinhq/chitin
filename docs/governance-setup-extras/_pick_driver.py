@@ -79,31 +79,139 @@ def model_ids(card: dict) -> set[str]:
     }
 
 
+DEPTH_SCORE = {"expert": 4, "strong": 3, "moderate": 2, "basic": 1}
+
+
+def capability_depth_score(card: dict, caps_needed: set[str]) -> int:
+    depths = {
+        x.get("skill"): DEPTH_SCORE.get(str(x.get("depth", "")).lower(), 0)
+        for x in card.get("capabilities", [])
+        if isinstance(x, dict)
+    }
+    return sum(depths.get(cap, 0) for cap in caps_needed)
+
+
+def min_model_cost(card: dict) -> float:
+    return min(
+        (
+            m.get("premium_cost", 99.0)
+            for m in card.get("models", [])
+            if isinstance(m, dict)
+        ),
+        default=99.0,
+    )
+
+
+def max_model_cost(card: dict) -> float:
+    return max(
+        (
+            m.get("premium_cost", -1.0)
+            for m in card.get("models", [])
+            if isinstance(m, dict)
+        ),
+        default=-1.0,
+    )
+
+
 def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[dict]]:
-    """Capability-filter + cheapest-model rank. Returns (picked_card, candidates)."""
+    """Capability-filter plus complexity-aware driver rank."""
     caps_needed = set(classify.get("capabilities", []))
     candidates = [c for c in cards if caps_needed.issubset(card_capabilities(c))]
+    bucket = complexity_bucket(classify)
 
-    ranked = sorted(
-        candidates,
-        key=lambda c: min(
-            (
-                m.get("premium_cost", 99.0)
-                for m in c.get("models", [])
-                if isinstance(m, dict)
+    if bucket == "high":
+        ranked = sorted(
+            candidates,
+            key=lambda c: (
+                -capability_depth_score(c, caps_needed),
+                -max_model_cost(c),
+                min_model_cost(c),
             ),
-            default=99.0,
-        ),
-    )
+        )
+    elif bucket == "medium":
+        ranked = sorted(
+            candidates,
+            key=lambda c: (
+                -capability_depth_score(c, caps_needed),
+                min_model_cost(c),
+            ),
+        )
+    else:
+        ranked = sorted(candidates, key=min_model_cost)
+
     pick = ranked[0] if ranked else {"id": "unassigned"}
     return pick, candidates
 
 
-def cheapest_model(card: dict) -> str | None:
-    models = sorted(
+def sorted_models(card: dict) -> list[dict]:
+    return sorted(
         (m for m in card.get("models", []) if isinstance(m, dict)),
         key=lambda m: m.get("premium_cost", 99.0),
     )
+
+
+def complexity_bucket(classify: dict) -> str:
+    raw = str(classify.get("complexity", "")).strip().lower()
+    if raw in {"hi", "high", "hard", "complex"}:
+        return "high"
+    if raw in {"med", "medium", "moderate"}:
+        return "medium"
+    if classify.get("needs_frontier") is True:
+        return "high"
+    return "low"
+
+
+def select_model(card: dict, classify: dict) -> str | None:
+    """Pick the minimum acceptable model for this task complexity.
+
+    Low complexity gets the cheapest model. Medium gets a middle-cost model
+    when available. High/needs_frontier gets the strongest listed model. The
+    card order is not trusted; premium_cost is the operator-maintained strength
+    proxy used elsewhere by the dispatch stack.
+    """
+    models = sorted_models(card)
+    if not models:
+        return None
+    bucket = complexity_bucket(classify)
+    if bucket == "high":
+        return models[-1].get("id")
+    if bucket == "medium":
+        return models[len(models) // 2].get("id")
+    return models[0].get("id")
+
+
+def model_cost(card: dict, model_id: str | None) -> float:
+    if not model_id:
+        return -1.0
+    for model in sorted_models(card):
+        if model.get("id") == model_id:
+            try:
+                return float(model.get("premium_cost", -1.0))
+            except (TypeError, ValueError):
+                return -1.0
+    return -1.0
+
+
+def effective_model(card: dict, classify: dict, requested_model: str | None) -> str | None:
+    """Honor a valid LLM model only if it is strong enough for complexity.
+
+    The LLM may prefer cheap models too aggressively. Enforce the
+    complexity-derived model floor so Copilot does not collapse to GPT-4.1
+    for medium/high work just because it is cheapest. Stronger-than-floor
+    requests are kept.
+    """
+    floor = select_model(card, classify)
+    if not requested_model:
+        return floor
+    if requested_model not in model_ids(card):
+        return floor
+    if model_cost(card, requested_model) < model_cost(card, floor):
+        return floor
+    return requested_model
+
+
+def cheapest_model(card: dict) -> str | None:
+    models = sorted_models(card)
     return models[0].get("id") if models else None
 
 
@@ -254,7 +362,7 @@ def main() -> None:
         forced_card = next((c for c in cards if c.get("id") == force), {})
         emit_result(
             driver=force,
-            model=cheapest_model(forced_card),
+            model=select_model(forced_card, classify),
             classify=classify,
             caps_needed=caps_needed,
             candidates_considered=1,
@@ -273,7 +381,7 @@ def main() -> None:
         if chosen_card is not None:
             emit_result(
                 driver=llm_result["driver"],
-                model=llm_result.get("model") or cheapest_model(chosen_card),
+                model=effective_model(chosen_card, classify, llm_result.get("model")),
                 classify=classify,
                 caps_needed=caps_needed,
                 candidates_considered=len(cards),
@@ -285,13 +393,13 @@ def main() -> None:
 
     pick, candidates = deterministic_pick(classify, cards)
     picked = pick.get("id")
-    model = cheapest_model(pick) if picked != "unassigned" else None
+    model = select_model(pick, classify) if picked != "unassigned" else None
     if picked == "unassigned":
         reasoning = "no candidates covered required capabilities"
     elif llm_rejection:
-        reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + cheapest-cost rank"
+        reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + complexity-aware model rank"
     else:
-        reasoning = "deterministic capability-filter + cheapest-cost rank"
+        reasoning = "deterministic capability-filter + complexity-aware model rank"
     if load_errors:
         reasoning = f"{reasoning}; {len(load_errors)} card load error(s)"
 
