@@ -1,0 +1,59 @@
+{
+  "id": "copilot",
+  "description": "GitHub Copilot CLI \u2014 free GPT-4.1 tier. Cheap, fast, used liberally as worker AND judge.",
+  "auth": "github-copilot-subscription",
+  "capabilities": [
+    {
+      "skill": "ts",
+      "depth": "strong"
+    },
+    {
+      "skill": "python",
+      "depth": "strong"
+    },
+    {
+      "skill": "go",
+      "depth": "moderate"
+    },
+    {
+      "skill": "docs",
+      "depth": "strong"
+    },
+    {
+      "skill": "review",
+      "depth": "strong"
+    },
+    {
+      "skill": "refactor",
+      "depth": "moderate"
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt-4.1",
+      "tier": "T1",
+      "premium_cost": 0.0
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "tier": "T2",
+      "premium_cost": 0.33
+    },
+    {
+      "id": "gpt-5.4",
+      "tier": "T3",
+      "premium_cost": 1.0
+    }
+  ],
+  "invocation": {
+    "cmd": "/home/red/.vite-plus/bin/copilot",
+    "args": [
+      "--allow-all",
+      "--model",
+      "{model}",
+      "-p",
+      "{prompt}"
+    ]
+  },
+  "notes": "GPT-4.1 is free per Copilot subscription. Use this tier liberally for low-stakes work and as a judge / sanity-check helper. Hermes is allowed to invoke copilot directly (per hermes-no-frontier-spawn rule exception). --allow-all replaces the non-existent --dangerously-skip-permissions; it is equivalent to --allow-all-tools + --allow-all-paths + --allow-all-urls. Model name uses dot form `claude-haiku-4.5` \u2014 the dash form `claude-haiku-4-5` is rejected by the copilot CLI (verified 2026-05-11). Absolute invocation path set 2026-05-12 by Clawta after isolated lobster env could not resolve PATH binaries."
+}
