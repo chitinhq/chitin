@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus Observatory Daily Report Generator
+After=network.target
+
+[Service]
+Type=oneshot
+User=%u
+WorkingDirectory=%h
+ExecStart=/usr/bin/env python -m argus report
+StandardOutput=journal
+StandardError=journal

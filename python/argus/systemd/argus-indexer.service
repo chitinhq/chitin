@@ -1,0 +1,16 @@
+[Unit]
+Description=Argus Observatory Indexer
+After=network.target
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h
+ExecStart=/usr/bin/env python -m argus index --decisions-dir %h/.chitin
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
