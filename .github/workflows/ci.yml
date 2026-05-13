@@ -128,5 +128,11 @@ jobs:
           # comment one ticket at a time.
           pnpm exec nx run @chitin/tooling-lint:lint:layer-tag-coverage
 
+      - name: Validate (Nx affected)
+        run: |
+          pnpm exec nx affected -t validate \
+            --base=${{ steps.nx-base.outputs.base }} \
+            --parallel=3
+
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1

@@ -33,6 +33,14 @@
         "cwd": "go/execution-kernel",
         "command": "go run ./cmd/chitin-kernel"
       }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "go/execution-kernel",
+        "command": "go vet ./... && go test ./..."
+      },
+      "dependsOn": ["^validate"]
     }
   }
 }

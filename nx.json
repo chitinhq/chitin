@@ -27,11 +27,37 @@
     }
   ],
   "targetDefaults": {
+    "build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "production",
+        "^production"
+      ]
+    },
+    "lint": {
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "test": {
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
     "validate": {
       "dependsOn": [
         "^validate"
       ],
-      "inputs": ["default"]
+      "inputs": [
+        "default"
+      ]
     }
   }
 }

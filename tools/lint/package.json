@@ -12,7 +12,12 @@
   "nx": {
     "sourceRoot": "tools/lint",
     "projectType": "library",
-    "tags": ["type:tooling", "scope:tooling", "layer:tooling", "lang:ts"],
+    "tags": [
+      "type:tooling",
+      "scope:tooling",
+      "layer:tooling",
+      "lang:ts"
+    ],
     "targets": {
       "test": {
         "executor": "nx:run-commands",
@@ -27,6 +32,16 @@
           "command": "pnpm exec tsx tools/lint/layer-tag-coverage.ts",
           "cwd": "{workspaceRoot}"
         }
+      },
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsc -p tools/lint/tsconfig.json --noEmit && pnpm exec vitest run --config tools/lint/vitest.config.ts",
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          "^validate"
+        ]
       }
     }
   }
