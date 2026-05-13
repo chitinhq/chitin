@@ -11,6 +11,7 @@
     "test": "vitest run tests"
   },
   "nx": {
+    "sourceRoot": "apps/cli/src",
     "projectType": "application",
     "tags": ["type:app", "scope:app", "layer:cli", "lang:ts"],
     "targets": {

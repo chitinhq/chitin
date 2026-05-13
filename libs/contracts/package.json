@@ -18,6 +18,7 @@
     "generate-go-types": "tsx tools/generate-go-types.ts"
   },
   "nx": {
+    "sourceRoot": "libs/contracts/src",
     "projectType": "library",
     "tags": ["type:lib", "scope:analytics", "layer:contracts", "lang:ts"],
     "targets": {

@@ -1,6 +1,24 @@
 {
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "name": "chitin-analysis",
-  "projectType": "library",
+  "root": "python/analysis",
   "sourceRoot": "python/analysis",
-  "tags": ["type:lib", "scope:analytics", "layer:analysis", "lang:python"]
+  "projectType": "library",
+  "tags": ["type:lib", "scope:analytics", "layer:analysis", "lang:python"],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/analysis",
+        "command": "if command -v uv >/dev/null 2>&1; then uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && python3 -m pytest -q; fi"
+      }
+    },
+    "compile": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/analysis",
+        "command": "python3 -m compileall -q ."
+      }
+    }
+  }
 }
