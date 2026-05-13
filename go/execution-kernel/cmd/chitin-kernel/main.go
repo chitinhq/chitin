@@ -66,6 +66,8 @@ func main() {
 		cmdRouter(args)
 	case "simulate":
 		cmdSimulate(args)
+	case "worktree":
+		cmdWorktree(args)
 	case "drive":
 		if len(args) < 1 {
 			exitErr("drive_no_driver", "usage: chitin-kernel drive <driver> [flags]")

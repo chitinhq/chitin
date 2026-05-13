@@ -97,6 +97,7 @@ backfilling, not by ignoring.
 
 - `scripts/kanban-flow` — lifecycle helper, source of truth for transitions
 - `hermes kanban` — display, comments, assign, complete (legacy paths)
+- `chitin-kernel worktree status` — joins local worktrees, kanban ticket ids, and PR state for pickup/prune decisions; see [worktree conventions](./worktree-conventions.md)
 - `swarm-elo` — post-merge judge ratings (separate; doesn't drive lifecycle)
 
 ## When the state machine drifts

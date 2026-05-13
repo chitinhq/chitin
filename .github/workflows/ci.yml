@@ -65,6 +65,9 @@ jobs:
         run: go test ./...
         working-directory: go/execution-kernel
 
+      - name: Worktree naming check
+        run: bash scripts/check-worktree-naming.sh
+
       - name: Build Go kernel
         run: pnpm exec nx run execution-kernel:build
 
