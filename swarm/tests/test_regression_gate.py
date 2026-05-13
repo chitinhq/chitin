@@ -198,5 +198,42 @@ class WarnOnlyTests(unittest.TestCase):
         self.assertNotIn("warn-info.sh", summary_section)
 
 
+class DiscoveryHygieneTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write(self, relpath: str, body: str) -> None:
+        full = self.sandbox / relpath
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(body)
+        full.chmod(0o755)
+
+    def test_wrong_extension_not_invoked(self) -> None:
+        self._write("scripts/check-foo.txt",
+            "#!/usr/bin/env bash\necho 'WAS_RUN'\nexit 1\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("WAS_RUN", result.stdout)
+
+    def test_subdirectory_not_recursed(self) -> None:
+        self._write("scripts/nested/check-foo.sh",
+            "#!/usr/bin/env bash\necho 'WAS_RUN'\nexit 1\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("WAS_RUN", result.stdout)
+
+    def test_allow_file_not_invoked_as_invariant(self) -> None:
+        self._write("scripts/governance-boundary.allow",
+            "some/path # reason here\n")
+        self._write("scripts/check-real.sh", "#!/usr/bin/env bash\nexit 0\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("governance-boundary.allow", result.stdout)
+        self.assertIn("check-real.sh", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
