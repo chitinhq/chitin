@@ -1,4 +1,4 @@
-import { evaluateRouter } from './chitin-bridge.mjs';
+import { evaluateHookGate, evaluateRouter, isExecShapedTool } from './chitin-bridge.mjs';
 
 const PLUGIN_ID = 'chitin-governance';
 
@@ -46,7 +46,8 @@ const plugin = {
 
     // ── pre-tool gate (pi runtime) ───────────────────────────────────────
     api.on('before_tool_call', async (event, ctx) => {
-      const decision = await evaluateRouter(
+      const evaluate = isExecShapedTool(event.toolName) ? evaluateHookGate : evaluateRouter;
+      const decision = await evaluate(
         {
           agent: ctx.agentId ?? 'openclaw-plugin',
           tool: event.toolName,
