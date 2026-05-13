@@ -1,6 +1,8 @@
 package claudecode
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
@@ -236,8 +238,8 @@ func TestNormalize_DelegateTaskFallsBackToSubagentType(t *testing.T) {
 
 func TestNormalize_BrowseToolsAreFileRead(t *testing.T) {
 	cases := []struct {
-		name      string
-		input     map[string]any
+		name       string
+		input      map[string]any
 		wantTarget string
 	}{
 		{"Glob", map[string]any{"pattern": "**/*.go"}, "**/*.go"},
@@ -262,6 +264,47 @@ func TestNormalize_TodoWriteIsFileWriteWithTodoTarget(t *testing.T) {
 	}
 	if a.Target != "todo" {
 		t.Fatalf("Target=%q want todo (existing v2 normalize convention)", a.Target)
+	}
+}
+
+func TestNormalize_GenericToolLeak_reNormalizesAndWarns(t *testing.T) {
+	buf := &bytes.Buffer{}
+	SetWarnSink(buf)
+	t.Cleanup(func() { SetWarnSink(nil) })
+
+	cases := []struct {
+		name       string
+		toolName   string
+		toolInput  map[string]any
+		wantType   gov.ActionType
+		wantTarget string
+	}{
+		{"lowercase read maps via gov normalize", "read", map[string]any{"path": "/tmp/x"}, gov.ActFileRead, "/tmp/x"},
+		{"lowercase exec maps via gov normalize", "exec", map[string]any{"cmd": "git status"}, gov.ActGitStatus, "git status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			a, err := Normalize(HookInput{ToolName: tc.toolName, ToolInput: tc.toolInput, Cwd: "/cwd"})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type != tc.wantType {
+				t.Errorf("Type = %q, want %q", a.Type, tc.wantType)
+			}
+			if a.Target != tc.wantTarget {
+				t.Errorf("Target = %q, want %q", a.Target, tc.wantTarget)
+			}
+			if a.Path != "/cwd" {
+				t.Errorf("Path = %q, want /cwd", a.Path)
+			}
+			if !strings.Contains(buf.String(), `"warning":"cross_driver_tool_name"`) {
+				t.Errorf("expected cross_driver_tool_name warn, got: %q", buf.String())
+			}
+			if !strings.Contains(buf.String(), `"driver":"claude-code"`) {
+				t.Errorf("warn missing driver=claude-code: %q", buf.String())
+			}
+		})
 	}
 }
 
