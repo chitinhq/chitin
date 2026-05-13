@@ -120,5 +120,26 @@ class NoShortCircuitTests(unittest.TestCase):
         self.assertIn("1/3 invariant(s) broken", result.stdout)
 
 
+class ToolErrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write_check(self, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"check-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_tool_error_counts_as_failure(self) -> None:
+        self._write_check("crash",
+            "#!/usr/bin/env bash\necho 'crash'\nexit 2\n")
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout)
+        self.assertIn("check-crash.sh", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
