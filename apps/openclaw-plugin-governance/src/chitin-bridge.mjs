@@ -143,15 +143,38 @@ function failClosed(opts, reason) {
  * @returns {Promise<GateDecision>}
  */
 export async function evaluateRouter(input, opts) {
+  return evaluateHookInvocation(input, opts, ['router', 'evaluate', '--hook-stdin', '--agent', input.agent], 'router');
+}
+
+/**
+ * Invoke `chitin-kernel gate evaluate --hook-stdin` for openclaw exec-shaped
+ * calls. The kernel has no dedicated openclaw driver selector here, so exec
+ * tools are adapted to the Claude-compatible Bash hook shape while keeping
+ * the openclaw agent id in --agent for chain attribution.
+ *
+ * @param {GateInput & { sessionId?: string }} input
+ * @param {BridgeOptions} opts
+ * @returns {Promise<GateDecision>}
+ */
+export async function evaluateHookGate(input, opts) {
+  return evaluateHookInvocation(input, opts, ['gate', 'evaluate', '--hook-stdin', '--agent', input.agent], 'gate');
+}
+
+/**
+ * @param {GateInput & { sessionId?: string }} input
+ * @param {BridgeOptions} opts
+ * @param {string[]} args
+ * @param {string} label
+ * @returns {Promise<GateDecision>}
+ */
+async function evaluateHookInvocation(input, opts, args, label) {
   const hookInput = {
     hook_event_name: 'PreToolUse',
-    tool_name: input.tool,
-    tool_input: input.params ?? {},
+    tool_name: hookToolName(input),
+    tool_input: hookToolInput(input),
     cwd: input.cwd ?? process.cwd(),
     session_id: input.sessionId ?? `openclaw-${input.agent}`,
   };
-
-  const args = ['router', 'evaluate', '--hook-stdin', '--agent', input.agent];
 
   let stdout = '';
   let stderr = '';
@@ -180,7 +203,7 @@ export async function evaluateRouter(input, opts) {
     });
 
     if (timedOut) {
-      return failClosed(opts, `chitin-kernel router timed out after ${opts.timeoutMs}ms`);
+      return failClosed(opts, `chitin-kernel ${label} timed out after ${opts.timeoutMs}ms`);
     }
 
     return parseRouterDecision(exitCode, stdout, opts);
@@ -191,9 +214,49 @@ export async function evaluateRouter(input, opts) {
     }
     return failClosed(
       opts,
-      `chitin-kernel router invocation failed: ${msg}${stderr ? ` | stderr: ${stderr.slice(0, 200)}` : ''}`,
+      `chitin-kernel ${label} invocation failed: ${msg}${stderr ? ` | stderr: ${stderr.slice(0, 200)}` : ''}`,
     );
   }
+}
+
+/**
+ * @param {GateInput} input
+ * @returns {string}
+ */
+function hookToolName(input) {
+  return isExecShapedTool(input.tool) ? 'Bash' : input.tool;
+}
+
+/**
+ * @param {GateInput} input
+ * @returns {Record<string, unknown>}
+ */
+function hookToolInput(input) {
+  if (!isExecShapedTool(input.tool)) return input.params ?? {};
+  const params = input.params ?? {};
+  const command = commandFromParams(params);
+  if (command === undefined) return params;
+  return { command };
+}
+
+/**
+ * @param {string} tool
+ * @returns {boolean}
+ */
+export function isExecShapedTool(tool) {
+  return /^(?:exec|process|terminal|bash|shell|shell\.exec)$/i.test(String(tool ?? '').trim());
+}
+
+/**
+ * @param {Record<string, unknown>} params
+ * @returns {string | undefined}
+ */
+function commandFromParams(params) {
+  for (const key of ['command', 'cmd', 'input']) {
+    const value = params[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
 }
 
 /**

@@ -36,6 +36,7 @@ invariantModes:
   no-rm-recursive: guide
   no-destructive-rm: guide
   no-force-push: enforce
+  no-commit-to-protected: enforce
   no-protected-push: guide
   no-env-file-write: enforce
   no-remote-code-exec: guide
@@ -77,6 +78,14 @@ rules:
     action: git.force-push
     effect: deny
     reason: "Force push rewrites shared history"
+
+  - id: no-commit-to-protected
+    action: git.commit
+    effect: deny
+    branches: [main, master, "<HEAD-implicit>"]
+    reason: "Direct commit to protected branch — every code change must start with `git checkout -b <feature-branch>` first. Bit 4× in 2026 per operator memory."
+    suggestion: "git checkout -b <type>/<slug> BEFORE the first edit; or `git worktree add` to a separate worktree directory."
+    correctedCommand: "git checkout -b fix/<issue>-<slug>"
 
   # Closes #60: bare `git push` (no remote, or no explicit branch refspec
   # like `HEAD:fix/x`) is treated as suspicious because gov can't verify

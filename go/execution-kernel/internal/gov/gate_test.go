@@ -2,6 +2,7 @@ package gov
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,71 @@ func TestGate_DeniesRmRfAndLogs(t *testing.T) {
 	}
 }
 
+func TestGate_DeniesGitCommitOnProtectedBranchForAllAgents(t *testing.T) {
+	repo := initTestRepoOnBranch(t, "main")
+	policy := protectedCommitPolicy(t)
+	g := &Gate{Policy: policy, Cwd: repo, NoRecord: true}
+	agents := []string{"clawta", "codex", "copilot", "gemini", "claude-code", "hermes"}
+
+	for _, agent := range agents {
+		t.Run(agent, func(t *testing.T) {
+			d := g.Evaluate(Action{Type: ActGitCommit, Target: `git commit -m "x"`, Path: repo}, agent, nil)
+			if d.Allowed {
+				t.Fatalf("commit on main should be denied for %s: %+v", agent, d)
+			}
+			if d.RuleID != "no-commit-to-protected" {
+				t.Fatalf("RuleID=%q want no-commit-to-protected", d.RuleID)
+			}
+			if d.Agent != agent {
+				t.Fatalf("Agent=%q want %q", d.Agent, agent)
+			}
+		})
+	}
+}
+
+func TestGate_AllowsGitCommitOnFeatureBranchAndGitReadsOnMain(t *testing.T) {
+	repo := initTestRepoOnBranch(t, "main")
+	policy := protectedCommitPolicy(t)
+	g := &Gate{Policy: policy, Cwd: repo, NoRecord: true}
+
+	for _, action := range []Action{
+		{Type: ActGitStatus, Target: "git status", Path: repo},
+		{Type: ActGitLog, Target: "git log", Path: repo},
+		{Type: ActGitDiff, Target: "git diff", Path: repo},
+	} {
+		d := g.Evaluate(action, "clawta", nil)
+		if !d.Allowed {
+			t.Fatalf("%s on main should be allowed, got rule=%q reason=%q", action.Type, d.RuleID, d.Reason)
+		}
+	}
+
+	runGitForProtectedCommitTest(t, repo, "checkout", "-b", "swarm/codex-test")
+	d := g.Evaluate(Action{Type: ActGitCommit, Target: `git commit -m "x"`, Path: repo}, "clawta", nil)
+	if !d.Allowed {
+		t.Fatalf("commit on feature branch should be allowed, got rule=%q reason=%q", d.RuleID, d.Reason)
+	}
+}
+
+func TestGate_DeniesGitCommitWhenProtectedBranchResolutionIndeterminate(t *testing.T) {
+	policy := protectedCommitPolicy(t)
+	g := &Gate{Policy: policy, NoRecord: true}
+
+	for name, path := range map[string]string{
+		"empty-path": "",
+		"non-repo":   t.TempDir(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := g.Evaluate(Action{Type: ActGitCommit, Target: `git commit -m "x"`, Path: path}, "clawta", nil)
+			if d.Allowed {
+				t.Fatalf("indeterminate protected commit should fail closed: %+v", d)
+			}
+			if d.RuleID != "no-commit-to-protected" {
+				t.Fatalf("RuleID=%q want no-commit-to-protected", d.RuleID)
+			}
+		})
+	}
+}
+
 func TestGate_EscalationRecorded(t *testing.T) {
 	g, _ := newTestGate(t)
 	for i := 0; i < 3; i++ {
@@ -77,6 +143,59 @@ func TestGate_EscalationRecorded(t *testing.T) {
 	}
 	if lv := g.Counter.Level("agent1"); lv != "elevated" {
 		t.Errorf("after 3 denials, level=%q want elevated", lv)
+	}
+}
+
+func protectedCommitPolicy(t *testing.T) Policy {
+	t.Helper()
+	p := Policy{
+		ID:   "protected-commit-test",
+		Mode: "enforce",
+		InvariantModes: map[string]string{
+			"no-commit-to-protected": "enforce",
+		},
+		Rules: []Rule{
+			{
+				ID:       "no-commit-to-protected",
+				Action:   ActionMatcher{string(ActGitCommit)},
+				Effect:   "deny",
+				Branches: []string{"main", "master", "<HEAD-implicit>"},
+				Reason:   "Direct commit to protected branch",
+			},
+			{
+				ID:     "allow-git-read",
+				Action: ActionMatcher{string(ActGitStatus), string(ActGitLog), string(ActGitDiff)},
+				Effect: "allow",
+			},
+			{
+				ID:     "allow-git-ops",
+				Action: ActionMatcher{string(ActGitCommit)},
+				Effect: "allow",
+			},
+		},
+	}
+	if err := p.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+	return p
+}
+
+func initTestRepoOnBranch(t *testing.T, branch string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	runGitForProtectedCommitTest(t, repo, "init")
+	runGitForProtectedCommitTest(t, repo, "checkout", "-b", branch)
+	return repo
+}
+
+func runGitForProtectedCommitTest(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }
 

@@ -32,7 +32,7 @@ type Rule struct {
 	Target            string            `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex       string            `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Params            map[string]string `yaml:"params,omitempty"`       // exact match on Action.Params string values
-	Branches          []string          `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
+	Branches          []string          `yaml:"branches,omitempty"`     // for git push/commit protected-branch checks
 	PathUnder         []string          `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
 	AgentInstanceID   IdentityMatcher   `yaml:"agent_instance_id,omitempty"`
 	AgentFingerprint  IdentityMatcher   `yaml:"agent_fingerprint,omitempty"`
@@ -557,16 +557,11 @@ func (r Rule) matchesWithFingerprint(a Action, ctx FingerprintContext) bool {
 			return false
 		}
 	}
-	// Branch condition: Action.Target must be in the list
+	// Branch condition: Action.Target must be in the list. For git.commit,
+	// the target is the raw command, so policies can opt into resolving the
+	// current HEAD by including the existing "<HEAD-implicit>" sentinel.
 	if len(r.Branches) > 0 {
-		inList := false
-		for _, b := range r.Branches {
-			if a.Target == b {
-				inList = true
-				break
-			}
-		}
-		if !inList {
+		if !r.branchMatches(a) {
 			return false
 		}
 	}
@@ -602,6 +597,54 @@ func (r Rule) matchesWithFingerprint(a Action, ctx FingerprintContext) bool {
 		}
 	}
 	return true
+}
+
+func (r Rule) branchMatches(a Action) bool {
+	for _, b := range r.Branches {
+		if a.Target == b {
+			return true
+		}
+	}
+	if a.Type != ActGitCommit || !branchesContain(r.Branches, "<HEAD-implicit>") {
+		return false
+	}
+	branch := currentGitBranch(a.Path)
+	if branch == "" {
+		// Protected-branch commit rules are safety rules. If the policy opted
+		// into resolving the implicit current HEAD but branch resolution is
+		// indeterminate, match the rule so an earlier deny fails closed instead
+		// of falling through to a broad git.commit allow.
+		return true
+	}
+	for _, b := range r.Branches {
+		if branch == b {
+			return true
+		}
+	}
+	return branch == "HEAD"
+}
+
+func branchesContain(branches []string, want string) bool {
+	for _, b := range branches {
+		if b == want {
+			return true
+		}
+	}
+	return false
+}
+
+func currentGitBranch(cwd string) string {
+	if strings.TrimSpace(cwd) == "" {
+		return ""
+	}
+	if out, err := gitOutput(cwd, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		return out
+	}
+	out, err := gitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return out
 }
 
 func (r Rule) identityMatches(ctx FingerprintContext) bool {

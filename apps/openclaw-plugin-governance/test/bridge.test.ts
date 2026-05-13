@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error — sibling .mjs without types
-import { evaluateGate } from '../src/chitin-bridge.mjs';
+import { evaluateGate, isExecShapedTool } from '../src/chitin-bridge.mjs';
 // @ts-expect-error — sibling .mjs without types
 import plugin from '../src/index.mjs';
 
@@ -170,6 +170,43 @@ describe('plugin.before_tool_call (calls evaluateRouter)', () => {
     }
   });
 
+  it('routes openclaw exec calls through gate hook stdin as Bash with agent attribution', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chitin-bridge-capture-'));
+    const argsPath = join(dir, 'args.txt');
+    const stdinPath = join(dir, 'stdin.json');
+    const fake = makeFakeKernel(`printf '%s\\n' "$*" > ${JSON.stringify(argsPath)}
+cat > ${JSON.stringify(stdinPath)}
+exit 0`);
+    let handler: Handler | undefined;
+    const noop = (): void => undefined;
+    const api = {
+      pluginConfig: { kernelPath: fake.path, timeoutMs: 2000, mode: 'enforce' },
+      logger: { info: noop, warn: noop, error: noop },
+      on: (event: string, fn: Handler) => {
+        if (event === 'before_tool_call') handler = fn;
+      },
+    };
+    plugin.register(api);
+    if (!handler) throw new Error('before_tool_call handler not registered');
+
+    try {
+      await handler({ toolName: 'exec', params: { cmd: 'git commit -m x' } }, { agentId: 'clawta' });
+
+      expect(readFileSync(argsPath, 'utf8').trim()).toBe(
+        'gate evaluate --hook-stdin --agent clawta',
+      );
+      const payload = JSON.parse(readFileSync(stdinPath, 'utf8')) as {
+        tool_name?: string;
+        tool_input?: { command?: string };
+      };
+      expect(payload.tool_name).toBe('Bash');
+      expect(payload.tool_input?.command).toBe('git commit -m x');
+    } finally {
+      fake.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Param rewrites are NOT supported by `router evaluate` — it uses
   // the Claude Code hook protocol which has no param-modification
   // surface. The pre-router code path (evaluateGate) DID propagate
@@ -177,4 +214,13 @@ describe('plugin.before_tool_call (calls evaluateRouter)', () => {
   // `describe('evaluateGate ...')` block at the top of this file
   // for direct callers, but no longer reachable through the plugin's
   // before_tool_call handler.
+});
+
+describe('isExecShapedTool', () => {
+  it('recognizes openclaw shell tool names', () => {
+    for (const tool of ['exec', 'process', 'terminal', 'bash', 'shell', 'shell.exec']) {
+      expect(isExecShapedTool(tool)).toBe(true);
+    }
+    expect(isExecShapedTool('read')).toBe(false);
+  });
 });
