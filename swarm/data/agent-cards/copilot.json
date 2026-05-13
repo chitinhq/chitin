@@ -1,6 +1,6 @@
 {
   "id": "copilot",
-  "description": "GitHub Copilot CLI \u2014 free GPT-4.1 tier. Cheap, fast, used liberally as worker AND judge.",
+  "description": "GitHub Copilot CLI — invoked via chitin-kernel drive copilot (Go SDK driver) so every tool call passes through gov.Gate.Evaluate inline. Byte-equivalent to the PreToolUse hooks used by codex/gemini/claude-code; just in-process instead of stdin-piped.",
   "auth": "github-copilot-subscription",
   "capabilities": [
     {
@@ -46,14 +46,16 @@
     }
   ],
   "invocation": {
-    "cmd": "/home/red/.vite-plus/bin/copilot",
+    "cmd": "/home/red/.local/bin/chitin-kernel",
     "args": [
-      "--allow-all",
+      "drive",
+      "copilot",
       "--model",
       "{model}",
-      "-p",
+      "--cwd",
+      ".",
       "{prompt}"
     ]
   },
-  "notes": "GPT-4.1 is free per Copilot subscription. Use this tier liberally for low-stakes work and as a judge / sanity-check helper. Hermes is allowed to invoke copilot directly (per hermes-no-frontier-spawn rule exception). --allow-all replaces the non-existent --dangerously-skip-permissions; it is equivalent to --allow-all-tools + --allow-all-paths + --allow-all-urls. Model name uses dot form `claude-haiku-4.5` \u2014 the dash form `claude-haiku-4-5` is rejected by the copilot CLI (verified 2026-05-11). Absolute invocation path set 2026-05-12 by Clawta after isolated lobster env could not resolve PATH binaries."
+  "notes": "Routed through `chitin-kernel drive copilot` (Go SDK driver at go/execution-kernel/internal/driver/copilot/) so each tool call lands `gov.Gate.Evaluate()` inline. The bare copilot CLI's --allow-all flag is NOT needed; the SDK driver handles permissions via the inline gate. Model name uses dot form `claude-haiku-4.5` — the dash form `claude-haiku-4-5` is rejected by the copilot CLI (verified 2026-05-11). Authority: this card invocation succeeds because gate_hook.go's `isClawtaDriveCarveout` allows agent=clawta + `chitin-kernel drive <lane>` without supervisor authority (the launched session's tool calls remain fully gated). Pre-2026-05-13 invocation was bare /home/red/.vite-plus/bin/copilot with --allow-all (bypassed chitin entirely); rolled forward in this PR."
 }

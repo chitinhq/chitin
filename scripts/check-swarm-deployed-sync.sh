@@ -34,6 +34,8 @@ WORKFLOWS_SRC="$REPO_ROOT/swarm/workflows"
 WORKFLOWS_DST="$DEPLOYED_ROOT/workflows"
 CARDS_SRC="$REPO_ROOT/swarm/data/agent-cards"
 CARDS_DST="$DEPLOYED_ROOT/data/agent-cards"
+BIN_SRC="$REPO_ROOT/swarm/bin"
+BIN_DST="$DEPLOYED_ROOT/bin"
 
 drift=0
 
@@ -65,6 +67,14 @@ if [ -d "$CARDS_SRC" ]; then
     while IFS= read -r src; do
         check_pair "$src" "$CARDS_DST/$(basename "$src")"
     done < <(find "$CARDS_SRC" -maxdepth 1 -type f -name '*.json' \
+        ! -name '*.bak*' 2>/dev/null)
+fi
+
+# Operator scripts (clawta-* cron helpers under swarm/bin/)
+if [ -d "$BIN_SRC" ] && [ -d "$BIN_DST" ]; then
+    while IFS= read -r src; do
+        check_pair "$src" "$BIN_DST/$(basename "$src")"
+    done < <(find "$BIN_SRC" -maxdepth 1 -type f -name 'clawta-*' \
         ! -name '*.bak*' 2>/dev/null)
 fi
 

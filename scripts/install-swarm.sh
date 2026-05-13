@@ -29,8 +29,10 @@ WORKFLOWS_SRC="$REPO_ROOT/swarm/workflows"
 WORKFLOWS_DST="$DEPLOYED_ROOT/workflows"
 CARDS_SRC="$REPO_ROOT/swarm/data/agent-cards"
 CARDS_DST="$DEPLOYED_ROOT/data/agent-cards"
+BIN_SRC="$REPO_ROOT/swarm/bin"
+BIN_DST="$DEPLOYED_ROOT/bin"
 
-mkdir -p "$WORKFLOWS_DST" "$CARDS_DST"
+mkdir -p "$WORKFLOWS_DST" "$CARDS_DST" "$BIN_DST"
 
 copied=0
 backed_up=0
@@ -70,11 +72,26 @@ find "$CARDS_SRC" -maxdepth 1 -type f -name '*.json' \
     install_file "$src" "$CARDS_DST/$(basename "$src")"
 done
 
+# clawta-* operator cron + helper scripts. The poller (~/.local/bin/...)
+# is a separate install path managed by the operator; this set covers
+# the openclaw-cron-resident scripts (pool guard, failure sentinel,
+# escalator, etc.) that live under ~/.openclaw/bin/.
+echo "Installing swarm operator scripts into $BIN_DST"
+find "$BIN_SRC" -maxdepth 1 -type f -name 'clawta-*' \
+    ! -name '*.bak*' \
+    -print 2>/dev/null \
+| while IFS= read -r src; do
+    dst="$BIN_DST/$(basename "$src")"
+    install_file "$src" "$dst"
+    # Preserve executable bit (operator scripts are commonly +x in repo)
+    chmod +x "$dst" 2>/dev/null || true
+done
+
 # `find ... | while read` runs in a subshell, so $copied/$backed_up don't
 # survive. Recount the destination tree against the source as a final
 # summary.
-src_count=$(find "$WORKFLOWS_SRC" "$CARDS_SRC" -maxdepth 1 -type f \
-    \( -name '*.lobster' -o -name '*.py' -o -name '*.md' -o -name '*.json' \) \
+src_count=$(find "$WORKFLOWS_SRC" "$CARDS_SRC" "$BIN_SRC" -maxdepth 1 -type f \
+    \( -name '*.lobster' -o -name '*.py' -o -name '*.md' -o -name '*.json' -o -name 'clawta-*' \) \
     ! -name '*.bak*' 2>/dev/null | wc -l)
 
 echo

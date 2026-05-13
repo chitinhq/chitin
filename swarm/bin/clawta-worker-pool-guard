@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/red/workspace/chitin
+# Default: only claude-code is disabled (Anthropic ToS forbids it as a
+# subagent). Copilot is governance-aware via `chitin-kernel drive copilot`
+# (which uses the in-kernel Go SDK driver — the authority carve-out for
+# agent=clawta is in gate_hook.go's isClawtaDriveCarveout). Override with
+# CLAWTA_DISABLED_WORKER_LANES if a lane needs to be quarantined.
+DISABLED_LANES=${CLAWTA_DISABLED_WORKER_LANES:-claude-code}
+DISABLED_DIR=/home/red/.openclaw/data/agent-cards/disabled
+mkdir -p "$DISABLED_DIR"
+changed=()
+IFS=',' read -r -a lanes <<< "$DISABLED_LANES"
+for lane in "${lanes[@]}"; do
+  lane="${lane// /}"
+  [[ -n "$lane" ]] || continue
+  card="/home/red/.openclaw/data/agent-cards/$lane.json"
+  if [[ -f "$card" ]]; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    mv "$card" "$DISABLED_DIR/$lane.json.disabled-$ts"
+    changed+=("quarantined active agent card: $lane")
+  fi
+  while IFS=$'\t' read -r id st title; do
+    [[ -n "${id:-}" ]] || continue
+    ./scripts/kanban-flow block "$id" "$lane removed from autonomous worker pool; human-in-loop/operator only" --author clawta >/dev/null 2>&1 || true
+    hermes kanban --board chitin assign "$id" red >/dev/null
+    hermes kanban --board chitin comment "$id" --author clawta "$lane is disabled for autonomous dispatch; moved to red for human-in-loop/operator handling." >/dev/null || true
+    changed+=("blocked $lane queue ticket: $id — $title")
+  done < <(sqlite3 -tabs /home/red/.hermes/kanban/boards/chitin/kanban.db "SELECT id,status,title FROM tasks WHERE status IN ('ready','todo') AND assignee='$lane' ORDER BY priority DESC, created_at ASC;")
+done
+
+if (( ${#changed[@]} )); then
+  {
+    echo "🦞 Worker-pool guard enforced disabled lane policy:"
+    printf -- '- %s\n' "${changed[@]}"
+  } | /home/red/.vite-plus/bin/openclaw message send --channel discord --account default --target channel:1503439202719760405 --text-file - >/dev/null 2>&1 || true
+fi
+printf 'worker pool guard: %d change(s)\n' "${#changed[@]}"

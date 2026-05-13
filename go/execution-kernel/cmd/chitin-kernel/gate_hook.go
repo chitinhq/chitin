@@ -312,6 +312,53 @@ func authorityCanMutateGovernance(authority string) bool {
 	}
 }
 
+// isClawtaDriveCarveout returns true iff this is the swarm dispatcher
+// (agent="clawta") invoking `chitin-kernel drive <lane>`. That is the
+// only chitin admin mutation the dispatcher is allowed to perform
+// without supervisor/operator/system authority — required so the
+// out-of-process kanban-dispatch workflow can spawn governance-aware
+// workers via the Go SDK drivers.
+//
+// Carve-out is narrow by construction:
+//   - agent MUST equal "clawta" (literal match; not a prefix/suffix)
+//   - the chitin-kernel subcommand MUST be "drive"
+//
+// All other chitin-kernel mutations (envelope.{create,grant,use,close},
+// gate.{evaluate,lockdown,reset}, emit, ingest-hermes, etc.) remain
+// authority-gated for clawta exactly as they were before.
+//
+// Source: ticket t_fcd419c0 — architectural gap between in-process and
+// out-of-process dispatch paths after the 2026-05-06 scope-narrow cull
+// deleted scripts/peer-copilot-chat.sh.
+func isClawtaDriveCarveout(action gov.Action, agent string) bool {
+	if agent != "clawta" {
+		return false
+	}
+	if action.Type != gov.ActShellExec && action.Type != gov.ActFileRecursiveDelete {
+		return false
+	}
+	fields := chitinKernelFields(action.Target)
+	if len(fields) < 2 {
+		return false
+	}
+	// fields[0] is "chitin-kernel"; advance past any global flags
+	// (e.g., --config <path>) to find the subcommand.
+	i := 1
+	for i < len(fields) {
+		f := fields[i]
+		if strings.HasPrefix(f, "-") {
+			if chitinKernelGlobalFlagTakesValue(f) {
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+		break
+	}
+	return i < len(fields) && fields[i] == "drive"
+}
+
 // runHookStdin is the production entry point for the Claude Code
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
 // evalHookStdin core. The split keeps evalHookStdin testable in-process
@@ -502,7 +549,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		// effects regardless of which path it traverses.
 		NoRecord: noRecord,
 	}
-	if classifyChitinAdminCommand(action) == chitinAdminMutation {
+	if classifyChitinAdminCommand(action) == chitinAdminMutation && !isClawtaDriveCarveout(action, agent) {
 		effectiveAuthority := gov.ResolveTrustedAuthority(identity, policy.Authority)
 		if !authorityCanMutateGovernance(effectiveAuthority) {
 			policy.Rules = append(policy.Rules, gov.Rule{

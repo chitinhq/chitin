@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/red/workspace/chitin
+DB=/home/red/.hermes/kanban/boards/chitin/kanban.db
+NOW=$(date +%s)
+STALE_AFTER=${CLAWTA_STALE_AFTER_SECONDS:-2700}   # 45m
+QUIET_AFTER=${CLAWTA_QUIET_AFTER_SECONDS:-1200}   # 20m
+changed=()
+checked=0
+
+while IFS=$'\t' read -r id assignee title age; do
+  [[ -n "${id:-}" ]] || continue
+  checked=$((checked + 1))
+
+  # If a PR has been opened, PR lifecycle owns the ticket; don't block it here.
+  pr_count=$(sqlite3 "$DB" "SELECT count(*) FROM task_events WHERE task_id='$id' AND kind='pr_opened';")
+  [[ "$pr_count" == "0" ]] || continue
+
+  # Active dispatch/process still running? Leave it alone.
+  if pgrep -af "($id|dispatch-$id|dispatch ticket $id|swarm-.*-$id)" >/dev/null 2>&1; then
+    continue
+  fi
+
+  log=/home/red/.openclaw/logs/dispatch-$id.log
+  quiet=$age
+  if [[ -f "$log" ]]; then
+    mtime=$(stat -c %Y "$log" 2>/dev/null || echo 0)
+    quiet=$(( NOW - mtime ))
+  fi
+  (( age >= STALE_AFTER && quiet >= QUIET_AFTER )) || continue
+
+  reason="stale in_progress without PR or active worker after ${age}s; dispatch log quiet ${quiet}s"
+  ./scripts/kanban-flow block "$id" "$reason" --author clawta >/dev/null 2>&1 || true
+  hermes kanban --board chitin assign "$id" red >/dev/null 2>&1 || true
+  hermes kanban --board chitin comment "$id" --author clawta \
+    "Stale-worker watchdog escalated to red: $reason" >/dev/null 2>&1 || true
+  changed+=("$id (${assignee:-unassigned}) — $title — $reason")
+done < <(sqlite3 -tabs "$DB" \
+  "SELECT id, coalesce(assignee,''), title, ($NOW - coalesce(started_at, created_at)) AS age FROM tasks WHERE status='in_progress' ORDER BY started_at ASC, created_at ASC;")
+
+if (( ${#changed[@]} )); then
+  {
+    echo "🦞 Stale-worker watchdog blocked/escalated ${#changed[@]} ticket(s):"
+    printf -- '- `%s`\n' "${changed[@]}"
+  } | /home/red/.vite-plus/bin/openclaw message send --channel discord --account default --text-file - >/dev/null 2>&1 || true
+fi
+
+printf 'stale watchdog: %d checked, %d changed\n' "$checked" "${#changed[@]}"
