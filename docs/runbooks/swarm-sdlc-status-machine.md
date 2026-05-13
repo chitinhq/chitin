@@ -65,13 +65,13 @@ comment + `pr_opened` task event without moving the ticket.
 
 | Transition                    | Owner       | Mechanism                                  |
 |-------------------------------|-------------|--------------------------------------------|
-| `triage → ready`              | Hermes / operator | `kanban-flow ready <id>` or hermes grooming reply |
+| `triage → ready`              | Hermes / operator | `kanban-flow ready <id>` or hermes grooming reply. **Defaults `assignee=clawta` if no terminal lane is already set and no explicit `--assignee NAME` override is passed.** Terminal lanes: codex, copilot, claude-code, gemini, clawta. |
 | `ready → in_progress`         | Clawta poller     | dispatch path; `kanban-flow start <id>` from lobster |
 | `ready → triage` (demote)     | Clawta poller     | when sequence-check flags "not actually ready" |
 | `in_progress → in_progress` (PR open) | Worker            | `kanban-flow pr <id> <url>` — no status flip, audit only |
 | `in_progress → done`          | Operator / merge bot | `kanban-flow done <id> --result "<txt>"` after PR merge |
 | `* → blocked`                 | Worker / clawta   | `kanban-flow block <id> <reason>`          |
-| `blocked → ready`             | Operator / hermes | `kanban-flow unblock <id>`                 |
+| `blocked → ready`             | Operator / hermes | `kanban-flow unblock <id>`. **Defaults `assignee=clawta` if no terminal lane is already set and no explicit `--assignee NAME` override is passed.** Terminal lanes: codex, copilot, claude-code, gemini, clawta. |
 
 Recovery: `kanban-flow done` is the universal completion verb — accepts
 any `from` status. Use it after PR merge, or for tickets that don't

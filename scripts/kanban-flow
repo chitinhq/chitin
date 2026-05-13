@@ -25,8 +25,13 @@
 #   kanban-flow block <id> <reason...> [--author NAME]
 #       any → blocked. Comments with reason.
 #
-#   kanban-flow unblock <id> [--author NAME]
-#       blocked → ready.
+#   kanban-flow unblock <id> [--author NAME] [--assignee NAME]
+#       blocked → ready. Defaults assignee to clawta if no terminal lane
+#       is already set and no explicit override is passed.
+#
+#   kanban-flow ready <id> [--author NAME] [--assignee NAME]
+#       triage|blocked → ready. Defaults assignee to clawta if no terminal
+#       lane is already set and no explicit override is passed.
 #
 #   kanban-flow demote <id> <reason...> [--author NAME]
 #       ready|todo → triage. Comments with reason. Used by clawta when a
@@ -46,6 +51,11 @@ set -euo pipefail
 DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/chitin/kanban.db}"
 BOARD="${KANBAN_BOARD:-chitin}"
 AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
+
+is_terminal_lane() {
+  local assignee="$1"
+  [[ "$assignee" == "codex" || "$assignee" == "copilot" || "$assignee" == "claude-code" || "$assignee" == "gemini" || "$assignee" == "clawta" ]]
+}
 
 die() { echo "kanban-flow: $*" >&2; exit 2; }
 
@@ -107,6 +117,7 @@ esac
 # Parse common flags
 author="$AUTHOR_DEFAULT"
 worktree=""
+assignee_override=""
 parse_flags() {
   local rest=()
   while [[ $# -gt 0 ]]; do
@@ -114,6 +125,7 @@ parse_flags() {
       --author) author="$2"; shift 2 ;;
       --worktree) worktree="$2"; shift 2 ;;
       --result) result="$2"; shift 2 ;;
+      --assignee) assignee_override="$2"; shift 2 ;;
       *) rest+=("$1"); shift ;;
     esac
   done
@@ -170,6 +182,17 @@ case "$cmd" in
     assert_status "$id" blocked
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Unblocked at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
+
+    # Handle assignee: default to clawta unless terminal lane is already set or explicit override given
+    if [[ -z "$assignee_override" ]]; then
+      current_assignee="$(sqlite3 "$DB" "SELECT assignee FROM tasks WHERE id='$id'")"
+      if [[ -z "$current_assignee" ]] || ! is_terminal_lane "$current_assignee"; then
+        sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+      fi
+    elif [[ -n "$assignee_override" ]]; then
+      sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
+    fi
+
     emit_transition "$id" blocked ready "$author"
     echo "$id: blocked → ready"
     ;;
@@ -192,6 +215,17 @@ case "$cmd" in
     [[ "$from" == triage || "$from" == blocked ]] || die "$id is in '$from'; can only mark ready from triage|blocked"
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
+
+    # Handle assignee: default to clawta unless terminal lane is already set or explicit override given
+    if [[ -z "$assignee_override" ]]; then
+      current_assignee="$(sqlite3 "$DB" "SELECT assignee FROM tasks WHERE id='$id'")"
+      if [[ -z "$current_assignee" ]] || ! is_terminal_lane "$current_assignee"; then
+        sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+      fi
+    elif [[ -n "$assignee_override" ]]; then
+      sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
+    fi
+
     emit_transition "$id" "$from" ready "$author"
     echo "$id: $from → ready"
     ;;
