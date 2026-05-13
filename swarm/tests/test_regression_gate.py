@@ -93,5 +93,32 @@ class FailingInvariantTests(unittest.TestCase):
         self.assertIn("violation: thing X broke", result.stdout)
 
 
+class NoShortCircuitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def _write_check(self, name: str, body: str) -> None:
+        p = self.sandbox / "scripts" / f"check-{name}.sh"
+        p.write_text(body)
+        p.chmod(0o755)
+
+    def test_mixed_pass_fail_pass_all_run(self) -> None:
+        self._write_check("a-pass", "#!/usr/bin/env bash\necho 'a ran'\nexit 0\n")
+        self._write_check("b-fail", "#!/usr/bin/env bash\necho 'b ran'\nexit 1\n")
+        self._write_check("c-pass", "#!/usr/bin/env bash\necho 'c ran'\nexit 0\n")
+
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("a ran", result.stdout)
+        self.assertIn("b ran", result.stdout)
+        self.assertIn("c ran", result.stdout)
+        self.assertIn("PASS", result.stdout)
+        self.assertIn("FAIL", result.stdout)
+        self.assertIn("1/3 invariant(s) broken", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
