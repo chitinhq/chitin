@@ -126,6 +126,16 @@ func (c *Counter) RecordActionDenial(agent, actionType, fp string, weight int) e
 	return nil
 }
 
+// PruneActionDenialsBefore drops windowed denial events older than the
+// maximum cascade window. Aggregate denial counters remain lifetime-spanning;
+// only timestamped events used for recent-behavior detection are pruned.
+func (c *Counter) PruneActionDenialsBefore(beforeUnix int64) error {
+	if _, err := c.db.Exec(`DELETE FROM denial_events WHERE ts_unix < ?`, beforeUnix); err != nil {
+		return fmt.Errorf("prune denial events: %w", err)
+	}
+	return nil
+}
+
 // CountActionDenialsSince returns timestamped denials for an agent/action type
 // in the trailing window. It is intentionally separate from the aggregate
 // denials table: the ladder stays lifetime-spanning, while cascade detection
@@ -182,4 +192,5 @@ func (c *Counter) Lockdown(agent string) {
 func (c *Counter) Reset(agent string) {
 	_, _ = c.db.Exec(`DELETE FROM denials WHERE agent = ?`, agent)
 	_, _ = c.db.Exec(`DELETE FROM agent_state WHERE agent = ?`, agent)
+	_, _ = c.db.Exec(`DELETE FROM denial_events WHERE agent = ?`, agent)
 }

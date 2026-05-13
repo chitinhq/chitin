@@ -108,6 +108,31 @@ func TestCounter_Reset(t *testing.T) {
 	if lv := c.Level("agent1"); lv != "normal" {
 		t.Errorf("after Reset, level=%q want normal", lv)
 	}
+	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 0); got != 0 {
+		t.Errorf("Reset should clear denial events, got %d", got)
+	}
+}
+
+func TestCounter_PruneActionDenialsBefore(t *testing.T) {
+	c := newTestCounter(t)
+	for _, ts := range []int64{100, 200, 300} {
+		if _, err := c.db.Exec(`
+			INSERT INTO denial_events (agent, action_type, action_fp, ts_unix)
+			VALUES (?, ?, ?, ?)
+		`, "agent1", string(ActShellExec), "fp", ts); err != nil {
+			t.Fatalf("insert denial event: %v", err)
+		}
+	}
+
+	if err := c.PruneActionDenialsBefore(200); err != nil {
+		t.Fatalf("PruneActionDenialsBefore: %v", err)
+	}
+	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 0); got != 2 {
+		t.Fatalf("prune should retain events at/after cutoff, got %d", got)
+	}
+	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 250); got != 1 {
+		t.Fatalf("recent count after prune: got %d want 1", got)
+	}
 }
 
 func TestCounter_ManualLockdown(t *testing.T) {

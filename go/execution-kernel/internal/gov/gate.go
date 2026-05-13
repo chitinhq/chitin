@@ -342,6 +342,12 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			if err := g.Counter.RecordActionDenial(agent, string(a.Type), a.Fingerprint(), weight); err != nil {
 				fmt.Fprintf(os.Stderr, "gov: RecordDenial failed agent=%s rule=%s: %v\n", agent, d.RuleID, err)
 			}
+			pruneBefore := denyCascadeSince(g.Policy.Escalation)
+			if pruneBefore > 0 {
+				if err := g.Counter.PruneActionDenialsBefore(pruneBefore); err != nil {
+					fmt.Fprintf(os.Stderr, "gov: PruneActionDenials failed agent=%s rule=%s: %v\n", agent, d.RuleID, err)
+				}
+			}
 			if a.Type == ActShellExec && denyCascadeFired(g.Counter, agent, g.Policy.Escalation) {
 				g.Counter.Lockdown(agent)
 			}
@@ -385,8 +391,15 @@ func denyCascadeFired(counter *Counter, agent string, cfg EscalationConfig) bool
 	if counter == nil || cfg.DenyCascadeCount <= 0 || cfg.DenyCascadeWindowSeconds <= 0 {
 		return false
 	}
-	since := time.Now().UTC().Add(-time.Duration(cfg.DenyCascadeWindowSeconds) * time.Second).Unix()
+	since := denyCascadeSince(cfg)
 	return counter.CountActionDenialsSince(agent, string(ActShellExec), since) >= cfg.DenyCascadeCount
+}
+
+func denyCascadeSince(cfg EscalationConfig) int64 {
+	if cfg.DenyCascadeWindowSeconds <= 0 {
+		return 0
+	}
+	return time.Now().UTC().Add(-time.Duration(cfg.DenyCascadeWindowSeconds) * time.Second).Unix()
 }
 
 // stampEnvelope is the lockdown-path helper: it does its own classify +
