@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +60,8 @@ func ReadChainEvents(sessionID string) []ChainEvent {
 // share both tool_name AND non-empty action_target. Same-tool with
 // no target is too loose to flag as a loop.
 func detectLoop(events []ChainEvent, maxLoopCount int) (bool, string) {
-	if len(events) < maxLoopCount {
+	effectiveLoopCount := adaptiveLoopCount(events, maxLoopCount)
+	if len(events) < effectiveLoopCount {
 		return false, ""
 	}
 	// Filter for decision events with tool_name AND non-empty
@@ -76,10 +78,10 @@ func detectLoop(events []ChainEvent, maxLoopCount int) (bool, string) {
 		}
 		recent = append(recent, ev)
 	}
-	if len(recent) < maxLoopCount {
+	if len(recent) < effectiveLoopCount {
 		return false, ""
 	}
-	recent = recent[len(recent)-maxLoopCount:]
+	recent = recent[len(recent)-effectiveLoopCount:]
 	sig := func(e ChainEvent) string {
 		t, _ := e.Payload["tool_name"].(string)
 		tg, _ := e.Payload["action_target"].(string)
@@ -95,7 +97,90 @@ func detectLoop(events []ChainEvent, maxLoopCount int) (bool, string) {
 	if len(short) > 80 {
 		short = short[:80]
 	}
-	return true, fmt.Sprintf("looping-tool-call:%s-x%d", short, maxLoopCount)
+	return true, fmt.Sprintf("looping-tool-call:%s-x%d", short, effectiveLoopCount)
+}
+
+func adaptiveLoopCount(events []ChainEvent, configured int) int {
+	if configured <= 0 {
+		configured = 3
+	}
+	var decisions []ChainEvent
+	for _, ev := range events {
+		if ev.EventType != "decision" {
+			continue
+		}
+		toolName, _ := ev.Payload["tool_name"].(string)
+		target, _ := ev.Payload["action_target"].(string)
+		if toolName == "" || target == "" {
+			continue
+		}
+		decisions = append(decisions, ev)
+	}
+	if len(decisions) == 0 {
+		return configured
+	}
+
+	actionType, _ := decisions[len(decisions)-1].Payload["action_type"].(string)
+	floor := configured
+	if isLowRiskFileLoopAction(actionType) {
+		// Chain calibration showed most false positives were normal
+		// read/write pairs during edit flows. Require a stronger run
+		// before calling those loops floundering.
+		floor = maxInt(floor, configured+2)
+	}
+
+	runs := recentCompletedRunLengths(decisions, 8)
+	if len(runs) < 3 {
+		return floor
+	}
+	sum := 0
+	for _, n := range runs {
+		sum += n
+	}
+	movingAverage := float64(sum) / float64(len(runs))
+	adaptive := int(math.Ceil(movingAverage)) + 1
+	if adaptive > configured+2 {
+		adaptive = configured + 2
+	}
+	return maxInt(floor, adaptive)
+}
+
+func recentCompletedRunLengths(decisions []ChainEvent, window int) []int {
+	if window <= 0 {
+		return nil
+	}
+	var runs []int
+	last := ""
+	runLen := 0
+	for _, ev := range decisions {
+		toolName, _ := ev.Payload["tool_name"].(string)
+		target, _ := ev.Payload["action_target"].(string)
+		sig := fmt.Sprintf("%s|%s", toolName, target)
+		if sig == last {
+			runLen++
+			continue
+		}
+		if runLen > 1 {
+			runs = append(runs, runLen)
+			if len(runs) > window {
+				runs = runs[1:]
+			}
+		}
+		last = sig
+		runLen = 1
+	}
+	return runs
+}
+
+func isLowRiskFileLoopAction(actionType string) bool {
+	return actionType == "file.read" || actionType == "file.write"
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // detectStall returns (true, reason) if no write-shape decisions

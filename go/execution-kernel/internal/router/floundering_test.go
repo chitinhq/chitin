@@ -40,6 +40,52 @@ func TestDetectFloundering_Loop(t *testing.T) {
 	}
 }
 
+func TestDetectFloundering_AdaptiveLoopThresholdAvoidsLegitimateFileEditPairs(t *testing.T) {
+	ev := func(actionType, target string) ChainEvent {
+		return ChainEvent{
+			Ts:        "2026-05-03T20:00:00Z",
+			EventType: "decision",
+			Payload: map[string]interface{}{
+				"tool_name":     actionType,
+				"action_type":   actionType,
+				"action_target": target,
+				"decision":      "allow",
+			},
+		}
+	}
+	res := DetectFloundering(
+		[]ChainEvent{ev("file.write", "/repo/a.go"), ev("file.write", "/repo/a.go")},
+		FlounderingThresholds{MaxLoopCount: 2, MaxStallSeconds: 600},
+		mustParse("2026-05-03T20:00:30Z"),
+	)
+	if res.Fired {
+		t.Errorf("Fired=true on a normal file edit pair; want adaptive threshold to suppress it (reason=%q)", res.Reason)
+	}
+}
+
+func TestDetectFloundering_AdaptiveLoopThresholdStillCatchesShellRetries(t *testing.T) {
+	ev := func(target string) ChainEvent {
+		return ChainEvent{
+			Ts:        "2026-05-03T20:00:00Z",
+			EventType: "decision",
+			Payload: map[string]interface{}{
+				"tool_name":     "shell.exec",
+				"action_type":   "shell.exec",
+				"action_target": target,
+				"decision":      "allow",
+			},
+		}
+	}
+	res := DetectFloundering(
+		[]ChainEvent{ev("ollama ps || true"), ev("ollama ps || true")},
+		FlounderingThresholds{MaxLoopCount: 2, MaxStallSeconds: 600},
+		mustParse("2026-05-03T20:00:30Z"),
+	)
+	if !res.Fired {
+		t.Error("Fired=false on repeated shell retry; want adaptive threshold to preserve loop detection")
+	}
+}
+
 func TestDetectFloundering_VaryingTargets(t *testing.T) {
 	ev := func(target string) ChainEvent {
 		return ChainEvent{

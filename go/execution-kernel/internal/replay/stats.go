@@ -11,10 +11,11 @@ import (
 
 // Stats — aggregate chain analytics keyed by an axis.
 type Stats struct {
-	Axis    string                 `json:"axis"`
-	Buckets map[string]BucketStats `json:"buckets"`
-	Total   int                    `json:"total_decisions"`
-	Window  string                 `json:"window,omitempty"`
+	Axis        string                  `json:"axis"`
+	Buckets     map[string]BucketStats  `json:"buckets"`
+	Total       int                     `json:"total_decisions"`
+	Window      string                  `json:"window,omitempty"`
+	Floundering *FlounderingCalibration `json:"floundering,omitempty"`
 }
 
 // BucketStats — per-axis-bucket counts.
@@ -25,6 +26,26 @@ type BucketStats struct {
 	// SuccessRate is allows / decisions (0.0-1.0). NaN-safe: 0
 	// when decisions=0.
 	SuccessRate float64 `json:"success_rate"`
+}
+
+// FlounderingCalibration compares the fixed loop threshold historically used
+// in chitin.yaml with the adaptive loop detector used by the router. Labels
+// are chain-derived proxies: a predicted loop is a false positive when later
+// write progress occurs in the same session or when the repeated calls are
+// low-risk file edit/read churn, and a false negative when a terminal
+// non-progress repeated-call loop had no detector fire.
+type FlounderingCalibration struct {
+	Sessions                  int     `json:"sessions"`
+	FixedPrecision            float64 `json:"fixed_precision"`
+	FixedRecall               float64 `json:"fixed_recall"`
+	FixedFalsePositiveRate    float64 `json:"fixed_false_positive_rate"`
+	FixedFalseNegativeRate    float64 `json:"fixed_false_negative_rate"`
+	AdaptivePrecision         float64 `json:"adaptive_precision"`
+	AdaptiveRecall            float64 `json:"adaptive_recall"`
+	AdaptiveFalsePositiveRate float64 `json:"adaptive_false_positive_rate"`
+	AdaptiveFalseNegativeRate float64 `json:"adaptive_false_negative_rate"`
+	FalsePositiveReduction    float64 `json:"false_positive_reduction"`
+	LoopMisfireIncrease       float64 `json:"loop_misfire_increase"`
 }
 
 // SupportedAxes is the closed set of axis labels accepted by
@@ -80,8 +101,9 @@ func ComputeStatsIn(axis, chitinDir string) (*Stats, error) {
 		return nil, err
 	}
 	stats := &Stats{
-		Axis:    axis,
-		Buckets: make(map[string]BucketStats),
+		Axis:        axis,
+		Buckets:     make(map[string]BucketStats),
+		Floundering: computeFlounderingCalibration(matches),
 	}
 	for _, p := range matches {
 		// Note: we read the whole file and split on newlines for
