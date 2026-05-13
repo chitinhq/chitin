@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Behavior tests for scripts/regression-gate.sh."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AGGREGATOR_SRC = REPO_ROOT / "scripts" / "regression-gate.sh"
+
+
+def make_sandbox() -> Path:
+    """Build a throwaway tree with a `scripts/` dir + a copy of the
+    aggregator, then return the tree root. Callers add stub invariants
+    into <tree>/scripts/ before running the aggregator."""
+    tmp = Path(tempfile.mkdtemp(prefix="regression-gate-test-"))
+    (tmp / "scripts").mkdir()
+    shutil.copy(AGGREGATOR_SRC, tmp / "scripts" / "regression-gate.sh")
+    (tmp / "scripts" / "regression-gate.sh").chmod(0o755)
+    return tmp
+
+
+def run_aggregator(sandbox: Path, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "scripts/regression-gate.sh"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+class EmptyRegistryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sandbox = make_sandbox()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.sandbox, ignore_errors=True)
+
+    def test_empty_registry_exits_zero(self) -> None:
+        result = run_aggregator(self.sandbox)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("All 0 invariants preserved", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
