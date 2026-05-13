@@ -122,6 +122,7 @@ $HOME/.chitin/
 - [`docs/architecture.md`](./docs/architecture.md) — kernel internals
 - [`docs/roadmap.md`](./docs/roadmap.md) — strategic arc + what's in flight
 - [`docs/driver-conformance.md`](./docs/driver-conformance.md) — current driver hook matrix and normalizer gaps
+- [`docs/governance-setup-extras/README.md`](./docs/governance-setup-extras/README.md) — mirrored workflow: `kanban-dispatch.lobster` (see sync policy)
 
 ## License
 

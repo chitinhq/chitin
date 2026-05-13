@@ -1,0 +1,18 @@
+# kanban-dispatch.lobster sync check
+# Ensures the mirrored workflow file matches the canonical source.
+
+name: kanban-dispatch-lobster-sync
+on:
+  pull_request:
+    paths:
+      - 'swarm/workflows/kanban-dispatch.lobster'
+      - 'docs/governance-setup-extras/kanban-dispatch.lobster'
+      - 'scripts/sync-kanban-dispatch.sh'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check kanban-dispatch.lobster sync
+        run: scripts/sync-kanban-dispatch.sh
