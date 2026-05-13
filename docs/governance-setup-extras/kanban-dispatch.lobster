@@ -94,7 +94,7 @@ steps:
       set -euo pipefail
       TICKET=$(cat)
       PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
-      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
       BASH_SCRIPT
       )"
@@ -135,7 +135,7 @@ steps:
       In 2 sentences, explain why this driver and model are the right pick. Ground the answer in the ticket's code complexity, language or stack, ticket type, required capabilities, and cost tradeoff. Return plain text only.
       PROMPT_TEXT
       )
-      OPENCLAW_BIN="${OPENCLAW_BIN:-/home/red/.vite-plus/bin/openclaw}"
+      OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent glm-agent --message "$PROMPT"
       BASH_SCRIPT
       )"
@@ -299,7 +299,12 @@ steps:
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
-      cd "$WORKTREE"
+      if ! cd "$WORKTREE"; then
+        MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
+        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
       BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
