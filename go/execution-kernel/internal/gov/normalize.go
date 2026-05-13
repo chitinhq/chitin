@@ -17,17 +17,13 @@ import (
 func Normalize(toolName string, args map[string]any) (Action, error) {
 	switch toolName {
 	case "terminal", "bash", "shell":
-		return normalizeShell(args), nil
-	// openclaw pi-runtime core tools — same shape as terminal/bash/shell.
-	// `exec` runs a shell command via the gateway; `process` is the same
-	// surface for backgrounded/long-running commands. Both carry `cmd` (or
-	// `command`) so normalizeShell handles them uniformly.
+		return normalizeShell(args)
 	case "exec", "process":
-		return normalizeShell(args), nil
+		return normalizeShell(args)
 	case "execute_code":
 		return normalizeExecuteCode(args), nil
 	case "write_file", "patch":
-		return normalizeWriteFile(args), nil
+		return normalizeWriteFile(args)
 	// openclaw pi-runtime file tools. `write` creates/overwrites; `edit`
 	// modifies in-place. Both end at file.write because both are mutations
 	// from the policy's perspective — the existing `write_file` mapping
@@ -35,18 +31,23 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	// "Write" is the Claude Code + Hermes tool name (capitalized); "write"
 	// is the lower-level alias. Both normalize identically.
 	case "write", "edit", "Write":
-		return normalizeWriteFile(args), nil
+		return normalizeWriteFile(args)
 	case "read_file":
 		path := stringArg(args, "path")
 		if path == "" {
 			path = stringArg(args, "file_path")
 		}
+		if path == "" {
+			return Action{}, ErrMissingTarget("read_file")
+		}
 		return Action{Type: ActFileRead, Target: path}, nil
 	case "read":
-		// openclaw pi-runtime read tool — path-based file read.
 		path := stringArg(args, "path")
 		if path == "" {
 			path = stringArg(args, "file_path")
+		}
+		if path == "" {
+			return Action{}, ErrMissingTarget("read")
 		}
 		return Action{Type: ActFileRead, Target: path}, nil
 	// openclaw chat-domain tools — slice 3 normalizer coverage.
@@ -177,12 +178,15 @@ func Normalize(toolName string, args map[string]any) (Action, error) {
 	return Action{Type: ActUnknown, Target: toolName, Params: args}, nil
 }
 
-func normalizeShell(args map[string]any) Action {
+func normalizeShell(args map[string]any) (Action, error) {
 	cmd := stringArg(args, "command")
 	if cmd == "" {
 		cmd = stringArg(args, "cmd")
 	}
-	return classifyShellCommand(cmd)
+	if strings.TrimSpace(cmd) == "" {
+		return Action{}, ErrMissingTarget("shell/exec/process/terminal")
+	}
+	return classifyShellCommand(cmd), nil
 }
 
 func normalizeExecuteCode(args map[string]any) Action {
@@ -197,12 +201,15 @@ func normalizeExecuteCode(args map[string]any) Action {
 	return Action{Type: ActFileWrite, Target: "execute_code"}
 }
 
-func normalizeWriteFile(args map[string]any) Action {
+func normalizeWriteFile(args map[string]any) (Action, error) {
 	path := stringArg(args, "path")
 	if path == "" {
 		path = stringArg(args, "file_path")
 	}
-	return Action{Type: ActFileWrite, Target: path}
+	if path == "" {
+		return Action{}, ErrMissingTarget("write_file/write/edit/patch")
+	}
+	return Action{Type: ActFileWrite, Target: path}, nil
 }
 
 // classifyShellCommand inspects a shell command string and returns the most
@@ -409,10 +416,10 @@ var reSelfMod = regexp.MustCompile(
 //
 // Patterns matched (ordered by specificity):
 //  1. subprocess.run/call/Popen/check_* with a LIST argument:
-//        subprocess.run(["rm", "-rf", "go/"])
+//     subprocess.run(["rm", "-rf", "go/"])
 //  2. subprocess.run/call/Popen/check_* with a STRING argument (typically
 //     shell=True, but matched regardless — string form is shell semantics):
-//        subprocess.run("rm -rf go/", shell=True)
+//     subprocess.run("rm -rf go/", shell=True)
 //  3. os.system("rm -rf go/") — always shell
 //  4. shutil.rmtree("go/") → rm -rf go/
 //  5. os.remove/unlink("x") → rm x
@@ -460,7 +467,9 @@ func extractShellIntent(code string) string {
 }
 
 // joinQuotedList takes the inside of a Python list literal like:
-//   "rm", "-rf", "go/"
+//
+//	"rm", "-rf", "go/"
+//
 // and returns the space-joined unquoted string: `rm -rf go/`
 func joinQuotedList(inside string) string {
 	parts := []string{}
