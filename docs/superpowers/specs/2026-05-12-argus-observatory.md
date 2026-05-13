@@ -58,9 +58,15 @@ that work from once-per-session bursts to 24/7 background research.
           KANBAN DB (truth)         CLAWTA-POLLER             ARGUS INDEX
               │                     (2m tick)                 ~/.argus/index.db
               │                          │                       │
-              └──> Hermes standups       └──> dispatch            ├──> daily digest
-                                                                  │    ~/.chitin/reports/
-                                                                  │    YYYY-MM-DD-digest.md
+              └──> Hermes standups       └──> dispatch            ├──> dark-HTML reports
+                                                                  │    on asset server
+                                                                  │    http://100.115.89.9:8888/
+                                                                  │    argus-<name>-latest.html
+                                                                  │    (mirrors Hermes pattern)
+                                                                  │
+                                                                  ├──> Discord text summary
+                                                                  │    posted to #ares with
+                                                                  │    clickable HTML link
                                                                   │
                                                                   ├──> on-demand query CLI
                                                                   │    `argus query "<q>"`
@@ -142,32 +148,59 @@ between observatory and orchestrator.
 
 ---
 
-## Slice 1 — Chain ledger indexer + daily digest
+## Slice 1 — Chain ledger indexer + daily research report
 
 **Goal:** prove the observatory pattern end-to-end with the cheapest
 source. Tail `~/.chitin/gov-decisions-*.jsonl`, index every gate
 event, run a small set of deterministic detectors over a rolling
-window, generate a daily markdown digest with qwen3.6:27b summary
-narration.
+window, generate a daily **dark-themed HTML report** published to the
+asset server (mirroring Hermes's existing report contract) with a
+Discord text summary that links back to it.
+
+**Report output contract (mirrors Hermes):**
+
+The five existing Hermes reports (chain summary, industry scan,
+grooming standup, board audit, doc sync) all publish as dark-themed
+HTML to `http://100.115.89.9:8888/` and post a short text summary to
+Discord with a clickable link. The `<name>-latest.html` symlink always
+points to the most recent run. Argus reports follow the same contract
+so the operator sees one unified feed shape across both agents.
+
+Argus does NOT duplicate Hermes's reports. Hermes covers operator-news
+("what happened today"); Argus covers research and forensics ("what
+patterns + drift + anomalies + stuck flows are worth a human's
+attention"). Slice 1 ships ONE Argus report; later slices add more.
 
 **Components in scope:**
 
-- `python/argus/` (new tree) or `~/.argus/argus/` operator-local —
-  Python package, single-process daemon. Decide between in-repo (chitin)
-  vs operator-local (similar to clawta CLI shape); recommend chitin
-  for source-of-truth + dispatchable upgrades.
+- `python/argus/` (new tree) — Python package, single-process daemon.
+  In-chitin so the swarm can dispatch slice upgrades.
 - `argus-indexer` — tails JSONL, writes canonical events to SQLite
   index `~/.argus/index.db`.
 - `argus-detect` — runs deterministic detectors (deny clusters,
   unknown-rate spikes, agent failure runs, stuck flows by
   `last_heartbeat_at`).
 - `argus-report` — daily cron at operator-configurable time
-  (default 07:00 local), generates `~/.chitin/reports/YYYY-MM-DD-digest.md`,
-  posts a one-line summary to `#ares` if any detector tripped.
+  (default 07:00 local, intentionally before Hermes's 8am chain
+  summary so the operator can compare). Renders dark HTML matching
+  Hermes's style, writes to the asset server, updates the
+  `argus-research-latest.html` symlink, posts a Discord summary to
+  `#ares` with the link.
 - `argus query "<q>"` CLI — natural-language query against the index,
   routed to qwen3.6:27b with the index schema in the system prompt.
 - Systemd unit for `argus-indexer` (always-on tail) and timer for
   `argus-report` (daily).
+
+**Report style reuse (decide during implementation):**
+
+Look for Hermes's HTML rendering pipeline at implementation time —
+either a shared module Argus can call into, or a styled template
+Argus mirrors. The asset server itself is a python3 process on
+`:8888` (verified at spec time, pid via `ss -tlnp`); locate its
+serving root to write into. **Prefer reusing Hermes's renderer over
+duplicating it** — operator-facing visual consistency is worth a
+direct dependency. If no reusable module exists, file a sub-ticket
+to extract one.
 
 **Tasks:**
 
@@ -189,19 +222,34 @@ narration.
      gate decisions.
    - **Stuck flow:** any chain_id with no events for > 2× its
      historical median duration.
-4. Implement `argus-report` daily-digest generator. Template:
+4. Locate Hermes's report-rendering pipeline (asset server target dir,
+   shared HTML template / renderer, Discord posting helper) so Argus
+   can reuse rather than duplicate. File a sub-ticket if extraction
+   is needed.
+5. Implement `argus-report` daily generator. Template (rendered as
+   dark HTML matching Hermes's style):
    - Top-level summary (3-5 sentences from qwen3.6:27b)
    - Detector results table
    - Top 10 (driver, agent, action_type) triples by volume
    - Top 5 unknown action targets to investigate
    - Stuck/zombie chain candidates
-5. Implement `argus query "<q>"` — load schema into qwen prompt,
+   - Footer with run timestamp + link to index DB stats
+6. Publish output: write HTML to asset server's serving root as
+   `argus-research-<YYYY-MM-DD-HHMM>.html`, atomic-rename the
+   `argus-research-latest.html` symlink to point at it.
+7. Post Discord summary to `#ares`: one-line headline + clickable link
+   to `http://100.115.89.9:8888/argus-research-latest.html`. Quiet
+   on quiet days (omit the post if no detector tripped; the HTML
+   still publishes for the archive).
+8. Implement `argus query "<q>"` — load schema into qwen prompt,
    ask it to emit a SQL query, run it, format results.
-6. Systemd setup: `argus-indexer.service` (always-on), `argus-report.timer`
-   (daily at 07:00 local), `argus-report.service` (oneshot).
-7. Smoke: run for 24h on real chain data; verify daily report
-   surfaces at least one real signal we'd want to know about; verify
-   no false-alarm storms in `#ares`.
+9. Systemd setup: `argus-indexer.service` (always-on),
+   `argus-report.timer` (daily at 07:00 local),
+   `argus-report.service` (oneshot).
+10. Smoke: run for 7 days on real chain data; verify daily report
+    surfaces at least one real signal we'd want to know about; verify
+    operator can compare it side-by-side with Hermes's 8am chain
+    summary; verify no false-alarm storms in `#ares`.
 
 **Invariants & boundaries (per t_6dbe137e dogfood):**
 
@@ -220,7 +268,7 @@ narration.
 
 - **Empty source file** — indexer handles a freshly-created empty jsonl
   without panic.
-- **Single event** — daily digest renders correctly with one event
+- **Single event** — daily report renders correctly with one event
   in the window (no divide-by-zero on rate calculations).
 - **Date rollover at midnight** — indexer drains yesterday's tail and
   switches to today's file in one tick, no events dropped.
@@ -230,24 +278,36 @@ narration.
 - **Detector edge cases** — exactly N events at exactly M seconds
   boundary; N-1 events should NOT trigger; N+1 events SHOULD trigger.
 - **qwen unreachable** — daily report still produces the structured
-  detector output even if the LLM narration step fails. Narration
-  degrades to a placeholder line.
+  HTML even if the LLM narration step fails. Narration degrades to
+  a placeholder paragraph; the structured tables still render.
+- **Asset server unreachable / serving dir not writable** — report
+  generation fails loudly with an operator-visible error, does NOT
+  silently skip. Symlink is updated only on successful write.
+- **Symlink-update atomicity** — `argus-research-latest.html`
+  pointing is atomic (write new HTML to temp filename, rename
+  symlink in one syscall) so concurrent readers never see a
+  partial / missing target.
 - **Index corruption** — argus-indexer detects and refuses to write
   to a corrupt DB; alerts operator instead of silently failing.
-- **Quiet day** — no detectors triggered → digest renders an "all
-  quiet" report; no #ares push.
+- **Quiet day** — no detectors triggered → HTML still publishes with
+  an "all quiet" body so the archive is continuous; Discord post
+  is suppressed.
 
 **Acceptance:**
 
-- 7 consecutive daily reports produced from real chain data
+- 7 consecutive daily reports published as dark HTML to the asset
+  server, each accessible via the `argus-research-latest.html`
+  symlink and dated archive URL.
 - At least one real, actionable signal surfaced that the operator
-  would not have caught otherwise
+  would not have caught otherwise.
+- Visual style consistent with Hermes's 5 existing reports
+  (operator sanity-check passes side-by-side comparison).
 - Zero false-positive #ares pushes during the smoke period (tune
-  thresholds before merging)
+  thresholds before merging).
 - `argus query "<q>"` returns useful results for at least 5 representative
   questions ("which agent had the most denies last week?", "PRs
-  touched gov/ in last 30d", etc.)
-- All boundaries above have a passing test
+  touched gov/ in last 30d", etc.).
+- All boundaries above have a passing test.
 
 **Dependencies:** none
 
@@ -619,7 +679,8 @@ running (Slice 4 of the clawta-hermes spec — verify status).
 | Argus source tree | `python/argus/` or `swarm/argus/` (chitin) | chitin repo |
 | Argus operator-local config | `~/.argus/config.yaml` | operator-local |
 | Argus index DB | `~/.argus/index.db` | operator-local |
-| Daily digest output | `~/.chitin/reports/YYYY-MM-DD-digest.md` | operator-local |
+| Daily report (HTML) | served at `http://100.115.89.9:8888/argus-research-latest.html` + dated archive (asset server pid found via `ss -tlnp \| grep :8888`; serving root located at implementation time) | operator-local |
+| Discord summary destination | `#ares` channel, posted via openclaw discord adapter — same path Hermes already uses | operator-local |
 | Systemd units | `~/.config/systemd/user/argus-*.{service,timer}` | operator-local |
 | Argus CLI | `~/.local/bin/argus` (symlink to chitin source) | operator-local |
 | ollama backend | `qwen3.6:27b` on the RTX 3090, served via ollama | operator-local |
