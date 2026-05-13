@@ -392,7 +392,12 @@ func denyCascadeFired(counter *Counter, agent string, cfg EscalationConfig) bool
 		return false
 	}
 	since := denyCascadeSince(cfg)
-	return counter.CountActionDenialsSince(agent, string(ActShellExec), since) >= cfg.DenyCascadeCount
+	count, err := counter.CountActionDenialsSince(agent, string(ActShellExec), since)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gov: CountActionDenialsSince failed agent=%s; forcing lockdown: %v\n", agent, err)
+		return true
+	}
+	return count >= cfg.DenyCascadeCount
 }
 
 func denyCascadeSince(cfg EscalationConfig) int64 {

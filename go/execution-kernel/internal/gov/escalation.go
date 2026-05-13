@@ -18,6 +18,8 @@ type Counter struct {
 	db *sql.DB
 }
 
+const denialEventRetention = 7 * 24 * time.Hour
+
 // OpenCounter opens/creates the SQLite DB at dbPath with WAL mode.
 func OpenCounter(dbPath string) (*Counter, error) {
 	db, err := sql.Open("sqlite", dbPath)
@@ -109,6 +111,9 @@ func (c *Counter) RecordActionDenial(agent, actionType, fp string, weight int) e
 	`, agent, actionType, fp, now.Unix()); err != nil {
 		return fmt.Errorf("insert denial event: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM denial_events WHERE ts_unix < ?`, now.Add(-denialEventRetention).Unix()); err != nil {
+		return fmt.Errorf("prune expired denial events: %w", err)
+	}
 
 	var total int
 	if err := tx.QueryRow(`SELECT total FROM agent_state WHERE agent = ?`, agent).Scan(&total); err != nil {
@@ -140,14 +145,16 @@ func (c *Counter) PruneActionDenialsBefore(beforeUnix int64) error {
 // in the trailing window. It is intentionally separate from the aggregate
 // denials table: the ladder stays lifetime-spanning, while cascade detection
 // is recent behavior.
-func (c *Counter) CountActionDenialsSince(agent, actionType string, sinceUnix int64) int {
+func (c *Counter) CountActionDenialsSince(agent, actionType string, sinceUnix int64) (int, error) {
 	var count int
-	_ = c.db.QueryRow(`
+	if err := c.db.QueryRow(`
 		SELECT COUNT(*)
 		FROM denial_events
 		WHERE agent = ? AND action_type = ? AND ts_unix >= ?
-	`, agent, actionType, sinceUnix).Scan(&count)
-	return count
+	`, agent, actionType, sinceUnix).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count denial events: %w", err)
+	}
+	return count, nil
 }
 
 // Level returns the escalation level for an agent: normal | elevated |

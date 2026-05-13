@@ -49,6 +49,7 @@ type unknownDecisionWire struct {
 	Agent        string `json:"agent"`
 	ActionType   string `json:"action_type"`
 	ActionTarget string `json:"action_target"`
+	Mode         string `json:"mode"`
 	RuleID       string `json:"rule_id"`
 	Ts           string `json:"ts"`
 	ChainID      string `json:"chain_id"`
@@ -192,6 +193,31 @@ func TestUnknownRateAlarmRejectsMalformedJSONL(t *testing.T) {
 	}
 }
 
+func TestUnknownRateAlarmExcludesMonitorModeRowsFromDenominator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gov-decisions-2026-05-11.jsonl")
+	body := strings.Join([]string{
+		`{"allowed":false,"mode":"enforce","rule_id":"default-deny-unknown","agent":"codex","action_type":"unknown","action_target":"new_tool","ts":"2026-05-11T01:00:00Z","chain_id":"chain-codex","seq":1}`,
+		`{"allowed":true,"mode":"monitor","rule_id":"router-heuristic:allow","agent":"codex","action_type":"router.signal","action_target":"Bash:go test ./...","ts":"2026-05-11T01:01:00Z","chain_id":"chain-codex","seq":2}`,
+		`{"allowed":true,"mode":"monitor","rule_id":"router-heuristic:allow","agent":"codex","action_type":"router.signal","action_target":"Read:docs/roadmap.md","ts":"2026-05-11T01:02:00Z","chain_id":"chain-codex","seq":3}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := analyzeUnknownRateDir(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want one row, got %+v", rows)
+	}
+	if rows[0].Total != 1 || rows[0].Unknown != 1 || rows[0].Rate != 1 {
+		t.Fatalf("monitor-mode rows should not dilute unknown rate, got %+v", rows[0])
+	}
+}
+
 func TestUnknownRateAlarmCurrentChainOptIn(t *testing.T) {
 	dir := os.Getenv("CHITIN_UNKNOWN_RATE_DIR")
 	if dir == "" {
@@ -311,6 +337,9 @@ func scanUnknownRateFile(path, filename string, topN int, buckets map[string]*un
 			return fmt.Errorf("malformed JSON in %s:%d: %w", path, lineNo, err)
 		}
 		if row.ActionType == "" {
+			continue
+		}
+		if row.Mode == "monitor" {
 			continue
 		}
 		if row.ActionType == string(ActUnknown) {

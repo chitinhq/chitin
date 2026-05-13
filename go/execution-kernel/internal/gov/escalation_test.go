@@ -3,6 +3,7 @@ package gov
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newTestCounter(t *testing.T) *Counter {
@@ -97,8 +98,8 @@ func TestCounter_PerAgentIsolation(t *testing.T) {
 func TestCounter_Reset(t *testing.T) {
 	c := newTestCounter(t)
 	for i := 0; i < 10; i++ {
-		if err := c.RecordDenial("agent1", "fp1", 1); err != nil {
-			t.Fatalf("RecordDenial: %v", err)
+		if err := c.RecordActionDenial("agent1", string(ActShellExec), "fp1", 1); err != nil {
+			t.Fatalf("RecordActionDenial: %v", err)
 		}
 	}
 	c.Reset("agent1")
@@ -108,7 +109,11 @@ func TestCounter_Reset(t *testing.T) {
 	if lv := c.Level("agent1"); lv != "normal" {
 		t.Errorf("after Reset, level=%q want normal", lv)
 	}
-	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 0); got != 0 {
+	got, err := c.CountActionDenialsSince("agent1", string(ActShellExec), 0)
+	if err != nil {
+		t.Fatalf("CountActionDenialsSince: %v", err)
+	}
+	if got != 0 {
 		t.Errorf("Reset should clear denial events, got %d", got)
 	}
 }
@@ -127,11 +132,51 @@ func TestCounter_PruneActionDenialsBefore(t *testing.T) {
 	if err := c.PruneActionDenialsBefore(200); err != nil {
 		t.Fatalf("PruneActionDenialsBefore: %v", err)
 	}
-	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 0); got != 2 {
+	got, err := c.CountActionDenialsSince("agent1", string(ActShellExec), 0)
+	if err != nil {
+		t.Fatalf("CountActionDenialsSince: %v", err)
+	}
+	if got != 2 {
 		t.Fatalf("prune should retain events at/after cutoff, got %d", got)
 	}
-	if got := c.CountActionDenialsSince("agent1", string(ActShellExec), 250); got != 1 {
+	got, err = c.CountActionDenialsSince("agent1", string(ActShellExec), 250)
+	if err != nil {
+		t.Fatalf("CountActionDenialsSince: %v", err)
+	}
+	if got != 1 {
 		t.Fatalf("recent count after prune: got %d want 1", got)
+	}
+}
+
+func TestCounter_RecordActionDenialPrunesExpiredEvents(t *testing.T) {
+	c := newTestCounter(t)
+	old := time.Now().UTC().Add(-denialEventRetention).Add(-time.Second).Unix()
+	if _, err := c.db.Exec(`
+		INSERT INTO denial_events (agent, action_type, action_fp, ts_unix)
+		VALUES (?, ?, ?, ?)
+	`, "agent1", string(ActShellExec), "old-fp", old); err != nil {
+		t.Fatalf("insert old denial event: %v", err)
+	}
+
+	if err := c.RecordActionDenial("agent1", string(ActShellExec), "new-fp", 1); err != nil {
+		t.Fatalf("RecordActionDenial: %v", err)
+	}
+	got, err := c.CountActionDenialsSince("agent1", string(ActShellExec), 0)
+	if err != nil {
+		t.Fatalf("CountActionDenialsSince: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("expired denial event should be pruned on write, got %d events", got)
+	}
+}
+
+func TestCounter_CountActionDenialsSinceReturnsQueryErrors(t *testing.T) {
+	c := newTestCounter(t)
+	if _, err := c.db.Exec(`DROP TABLE denial_events`); err != nil {
+		t.Fatalf("drop denial_events: %v", err)
+	}
+	if got, err := c.CountActionDenialsSince("agent1", string(ActShellExec), 0); err == nil {
+		t.Fatalf("expected query error after dropping denial_events, got count=%d nil error", got)
 	}
 }
 
