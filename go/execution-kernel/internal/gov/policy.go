@@ -26,27 +26,28 @@ type Policy struct {
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
 type Rule struct {
-	ID                string          `yaml:"id"`
-	Action            ActionMatcher   `yaml:"action"`                 // single type OR list of types
-	Effect            string          `yaml:"effect"`                 // allow | deny | guide | monitor
-	Target            string          `yaml:"target,omitempty"`       // substring match on Action.Target
-	TargetRegex       string          `yaml:"target_regex,omitempty"` // regex match on Action.Target
-	Branches          []string        `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
-	PathUnder         []string        `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
-	AgentInstanceID   IdentityMatcher `yaml:"agent_instance_id,omitempty"`
-	AgentFingerprint  IdentityMatcher `yaml:"agent_fingerprint,omitempty"`
-	Driver            IdentityMatcher `yaml:"driver,omitempty"`
-	Model             IdentityMatcher `yaml:"model,omitempty"`
-	Role              IdentityMatcher `yaml:"role,omitempty"`
-	StationPromptHash IdentityMatcher `yaml:"station_prompt_hash,omitempty"`
-	SkillsToolsHash   IdentityMatcher `yaml:"skills_tools_hash,omitempty"`
-	SoulLens          IdentityMatcher `yaml:"soul_lens,omitempty"`
-	Authority         IdentityMatcher `yaml:"authority,omitempty"`
-	WorkflowID        IdentityMatcher `yaml:"workflow_id,omitempty"`
-	Reason            string          `yaml:"reason,omitempty"`
-	Suggestion        string          `yaml:"suggestion,omitempty"`
-	CorrectedCommand  string          `yaml:"correctedCommand,omitempty"`
-	EscalationWeight  int             `yaml:"escalation_weight,omitempty"` // default 1
+	ID                string            `yaml:"id"`
+	Action            ActionMatcher     `yaml:"action"`                 // single type OR list of types
+	Effect            string            `yaml:"effect"`                 // allow | deny | guide | monitor
+	Target            string            `yaml:"target,omitempty"`       // substring match on Action.Target
+	TargetRegex       string            `yaml:"target_regex,omitempty"` // regex match on Action.Target
+	Params            map[string]string `yaml:"params,omitempty"`       // exact match on Action.Params string values
+	Branches          []string          `yaml:"branches,omitempty"`     // for git.push — match if Action.Target ∈ list
+	PathUnder         []string          `yaml:"path_under,omitempty"`   // for file.* — match if Action.Target begins with any
+	AgentInstanceID   IdentityMatcher   `yaml:"agent_instance_id,omitempty"`
+	AgentFingerprint  IdentityMatcher   `yaml:"agent_fingerprint,omitempty"`
+	Driver            IdentityMatcher   `yaml:"driver,omitempty"`
+	Model             IdentityMatcher   `yaml:"model,omitempty"`
+	Role              IdentityMatcher   `yaml:"role,omitempty"`
+	StationPromptHash IdentityMatcher   `yaml:"station_prompt_hash,omitempty"`
+	SkillsToolsHash   IdentityMatcher   `yaml:"skills_tools_hash,omitempty"`
+	SoulLens          IdentityMatcher   `yaml:"soul_lens,omitempty"`
+	Authority         IdentityMatcher   `yaml:"authority,omitempty"`
+	WorkflowID        IdentityMatcher   `yaml:"workflow_id,omitempty"`
+	Reason            string            `yaml:"reason,omitempty"`
+	Suggestion        string            `yaml:"suggestion,omitempty"`
+	CorrectedCommand  string            `yaml:"correctedCommand,omitempty"`
+	EscalationWeight  int               `yaml:"escalation_weight,omitempty"` // default 1
 
 	// compiledRegex is populated by ApplyDefaults from TargetRegex so we
 	// validate patterns at load time (fail-closed on bad regex) rather than
@@ -421,6 +422,14 @@ func (p *Policy) ApplyDefaults() error {
 				return fmt.Errorf("rule %q: action[%d] is empty; remove the entry or fill it in", p.Rules[i].ID, j)
 			}
 		}
+		for k, v := range p.Rules[i].Params {
+			if k == "" {
+				return fmt.Errorf("rule %q: params contains an empty key; remove the entry or fill it in", p.Rules[i].ID)
+			}
+			if v == "" {
+				return fmt.Errorf("rule %q: params[%q] is empty; remove the entry or fill it in", p.Rules[i].ID, k)
+			}
+		}
 		if err := validateIdentityMatcher(p.Rules[i].ID, "agent_instance_id", p.Rules[i].AgentInstanceID); err != nil {
 			return err
 		}
@@ -541,6 +550,12 @@ func (r Rule) matchesWithFingerprint(a Action, ctx FingerprintContext) bool {
 	}
 	if !r.identityMatches(ctx) {
 		return false
+	}
+	for key, want := range r.Params {
+		got, ok := a.Params[key]
+		if !ok || fmt.Sprint(got) != want {
+			return false
+		}
 	}
 	// Branch condition: Action.Target must be in the list
 	if len(r.Branches) > 0 {

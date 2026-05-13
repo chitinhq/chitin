@@ -48,14 +48,14 @@ func flagTakesValue(tool, action, flag string) bool {
 		"grep:m":              true,
 
 		// git log
-		"git.log:max-count":  true,
-		"git.log:n":          true,
-		"git.log:format":     true,
-		"git.log:pretty":     true,
-		"git.log:since":      true,
-		"git.log:until":      true,
-		"git.log:author":     true,
-		"git.log:grep":       true,
+		"git.log:max-count": true,
+		"git.log:n":         true,
+		"git.log:format":    true,
+		"git.log:pretty":    true,
+		"git.log:since":     true,
+		"git.log:until":     true,
+		"git.log:author":    true,
+		"git.log:grep":      true,
 
 		// git commit
 		"git.commit:m":       true,
@@ -85,25 +85,38 @@ func flagTakesValue(tool, action, flag string) bool {
 		"find:maxdepth": true,
 
 		// docker
-		"docker:name":    true,
-		"docker:format":  true,
-		"docker:f":       true,
+		"docker:name":   true,
+		"docker:format": true,
+		"docker:f":      true,
 
 		// Global pre-action value-taking flags. Used by parseOne's
 		// action-discovery walk so commands like `git -C /tmp status` or
 		// `kubectl --context prod delete ns x` correctly land on the
 		// action verb instead of treating the flag's value as the action.
-		"git:C":            true,
-		"git:c":            true, // git -c key=value (config override)
-		"git:git-dir":      true,
-		"git:work-tree":    true,
-		"kubectl:context":  true,
-		"kubectl:n":        true, // namespace
+		"git:C":             true,
+		"git:c":             true, // git -c key=value (config override)
+		"git:git-dir":       true,
+		"git:work-tree":     true,
+		"kubectl:context":   true,
+		"kubectl:n":         true, // namespace
 		"kubectl:namespace": true,
-		"kubectl:s":        true, // server
-		"kubectl:server":   true,
-		"docker:H":         true, // host
-		"docker:host":      true,
+		"kubectl:s":         true, // server
+		"kubectl:server":    true,
+		"docker:H":          true, // host
+		"docker:host":       true,
+
+		// Inline interpreter source. These must stay attached to the
+		// flag so bypass detectors can inspect `python -c "..."`,
+		// `node -e "..."`, etc. as code rather than loose positionals.
+		"python:c": true,
+		"node:e":   true,
+		"ruby:e":   true,
+		"perl:e":   true,
+		"bash:c":   true,
+		"sh:c":     true,
+		"zsh:c":    true,
+		"ash:c":    true,
+		"dash:c":   true,
 	}
 
 	// Check with action specificity first.

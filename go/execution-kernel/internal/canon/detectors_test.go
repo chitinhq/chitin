@@ -125,6 +125,94 @@ func TestWriteDestinations(t *testing.T) {
 	}
 }
 
+func TestInlineGovWriteTargets(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{
+			name: "python open write",
+			raw:  `python3 -c "open('chitin.yaml','w').write('x')"`,
+			want: []string{"chitin.yaml"},
+		},
+		{
+			name: "python pathlib write_text",
+			raw:  `python -c "import pathlib; pathlib.Path('/home/red/.chitin/policy.json').write_text('x')"`,
+			want: []string{"/home/red/.chitin/policy.json"},
+		},
+		{
+			name: "python rename into gov path",
+			raw:  `python -c "import os; os.rename('/tmp/x', '/home/red/.hermes/plugins/chitin-governance/plugin.py')"`,
+			want: []string{"/home/red/.hermes/plugins/chitin-governance/plugin.py"},
+		},
+		{
+			name: "python subprocess cp into gov path",
+			raw:  `python -c "import subprocess; subprocess.run(['cp', '/tmp/x', '.chitin/policy.json'])"`,
+			want: []string{".chitin/policy.json"},
+		},
+		{
+			name: "node writeFileSync",
+			raw:  `node -e "const fs = require('fs'); fs.writeFileSync('chitin.yaml', 'x')"`,
+			want: []string{"chitin.yaml"},
+		},
+		{
+			name: "node appendFile",
+			raw:  `node -e "fs.appendFile('/home/red/.chitin/events.jsonl', 'x', () => {})"`,
+			want: []string{"/home/red/.chitin/events.jsonl"},
+		},
+		{
+			name: "shell redirect",
+			raw:  `bash -c "echo x > chitin.yaml"`,
+			want: []string{"chitin.yaml"},
+		},
+		{
+			name: "shell tee",
+			raw:  `sh -c "echo x | tee /home/red/.chitin/gov.db"`,
+			want: []string{"/home/red/.chitin/gov.db"},
+		},
+		{
+			name: "shell install",
+			raw:  `bash -c "install /tmp/x .hermes/plugins/chitin-governance/plugin.py"`,
+			want: []string{".hermes/plugins/chitin-governance/plugin.py"},
+		},
+		{
+			name: "ruby File.write",
+			raw:  `ruby -e "File.write('chitin.yaml', 'x')"`,
+			want: []string{"chitin.yaml"},
+		},
+		{
+			name: "ruby File.open append",
+			raw:  `ruby -e "File.open('/home/red/.chitin/events.jsonl', 'a') { |f| f.write('x') }"`,
+			want: []string{"/home/red/.chitin/events.jsonl"},
+		},
+		{
+			name: "perl open write",
+			raw:  `perl -e "open(my $fh, '>', 'chitin.yaml'); print $fh 'x';"`,
+			want: []string{"chitin.yaml"},
+		},
+		{
+			name: "saved script is not inspected",
+			raw:  `python3 /tmp/write_chitin.py`,
+			want: nil,
+		},
+		{
+			name: "operator editor command is not inline write",
+			raw:  `$EDITOR chitin.yaml`,
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InlineGovWriteTargets(ParseOne(tc.raw))
+			if !sliceEqual(got, tc.want) {
+				t.Fatalf("InlineGovWriteTargets(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsRemoteCodeExec_PipeForm(t *testing.T) {
 	cases := []struct {
 		raw  string

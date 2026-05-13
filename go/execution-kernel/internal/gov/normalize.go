@@ -269,6 +269,19 @@ func classifyShellCommand(cmd string) Action {
 		}
 	}
 
+	// Inline self-modification via shell-spawned interpreters — re-tag to
+	// file.write before generic shell redirect detection so the policy can
+	// identify the bypass class with Params["via"]="inline-interpreter".
+	for _, seg := range canon.Parse(trimmed).Segments {
+		for _, dest := range canon.InlineGovWriteTargets(seg.Command) {
+			return Action{
+				Type:   ActFileWrite,
+				Target: dest,
+				Params: map[string]any{"via": "inline-interpreter"},
+			}
+		}
+	}
+
 	// Self-modification via shell — extract write destinations and re-tag
 	// to file.write so the no-governance-self-modification rule fires
 	// (#59). The target_regex on that rule already handles the path

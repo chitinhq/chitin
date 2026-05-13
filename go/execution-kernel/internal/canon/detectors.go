@@ -31,9 +31,10 @@ import (
 // quoting, or splitting.
 //
 // Closes #58. Catches:
-//   `rm -rf X`, `rm  -rf X` (multi-space), `rm '-rf' X` (quoted),
-//   `rm -r -f X` (split flags), `rm --recursive --force X` (long form),
-//   `rm -fr X` (reordered).
+//
+//	`rm -rf X`, `rm  -rf X` (multi-space), `rm '-rf' X` (quoted),
+//	`rm -r -f X` (split flags), `rm --recursive --force X` (long form),
+//	`rm -fr X` (reordered).
 func IsRecursiveDelete(c Command) bool {
 	if c.Tool != "rm" {
 		return false
@@ -60,8 +61,9 @@ func IsRecursiveDelete(c Command) bool {
 // stance is to treat as suspicious.
 //
 // Closes #60. Catches:
-//   `git push`, `git push origin`, `git push -u origin HEAD`,
-//   `git push --set-upstream`, `git -C /tmp push`.
+//
+//	`git push`, `git push origin`, `git push -u origin HEAD`,
+//	`git push --set-upstream`, `git -C /tmp push`.
 func IsBareGitPush(c Command) bool {
 	if c.Tool != "git" || c.Action != "push" {
 		return false
@@ -87,10 +89,11 @@ func IsBareGitPush(c Command) bool {
 // global flags or env-prefix already stripped by canon.
 //
 // Closes #62. Catches:
-//   `terraform destroy`, `terraform -chdir=./infra destroy`,
-//   `env TF_LOG=1 terraform destroy`,
-//   `kubectl delete ns x`, `kubectl --context=prod delete ns x`,
-//   `KUBECONFIG=/tmp/k kubectl delete namespace x`.
+//
+//	`terraform destroy`, `terraform -chdir=./infra destroy`,
+//	`env TF_LOG=1 terraform destroy`,
+//	`kubectl delete ns x`, `kubectl --context=prod delete ns x`,
+//	`KUBECONFIG=/tmp/k kubectl delete namespace x`.
 func IsInfraDestroy(c Command) (tool string, ok bool) {
 	if c.Tool == "terraform" && c.Action == "destroy" {
 		return "terraform", true
@@ -115,9 +118,10 @@ func IsInfraDestroy(c Command) (tool string, ok bool) {
 //
 // Closes #59 (with the caller mapping each destination back through the
 // self-mod target_regex). Catches:
-//   `echo X > path`, `cat >> path`, `tee path`, `tee -a path`,
-//   `cp src path`, `mv src path`, heredoc destinations
-//   `cat > path <<EOF`.
+//
+//	`echo X > path`, `cat >> path`, `tee path`, `tee -a path`,
+//	`cp src path`, `mv src path`, heredoc destinations
+//	`cat > path <<EOF`.
 func WriteDestinations(raw string) []string {
 	var dests []string
 	// Redirect: > or >> followed by optional whitespace then a path token.
@@ -148,6 +152,76 @@ func WriteDestinations(raw string) []string {
 	return dests
 }
 
+// InlineGovWriteTargets extracts governance-path write targets from inline
+// interpreter source passed on the command line (`python -c`, `node -e`,
+// `ruby -e`, `perl -e`, and shell `-c`). It intentionally does not read
+// saved script files; those are a race-prone gate-time surface and are
+// covered by the operator workflow / signed-policy followup.
+func InlineGovWriteTargets(c Command) []string {
+	code, ok := inlineInterpreterCode(c)
+	if !ok {
+		return nil
+	}
+	switch c.Tool {
+	case "python":
+		return inlineGovMatches(code,
+			rePythonOpenGovWrite,
+			rePythonPathlibGovWrite,
+			rePythonRenameGovWrite,
+			rePythonSubprocessGovWrite,
+		)
+	case "node":
+		return inlineGovMatches(code, reNodeWriteGov)
+	case "bash", "sh", "zsh", "ash", "dash":
+		var targets []string
+		for _, dest := range WriteDestinations(code) {
+			if reGovPath.MatchString(dest) {
+				targets = append(targets, dest)
+			}
+		}
+		for _, target := range inlineGovMatches(code, reShellCopyMoveGov) {
+			targets = append(targets, target)
+		}
+		return targets
+	case "ruby":
+		return inlineGovMatches(code, reRubyWriteGov, reRubyOpenGovWrite)
+	case "perl":
+		return inlineGovMatches(code, rePerlOpenGovWrite, rePerlOpenGovWriteSeparate)
+	}
+	return nil
+}
+
+func inlineInterpreterCode(c Command) (string, bool) {
+	switch c.Tool {
+	case "python", "bash", "sh", "zsh", "ash", "dash":
+		code, ok := c.Flags["c"]
+		return code, ok && code != ""
+	case "node", "ruby", "perl":
+		code, ok := c.Flags["e"]
+		return code, ok && code != ""
+	}
+	return "", false
+}
+
+func inlineGovMatches(code string, patterns ...*regexp.Regexp) []string {
+	var targets []string
+	seen := map[string]bool{}
+	for _, pattern := range patterns {
+		for _, m := range pattern.FindAllStringSubmatch(code, -1) {
+			if len(m) < 2 {
+				continue
+			}
+			target := strings.TrimSpace(m[1])
+			if target == "" || seen[target] {
+				continue
+			}
+			seen[target] = true
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
 // IsRemoteCodeExec reports whether this pipeline fetches a script from the
 // network and then pipes/sources it through a shell — the curl|bash class.
 //
@@ -156,10 +230,11 @@ func WriteDestinations(raw string) []string {
 // because canon's tokenizer mangles the `<(curl` prefix.
 //
 // Catches:
-//   `curl URL | bash`, `curl URL | sh`, `wget -qO- URL | bash`,
-//   `wget URL | zsh`, plus the two-stage form
-//   `curl URL -o /tmp/x.sh && bash /tmp/x.sh` (caught via && between a
-//   network-fetch segment and a bash segment).
+//
+//	`curl URL | bash`, `curl URL | sh`, `wget -qO- URL | bash`,
+//	`wget URL | zsh`, plus the two-stage form
+//	`curl URL -o /tmp/x.sh && bash /tmp/x.sh` (caught via && between a
+//	network-fetch segment and a bash segment).
 func IsRemoteCodeExec(p Pipeline) bool {
 	// Pipe / && form, both orderings:
 	//   - fetch | bash    (segments: fetch, bash with Op=Pipe)
@@ -256,4 +331,18 @@ var (
 	// substitution. Conservative: only the launcher-immediately-before
 	// proc-subst pattern.
 	reProcSubstFetch = regexp.MustCompile(`\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b`)
+
+	govPath   = `([^'"\s|;&<>]*(?:chitin\.yaml|\.chitin/[^'"\s|;&<>]*|\.hermes/plugins/chitin-governance/[^'"\s|;&<>]*)[^'"\s|;&<>]*)`
+	reGovPath = regexp.MustCompile(`(?:(?:^|/)chitin\.yaml$|(?:^|/)\.chitin/|(?:^|/)\.hermes/plugins/chitin-governance/)`)
+
+	rePythonOpenGovWrite       = regexp.MustCompile(`\bopen\s*\(\s*['"]` + govPath + `['"]\s*,\s*['"][^'"]*[wa+][^'"]*['"]`)
+	rePythonPathlibGovWrite    = regexp.MustCompile(`\bpathlib\.Path\s*\(\s*['"]` + govPath + `['"]\s*\)\s*\.write_text\b`)
+	rePythonRenameGovWrite     = regexp.MustCompile(`\bos\.rename\s*\(\s*[^,]+,\s*['"]` + govPath + `['"]`)
+	rePythonSubprocessGovWrite = regexp.MustCompile(`\bsubprocess\.(?:run|call|Popen|check_call|check_output)\s*\(\s*\[[^\]]*['"](?:mv|cp|tee|>)['"][^\]]*['"]` + govPath + `['"]`)
+	reNodeWriteGov             = regexp.MustCompile(`\bfs\.(?:writeFile|writeFileSync|appendFile|appendFileSync)\s*\(\s*['"]` + govPath + `['"]`)
+	reShellCopyMoveGov         = regexp.MustCompile(`\b(?:cp|mv|install)\b[^;|&]*\s` + govPath + `(?:\s|$)`)
+	reRubyWriteGov             = regexp.MustCompile(`\bFile\.(?:write|binwrite)\s*\(\s*['"]` + govPath + `['"]`)
+	reRubyOpenGovWrite         = regexp.MustCompile(`\bFile\.open\s*\(\s*['"]` + govPath + `['"]\s*,\s*['"][^'"]*[wa+][^'"]*['"]`)
+	rePerlOpenGovWrite         = regexp.MustCompile(`\bopen\s*\([^,]*,\s*['"]\s*(?:>>?|\+>)\s*` + govPath + `['"]`)
+	rePerlOpenGovWriteSeparate = regexp.MustCompile(`\bopen\s*\([^,]*,\s*['"]\s*(?:>>?|\+>)\s*['"]\s*,\s*['"]` + govPath + `['"]`)
 )
