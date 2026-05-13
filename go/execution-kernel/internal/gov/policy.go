@@ -314,9 +314,16 @@ func (m IdentityMatcher) Matches(value string) bool {
 // on malformed YAML or any rule with a regex that fails to compile —
 // fail-closed at load time rather than silently-false at eval time.
 func LoadPolicyFile(path string) (Policy, error) {
+	return LoadPolicyFileWithOptions(path, PolicyLoadOptions{})
+}
+
+func LoadPolicyFileWithOptions(path string, opts PolicyLoadOptions) (Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Policy{}, fmt.Errorf("read policy: %w", err)
+	}
+	if err := VerifyPolicySignatureBytes(path, data, opts); err != nil {
+		return Policy{}, err
 	}
 	p, err := parsePolicyYAML(data)
 	if err != nil {

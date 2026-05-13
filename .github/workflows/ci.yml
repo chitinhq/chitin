@@ -61,6 +61,28 @@ jobs:
         run: go vet ./...
         working-directory: go/execution-kernel
 
+      - name: Verify signed governance policy
+        env:
+          CHITIN_POLICY_PUBLIC_KEY: ${{ vars.CHITIN_POLICY_PUBLIC_KEY || secrets.CHITIN_POLICY_PUBLIC_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.event.pull_request.base.ref }}"
+          else
+            base="HEAD~1"
+          fi
+          if ! git diff --name-only "$base"...HEAD | grep -qx 'chitin.yaml'; then
+            echo "chitin.yaml unchanged; skipping signed-policy verification"
+            exit 0
+          fi
+          if [ -z "${CHITIN_POLICY_PUBLIC_KEY:-}" ]; then
+            echo "::error file=chitin.yaml::chitin.yaml changed but CHITIN_POLICY_PUBLIC_KEY is not configured as a repository variable/secret; see docs/runbooks/governance-signed-policy.md"
+            exit 1
+          fi
+          go run ./cmd/chitin-kernel policy verify \
+            --policy-file ../../chitin.yaml \
+            --public-key "$CHITIN_POLICY_PUBLIC_KEY"
+        working-directory: go/execution-kernel
+
       - name: Go test
         run: go test ./...
         working-directory: go/execution-kernel

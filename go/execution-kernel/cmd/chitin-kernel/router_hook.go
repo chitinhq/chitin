@@ -74,7 +74,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	// Step 1: kernel verdict via evalHookStdin's pure core
 	var kernelOut bytes.Buffer
-	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
+	kernelCode := evalHookStdin(bytes.NewReader(in), &kernelOut, errOut, agent, envelopeFlag, policyFile, requirePolicy, noRecord, false)
 
 	// Fast path: router policy disabled → emit kernel verdict directly
 	if !policy.Enabled {

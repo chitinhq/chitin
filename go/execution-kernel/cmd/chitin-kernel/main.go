@@ -60,6 +60,8 @@ func main() {
 		cmdBoardConfig(args)
 	case "gate":
 		cmdGate(args)
+	case "policy":
+		cmdPolicy(args)
 	case "envelope":
 		cmdEnvelope(args)
 	case "decisions":
@@ -225,9 +227,9 @@ func cmdChainVerify(args []string) {
 	}
 	if info == nil {
 		out, _ := json.Marshal(map[string]any{
-			"verified":  false,
-			"reason":    "chain not found in index",
-			"chain_id":  *sessionID,
+			"verified":     false,
+			"reason":       "chain not found in index",
+			"chain_id":     *sessionID,
 			"phase_2_note": "full hash-recomputation verification lands in Phase 2",
 		})
 		fmt.Println(string(out))
@@ -248,17 +250,19 @@ func cmdChainVerify(args []string) {
 // in one of two modes:
 //
 // Parse-only mode (no --envelope-template):
-//   Parses the transcript, saves a checkpoint recording the byte offset, and
-//   prints {"ok":true,"turns":[...]} to stdout.  Useful for external callers
-//   that want the parsed turn data without emitting to a chain.
+//
+//	Parses the transcript, saves a checkpoint recording the byte offset, and
+//	prints {"ok":true,"turns":[...]} to stdout.  Useful for external callers
+//	that want the parsed turn data without emitting to a chain.
 //
 // Emit mode (--envelope-template <file>):
-//   In addition to parsing and checkpointing, emits one assistant_turn event
-//   per parsed turn into .chitin/events-<run_id>.jsonl using the transactional
-//   Emitter.  The template JSON must contain all required envelope fields
-//   (schema_version, run_id, session_id, surface, chain_id, chain_type="session");
-//   missing fields cause a loud failure before any emission.  On success prints
-//   {"ok":true,"emitted":N,"turns":N}.
+//
+//	In addition to parsing and checkpointing, emits one assistant_turn event
+//	per parsed turn into .chitin/events-<run_id>.jsonl using the transactional
+//	Emitter.  The template JSON must contain all required envelope fields
+//	(schema_version, run_id, session_id, surface, chain_id, chain_type="session");
+//	missing fields cause a loud failure before any emission.  On success prints
+//	{"ok":true,"emitted":N,"turns":N}.
 func cmdIngestTranscript(args []string) {
 	fs := flag.NewFlagSet("ingest-transcript", flag.ExitOnError)
 	fs.Usage = func() {
@@ -779,7 +783,8 @@ func exitErrWithChain(kind, msg, chainID string) {
 // cmdGate dispatches subcommands: evaluate, status, lockdown, reset.
 //
 // evaluate: --tool <name> --args-json <json> --agent <name> [--cwd <path>]
-//   Stdout: Decision JSON. Exit 0=allow, 1=deny, 2=internal error.
+//
+//	Stdout: Decision JSON. Exit 0=allow, 1=deny, 2=internal error.
 //
 // status:   --cwd <path> --agent <name>
 // lockdown: --agent <name>
@@ -814,6 +819,7 @@ func cmdGateEvaluate(args []string) {
 	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
 	requirePolicy := fs.Bool("require-policy", false, "fail closed when no chitin.yaml is found from cwd (default: fail open with stderr warning)")
 	policyFile := fs.String("policy-file", os.Getenv("CHITIN_POLICY_FILE"), "explicit chitin.yaml path; overrides the cwd-walk-upward lookup. Required for callers (like the hermes plugin) that run from arbitrary cwds and need policy enforcement to be cwd-independent.")
+	bypassSig := fs.Bool("bypass-sig", false, "break-glass: skip chitin.yaml signature verification for this evaluation; emits an audit row and stderr warning")
 	noRecord := fs.Bool("no-record", false, "evaluate without persistent side effects: skip Counter.RecordDenial (no escalation toward lockdown), skip WriteLog chain append, skip OnDecision emission. Use for smoke-testing policy rules without polluting the production agent_state DB or daily chain rollups. The Decision is still printed to stdout exactly as a recording evaluation would print it.")
 	fs.Parse(args)
 
@@ -821,7 +827,7 @@ func cmdGateEvaluate(args []string) {
 		if *agent == "" {
 			*agent = "claude-code"
 		}
-		runHookStdin(*agent, *envelopeID, *policyFile, *requirePolicy, *noRecord)
+		runHookStdin(*agent, *envelopeID, *policyFile, *requirePolicy, *noRecord, *bypassSig)
 		return
 	}
 
@@ -848,10 +854,11 @@ func cmdGateEvaluate(args []string) {
 	// of a non-chitin repo, or from /tmp). When unset, fall back to the
 	// inheritance walk so existing operator-CLI usage stays unchanged.
 	var policy gov.Policy
+	loadOpts := gov.PolicyLoadOptions{BypassSignature: *bypassSig}
 	if *policyFile != "" {
-		policy, err = gov.LoadPolicyFile(*policyFile)
+		policy, err = gov.LoadPolicyFileWithOptions(*policyFile, loadOpts)
 	} else {
-		policy, _, err = gov.LoadWithInheritance(absCwd)
+		policy, _, err = gov.LoadWithInheritanceWithOptions(absCwd, loadOpts)
 	}
 	if err != nil {
 		// Distinguish "no policy found" (intentional deny, exit 1) from
@@ -866,11 +873,17 @@ func cmdGateEvaluate(args []string) {
 			ruleID = "policy_invalid"
 			exitCode = 2
 		}
+		if gov.IsPolicySignatureError(err) {
+			ruleID = "policy_signature_invalid"
+		}
 		out := map[string]any{
 			"allowed": false, "mode": "enforce", "rule_id": ruleID,
 			"reason":        errMsg,
 			"action_type":   string(action.Type),
 			"action_target": action.Target,
+		}
+		if ruleID == "policy_signature_invalid" {
+			auditPolicySignatureDeny(chitinDir(), action, *agent, errMsg)
 		}
 		b, _ := json.Marshal(out)
 		fmt.Println(string(b))
@@ -879,6 +892,10 @@ func cmdGateEvaluate(args []string) {
 
 	chitinDir := chitinDir() // honors CHITIN_HOME for tests; defaults to ~/.chitin
 	_ = os.MkdirAll(chitinDir, 0o755)
+	if *bypassSig && !*noRecord {
+		auditPolicySignatureBypass(chitinDir, action, *agent, selectedPolicyPath(*policyFile, absCwd))
+		fmt.Fprintln(os.Stderr, `{"warning":"policy_signature_bypass","note":"chitin.yaml signature verification bypassed for this gate evaluation; restore a valid signature immediately"}`)
+	}
 	counter, err := gov.OpenCounter(filepath.Join(chitinDir, "gov.db"))
 	if err != nil {
 		exitErr("gate_counter", err.Error())
@@ -937,6 +954,125 @@ func cmdGateEvaluate(args []string) {
 	os.Exit(1)
 }
 
+func cmdPolicy(args []string) {
+	if len(args) < 1 {
+		exitErr("policy_no_subcommand", "usage: chitin-kernel policy {keygen|sign|verify} [flags]")
+	}
+	sub, subArgs := args[0], args[1:]
+	switch sub {
+	case "keygen":
+		cmdPolicyKeygen(subArgs)
+	case "sign":
+		cmdPolicySign(subArgs)
+	case "verify":
+		cmdPolicyVerify(subArgs)
+	default:
+		exitErr("policy_unknown_subcommand", sub)
+	}
+}
+
+func cmdPolicyKeygen(args []string) {
+	fs := flag.NewFlagSet("policy keygen", flag.ExitOnError)
+	publicOut := fs.String("public-out", "", "path to write the base64 Ed25519 public key")
+	privateOut := fs.String("private-out", "", "path to write the base64 Ed25519 private key")
+	fs.Parse(args)
+	if *publicOut == "" || *privateOut == "" {
+		exitErr("policy_keygen_missing_args", "--public-out and --private-out are required")
+	}
+	pub, priv, err := gov.GeneratePolicyKeyPair()
+	if err != nil {
+		exitErr("policy_keygen", err.Error())
+	}
+	if err := os.WriteFile(*publicOut, []byte(pub), 0o644); err != nil {
+		exitErr("policy_keygen_write_public", err.Error())
+	}
+	if err := os.WriteFile(*privateOut, []byte(priv), 0o600); err != nil {
+		exitErr("policy_keygen_write_private", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func cmdPolicySign(args []string) {
+	fs := flag.NewFlagSet("policy sign", flag.ExitOnError)
+	policyFile := fs.String("policy-file", "chitin.yaml", "policy file to sign")
+	privateKeyFile := fs.String("private-key", os.Getenv("CHITIN_POLICY_PRIVATE_KEY_FILE"), "operator-local Ed25519 private key file")
+	outFile := fs.String("out", "", "signature output path (default: <policy-file>.sig)")
+	fs.Parse(args)
+	if *privateKeyFile == "" {
+		exitErr("policy_sign_missing_key", "--private-key or CHITIN_POLICY_PRIVATE_KEY_FILE is required")
+	}
+	data, err := os.ReadFile(*policyFile)
+	if err != nil {
+		exitErr("policy_sign_read_policy", err.Error())
+	}
+	key, err := os.ReadFile(*privateKeyFile)
+	if err != nil {
+		exitErr("policy_sign_read_key", err.Error())
+	}
+	sig, err := gov.SignPolicyBytes(data, string(key))
+	if err != nil {
+		exitErr("policy_sign", err.Error())
+	}
+	dst := *outFile
+	if dst == "" {
+		dst = *policyFile + gov.DefaultPolicySigSuffix
+	}
+	if err := os.WriteFile(dst, []byte(sig), 0o644); err != nil {
+		exitErr("policy_sign_write", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func cmdPolicyVerify(args []string) {
+	fs := flag.NewFlagSet("policy verify", flag.ExitOnError)
+	policyFile := fs.String("policy-file", "chitin.yaml", "policy file to verify")
+	publicKey := fs.String("public-key", os.Getenv("CHITIN_POLICY_PUBLIC_KEY"), "base64 Ed25519 public key")
+	trustDir := fs.String("trust-dir", os.Getenv("CHITIN_POLICY_TRUST_DIR"), "trust directory containing chitin-policy-ed25519.pub")
+	requireSig := fs.Bool("require-signature", true, "fail when the signature sidecar is missing")
+	fs.Parse(args)
+	opts := gov.PolicyLoadOptions{
+		PublicKey:        *publicKey,
+		TrustDir:         *trustDir,
+		RequireSignature: *requireSig,
+	}
+	if _, err := gov.LoadPolicyFileWithOptions(*policyFile, opts); err != nil {
+		exitErr("policy_verify_failed", err.Error())
+	}
+	fmt.Println(`{"ok":true}`)
+}
+
+func auditPolicySignatureDeny(logDir string, action gov.Action, agent, reason string) {
+	_ = gov.WriteLog(gov.Decision{
+		Allowed: false,
+		Mode:    "enforce",
+		RuleID:  "policy_signature_invalid",
+		Reason:  reason,
+		Action:  action,
+		Agent:   agent,
+	}, logDir)
+}
+
+func auditPolicySignatureBypass(logDir string, action gov.Action, agent, policyPath string) {
+	if action.Target == "" {
+		action = gov.Action{Type: gov.ActFileRead, Target: policyPath}
+	}
+	_ = gov.WriteLog(gov.Decision{
+		Allowed: true,
+		Mode:    "monitor",
+		RuleID:  "policy_signature_bypass",
+		Reason:  "operator break-glass bypassed chitin.yaml signature verification",
+		Action:  action,
+		Agent:   agent,
+	}, logDir)
+}
+
+func selectedPolicyPath(policyFile, cwd string) string {
+	if policyFile != "" {
+		return policyFile
+	}
+	return filepath.Join(cwd, "chitin.yaml")
+}
+
 func cmdGateStatus(args []string) {
 	fs := flag.NewFlagSet("gate status", flag.ExitOnError)
 	cwd := fs.String("cwd", ".", "cwd to load policy from")
@@ -966,8 +1102,8 @@ func cmdGateStatus(args []string) {
 	out := map[string]any{
 		"policy_id": policy.ID, "mode": policy.Mode,
 		"policy_sources": sources,
-		"rules_count": len(policy.Rules),
-		"agent": *agent, "level": level, "locked": locked,
+		"rules_count":    len(policy.Rules),
+		"agent":          *agent, "level": level, "locked": locked,
 	}
 	b, _ := json.Marshal(out)
 	fmt.Println(string(b))

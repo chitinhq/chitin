@@ -363,8 +363,8 @@ func isClawtaDriveCarveout(action gov.Action, agent string) bool {
 // PreToolUse hook. It wires real stdin/stdout/os.Exit around the pure
 // evalHookStdin core. The split keeps evalHookStdin testable in-process
 // while production gets the full os-level behavior.
-func runHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) {
-	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, policyFile, requirePolicy, noRecord)
+func runHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecord, bypassSig bool) {
+	code := evalHookStdin(os.Stdin, os.Stdout, os.Stderr, agent, envelopeFlag, policyFile, requirePolicy, noRecord, bypassSig)
 	os.Exit(code)
 }
 
@@ -392,7 +392,7 @@ func runHookStdin(agent, envelopeFlag, policyFile string, requirePolicy, noRecor
 // (Counter + BudgetStore). Sharing one *sql.DB would halve cold-start
 // open cost. Deferred until Milestone D's 8-shim stress test surfaces
 // real contention numbers — at 3ms p95 today the headroom is ample.
-func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, policyFile string, requirePolicy, noRecord bool) int {
+func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, policyFile string, requirePolicy, noRecord, bypassSig bool) int {
 	if agent == "" {
 		agent = "claude-code"
 	}
@@ -482,14 +482,20 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 	// muddying the counterfactual analysis. Found while replaying the
 	// 17-day Curie capture dataset.
 	var policy gov.Policy
+	loadOpts := gov.PolicyLoadOptions{BypassSignature: bypassSig}
 	if policyFile != "" {
-		policy, err = gov.LoadPolicyFile(policyFile)
+		policy, err = gov.LoadPolicyFileWithOptions(policyFile, loadOpts)
 	} else {
-		policy, _, err = gov.LoadWithInheritance(absCwd)
+		policy, _, err = gov.LoadWithInheritanceWithOptions(absCwd, loadOpts)
 	}
 	if err != nil {
 		errMsg := err.Error()
 		if !strings.HasPrefix(errMsg, "no_policy_found") {
+			if gov.IsPolicySignatureError(err) {
+				auditPolicySignatureDeny(chitinDir(), action, agent, errMsg)
+				writeBlockDecision(out, "policy_signature_invalid", "policy_invalid: "+errMsg)
+				return claudecode.ExitBlock
+			}
 			writeBlockReason(out, "policy_invalid: "+errMsg)
 			return claudecode.ExitBlock
 		}
@@ -511,6 +517,13 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 
 	cdir := chitinDir()
 	_ = os.MkdirAll(cdir, 0o755)
+	if bypassSig && !noRecord {
+		auditPolicySignatureBypass(cdir, action, agent, selectedPolicyPath(policyFile, absCwd))
+		writeJSONLine(errOut, map[string]string{
+			"warning": "policy_signature_bypass",
+			"note":    "chitin.yaml signature verification bypassed for this gate evaluation; restore a valid signature immediately",
+		})
+	}
 	dbPath := filepath.Join(cdir, "gov.db")
 
 	counter, err := gov.OpenCounter(dbPath)
@@ -696,7 +709,14 @@ func loadRates(cwd string, errOut io.Writer) cost.RateTable {
 }
 
 func writeBlockReason(out io.Writer, reason string) {
+	writeBlockDecision(out, "", reason)
+}
+
+func writeBlockDecision(out io.Writer, ruleID, reason string) {
 	body, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
+	if ruleID != "" {
+		body, _ = json.Marshal(map[string]string{"decision": "block", "rule_id": ruleID, "reason": reason})
+	}
 	_, _ = out.Write(body)
 	_, _ = out.Write([]byte{'\n'})
 }

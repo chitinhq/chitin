@@ -52,7 +52,7 @@ func runHookCallAsAgent(t *testing.T, env *hookTestEnv, agent string, payload ma
 	}
 	in := bytes.NewReader(body)
 	var out, errOut bytes.Buffer
-	exitCode = evalHookStdin(in, &out, &errOut, agent, envelopeFlag, "", false, false)
+	exitCode = evalHookStdin(in, &out, &errOut, agent, envelopeFlag, "", false, false, false)
 	return out.String(), errOut.String(), exitCode
 }
 
@@ -395,7 +395,7 @@ func TestEvalHookStdin_NoPolicyInCwdAllowsWithWarning(t *testing.T) {
 		"cwd":        cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false, false)
 	if code != 0 {
 		t.Fatalf("exit=%d want 0 (fail-open)", code)
 	}
@@ -428,7 +428,7 @@ func TestEvalHookStdin_NoPolicyInCwd_RequirePolicy_Blocks(t *testing.T) {
 		"cwd":        cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", true, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", true, false, false)
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (--require-policy → block)", code)
 	}
@@ -444,6 +444,113 @@ func TestEvalHookStdin_NoPolicyInCwd_RequirePolicy_Blocks(t *testing.T) {
 	}
 }
 
+func TestEvalHookStdin_TamperedSignedPolicyFailsClosedAndLogs(t *testing.T) {
+	cwd := t.TempDir()
+	chitin := t.TempDir()
+	trustDir := filepath.Join(chitin, "trust")
+	if err := os.MkdirAll(trustDir, 0o755); err != nil {
+		t.Fatalf("mkdir trust: %v", err)
+	}
+	pub, priv, err := gov.GeneratePolicyKeyPair()
+	if err != nil {
+		t.Fatalf("GeneratePolicyKeyPair: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trustDir, gov.DefaultPolicyPublicKey), []byte(pub), 0o644); err != nil {
+		t.Fatalf("write public key: %v", err)
+	}
+	orig := baselinePolicy
+	policyPath := filepath.Join(cwd, "chitin.yaml")
+	if err := os.WriteFile(policyPath, []byte(orig), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	sig, err := gov.SignPolicyBytes([]byte(orig), priv)
+	if err != nil {
+		t.Fatalf("SignPolicyBytes: %v", err)
+	}
+	if err := os.WriteFile(policyPath+gov.DefaultPolicySigSuffix, []byte(sig), 0o644); err != nil {
+		t.Fatalf("write sig: %v", err)
+	}
+	if err := os.WriteFile(policyPath, []byte(strings.Replace(orig, "read ok", "tampered read ok", 1)), 0o644); err != nil {
+		t.Fatalf("tamper policy: %v", err)
+	}
+
+	t.Setenv("CHITIN_HOME", chitin)
+	t.Setenv("CHITIN_POLICY_TRUST_DIR", trustDir)
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Read",
+		"tool_input": map[string]any{"file_path": "/x"},
+		"cwd":        cwd,
+	})
+	var out, errOut bytes.Buffer
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false, false)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2 (signature fail closed), stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "policy_signature_invalid") {
+		t.Fatalf("stdout missing structured signature error: %q", out.String())
+	}
+	entries, err := os.ReadDir(chitin)
+	if err != nil {
+		t.Fatalf("read chitin dir: %v", err)
+	}
+	var sawDecision bool
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "gov-decisions-") {
+			data, _ := os.ReadFile(filepath.Join(chitin, entry.Name()))
+			sawDecision = strings.Contains(string(data), `"rule_id":"policy_signature_invalid"`)
+		}
+	}
+	if !sawDecision {
+		t.Fatalf("expected policy_signature_invalid audit row in %s", chitin)
+	}
+}
+
+func TestEvalHookStdin_BypassSigAllowsTamperedPolicyAndLogsWarning(t *testing.T) {
+	cwd := t.TempDir()
+	chitin := t.TempDir()
+	trustDir := filepath.Join(chitin, "trust")
+	if err := os.MkdirAll(trustDir, 0o755); err != nil {
+		t.Fatalf("mkdir trust: %v", err)
+	}
+	pub, priv, err := gov.GeneratePolicyKeyPair()
+	if err != nil {
+		t.Fatalf("GeneratePolicyKeyPair: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trustDir, gov.DefaultPolicyPublicKey), []byte(pub), 0o644); err != nil {
+		t.Fatalf("write public key: %v", err)
+	}
+	policyPath := filepath.Join(cwd, "chitin.yaml")
+	if err := os.WriteFile(policyPath, []byte(baselinePolicy), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	sig, err := gov.SignPolicyBytes([]byte(baselinePolicy), priv)
+	if err != nil {
+		t.Fatalf("SignPolicyBytes: %v", err)
+	}
+	if err := os.WriteFile(policyPath+gov.DefaultPolicySigSuffix, []byte(sig), 0o644); err != nil {
+		t.Fatalf("write sig: %v", err)
+	}
+	if err := os.WriteFile(policyPath, []byte(strings.Replace(baselinePolicy, "read ok", "tampered read ok", 1)), 0o644); err != nil {
+		t.Fatalf("tamper policy: %v", err)
+	}
+
+	t.Setenv("CHITIN_HOME", chitin)
+	t.Setenv("CHITIN_POLICY_TRUST_DIR", trustDir)
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Read",
+		"tool_input": map[string]any{"file_path": "/x"},
+		"cwd":        cwd,
+	})
+	var out, errOut bytes.Buffer
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false, true)
+	if code != 0 {
+		t.Fatalf("exit=%d want 0 under bypass, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "policy_signature_bypass") {
+		t.Fatalf("stderr missing bypass warning: %q", errOut.String())
+	}
+}
+
 func TestEvalHookStdin_WrongTypeField_WarnsAndProceeds(t *testing.T) {
 	// file_path: 42 instead of a string. Normalize emits empty Target;
 	// stderr gets a tool_input_wrong_type warning so an operator
@@ -455,7 +562,7 @@ func TestEvalHookStdin_WrongTypeField_WarnsAndProceeds(t *testing.T) {
 		"cwd":        env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false, false)
 	if !strings.Contains(errOut.String(), "tool_input_wrong_type") {
 		t.Fatalf("stderr missing wrong-type warning: %q", errOut.String())
 	}
@@ -465,7 +572,7 @@ func TestEvalHookStdin_MalformedJSONIsExit1(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	in := bytes.NewReader([]byte("not json"))
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(in, &out, &errOut, "claude-code", "", "", false, false)
+	code := evalHookStdin(in, &out, &errOut, "claude-code", "", "", false, false, false)
 	_ = env
 	if code != 1 {
 		t.Fatalf("exit=%d want 1 (non-blocking error)", code)
@@ -1022,7 +1129,7 @@ func TestEvalHookStdin_ChitinAdmin_ChainedRmRfStillBlocked(t *testing.T) {
 		"cwd": env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false, false)
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (rm-rf rule should still apply); stdout=%q", code, out.String())
 	}
@@ -1065,7 +1172,7 @@ func TestEvalHookStdin_ChitinAdmin_ExemptInfoLogged(t *testing.T) {
 		"cwd":        env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", envelope.ID, "", false, false, false)
 	if code != 0 {
 		t.Fatalf("exit=%d want 0", code)
 	}
@@ -1117,7 +1224,7 @@ func TestEvalHookStdin_NoRecordSuppressesAllPersistence(t *testing.T) {
 	// state-mutating side effects fire.
 	for i := 0; i < 15; i++ {
 		var out, errOut bytes.Buffer
-		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "norecord-hook", "", "", false, true)
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "norecord-hook", "", "", false, true, false)
 		if code != 2 {
 			t.Fatalf("iter %d: code=%d want 2 (block); stdout=%q", i, code, out.String())
 		}
@@ -1176,7 +1283,7 @@ func TestEvalHookStdin_NoRecordSkipsEnvelopeSpend(t *testing.T) {
 		"tool_input": map[string]any{"file_path": "/x"},
 		"cwd":        env.cwd,
 	})
-	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, true)
+	code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, true, false)
 	if code != 0 {
 		t.Fatalf("allow under NoRecord should exit 0, got %d (stdout=%q errOut=%q)", code, out.String(), errOut.String())
 	}
@@ -1223,7 +1330,7 @@ func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
 	// Without --policy-file: hook fires no_policy_found warning, allows.
 	{
 		var out, errOut bytes.Buffer
-		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false, false)
 		if code != 0 {
 			t.Fatalf("no-policy path: code=%d want 0 (fail-open allow)", code)
 		}
@@ -1237,7 +1344,7 @@ func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
 	// fail-open path).
 	{
 		var out, errOut bytes.Buffer
-		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", policyPath, false, false)
+		code := evalHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", policyPath, false, false, false)
 		if code != 0 {
 			t.Fatalf("policy-file path: code=%d want 0 (allow), stdout=%q errOut=%q", code, out.String(), errOut.String())
 		}
