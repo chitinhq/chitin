@@ -29,10 +29,15 @@ BASE_REPO = Path(os.environ.get("CHITIN_REPO", str(Path.home() / "workspace/chit
 WORKTREE_ROOT = Path(os.environ.get("CLAWTA_PR_FIX_WORKTREES", str(Path.home() / ".cache/chitin/pr-fix-worktrees")))
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-pr-fix-dispatcher.log"
-REVIEW_MARKER = "<!-- clawta-reviewer:v1 -->"
+REVIEW_MARKER_RE = re.compile(r"<!--\s*clawta-reviewer:v1(?:\s+head=[0-9a-f]+)?\s*-->")
 DISPATCH_MARKER = "<!-- clawta-fix-dispatcher:v1 -->"
 DEFAULT_PREFIXES = ("swarm/", "clawta/")
 CODEX_MODEL = os.environ.get("CLAWTA_FIX_CODEX_MODEL", "gpt-5.5")
+TRUSTED_REVIEW_AUTHORS = tuple(
+    author.strip()
+    for author in os.environ.get("CLAWTA_REVIEWER_TRUSTED_AUTHORS", "jpleva91").split(",")
+    if author.strip()
+)
 
 VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(APPROVE|REQUEST_CHANGES|COMMENT)", re.I)
 
@@ -73,8 +78,22 @@ def comments(pr_number: int) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def comment_author(comment: dict[str, Any]) -> str:
+    user = comment.get("user")
+    if isinstance(user, dict):
+        return str(user.get("login") or "")
+    return ""
+
+
+def is_trusted_review_comment(comment: dict[str, Any]) -> bool:
+    body = str(comment.get("body", ""))
+    if not REVIEW_MARKER_RE.search(body):
+        return False
+    return comment_author(comment) in TRUSTED_REVIEW_AUTHORS
+
+
 def latest_review_comment(comments_: list[dict[str, Any]]) -> str | None:
-    bodies = [str(c.get("body", "")) for c in comments_ if REVIEW_MARKER in str(c.get("body", ""))]
+    bodies = [str(c.get("body", "")) for c in comments_ if is_trusted_review_comment(c)]
     return bodies[-1] if bodies else None
 
 
@@ -120,12 +139,11 @@ def ensure_worktree(branch: str, pr_number: int) -> Path:
         return existing
     wt = WORKTREE_ROOT / f"pr-{pr_number}"
     if wt.exists():
-        run(["git", "fetch", "origin", branch], timeout=120)
-        run(["git", "checkout", branch], cwd=wt, timeout=60)
-        run(["git", "pull", "--ff-only"], cwd=wt, timeout=120)
+        run(["git", "fetch", "origin", branch], timeout=120, check=True)
+        run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=wt, timeout=60, check=True)
         return wt
-    run(["git", "fetch", "origin", branch], timeout=120, check=True)
-    run(["git", "worktree", "add", str(wt), branch], timeout=120, check=True)
+    run(["git", "fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"], timeout=120, check=True)
+    run(["git", "worktree", "add", "-B", branch, str(wt), f"origin/{branch}"], timeout=120, check=True)
     return wt
 
 
