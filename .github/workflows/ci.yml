@@ -137,13 +137,11 @@ jobs:
       - name: Oxlint
         run: pnpm exec oxlint . || true  # warnings only for phase-1
 
-      - name: Spec front-matter + INDEX.md drift check
+      - name: Regression gate
         run: |
-          # Enforces the lifecycle schema from
-          # docs/superpowers/specs/2026-05-13-spec-lifecycle-metadata.md:
-          # every spec has a 6-field YAML front-matter block, status is
-          # in the closed enum, and the committed INDEX.md matches what
-          # the generator produces. See docs/runbooks/spec-lifecycle.md.
+          # Runs every registered invariant in scripts/check-*.{sh,py}
+          # against the merged-state tree. Hard-block: failure = CI failure.
+          # See docs/superpowers/specs/2026-05-13-regression-gate.md
+          # and docs/runbooks/regression-gate.md.
           python3 -m pip install --quiet --user pyyaml
-          python3 scripts/check-spec-frontmatter.py
-          python3 scripts/regen-spec-index.py --check
+          bash scripts/regression-gate.sh
