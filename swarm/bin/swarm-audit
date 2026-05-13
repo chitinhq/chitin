@@ -2,7 +2,7 @@
 """swarm-audit — operator-controlled daily audit of the chitin swarm.
 
 Reads the previous 24h of:
-  - chain ledger (~/.chitin/gov-decisions-*.jsonl) — denials, unknown
+  - chain ledger (via chitin-kernel decisions recent) — denials, unknown
     actions, governance gaps
   - kanban (~/.hermes/kanban/.../kanban.db) — stale in_progress,
     grooming-gap demotes, completions
@@ -21,6 +21,7 @@ Env:
   SWARM_AUDIT_DISCORD_CHANNEL  Discord channel id to post the summary
                                (omit to print to stdout only)
   SWARM_AUDIT_AGENT            openclaw agent to call (default: clawta)
+  CHITIN_KERNEL_BIN            chitin-kernel binary (default: chitin-kernel)
   KANBAN_DB                    kanban sqlite path
   CHITIN_LEDGER_DIR            ~/.chitin/ override
   GITHUB_REPOSITORY            default: chitinhq/chitin
@@ -49,6 +50,8 @@ LEDGER_DIR = Path(os.environ.get("CHITIN_LEDGER_DIR", str(Path.home() / ".chitin
 REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
 DISCORD_CHANNEL = os.environ.get("SWARM_AUDIT_DISCORD_CHANNEL", "")
 AGENT = os.environ.get("SWARM_AUDIT_AGENT", "clawta")
+MODEL = os.environ.get("SWARM_AUDIT_MODEL", "openai-codex/gpt-5.5")
+CHITIN_KERNEL_BIN = os.environ.get("CHITIN_KERNEL_BIN", "chitin-kernel")
 OPENCLAW_BIN = os.environ.get(
     "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
 )
@@ -67,21 +70,48 @@ def log(msg: str) -> None:
         pass
 
 
+def _window_hours_since(cutoff_iso: str) -> int:
+    cutoff = datetime.fromisoformat(cutoff_iso)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    seconds = (datetime.now(timezone.utc) - cutoff).total_seconds()
+    return max(1, int((seconds + 3599) // 3600))
+
+
 def iter_ledger_rows_since(cutoff_iso: str):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-    for date in (yesterday, today):
-        p = LEDGER_DIR / f"gov-decisions-{date}.jsonl"
-        if not p.exists():
-            continue
-        with p.open() as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                    if row.get("ts", "") >= cutoff_iso:
-                        yield row
-                except json.JSONDecodeError:
-                    continue
+    window_hours = _window_hours_since(cutoff_iso)
+    try:
+        r = subprocess.run(
+            [
+                CHITIN_KERNEL_BIN,
+                "decisions",
+                "recent",
+                "--window-hours",
+                str(window_hours),
+                "--limit",
+                "5000",
+                "--dir",
+                str(LEDGER_DIR),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        log(f"chitin decisions recent failed: {e}")
+        return
+    if r.returncode != 0:
+        log(f"chitin decisions recent rc={r.returncode}; stderr={r.stderr[-300:]}")
+        return
+    try:
+        rows = json.loads(r.stdout) if r.stdout.strip() else []
+    except json.JSONDecodeError as e:
+        log(f"chitin decisions recent JSON parse failed: {e}")
+        return
+    for row in rows:
+        if isinstance(row, dict) and row.get("ts", "") >= cutoff_iso:
+            yield row
 
 
 def gather_chain_facts(cutoff_iso: str) -> dict[str, Any]:
@@ -270,7 +300,100 @@ def call_model(prompt: str) -> str:
     return r.stdout.strip()
 
 
-def deliver(summary: str, dry_run: bool) -> None:
+def summary_bullets(summary: str) -> list[dict[str, str]]:
+    bullets: list[dict[str, str]] = []
+    for raw in summary.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        tag = "watch"
+        text = line
+        if line.startswith("[") and "]" in line:
+            tag, text = line[1:].split("]", 1)
+            tag = tag.strip()
+            text = text.strip()
+        bullets.append({"tag": tag, "text": text})
+        if len(bullets) >= 5:
+            break
+    return bullets
+
+
+def build_summary_event(
+    summary: str,
+    facts: dict[str, Any],
+    window_hours: int,
+    duration_ms: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    ts_compact = ts.strftime("%Y%m%dT%H%M%SZ")
+    chain_id = f"swarm-audit-{ts_compact}"
+    payload = {
+        "window_hours": window_hours,
+        "facts": facts,
+        "bullets": summary_bullets(summary),
+        "model": MODEL,
+        "duration_ms": duration_ms,
+    }
+    return {
+        "schema_version": "2",
+        "run_id": chain_id,
+        "session_id": chain_id,
+        "surface": "swarm-audit",
+        "driver_identity": {
+            "user": os.environ.get("USER", ""),
+            "machine_id": os.uname().nodename,
+            "machine_fingerprint": "",
+        },
+        "agent_instance_id": "claude-code",
+        "agent_fingerprint": "",
+        "event_type": "swarm.audit.summary",
+        "chain_id": chain_id,
+        "chain_type": "session",
+        "ts": ts.isoformat().replace("+00:00", "Z"),
+        "labels": {"kind": "swarm.audit.summary", "driver": "swarm-audit"},
+        "payload": payload,
+    }
+
+
+def emit_summary_event(
+    summary: str,
+    facts: dict[str, Any],
+    window_hours: int,
+    duration_ms: int,
+) -> None:
+    event = build_summary_event(summary, facts, window_hours, duration_ms)
+    ts = event["ts"].replace(":", "").replace("-", "")
+    path = Path("/tmp") / f"swarm-audit-{ts}.json"
+    try:
+        path.write_text(json.dumps(event, indent=2, sort_keys=True) + "\n")
+        r = subprocess.run(
+            [
+                CHITIN_KERNEL_BIN,
+                "emit",
+                "--dir",
+                str(LEDGER_DIR),
+                "--event-file",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if r.returncode != 0:
+            log(f"chitin emit rc={r.returncode}; stderr={r.stderr[-300:]}")
+    except (OSError, subprocess.SubprocessError, FileNotFoundError) as e:
+        log(f"chitin emit failed: {e}")
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def deliver(summary: str, dry_run: bool, facts: dict[str, Any], window_hours: int, duration_ms: int) -> None:
+    emit_summary_event(summary, facts, window_hours, duration_ms)
     if dry_run or not DISCORD_CHANNEL:
         print(summary)
         return
@@ -324,8 +447,10 @@ def main() -> int:
     log(f"facts gathered: {sum(1 for _ in facts)} top-level keys")
 
     prompt = build_prompt(facts)
+    model_started = time.monotonic()
     summary = call_model(prompt)
-    deliver(summary, args.dry_run)
+    duration_ms = int((time.monotonic() - model_started) * 1000)
+    deliver(summary, args.dry_run, facts, args.hours, duration_ms)
     log(f"swarm-audit: complete ({len(summary)} chars)")
     return 0
 

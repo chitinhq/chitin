@@ -124,3 +124,28 @@ func TestFindRelatedSessions_FilePathOverlap(t *testing.T) {
 		t.Errorf("got %v; want [sess-aaa]", got)
 	}
 }
+
+func TestFindRelatedSessionsByKind(t *testing.T) {
+	tmp := t.TempDir()
+	chitinDir := filepath.Join(tmp, ".chitin")
+	if err := os.MkdirAll(chitinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(sid, body string) {
+		t.Helper()
+		p := filepath.Join(chitinDir, "events-"+sid+".jsonl")
+		if err := os.WriteFile(p, []byte(body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("audit-1", `{"event_type":"swarm.audit.summary","payload":{"bullets":[]}}`)
+	write("other-1", `{"event_type":"decision","payload":{"decision":"allow"}}`)
+
+	got, err := FindRelatedSessionsByKind(chitinDir, "swarm.audit.summary", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "audit-1" {
+		t.Fatalf("got %v; want [audit-1]", got)
+	}
+}

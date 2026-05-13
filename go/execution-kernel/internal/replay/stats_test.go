@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeChain materializes a synthetic events-*.jsonl in dir with
@@ -56,6 +57,32 @@ func TestComputeStatsIn_UnknownAxisErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported axis") {
 		t.Errorf("error text=%q want to mention unsupported axis", err.Error())
+	}
+}
+
+func TestComputeStatsInWindow_FiltersOldEvents(t *testing.T) {
+	tmp := t.TempDir()
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	writeChain(t, tmp, "s1",
+		`{"ts":"`+now.Add(-30*time.Minute).Format(time.RFC3339)+`","event_type":"decision","payload":{"tool_name":"Bash","action_type":"shell.exec","decision":"allow","rule_id":"allow"}}`+"\n"+
+			`{"ts":"`+now.Add(-3*time.Hour).Format(time.RFC3339)+`","event_type":"decision","payload":{"tool_name":"Read","action_type":"file.read","decision":"allow","rule_id":"allow"}}`+"\n",
+	)
+
+	s, err := ComputeStatsInWindow("tool_name", tmp, 1, now)
+	if err != nil {
+		t.Fatalf("ComputeStatsInWindow: %v", err)
+	}
+	if s.Total != 1 {
+		t.Fatalf("Total=%d want 1", s.Total)
+	}
+	if _, ok := s.Buckets["Bash"]; !ok {
+		t.Fatalf("expected Bash bucket in window, got %+v", s.Buckets)
+	}
+	if _, ok := s.Buckets["Read"]; ok {
+		t.Fatalf("old Read bucket should be excluded, got %+v", s.Buckets)
+	}
+	if s.Window != "1h" {
+		t.Fatalf("Window=%q want 1h", s.Window)
 	}
 }
 

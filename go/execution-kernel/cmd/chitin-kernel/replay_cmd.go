@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
 )
@@ -16,9 +17,10 @@ import (
 // current policy at cwd; prints diffs.
 //
 // Flags:
-//   --session=<id>   session_id to replay (or "latest" for most recent)
-//   --json           emit JSON report instead of human-readable
-//   --policy-cwd=<d> cwd for policy resolution (default: $PWD)
+//
+//	--session=<id>   session_id to replay (or "latest" for most recent)
+//	--json           emit JSON report instead of human-readable
+//	--policy-cwd=<d> cwd for policy resolution (default: $PWD)
 func cmdChainReplay(args []string) {
 	sessionID := ""
 	jsonOut := false
@@ -104,24 +106,57 @@ func cmdChainSummarize(args []string) {
 // + best-match first.
 func cmdChainRelated(args []string) {
 	entryID := ""
+	kind := ""
 	maxResults := 5
 	var filePaths []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case strings.HasPrefix(a, "--entry-id="):
 			entryID = a[len("--entry-id="):]
+		case a == "--entry-id" && i+1 < len(args):
+			i++
+			entryID = args[i]
+		case strings.HasPrefix(a, "--kind="):
+			kind = a[len("--kind="):]
+		case a == "--kind" && i+1 < len(args):
+			i++
+			kind = args[i]
 		case strings.HasPrefix(a, "--file="):
 			filePaths = append(filePaths, a[len("--file="):])
+		case a == "--file" && i+1 < len(args):
+			i++
+			filePaths = append(filePaths, args[i])
 		case strings.HasPrefix(a, "--max="):
 			if n, err := strconv.Atoi(a[len("--max="):]); err == nil {
 				maxResults = n
 			}
+		case a == "--max" && i+1 < len(args):
+			i++
+			if n, err := strconv.Atoi(args[i]); err == nil {
+				maxResults = n
+			}
+		case strings.HasPrefix(a, "--limit="):
+			if n, err := strconv.Atoi(a[len("--limit="):]); err == nil {
+				maxResults = n
+			}
+		case a == "--limit" && i+1 < len(args):
+			i++
+			if n, err := strconv.Atoi(args[i]); err == nil {
+				maxResults = n
+			}
 		case a == "--help" || a == "-h":
-			fmt.Fprintln(os.Stderr, "Usage: chitin-kernel chain related --entry-id=<id> [--file=<path>...] [--max=<n>]")
+			fmt.Fprintln(os.Stderr, "Usage: chitin-kernel chain related [--entry-id=<id>] [--kind=<event-kind>] [--file=<path>...] [--limit=<n>]")
 			os.Exit(0)
 		}
 	}
-	ids, err := replay.FindRelatedSessions(entryID, filePaths, maxResults)
+	var ids []string
+	var err error
+	if kind != "" {
+		ids, err = replay.FindRelatedSessionsByKind(chitinDir(), kind, maxResults)
+	} else {
+		ids, err = replay.FindRelatedSessionsIn(chitinDir(), entryID, filePaths, maxResults)
+	}
 	if err != nil {
 		exitErr("chain_related_failed", err.Error())
 	}
@@ -242,14 +277,28 @@ Use case:
 func cmdChainStats(args []string) {
 	axis := "tool_name"
 	jsonOut := false
-	for _, a := range args {
+	windowHours := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case strings.HasPrefix(a, "--by="):
 			axis = a[len("--by="):]
+		case a == "--by" && i+1 < len(args):
+			i++
+			axis = args[i]
+		case strings.HasPrefix(a, "--window-hours="):
+			if n, err := strconv.Atoi(a[len("--window-hours="):]); err == nil {
+				windowHours = n
+			}
+		case a == "--window-hours" && i+1 < len(args):
+			i++
+			if n, err := strconv.Atoi(args[i]); err == nil {
+				windowHours = n
+			}
 		case a == "--json":
 			jsonOut = true
 		case a == "--help" || a == "-h":
-			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain stats [--by=<axis>] [--json]
+			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain stats [--by=<axis>] [--window-hours=<n>] [--json]
 
 Aggregate decision events across all sessions; output per-bucket
 counts + success rates.
@@ -259,7 +308,7 @@ Default: tool_name.`)
 			os.Exit(0)
 		}
 	}
-	stats, err := replay.ComputeStats(axis)
+	stats, err := replay.ComputeStatsInWindow(axis, chitinDir(), windowHours, time.Time{})
 	if err != nil {
 		exitErr("chain_stats_failed", err.Error())
 	}
@@ -272,6 +321,9 @@ Default: tool_name.`)
 		return
 	}
 	fmt.Printf("chitin chain stats — by %s\n", axis)
+	if stats.Window != "" {
+		fmt.Printf("  window: %s\n", stats.Window)
+	}
 	fmt.Printf("  total decisions: %d\n\n", stats.Total)
 	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "bucket", "decisions", "allows", "denies", "success%")
 	fmt.Printf("  %-30s %10s %10s %10s %10s\n", "------", "---------", "------", "------", "--------")
