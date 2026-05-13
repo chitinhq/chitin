@@ -324,8 +324,15 @@ steps:
       printf '{"session_id":"%s","tool_name":"Bash","tool_input":{"command":"echo clawta-spawn-marker"}}' \
         "$SPAWN_RUN_ID" \
         | CHITIN_DRIVER=clawta chitin-kernel gate evaluate --hook-stdin --agent=clawta >/dev/null 2>&1 || true
-      echo "spawn_worker: exec $CMD ${ARGV[*]}" >&2
-      exec env CHITIN_DRIVER=clawta "$CMD" "${ARGV[@]}"
+      # Per-dispatch envelope: each worker gets its own spent_calls
+      # counter. Without this, the worker inherits the parent's
+      # CHITIN_BUDGET_ENVELOPE (which beats the ~/.chitin/current-envelope
+      # file in resolveEnvelope) and aggregates spend with every other
+      # agent dispatched under the same parent — one cap hit locks
+      # whichever agent calls next.
+      NEW_ENV=$(chitin-kernel envelope create --calls=10000 --bytes=33554432 --usd=2.0)
+      echo "spawn_worker: exec $CMD ${ARGV[*]} (envelope=$NEW_ENV)" >&2
+      exec env CHITIN_DRIVER=clawta CHITIN_BUDGET_ENVELOPE="$NEW_ENV" "$CMD" "${ARGV[@]}"
       BASH_SCRIPT
       )"
     stdin: $fetch_ticket.stdout
