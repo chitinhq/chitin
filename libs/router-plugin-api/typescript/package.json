@@ -12,8 +12,25 @@
   "nx": {
     "sourceRoot": "libs/router-plugin-api/typescript",
     "projectType": "library",
-    "tags": ["type:lib", "scope:plugin", "layer:plugin-api", "lang:ts"]
+    "tags": [
+      "type:lib",
+      "scope:plugin",
+      "layer:plugin-api",
+      "lang:ts"
+    ],
+    "targets": {
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run libs/router-plugin-api/typescript/index.test.ts",
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          "^validate"
+        ]
+      }
+    }
   },
-  "$schema-comment-private": "Currently `private: true` because this package isn't yet published to npm. External plugin authors consume it by vendoring the .ts source until the publish pipeline (TS→JS build, dist field, npm prepublish) lands. See PR review on #250 for the deliberate-publish decision.",
-  "$schema-comment-entrypoints": "main + exports point at raw .ts on purpose for monorepo use (Bun + tsx + ts-node + node --experimental-strip-types all handle this). Plain Node from npm install will need .js entrypoints when this package is published — tracked alongside the private:false flip."
+  "$schema-comment-private": "Currently `private: true` because this package isn't yet published to npm. External plugin authors consume it by vendoring the .ts source until the publish pipeline (TS\u2192JS build, dist field, npm prepublish) lands. See PR review on #250 for the deliberate-publish decision.",
+  "$schema-comment-entrypoints": "main + exports point at raw .ts on purpose for monorepo use (Bun + tsx + ts-node + node --experimental-strip-types all handle this). Plain Node from npm install will need .js entrypoints when this package is published \u2014 tracked alongside the private:false flip."
 }

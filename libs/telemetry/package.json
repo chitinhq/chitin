@@ -19,7 +19,12 @@
   "nx": {
     "sourceRoot": "libs/telemetry/src",
     "projectType": "library",
-    "tags": ["type:lib", "scope:analytics", "layer:telemetry", "lang:ts"],
+    "tags": [
+      "type:lib",
+      "scope:analytics",
+      "layer:telemetry",
+      "lang:ts"
+    ],
     "targets": {
       "test": {
         "executor": "nx:run-commands",
@@ -27,6 +32,16 @@
           "command": "pnpm exec vitest run libs/telemetry/tests",
           "cwd": "{workspaceRoot}"
         }
+      },
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsc -b libs/telemetry/tsconfig.lib.json && pnpm exec vitest run libs/telemetry/tests",
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          "^validate"
+        ]
       }
     }
   },

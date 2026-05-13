@@ -7,6 +7,23 @@
   "nx": {
     "sourceRoot": "tools/generators",
     "projectType": "library",
-    "tags": ["type:tooling", "scope:tooling", "layer:tooling", "lang:ts"]
+    "tags": [
+      "type:tooling",
+      "scope:tooling",
+      "layer:tooling",
+      "lang:ts"
+    ],
+    "targets": {
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsc --noEmit --skipLibCheck --allowImportingTsExtensions --moduleResolution bundler --module ESNext --target ES2022 tools/generators/app/index.ts tools/generators/investigate/generate.ts",
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          "^validate"
+        ]
+      }
+    }
   }
 }
