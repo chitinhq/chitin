@@ -172,6 +172,44 @@ func TestNormalize_TerminalGhPRCreate(t *testing.T) {
 	}
 }
 
+func TestNormalize_TerminalGhPRCloseDeleteBranchIsNotRecursiveDelete(t *testing.T) {
+	cases := []string{
+		`gh pr close 123 --delete-branch`,
+		`rtk gh pr close 123 --repo chitinhq/chitin --comment "close without merge" --delete-branch`,
+		`cd /work/chitin && gh pr close 123 --delete-branch`,
+		`cd /work/chitin && gh pr close 123 --delete-branch 2>&1 | tail -5`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			a, err := Normalize("terminal", map[string]any{"command": cmd})
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type == ActFileRecursiveDelete {
+				t.Fatalf("Type=%q; --delete-branch is a GitHub PR flag, not filesystem deletion", a.Type)
+			}
+			if a.Type != ActGithubPRClose {
+				t.Fatalf("Type=%q want %q", a.Type, ActGithubPRClose)
+			}
+		})
+	}
+}
+
+func TestNormalize_TerminalSearchForRmRfLiteralIsRead(t *testing.T) {
+	a, err := Normalize("terminal", map[string]any{
+		"command": `rg -n "rm -rf|recursive_delete" go/execution-kernel docs`,
+	})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if a.Type == ActFileRecursiveDelete {
+		t.Fatalf("Type=%q; searching for a destructive literal is not deletion", a.Type)
+	}
+	if a.Type != ActFileRead {
+		t.Fatalf("Type=%q want %q", a.Type, ActFileRead)
+	}
+}
+
 func TestNormalize_WriteFileEnv(t *testing.T) {
 	a, _ := Normalize("write_file", map[string]any{"path": ".env", "content": "X=1"})
 	if a.Type != ActFileWrite {

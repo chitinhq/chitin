@@ -232,9 +232,9 @@ func normalizeWriteFile(args map[string]any) (Action, error) {
 //     bypass-class detectors in canon (IsRecursiveDelete, IsBareGitPush,
 //     IsInfraDestroy, IsRemoteCodeExec, ContainsProcSubstFetch,
 //     WriteDestinations) — never a raw-string regex.
-//   - Each concrete dispatch (git.status, gh.pr.create, etc.) is keyed
-//     on canon.Command{Tool, Action} for the FIRST segment of the
-//     pipeline. Commands with no canon mapping fall through to ActShellExec.
+//   - Each concrete dispatch (git.status, gh.pr.create, file.read, etc.) is
+//     keyed on canon.Command{Tool, Action} for parsed pipeline segments.
+//     Commands with no canon mapping fall through to ActShellExec.
 //   - Per-segment shape annotations (curl-pipe-bash, remote-code-exec)
 //     are set in Params for policy target_regex matching.
 //
@@ -250,10 +250,6 @@ func classifyShellCommand(cmd string) Action {
 	// back to the tokenizer-grade Parse on parse failure, so we never
 	// regress below the prior tokenizer behavior.
 	pipeline := canon.ParseAST(trimmed)
-	first := canon.Command{}
-	if len(pipeline.Segments) > 0 {
-		first = pipeline.Segments[0].Command
-	}
 
 	// === Destructive / re-tag patterns (consulted before per-tool dispatch) ===
 
@@ -309,12 +305,16 @@ func classifyShellCommand(cmd string) Action {
 	}
 
 	// === Per-tool dispatch (keyed on canon's Tool/Action) ===
-
-	switch first.Tool {
-	case "git":
-		return classifyGit(first, trimmed)
-	case "gh":
-		return classifyGh(first, trimmed)
+	//
+	// Dispatch over all parsed segments, not only argv[0] of the raw shell
+	// string. Common worker commands prefix structured operations with
+	// `cd <repo> && ...`; those should still normalize as the underlying
+	// git/gh/search operation. The destructive detectors above already scanned
+	// all segments first, so this cannot hide recursive deletion.
+	for _, seg := range pipeline.Segments {
+		if action, ok := classifyStructuredShellSegment(seg.Command, trimmed); ok {
+			return action
+		}
 	}
 
 	// === Default: generic shell.exec with optional shape annotation ===
@@ -327,6 +327,34 @@ func classifyShellCommand(cmd string) Action {
 		action.Params = map[string]any{"shape": "remote-code-exec"}
 	}
 	return action
+}
+
+func classifyStructuredShellSegment(c canon.Command, raw string) (Action, bool) {
+	switch c.Tool {
+	case "git":
+		a := classifyGit(c, raw)
+		return a, a.Type != ActShellExec
+	case "gh":
+		a := classifyGh(c, raw)
+		return a, a.Type != ActShellExec
+	case "rtk":
+		if len(c.Args) > 0 && c.Args[0] == "gh" {
+			nested := canon.ParseOne(strings.Join(c.Args, " "))
+			a := classifyGh(nested, raw)
+			return a, a.Type != ActShellExec
+		}
+	case "grep":
+		target := raw
+		if len(c.Args) > 0 {
+			target = strings.Join(c.Args, " ")
+		}
+		return Action{
+			Type:   ActFileRead,
+			Target: target,
+			Params: map[string]any{"tool": c.Tool},
+		}, true
+	}
+	return Action{}, false
 }
 
 // classifyGit dispatches the git family (force-push, push, status, log,
