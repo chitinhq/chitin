@@ -3,5 +3,15 @@
   "$schema": "../../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "libs/adapters/ollama-local/src",
   "projectType": "library",
-  "tags": ["type:adapter", "scope:plugin", "layer:adapter", "lang:ts"]
+  "tags": ["type:adapter", "scope:plugin", "layer:adapter", "lang:ts"],
+  "targets": {
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "libs/adapters/ollama-local",
+        "command": "tsc --noEmit"
+      },
+      "dependsOn": ["^validate"]
+    }
+  }
 }

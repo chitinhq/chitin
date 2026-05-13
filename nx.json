@@ -28,9 +28,7 @@
   ],
   "targetDefaults": {
     "validate": {
-      "dependsOn": [
-        "^validate"
-      ],
+      "dependsOn": ["^validate"],
       "inputs": ["default"]
     }
   }
