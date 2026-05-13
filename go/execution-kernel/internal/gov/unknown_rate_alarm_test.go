@@ -176,6 +176,22 @@ func TestUnknownRateAlarmFailureMessageIncludesTopToolsAndSamples(t *testing.T) 
 	}
 }
 
+func TestUnknownRateAlarmRejectsMalformedJSONL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gov-decisions-2026-05-11.jsonl")
+	if err := os.WriteFile(path, []byte("{not-json}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := analyzeUnknownRateDir(dir, 3)
+	if err == nil {
+		t.Fatal("expected malformed JSONL to fail closed")
+	}
+	if !strings.Contains(err.Error(), "malformed JSON") || !strings.Contains(err.Error(), ":1:") {
+		t.Fatalf("error should identify malformed JSON line, got %v", err)
+	}
+}
+
 func TestUnknownRateAlarmCurrentChainOptIn(t *testing.T) {
 	dir := os.Getenv("CHITIN_UNKNOWN_RATE_DIR")
 	if dir == "" {
@@ -292,7 +308,7 @@ func scanUnknownRateFile(path, filename string, topN int, buckets map[string]*un
 		}
 		var row unknownDecisionWire
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			continue
+			return fmt.Errorf("malformed JSON in %s:%d: %w", path, lineNo, err)
 		}
 		if row.ActionType == "" {
 			continue

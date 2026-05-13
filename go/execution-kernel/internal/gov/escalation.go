@@ -42,6 +42,14 @@ func OpenCounter(dbPath string) (*Counter, error) {
 			locked INTEGER NOT NULL DEFAULT 0,
 			locked_ts TEXT
 		);
+		CREATE TABLE IF NOT EXISTS denial_events (
+			agent TEXT NOT NULL,
+			action_type TEXT NOT NULL,
+			action_fp TEXT NOT NULL,
+			ts_unix INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_denial_events_agent_type_ts
+			ON denial_events(agent, action_type, ts_unix);
 	`); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
@@ -60,10 +68,17 @@ func (c *Counter) Close() error {
 // silently dropping the escalation count — a silent drop would let an
 // agent past the lockdown threshold without ever locking.
 func (c *Counter) RecordDenial(agent, fp string, weight int) error {
+	return c.RecordActionDenial(agent, "", fp, weight)
+}
+
+// RecordActionDenial increments the aggregate escalation counters and records
+// one timestamped denial event for windowed cascade detection.
+func (c *Counter) RecordActionDenial(agent, actionType, fp string, weight int) error {
 	if weight <= 0 {
 		weight = 1
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
+	nowText := now.Format(time.RFC3339)
 
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -77,7 +92,7 @@ func (c *Counter) RecordDenial(agent, fp string, weight int) error {
 		ON CONFLICT(agent, action_fp) DO UPDATE SET
 			count = count + excluded.count,
 			last_ts = excluded.last_ts
-	`, agent, fp, weight, now, now); err != nil {
+	`, agent, fp, weight, nowText, nowText); err != nil {
 		return fmt.Errorf("upsert denial: %w", err)
 	}
 
@@ -88,13 +103,19 @@ func (c *Counter) RecordDenial(agent, fp string, weight int) error {
 	`, agent, weight); err != nil {
 		return fmt.Errorf("upsert agent_state: %w", err)
 	}
+	if _, err := tx.Exec(`
+		INSERT INTO denial_events (agent, action_type, action_fp, ts_unix)
+		VALUES (?, ?, ?, ?)
+	`, agent, actionType, fp, now.Unix()); err != nil {
+		return fmt.Errorf("insert denial event: %w", err)
+	}
 
 	var total int
 	if err := tx.QueryRow(`SELECT total FROM agent_state WHERE agent = ?`, agent).Scan(&total); err != nil {
 		return fmt.Errorf("read agent_state.total: %w", err)
 	}
 	if total >= 10 {
-		if _, err := tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ? WHERE agent = ?`, now, agent); err != nil {
+		if _, err := tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ? WHERE agent = ?`, nowText, agent); err != nil {
 			return fmt.Errorf("set locked: %w", err)
 		}
 	}
@@ -103,6 +124,30 @@ func (c *Counter) RecordDenial(agent, fp string, weight int) error {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// PruneActionDenialsBefore drops windowed denial events older than the
+// maximum cascade window. Aggregate denial counters remain lifetime-spanning;
+// only timestamped events used for recent-behavior detection are pruned.
+func (c *Counter) PruneActionDenialsBefore(beforeUnix int64) error {
+	if _, err := c.db.Exec(`DELETE FROM denial_events WHERE ts_unix < ?`, beforeUnix); err != nil {
+		return fmt.Errorf("prune denial events: %w", err)
+	}
+	return nil
+}
+
+// CountActionDenialsSince returns timestamped denials for an agent/action type
+// in the trailing window. It is intentionally separate from the aggregate
+// denials table: the ladder stays lifetime-spanning, while cascade detection
+// is recent behavior.
+func (c *Counter) CountActionDenialsSince(agent, actionType string, sinceUnix int64) int {
+	var count int
+	_ = c.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM denial_events
+		WHERE agent = ? AND action_type = ? AND ts_unix >= ?
+	`, agent, actionType, sinceUnix).Scan(&count)
+	return count
 }
 
 // Level returns the escalation level for an agent: normal | elevated |
@@ -147,4 +192,5 @@ func (c *Counter) Lockdown(agent string) {
 func (c *Counter) Reset(agent string) {
 	_, _ = c.db.Exec(`DELETE FROM denials WHERE agent = ?`, agent)
 	_, _ = c.db.Exec(`DELETE FROM agent_state WHERE agent = ?`, agent)
+	_, _ = c.db.Exec(`DELETE FROM denial_events WHERE agent = ?`, agent)
 }

@@ -11,6 +11,8 @@ escalation:
   elevated_threshold: 3
   high_threshold: 7
   lockdown_threshold: 10
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
 
 rules:
   - id: no-destructive-rm

@@ -19,11 +19,11 @@
 //	write_file         → file.write, target = path.
 //	patch              → file.write, target = path (patch-style write).
 //	search_files       → file.read, target = pattern (grep-like).
-//	execute_code       → shell.exec via gov.Normalize on the code string
-//	                     under "command" — best-effort because hermes's
-//	                     execute_code is a sandbox runner, not a raw
-//	                     shell, but the deny-rules (rm-rf, etc.) still
-//	                     apply to anything it would attempt.
+//	execute_code       → gov.Normalize("execute_code", code) so Python
+//	                     subprocess/shutil patterns are extracted before
+//	                     shell classification. Best-effort because
+//	                     hermes's execute_code is a sandbox runner, not a
+//	                     raw shell.
 //	web_search         → http.request, target = query.
 //	web_extract        → http.request, target = first url (urls is array).
 //	browser_navigate   → http.request, target = url.
@@ -102,11 +102,11 @@ func Normalize(in HookInput) (gov.Action, error) {
 		return a, nil
 
 	case "execute_code":
-		// hermes's sandboxed code runner. Treat the code string as a
-		// shell command for gov.Normalize purposes — the deny rules
-		// (rm-rf, etc.) still apply to anything it would attempt.
+		// Hermes's sandboxed code runner. Route through gov.Normalize's
+		// execute_code branch so Python subprocess/shutil patterns are
+		// extracted before shell classification.
 		code := stringField(in.ToolInput, "code")
-		a, err := gov.Normalize("terminal", map[string]any{"command": code})
+		a, err := gov.Normalize("execute_code", map[string]any{"code": code})
 		if err != nil {
 			return gov.Action{}, fmt.Errorf("normalize execute_code: %w", err)
 		}

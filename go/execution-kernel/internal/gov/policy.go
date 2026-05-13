@@ -144,10 +144,12 @@ func (b Bounds) effectiveBounds(actionType string) ActionBounds {
 
 // EscalationConfig overrides the default escalation thresholds.
 type EscalationConfig struct {
-	ElevatedThreshold int `yaml:"elevated_threshold"`     // default 3
-	HighThreshold     int `yaml:"high_threshold"`         // default 7
-	LockdownThreshold int `yaml:"lockdown_threshold"`     // default 10
-	MaxRetriesPerFp   int `yaml:"max_retries_per_action"` // default 3
+	ElevatedThreshold        int `yaml:"elevated_threshold"`          // default 3
+	HighThreshold            int `yaml:"high_threshold"`              // default 7
+	LockdownThreshold        int `yaml:"lockdown_threshold"`          // default 10
+	MaxRetriesPerFp          int `yaml:"max_retries_per_action"`      // default 3
+	DenyCascadeCount         int `yaml:"deny_cascade_count"`          // default 4
+	DenyCascadeWindowSeconds int `yaml:"deny_cascade_window_seconds"` // default 300
 }
 
 // Decision is the result of evaluating an Action against a Policy.
@@ -367,6 +369,12 @@ func (p *Policy) ApplyDefaults() error {
 	}
 	if p.Escalation.MaxRetriesPerFp == 0 {
 		p.Escalation.MaxRetriesPerFp = 3
+	}
+	if p.Escalation.DenyCascadeCount == 0 {
+		p.Escalation.DenyCascadeCount = 4
+	}
+	if p.Escalation.DenyCascadeWindowSeconds == 0 {
+		p.Escalation.DenyCascadeWindowSeconds = 300
 	}
 	for i, grant := range p.Authority.Trusted {
 		if grant.Authority == "" {
