@@ -228,6 +228,23 @@ func TestGate_DenyCascadeLocksShellExecWithinWindow(t *testing.T) {
 	}
 }
 
+func TestGate_DenyCascadeQueryErrorForcesLockdown(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.Policy.Escalation.DenyCascadeCount = 3
+	g.Policy.Escalation.DenyCascadeWindowSeconds = 60
+	if _, err := g.Counter.db.Exec(`DROP TABLE denial_events`); err != nil {
+		t.Fatalf("drop denial_events: %v", err)
+	}
+
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+	if d.RuleID != "no-rm" {
+		t.Fatalf("RuleID=%q want no-rm", d.RuleID)
+	}
+	if d.Escalation != "lockdown" {
+		t.Fatalf("cascade query error should force lockdown, escalation=%q", d.Escalation)
+	}
+}
+
 func TestGate_LockdownDeniesEverything(t *testing.T) {
 	g, _ := newTestGate(t)
 	g.Counter.Lockdown("agent1")
@@ -654,6 +671,7 @@ func TestGate_FingerprintEmptyByDefault(t *testing.T) {
 }
 
 func TestGate_DefaultExternalRoleStampsExternalAuthority(t *testing.T) {
+	withCleanFingerprintEnv(t)
 	g, _ := newTestGate(t)
 	g.Fingerprint = FingerprintContextFromEnv()
 
