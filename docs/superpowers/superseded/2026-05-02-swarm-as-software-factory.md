@@ -1,19 +1,25 @@
 ---
-date: 2026-05-02
 status: superseded
-superseded_on: 2026-05-08
+owner: claude-code
+kanban: null
+implementation_pr: null
 superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
+effective_from: '2026-05-02'
+effective_to: 2026-05-08
 audience: operator + future agents picking up swarm-shape work
-purpose: Crystallize the shape of the chitin swarm beyond a single dispatcher
-  loop — the role taxonomy, the review-tier escalation policy, the hand-off
-  contract, and the phased path from "the loop runs" to "an instrumented
-  factory we leave running."
-reason: |
-  The dispatch-side analyst loop framed here (swarm_runs / swarm_health /
+date: 2026-05-02
+purpose: Crystallize the shape of the chitin swarm beyond a single dispatcher loop
+  — the role taxonomy, the review-tier escalation policy, the hand-off contract, and
+  the phased path from "the loop runs" to "an instrumented factory we leave running."
+reason: 'The dispatch-side analyst loop framed here (swarm_runs / swarm_health /
+
   fingerprint_outcomes / routing_elo / investigate) lives outside chitin
+
   per the 2026-05-06 scope-narrow decision. Chitin keeps kernel + plugins
+
   + chain data; the analyst-role rollups and the dispatcher-fed analyzers
-  move to the orchestrator. Retained as historical framing.
+
+  move to the orchestrator. Retained as historical framing.'
 ---
 
 > **SUPERSEDED 2026-05-08.** Per

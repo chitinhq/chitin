@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-19'
+effective_to: null
+---
+
 # Design — Phase 1.5: Observability Chain Contract
 
 **Date:** 2026-04-19

@@ -1,13 +1,20 @@
 ---
 status: superseded
-superseded_on: 2026-05-08
+owner: claude-code
+kanban: null
+implementation_pr: null
 superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
-reason: |
-  Orchestration is no longer chitin's concern. The 2026-05-06
+effective_from: '2026-04-28'
+effective_to: 2026-05-08
+reason: 'Orchestration is no longer chitin''s concern. The 2026-05-06
+
   scope-narrow decision moves dispatch + scheduling to hermes + future
+
   external orchestrators; chitin is governor + plugins + chain data
+
   only. An octi-v2-style dispatcher inside this monorepo is off the
-  table.
+
+  table.'
 ---
 
 > **SUPERSEDED 2026-05-08.** Per

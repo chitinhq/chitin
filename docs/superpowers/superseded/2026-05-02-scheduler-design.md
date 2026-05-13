@@ -1,13 +1,20 @@
 ---
 status: superseded
-superseded_on: 2026-05-08
+owner: claude-code
+kanban: null
+implementation_pr: null
 superseded_by: docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md
-reason: |
-  Scheduling and dispatch live outside chitin per the kernel-narrow
+effective_from: '2026-05-02'
+effective_to: 2026-05-08
+reason: 'Scheduling and dispatch live outside chitin per the kernel-narrow
+
   decision (2026-05-06). The libs/scheduler library, apps/cli scheduler
+
   subcommands, and the swarm-tunable rank/ingest boundary all moved out
-  of chitin's scope to hermes + the future orchestrator. Chitin owns
-  kernel + plugins + data; nothing else.
+
+  of chitin''s scope to hermes + the future orchestrator. Chitin owns
+
+  kernel + plugins + data; nothing else.'
 ---
 
 > **SUPERSEDED 2026-05-08.** Per

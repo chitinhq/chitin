@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-20'
+effective_to: null
+---
+
 # OpenClaw Adapter Implementation — Design Addendum
 
 **Date:** 2026-04-20

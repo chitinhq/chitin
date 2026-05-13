@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_76fd3758
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Spec: swarm observability via chitin CLI
 
 Date: 2026-05-12

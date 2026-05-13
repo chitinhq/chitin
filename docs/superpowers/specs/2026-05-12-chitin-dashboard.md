@@ -1,3 +1,13 @@
+---
+status: open
+owner: jared+claude
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Chitin Dashboard — visual replay + self-improving feedback loop
 
 Date: 2026-05-12

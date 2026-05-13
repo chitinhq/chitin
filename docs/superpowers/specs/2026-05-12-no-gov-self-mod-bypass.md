@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_0567e90a
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Spec: close shell-subprocess governance-self-modification bypass
 
 Date: 2026-05-12

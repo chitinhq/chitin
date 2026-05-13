@@ -1,3 +1,13 @@
+---
+status: amended
+owner: jared+claude
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-12'
+effective_to: null
+---
+
 # Hermes + Clawta Architecture — 5-slice spec
 
 Date: 2026-05-12

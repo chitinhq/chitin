@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-30'
+effective_to: null
+---
+
 # Local 24/7 Worker — Design Addendum (three-plane reframe)
 
 **Date:** 2026-04-30 (same day as parent spec).

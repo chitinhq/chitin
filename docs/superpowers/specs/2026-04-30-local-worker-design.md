@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-30'
+effective_to: null
+---
+
 # Local 24/7 Worker — Design
 
 **Status:** spec draft. First articulation of the chitin-governed local worker shape; reference rig for the "safe local-LLM autonomy" thesis. Post-talk implementation candidate.

@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_c083fd6d
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-13'
+effective_to: null
+---
+
 # Spec: worktree status report
 
 Date: 2026-05-13

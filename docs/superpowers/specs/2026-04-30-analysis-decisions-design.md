@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-30'
+effective_to: null
+---
+
 # Analysis Stream: Decisions — Design
 
 **Status:** spec draft — first stream of the analysis layer (Milestone J3 framing). Foundation built here is reused by debt and soul-routing streams (deferred to post-talk).

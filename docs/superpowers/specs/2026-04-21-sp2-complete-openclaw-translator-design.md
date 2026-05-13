@@ -1,3 +1,13 @@
+---
+status: draft
+owner: claude-code
+kanban: null
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-04-21'
+effective_to: null
+---
+
 # SP-2 — Complete openclaw Translator (Spans-Only v1)
 
 **Date:** 2026-04-21

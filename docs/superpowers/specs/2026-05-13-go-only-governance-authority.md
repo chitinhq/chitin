@@ -1,3 +1,13 @@
+---
+status: open
+owner: claude-code
+kanban: t_742ee3ea
+implementation_pr: null
+superseded_by: null
+effective_from: '2026-05-13'
+effective_to: null
+---
+
 # Spec: Go is the only governance authority
 
 Date: 2026-05-13
