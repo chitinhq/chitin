@@ -3,7 +3,6 @@ package gov
 import (
 	"fmt"
 	"os"
-	osexec "os/exec"
 	"regexp"
 	"strings"
 
@@ -611,7 +610,11 @@ func (r Rule) branchMatches(a Action) bool {
 	}
 	branch := currentGitBranch(a.Path)
 	if branch == "" {
-		return false
+		// Protected-branch commit rules are safety rules. If the policy opted
+		// into resolving the implicit current HEAD but branch resolution is
+		// indeterminate, match the rule so an earlier deny fails closed instead
+		// of falling through to a broad git.commit allow.
+		return true
 	}
 	for _, b := range r.Branches {
 		if branch == b {
@@ -632,16 +635,16 @@ func branchesContain(branches []string, want string) bool {
 
 func currentGitBranch(cwd string) string {
 	if strings.TrimSpace(cwd) == "" {
-		cwd = "."
+		return ""
 	}
-	if out, err := osexec.Command("git", "-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
-		return strings.TrimSpace(string(out))
+	if out, err := gitOutput(cwd, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		return out
 	}
-	out, err := osexec.Command("git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := gitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func (r Rule) identityMatches(ctx FingerprintContext) bool {

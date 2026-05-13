@@ -116,6 +116,26 @@ func TestGate_AllowsGitCommitOnFeatureBranchAndGitReadsOnMain(t *testing.T) {
 	}
 }
 
+func TestGate_DeniesGitCommitWhenProtectedBranchResolutionIndeterminate(t *testing.T) {
+	policy := protectedCommitPolicy(t)
+	g := &Gate{Policy: policy, NoRecord: true}
+
+	for name, path := range map[string]string{
+		"empty-path": "",
+		"non-repo":   t.TempDir(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := g.Evaluate(Action{Type: ActGitCommit, Target: `git commit -m "x"`, Path: path}, "clawta", nil)
+			if d.Allowed {
+				t.Fatalf("indeterminate protected commit should fail closed: %+v", d)
+			}
+			if d.RuleID != "no-commit-to-protected" {
+				t.Fatalf("RuleID=%q want no-commit-to-protected", d.RuleID)
+			}
+		})
+	}
+}
+
 func TestGate_EscalationRecorded(t *testing.T) {
 	g, _ := newTestGate(t)
 	for i := 0; i < 3; i++ {

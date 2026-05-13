@@ -1,9 +1,11 @@
 package gov
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const worktreeDiagnosticRuleID = "worktree-required-diagnostic"
@@ -89,7 +91,9 @@ func pathUnderOrEqual(path, root string) bool {
 }
 
 func gitOutput(cwd string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", cwd}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", cwd}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
