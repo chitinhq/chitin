@@ -3,18 +3,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from argus import migrations
 from analysis.models import parse_decision_line
 
 
 def _line_hash(line: str) -> str:
     """Deterministic hash of a decision line for idempotency."""
     return hashlib.sha256(line.encode()).hexdigest()
+
+
+def _source_line_hash(source: str, source_ref: str, line: str) -> str:
+    """Deterministic per-source hash for non-chain ingest."""
+    payload = f"{source}\0{source_ref}\0{line}"
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
@@ -27,6 +35,11 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY,
             line_hash TEXT UNIQUE NOT NULL,
+            source TEXT NOT NULL DEFAULT 'chain',
+            kind TEXT NOT NULL DEFAULT 'chain_decision',
+            subject TEXT,
+            source_ref TEXT,
+            payload_json TEXT,
             ts TEXT NOT NULL,
             ts_unix INTEGER NOT NULL,
             allowed INTEGER NOT NULL,
@@ -69,6 +82,21 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         ON events(agent)
     """)
 
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_source_ts
+        ON events(source, ts_unix)
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_kind_ts
+        ON events(kind, ts_unix)
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_subject_ts
+        ON events(subject, ts_unix)
+    """)
+
     conn.commit()
     return conn
 
@@ -105,12 +133,13 @@ def index_jsonl_file_from_offset(
     if not file_path.exists():
         return 0, 0, offset
 
-    with file_path.open("r") as f:
+    with file_path.open("rb") as f:
         f.seek(offset)
+        chunk = f.read()
+        complete, next_offset = _split_complete_lines(chunk, offset)
         inserted = 0
         skipped = 0
-        for line in f:
-            raw = line.rstrip("\n")
+        for raw in complete:
             if not raw.strip():
                 continue
 
@@ -126,13 +155,15 @@ def index_jsonl_file_from_offset(
             try:
                 conn.execute("""
                     INSERT INTO events (
-                        line_hash, ts, ts_unix, allowed, mode, rule_id, reason,
+                        line_hash, source, kind, subject, source_ref, payload_json,
+                        ts, ts_unix, allowed, mode, rule_id, reason,
                         escalation, agent, action_type, action_target, envelope_id,
                         tier, cost_usd, input_bytes, tool_calls, model, role,
                         workflow_id, fingerprint
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    lh, d.ts.isoformat(), ts_unix, int(d.allowed),
+                    lh, "chain", "chain_decision", None, str(file_path), raw,
+                    d.ts.isoformat(), ts_unix, int(d.allowed),
                     d.mode, d.rule_id, d.reason, d.escalation,
                     d.agent, d.action_type, d.action_target, d.envelope_id,
                     d.tier, d.cost_usd, d.input_bytes, d.tool_calls,
@@ -143,7 +174,6 @@ def index_jsonl_file_from_offset(
                 skipped += 1
             except Exception:
                 continue
-        next_offset = f.tell()
     conn.commit()
     return inserted, skipped, next_offset
 
@@ -156,6 +186,7 @@ def tail_all_decisions(decisions_dir: Path) -> Path:
     """Create index.db in ~/.argus/ from all gov-decisions-*.jsonl files."""
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
+    migrations.apply_pending(conn)
 
     for f in _decision_files(decisions_dir):
         index_jsonl_file(conn, f)
@@ -176,6 +207,7 @@ def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path
     """
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
+    migrations.apply_pending(conn)
     offsets: dict[Path, int] = {}
     try:
         while True:
@@ -199,3 +231,95 @@ def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path
     finally:
         conn.close()
     return db_path
+
+
+def _split_complete_lines(data: bytes, offset: int) -> tuple[list[str], int]:
+    """Return complete newline-terminated lines and the safe next offset."""
+    if not data:
+        return [], offset
+    if data.endswith(b"\n"):
+        complete = data
+        next_offset = offset + len(data)
+    else:
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return [], offset
+        complete = data[: nl + 1]
+        next_offset = offset + nl + 1
+    lines = [
+        line.decode("utf-8", errors="replace").rstrip("\n")
+        for line in complete.splitlines()
+    ]
+    return lines, next_offset
+
+
+def insert_event(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    kind: str,
+    ts: str,
+    source_ref: str,
+    allowed: int = 1,
+    subject: str | None = None,
+    payload: dict | None = None,
+    agent: str | None = None,
+    action_type: str | None = None,
+    action_target: str | None = None,
+    reason: str | None = None,
+    rule_id: str | None = None,
+) -> bool:
+    """Insert one external event; returns True when new."""
+    ts_unix = _parse_ts_unix(ts)
+    if ts_unix is None:
+        return False
+    payload_json = json.dumps(payload or {}, sort_keys=True)
+    raw = payload_json if payload_json != "{}" else f"{kind}:{ts}:{subject or ''}"
+    line_hash = _source_line_hash(source, source_ref, raw)
+    try:
+        conn.execute(
+            """
+            INSERT INTO events (
+                line_hash, source, kind, subject, source_ref, payload_json,
+                ts, ts_unix, allowed, agent, action_type, action_target, reason, rule_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                line_hash,
+                source,
+                kind,
+                subject,
+                source_ref,
+                payload_json,
+                ts,
+                ts_unix,
+                int(allowed),
+                agent,
+                action_type or kind,
+                action_target,
+                reason,
+                rule_id,
+            ),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def checkpoint_key(source: str, path_or_name: str) -> str:
+    """Stable source checkpoint key."""
+    return f"{source}:{path_or_name}"
+
+
+def file_inode(path: Path) -> int | None:
+    """Best-effort inode read."""
+    try:
+        return int(path.stat().st_ino)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def env_path(name: str, default: str) -> Path:
+    """Read a source path from env with ~ expansion."""
+    return Path(os.environ.get(name, default)).expanduser()

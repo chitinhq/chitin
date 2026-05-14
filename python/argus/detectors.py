@@ -297,6 +297,167 @@ def detect_stuck_flow(
     return findings
 
 
+def detect_hermes_standup_gap(
+    db_path: str,
+    *,
+    max_gap_hours: int = 8,
+) -> list[Finding]:
+    """Detect >8h gaps between consecutive Hermes standups."""
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT ts_unix, source_ref
+            FROM events
+            WHERE source = 'hermes' AND kind = 'hermes_standup'
+            ORDER BY ts_unix ASC, id ASC
+            """
+        ).fetchall()
+        if len(rows) < 2:
+            return findings
+        max_gap_seconds = max_gap_hours * 3600
+        for prev, curr in zip(rows, rows[1:]):
+            gap = int(curr["ts_unix"]) - int(prev["ts_unix"])
+            if gap > max_gap_seconds:
+                findings.append(
+                    Finding(
+                        detector="hermes_standup_gap",
+                        ts=_from_unix(curr["ts_unix"]),
+                        severity="warning",
+                        title=f"Hermes standup gap: {gap // 3600}h without a standup",
+                        details={
+                            "gap_seconds": gap,
+                            "threshold_seconds": max_gap_seconds,
+                            "previous_source_ref": prev["source_ref"],
+                            "current_source_ref": curr["source_ref"],
+                        },
+                    )
+                )
+    finally:
+        conn.close()
+    return findings
+
+
+def detect_openclaw_workflow_failure_correlation(
+    db_path: str,
+    *,
+    block_window_seconds: int = 3600,
+) -> list[Finding]:
+    """Detect workflow failures that did or did not correlate to kanban-flow block."""
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        failures = conn.execute(
+            """
+            SELECT ts_unix, subject, payload_json, source_ref
+            FROM events
+            WHERE source = 'openclaw' AND kind = 'openclaw_workflow_failure'
+            ORDER BY ts_unix DESC, id DESC
+            """
+        ).fetchall()
+        for failure in failures:
+            subject = failure["subject"] or ""
+            block = conn.execute(
+                """
+                SELECT id, ts_unix, source_ref
+                FROM events
+                WHERE source = 'chain'
+                  AND action_target LIKE '%kanban-flow block%'
+                  AND (? = '' OR action_target LIKE '%' || ? || '%')
+                  AND ts_unix BETWEEN ? AND ?
+                ORDER BY ts_unix ASC, id ASC
+                LIMIT 1
+                """,
+                (
+                    subject,
+                    subject,
+                    int(failure["ts_unix"]),
+                    int(failure["ts_unix"]) + block_window_seconds,
+                ),
+            ).fetchone()
+            severity = "info" if block else "warning"
+            title = (
+                f"Openclaw workflow failure correlated to kanban-flow block for {subject or 'unknown ticket'}"
+                if block
+                else f"Openclaw workflow failure without kanban-flow block for {subject or 'unknown ticket'}"
+            )
+            findings.append(
+                Finding(
+                    detector="openclaw_workflow_failure_correlation",
+                    ts=_from_unix(failure["ts_unix"]),
+                    severity=severity,
+                    title=title,
+                    details={
+                        "ticket": subject or None,
+                        "source_ref": failure["source_ref"],
+                        "block_found": bool(block),
+                        "block_source_ref": block["source_ref"] if block else None,
+                        "block_window_seconds": block_window_seconds,
+                    },
+                )
+            )
+    finally:
+        conn.close()
+    return findings
+
+
+def detect_discord_narration_gap(
+    db_path: str,
+    *,
+    announce_window_seconds: int = 900,
+) -> list[Finding]:
+    """Detect dispatched tickets with no `#clawta` announce."""
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        dispatches = conn.execute(
+            """
+            SELECT ts_unix, subject, source_ref
+            FROM events
+            WHERE source = 'openclaw' AND kind = 'openclaw_dispatch'
+            ORDER BY ts_unix DESC, id DESC
+            """
+        ).fetchall()
+        for dispatch in dispatches:
+            subject = dispatch["subject"] or ""
+            announce = conn.execute(
+                """
+                SELECT id, source_ref
+                FROM events
+                WHERE source = 'discord'
+                  AND kind = 'discord_clawta_announce'
+                  AND subject = ?
+                  AND ts_unix BETWEEN ? AND ?
+                ORDER BY ts_unix ASC, id ASC
+                LIMIT 1
+                """,
+                (
+                    subject,
+                    int(dispatch["ts_unix"]),
+                    int(dispatch["ts_unix"]) + announce_window_seconds,
+                ),
+            ).fetchone()
+            if announce:
+                continue
+            findings.append(
+                Finding(
+                    detector="discord_narration_gap",
+                    ts=_from_unix(dispatch["ts_unix"]),
+                    severity="warning",
+                    title=f"Dispatch {subject or 'unknown'} missing #clawta announce",
+                    details={
+                        "ticket": subject or None,
+                        "dispatch_source_ref": dispatch["source_ref"],
+                        "announce_window_seconds": announce_window_seconds,
+                    },
+                )
+            )
+    finally:
+        conn.close()
+    return findings
+
+
 def run_all_detectors(db_path: str) -> list[Finding]:
     """Run all detectors and return all findings."""
     findings = []
@@ -304,4 +465,7 @@ def run_all_detectors(db_path: str) -> list[Finding]:
     findings.extend(detect_unknown_rate_spike(db_path, window_hours=24, threshold_percent=1.0))
     findings.extend(detect_agent_failure_run(db_path, min_failures=3))
     findings.extend(detect_stuck_flow(db_path, min_idle_seconds=3600))
+    findings.extend(detect_hermes_standup_gap(db_path, max_gap_hours=8))
+    findings.extend(detect_openclaw_workflow_failure_correlation(db_path, block_window_seconds=3600))
+    findings.extend(detect_discord_narration_gap(db_path, announce_window_seconds=900))
     return sorted(findings, key=lambda f: f.ts, reverse=True)

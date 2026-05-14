@@ -7,12 +7,12 @@ import sys
 from pathlib import Path
 
 from argus import findings_cli, migrations
-from argus.indexer import follow_all_decisions, tail_all_decisions
+from argus.logs import follow_all_sources, index_all_sources
 from argus.reporter import generate_daily_report
 
 
 def cmd_index(args) -> int:
-    """Index gov-decisions JSONL files from decisions_dir."""
+    """Index chain decisions plus configured Slice 3 sources."""
     decisions_dir = Path(args.decisions_dir)
     if not decisions_dir.exists():
         print(f"Error: decisions_dir not found: {decisions_dir}", file=sys.stderr)
@@ -30,12 +30,19 @@ def cmd_index(args) -> int:
         pass
 
     try:
+        db_path = Path(args.db_path)
         if args.follow:
-            print(f"Following {decisions_dir} into {Path.home() / '.argus' / 'index.db'}",
-                  file=sys.stderr)
-            follow_all_decisions(decisions_dir, poll_seconds=args.poll_seconds)
+            print(f"Following {decisions_dir} into {db_path}", file=sys.stderr)
+            follow_all_sources(
+                db_path=db_path,
+                decisions_dir=decisions_dir,
+                poll_seconds=args.poll_seconds,
+            )
             return 0
-        out = tail_all_decisions(decisions_dir)
+        out = index_all_sources(
+            db_path=db_path,
+            decisions_dir=decisions_dir,
+        )
         print(f"Indexed to {out}", file=sys.stderr)
         return 0
     except KeyboardInterrupt:
@@ -83,11 +90,11 @@ def cmd_query(args) -> int:
     question = args.query
     system = prompts.system_with_preamble(
         "You translate a natural-language question into a single read-only "
-        "SQL SELECT against the table `events` with columns: ts, allowed, "
-        "mode, rule_id, reason, escalation, agent, action_type, action_target, "
-        "envelope_id, tier, cost_usd, input_bytes, tool_calls, model, role, "
-        "workflow_id, fingerprint, source. Return ONLY the SELECT statement, "
-        "no prose, no semicolon, no code fence."
+        "SQL SELECT against the table `events` with columns: source, kind, subject, "
+        "source_ref, payload_json, ts, allowed, mode, rule_id, reason, escalation, "
+        "agent, action_type, action_target, envelope_id, tier, cost_usd, input_bytes, "
+        "tool_calls, model, role, workflow_id, fingerprint. Return ONLY the SELECT "
+        "statement, no prose, no semicolon, no code fence."
     )
 
     conn = migrations.open_writable(db_path)
@@ -181,7 +188,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = p.add_subparsers(dest="cmd", required=True)
 
     # index
-    index_p = subparsers.add_parser("index", help="Index gov-decisions JSONL files")
+    index_p = subparsers.add_parser("index", help="Index chain, logs, and Discord sources")
     index_p.add_argument("--decisions-dir", default=str(Path.home() / ".chitin"),
                          help="Directory containing gov-decisions-*.jsonl")
     index_p.add_argument("--follow", action="store_true",

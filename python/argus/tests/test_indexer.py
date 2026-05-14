@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from argus.indexer import init_db, index_jsonl_file, _line_hash, _parse_ts_unix
+from argus.indexer import (
+    init_db,
+    index_jsonl_file,
+    index_jsonl_file_from_offset,
+    _line_hash,
+    _parse_ts_unix,
+)
 
 
 class TestLineHash:
@@ -243,4 +249,25 @@ def test_index_jsonl_from_offset_indexes_appended_lines_and_rollover():
             _, _, offsets[f] = index_jsonl_file_from_offset(conn, f, offsets.get(f, 0))
 
         assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+        conn.close()
+
+
+def test_index_jsonl_from_offset_waits_for_newline_before_processing():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        db_path = root / "test.db"
+        file_path = root / "gov-decisions-2026-05-13.jsonl"
+        file_path.write_text('{"ts":"2026-05-13T08:00:00Z","allowed":false,"rule_id":"r1"}')
+
+        conn = init_db(db_path)
+        inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, file_path, 0)
+        assert inserted == 0
+        assert skipped == 0
+        assert next_offset == 0
+
+        file_path.write_text(file_path.read_text() + "\n")
+        inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, file_path, next_offset)
+        assert inserted == 1
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert next_offset == file_path.stat().st_size
         conn.close()

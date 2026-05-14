@@ -1,11 +1,46 @@
 """Tests for additive schema migrations."""
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
 
 from argus import migrations
 from argus.indexer import init_db
+
+
+def _legacy_conn(db: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY,
+            line_hash TEXT UNIQUE NOT NULL,
+            ts TEXT NOT NULL,
+            ts_unix INTEGER NOT NULL,
+            allowed INTEGER NOT NULL,
+            mode TEXT,
+            rule_id TEXT,
+            reason TEXT,
+            escalation TEXT,
+            agent TEXT,
+            action_type TEXT,
+            action_target TEXT,
+            envelope_id TEXT,
+            tier TEXT,
+            cost_usd REAL,
+            input_bytes INTEGER,
+            tool_calls INTEGER,
+            model TEXT,
+            role TEXT,
+            workflow_id TEXT,
+            fingerprint TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
 
 
 def test_migrations_apply_idempotently():
@@ -39,7 +74,7 @@ def test_migrations_create_expected_tables():
 def test_events_source_column_added_with_default():
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "i.db"
-        conn = init_db(db)
+        conn = _legacy_conn(db)
         # Insert a row pre-migration to verify backfill default.
         conn.execute(
             """
@@ -51,6 +86,18 @@ def test_events_source_column_added_with_default():
         migrations.apply_pending(conn)
         row = conn.execute("SELECT source FROM events WHERE line_hash = 'h1'").fetchone()
         assert row["source"] == "chain"
+        conn.close()
+
+
+def test_log_columns_and_checkpoint_table_added():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "i.db"
+        conn = _legacy_conn(db)
+        migrations.apply_pending(conn)
+        event_cols = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        assert {"kind", "subject", "source_ref"}.issubset(event_cols)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "source_checkpoints" in tables
         conn.close()
 
 

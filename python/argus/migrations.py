@@ -9,6 +9,7 @@ mutate the migration list, which would break existing operator installs.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -158,6 +159,36 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             """,
         ],
     ),
+    (
+        7,
+        "log_event_columns",
+        [
+            "ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'chain_decision'",
+            "ALTER TABLE events ADD COLUMN subject TEXT",
+            "ALTER TABLE events ADD COLUMN source_ref TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_kind_ts ON events(kind, ts_unix)",
+            "CREATE INDEX IF NOT EXISTS idx_subject_ts ON events(subject, ts_unix)",
+        ],
+    ),
+    (
+        8,
+        "source_checkpoints",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS source_checkpoints (
+                source_key TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                path TEXT,
+                offset INTEGER NOT NULL DEFAULT 0,
+                inode INTEGER,
+                cursor TEXT,
+                updated_ts INTEGER NOT NULL,
+                meta_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_source_checkpoints_source ON source_checkpoints(source)",
+        ],
+    ),
 ]
 
 
@@ -239,3 +270,51 @@ def open_writable(db_path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def get_checkpoint(conn: sqlite3.Connection, source_key: str) -> sqlite3.Row | None:
+    """Return one source checkpoint row, if present."""
+    return conn.execute(
+        "SELECT * FROM source_checkpoints WHERE source_key = ?",
+        (source_key,),
+    ).fetchone()
+
+
+def upsert_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    source_key: str,
+    source: str,
+    path: str | None,
+    offset: int = 0,
+    inode: int | None = None,
+    cursor: str | None = None,
+    meta: dict | None = None,
+) -> None:
+    """Persist a checkpoint for a tailed source."""
+    conn.execute(
+        """
+        INSERT INTO source_checkpoints (
+            source_key, source, path, offset, inode, cursor, updated_ts, meta_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_key) DO UPDATE SET
+            source = excluded.source,
+            path = excluded.path,
+            offset = excluded.offset,
+            inode = excluded.inode,
+            cursor = excluded.cursor,
+            updated_ts = excluded.updated_ts,
+            meta_json = excluded.meta_json
+        """,
+        (
+            source_key,
+            source,
+            path,
+            int(offset),
+            inode,
+            cursor,
+            int(time.time()),
+            json.dumps(meta or {}, sort_keys=True),
+        ),
+    )
+    conn.commit()
