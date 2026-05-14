@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "spawn_worker_subprocess.py"
@@ -85,7 +87,7 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
             self.assertNotIn(huge_prompt, argv, msg=driver)
 
     def test_prepare_worker_command_missing_prompt_does_not_crash(self):
-        # Boundary: error. A config with no "prompt" key must not raise — the
+        # Boundary: empty. A config with no "prompt" key must not raise — the
         # helper falls back to an empty prompt, still routed via stdin so the
         # {prompt} placeholder never becomes a literal argv entry.
         module = load_module()
@@ -99,6 +101,59 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
         )
         self.assertEqual(argv, ["codex", "exec", "--model", "gpt-5.5"])
         self.assertEqual(stdin_text, "")
+
+    def test_build_transcript_tail_empty_boundary(self):
+        # Boundary: empty. A worker with no emitted output should not invent
+        # transcript metadata.
+        module = load_module()
+
+        self.assertEqual(module.build_transcript_tail("", ""), "")
+
+    def test_build_transcript_tail_max_boundary(self):
+        # Boundary: max. Keep exactly TRANSCRIPT_TAIL_LINES final lines so
+        # operator-visible comments stay bounded even for verbose sessions.
+        module = load_module()
+        stdout = "\n".join(f"out-{i}" for i in range(45))
+        stderr = "\n".join(f"err-{i}" for i in range(45))
+
+        tail = module.build_transcript_tail(stdout, stderr)
+
+        lines = tail.splitlines()
+        self.assertEqual(len(lines), module.TRANSCRIPT_TAIL_LINES)
+        self.assertEqual(lines[0], "[stderr] err-5")
+        self.assertEqual(lines[-1], "[stderr] err-44")
+
+    def test_summarize_completed_run_detects_zero_commit_session(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=0):
+            summary = module.summarize_completed_run(
+                {"driver": "copilot", "model": "gpt-4.1"},
+                0,
+                "nothing to do\n",
+                "worker exited cleanly\n",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "completed_no_commit")
+        self.assertEqual(summary["exit_reason"], "model-concluded-nothing")
+        self.assertEqual(summary["commit_count_ahead"], 0)
+        self.assertIn("[stdout] nothing to do", summary["transcript_tail"])
+
+    def test_summarize_completed_run_failed_session_is_classified(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=0):
+            summary = module.summarize_completed_run(
+                {"driver": "copilot", "model": "gpt-4.1"},
+                7,
+                "",
+                "traceback",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "session-error")
 
 
 if __name__ == "__main__":
