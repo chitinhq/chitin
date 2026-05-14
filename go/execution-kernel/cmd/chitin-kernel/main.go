@@ -56,6 +56,8 @@ func main() {
 		cmdUninstall(args)
 	case "health":
 		cmdHealth(args)
+	case "board-config":
+		cmdBoardConfig(args)
 	case "gate":
 		cmdGate(args)
 	case "envelope":

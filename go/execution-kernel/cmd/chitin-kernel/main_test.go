@@ -64,6 +64,16 @@ func runCLI(t *testing.T, wd string, args ...string) (string, string, int) {
 	return string(stdout), string(stderr), cmd.ProcessState.ExitCode()
 }
 
+func writeFileForCLI(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 // fixturePathForCLI returns the SP-1 synthesized fixture absolute path.
 func fixturePathForCLI(t *testing.T) string {
 	t.Helper()
