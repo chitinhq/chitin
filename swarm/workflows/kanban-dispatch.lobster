@@ -355,7 +355,13 @@ steps:
         }' \
         --arg NEW_ENV "$NEW_ENV")
 
-      WORKER_RESULT=$(printf '%s' "$SPAWN_CONFIG" | python3 "$HOME/.openclaw/workflows/spawn_worker_subprocess.py")
+      # `|| true`: spawn_worker_subprocess.py exits non-zero on timeout /
+      # session-error, but it always emits a structured JSON result on
+      # stdout first. Without this, `set -e` aborts here before the result
+      # is parsed and written to RESULT_FILE, so finalize_dispatch loses
+      # the failure detail. The JSON-driven status checks below handle the
+      # non-zero outcome explicitly.
+      WORKER_RESULT=$(printf '%s' "$SPAWN_CONFIG" | python3 "$HOME/.openclaw/workflows/spawn_worker_subprocess.py" || true)
       WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
       WORKER_RETURNCODE=$(echo "$WORKER_RESULT" | jq -r '.returncode // -1')
       WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
@@ -412,18 +418,25 @@ steps:
             exit 0
             ;;
           completed_no_commit)
-            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id})
-            MSG=$(printf '%s' "$REPORT" | jq -r '.message')
-            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason')
+            # Guard the report pipeline: if worker_failure_report.py is not
+            # deployed or emits unparseable JSON, fall back to WORKER_ERROR
+            # so we never post an empty comment or block with an empty reason.
+            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id} 2>/dev/null || true)
+            MSG=$(printf '%s' "$REPORT" | jq -r '.message // empty' 2>/dev/null || true)
+            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
+            [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker exited with no commits. ${WORKER_ERROR:-(no error detail)}"
+            [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker exited with no commits; ${WORKER_ERROR:-see dispatch log}"
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
           failed)
-            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id})
-            MSG=$(printf '%s' "$REPORT" | jq -r '.message')
-            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason')
+            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id} 2>/dev/null || true)
+            MSG=$(printf '%s' "$REPORT" | jq -r '.message // empty' 2>/dev/null || true)
+            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
+            [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker session failed. ${WORKER_ERROR:-(no error detail)}"
+            [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker session failed; ${WORKER_ERROR:-see dispatch log}"
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
