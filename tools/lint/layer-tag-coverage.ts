@@ -1,5 +1,5 @@
-// Structural linter: every `layer:*` nx tag in any workspace
-// package.json has a matching `depConstraints` entry in
+// Structural linter: every `layer:*` and `scope:*` nx tag in any
+// workspace project metadata has a matching `depConstraints` entry in
 // `eslint.config.mjs`.
 //
 // Why: four separate Copilot review cycles (PRs #194 / #195 / #199 /
@@ -39,8 +39,9 @@ export interface PackageJsonShape {
  * packages aren't covered by the boundary rule, which is fine — the
  * linter's job is to spot OPT-IN omissions.
  */
-export function extractLayerTagsFromPackageJson(
+export function extractTagsFromPackageJson(
   pkg: PackageJsonShape,
+  prefix: string,
 ): string[] {
   const json = pkg.json;
   if (!json || typeof json !== 'object') return [];
@@ -58,28 +59,53 @@ export function extractLayerTagsFromPackageJson(
   if (Array.isArray(rootTags)) tagSources.push(...rootTags);
 
   return tagSources.filter(
-    (t): t is string => typeof t === 'string' && t.startsWith('layer:'),
+    (t): t is string => typeof t === 'string' && t.startsWith(prefix),
   );
+}
+
+export function extractLayerTagsFromPackageJson(
+  pkg: PackageJsonShape,
+): string[] {
+  return extractTagsFromPackageJson(pkg, 'layer:');
+}
+
+export function extractScopeTagsFromPackageJson(
+  pkg: PackageJsonShape,
+): string[] {
+  return extractTagsFromPackageJson(pkg, 'scope:');
 }
 
 /**
  * Pull the `sourceTag` strings from a `depConstraints` array — the
  * shape ESLint loads from `eslint.config.mjs` at runtime.
  *
- * Defensive: only tags starting with `layer:` are returned, mirroring
- * the linter's scope (other depConstraint shapes — e.g., `scope:*` —
- * are out of scope here).
+ * Defensive: only tags starting with `prefix` are returned, so callers
+ * can ask for `layer:` or `scope:` (or any other namespace) without
+ * picking up unrelated tags.
  */
-export function extractDepConstraintLayerTags(
+export function extractDepConstraintTags(
   depConstraints: ReadonlyArray<{ sourceTag?: unknown }>,
+  prefix: string,
 ): string[] {
   const out: string[] = [];
   for (const c of depConstraints) {
-    if (typeof c.sourceTag === 'string' && c.sourceTag.startsWith('layer:')) {
+    if (typeof c.sourceTag === 'string' && c.sourceTag.startsWith(prefix)) {
       out.push(c.sourceTag);
     }
   }
   return out;
+}
+
+export function extractDepConstraintLayerTags(
+  depConstraints: ReadonlyArray<{ sourceTag?: unknown }>,
+): string[] {
+  return extractDepConstraintTags(depConstraints, 'layer:');
+}
+
+export function extractDepConstraintScopeTags(
+  depConstraints: ReadonlyArray<{ sourceTag?: unknown }>,
+): string[] {
+  return extractDepConstraintTags(depConstraints, 'scope:');
 }
 
 export interface CoverageGaps {
@@ -246,8 +272,8 @@ export async function loadDepConstraints(
 
 export interface LintResult {
   ok: boolean;
-  missing: CoverageGaps['missing'];
-  orphaned: CoverageGaps['orphaned'];
+  layer: CoverageGaps;
+  scope: CoverageGaps;
 }
 
 export async function lintLayerTagCoverage(opts: {
@@ -255,19 +281,52 @@ export async function lintLayerTagCoverage(opts: {
   eslintConfigPath: string;
 }): Promise<LintResult> {
   const pkgs = loadWorkspacePackageJsons(opts.rootDir);
-  const tagsByPath = new Map<string, string[]>();
+  const layerTagsByPath = new Map<string, string[]>();
+  const scopeTagsByPath = new Map<string, string[]>();
   for (const pkg of pkgs) {
-    const tags = extractLayerTagsFromPackageJson(pkg);
-    if (tags.length > 0) tagsByPath.set(pkg.path, tags);
+    const layerTags = extractLayerTagsFromPackageJson(pkg);
+    if (layerTags.length > 0) layerTagsByPath.set(pkg.path, layerTags);
+    const scopeTags = extractScopeTagsFromPackageJson(pkg);
+    if (scopeTags.length > 0) scopeTagsByPath.set(pkg.path, scopeTags);
   }
   const depConstraints = await loadDepConstraints(opts.eslintConfigPath);
-  const dcTags = extractDepConstraintLayerTags(depConstraints);
-  const gaps = findCoverageGaps(tagsByPath, dcTags);
+  const layerGaps = findCoverageGaps(
+    layerTagsByPath,
+    extractDepConstraintLayerTags(depConstraints),
+  );
+  const scopeGaps = findCoverageGaps(
+    scopeTagsByPath,
+    extractDepConstraintScopeTags(depConstraints),
+  );
   return {
-    ok: gaps.missing.length === 0,
-    missing: gaps.missing,
-    orphaned: gaps.orphaned,
+    ok: layerGaps.missing.length === 0 && scopeGaps.missing.length === 0,
+    layer: layerGaps,
+    scope: scopeGaps,
   };
+}
+
+function printCoverageResult(
+  label: string,
+  kind: string,
+  gaps: CoverageGaps,
+): void {
+  if (gaps.missing.length > 0) {
+    console.error(`${label}: ERROR — ${kind} tags without depConstraints:`);
+    for (const { tag, foundIn } of gaps.missing) {
+      console.error(`  ${tag}`);
+      for (const path of foundIn) {
+        console.error(`    used by ${path}`);
+      }
+    }
+    console.error('');
+  }
+
+  if (gaps.orphaned.length > 0) {
+    console.error(`${label}: warning — depConstraints with no matching package:`);
+    for (const tag of gaps.orphaned) {
+      console.error(`  ${tag} (defined but no package carries this tag yet)`);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -278,14 +337,10 @@ async function main(): Promise<void> {
     eslintConfigPath: eslintConfig,
   });
 
-  if (result.missing.length > 0) {
-    console.error('layer-tag-coverage: ERROR — layer:* tags without depConstraints:');
-    for (const { tag, foundIn } of result.missing) {
-      console.error(`  ${tag}`);
-      for (const path of foundIn) {
-        console.error(`    used by ${path}`);
-      }
-    }
+  printCoverageResult('layer-tag-coverage', 'layer', result.layer);
+  printCoverageResult('scope-tag-coverage', 'scope', result.scope);
+
+  if (result.layer.missing.length > 0 || result.scope.missing.length > 0) {
     console.error('');
     console.error(
       'Add the missing entries to `eslint.config.mjs` under ' +
@@ -293,18 +348,13 @@ async function main(): Promise<void> {
     );
   }
 
-  if (result.orphaned.length > 0) {
-    console.error('layer-tag-coverage: warning — depConstraints with no matching package:');
-    for (const tag of result.orphaned) {
-      console.error(`  ${tag} (defined but no package carries this tag yet)`);
-    }
-  }
-
   if (result.ok) {
     console.error(
-      `layer-tag-coverage: ok (` +
-      `${result.missing.length} errors, ` +
-      `${result.orphaned.length} orphan warning${result.orphaned.length === 1 ? '' : 's'})`,
+      `tag-coverage: ok (` +
+      `${result.layer.missing.length + result.scope.missing.length} errors, ` +
+      `${result.layer.orphaned.length + result.scope.orphaned.length} orphan warning${
+        result.layer.orphaned.length + result.scope.orphaned.length === 1 ? '' : 's'
+      })`,
     );
   }
 
@@ -314,7 +364,7 @@ async function main(): Promise<void> {
 const isCli = fileURLToPath(import.meta.url) === process.argv[1];
 if (isCli) {
   main().catch((err: unknown) => {
-    console.error('layer-tag-coverage: fatal:', err instanceof Error ? err.message : err);
+    console.error('tag-coverage: fatal:', err instanceof Error ? err.message : err);
     process.exit(1);
   });
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractDepConstraintScopeTags,
   extractDepConstraintLayerTags,
   extractLayerTagsFromPackageJson,
+  extractScopeTagsFromPackageJson,
   findCoverageGaps,
   type PackageJsonShape,
 } from '../layer-tag-coverage.ts';
@@ -66,6 +68,31 @@ describe('extractLayerTagsFromPackageJson', () => {
   });
 });
 
+describe('extractScopeTagsFromPackageJson', () => {
+  function pkg(json: unknown): PackageJsonShape {
+    return { path: 'apps/test/package.json', json };
+  }
+
+  it('returns scope:* tags from nx.tags', () => {
+    expect(extractScopeTagsFromPackageJson(pkg({
+      nx: { tags: ['layer:cli', 'scope:app'] },
+    }))).toEqual(['scope:app']);
+  });
+
+  it('reads root-level tags from project.json-shape files', () => {
+    expect(extractScopeTagsFromPackageJson({
+      path: 'python/analysis/project.json',
+      json: { tags: ['scope:analytics', 'layer:analysis'] },
+    })).toEqual(['scope:analytics']);
+  });
+
+  it('returns empty when no scope tags exist', () => {
+    expect(extractScopeTagsFromPackageJson(pkg({
+      nx: { tags: ['layer:contracts'] },
+    }))).toEqual([]);
+  });
+});
+
 describe('extractDepConstraintLayerTags', () => {
   it('returns layer:* sourceTags', () => {
     const dc = [
@@ -86,6 +113,24 @@ describe('extractDepConstraintLayerTags', () => {
   it('skips entries with non-string sourceTag', () => {
     const dc = [{ sourceTag: 'layer:foo' }, { sourceTag: 123 }, {}];
     expect(extractDepConstraintLayerTags(dc)).toEqual(['layer:foo']);
+  });
+});
+
+describe('extractDepConstraintScopeTags', () => {
+  it('returns scope:* sourceTags', () => {
+    const dc = [
+      { sourceTag: 'scope:analytics', onlyDependOnLibsWithTags: ['scope:analytics'] },
+      { sourceTag: 'scope:app', onlyDependOnLibsWithTags: ['scope:analytics'] },
+    ];
+    expect(extractDepConstraintScopeTags(dc)).toEqual(['scope:analytics', 'scope:app']);
+  });
+
+  it('skips non-scope tags', () => {
+    const dc = [
+      { sourceTag: 'scope:analytics', onlyDependOnLibsWithTags: [] },
+      { sourceTag: 'layer:contracts', onlyDependOnLibsWithTags: [] },
+    ];
+    expect(extractDepConstraintScopeTags(dc)).toEqual(['scope:analytics']);
   });
 });
 

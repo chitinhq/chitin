@@ -1,0 +1,25 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "chitin-router-plugin-api-python",
+  "root": "libs/router-plugin-api/python",
+  "sourceRoot": "libs/router-plugin-api/python",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:plugin", "layer:plugin-api", "lang:python"],
+  "targets": {
+    "compile": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "libs/router-plugin-api/python",
+        "command": "python3 -m compileall -q ."
+      }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "libs/router-plugin-api/python",
+        "command": "python3 -m compileall -q ."
+      },
+      "dependsOn": ["^validate"]
+    }
+  }
+}
