@@ -1,6 +1,13 @@
 package gov
 
-import "testing"
+import (
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestBounds_NonPushShapedSkips(t *testing.T) {
 	// Bounds only fires for git.push / github.pr.create.
@@ -14,10 +21,10 @@ func TestBounds_NonPushShapedSkips(t *testing.T) {
 
 func TestBounds_ParseStatLine(t *testing.T) {
 	cases := []struct {
-		line     string
-		wantF    int
-		wantIns  int
-		wantDel  int
+		line    string
+		wantF   int
+		wantIns int
+		wantDel int
 	}{
 		{" 3 files changed, 10 insertions(+), 5 deletions(-)", 3, 10, 5},
 		{" 1 file changed, 1 insertion(+)", 1, 1, 0},
@@ -174,4 +181,148 @@ func TestGate_MonitorModeOverridesBoundsDeny(t *testing.T) {
 		t.Errorf("monitor-mode override should flip bounds deny to allow, got Mode=%q RuleID=%q",
 			d.Mode, d.RuleID)
 	}
+}
+
+func TestCollectDiffStats_GithubPRCreateUsesHeadBranchNotCwdHead(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	runGitBounds(t, repo, "checkout", "-b", "feature/small")
+	writeAndCommitBoundsFile(t, repo, "small.txt", strings.Repeat("a\n", 20), "small branch change")
+	runGitBounds(t, repo, "checkout", "main")
+
+	writeAndCommitBoundsFile(t, repo, "large.txt", strings.Repeat("b\n", 2200), "large cwd change")
+
+	files, ins, del, err := collectDiffStats(Action{
+		Type:   ActGithubPRCreate,
+		Target: "gh pr create --base main --head feature/small",
+	}, repo)
+	if err != nil {
+		t.Fatalf("collectDiffStats: %v", err)
+	}
+	if files != 1 || ins != 20 || del != 0 {
+		t.Fatalf("github.pr.create should diff main...feature/small, got files=%d ins=%d del=%d", files, ins, del)
+	}
+}
+
+func TestCollectDiffStats_GitPushStillUsesCwdHead(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	writeAndCommitBoundsFile(t, repo, "large.txt", strings.Repeat("b\n", 2200), "large cwd change")
+
+	files, ins, del, err := collectDiffStats(Action{
+		Type:   ActGitPush,
+		Target: "git push origin main",
+	}, repo)
+	if err != nil {
+		t.Fatalf("collectDiffStats: %v", err)
+	}
+	if files != 1 || ins != 2200 || del != 0 {
+		t.Fatalf("git.push should diff cwd HEAD, got files=%d ins=%d del=%d", files, ins, del)
+	}
+}
+
+func TestCollectDiffStats_GithubPRCreateMissingHeadFallsBackToCwdHeadAndWarns(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	writeAndCommitBoundsFile(t, repo, "cwd.txt", strings.Repeat("c\n", 15), "cwd change")
+
+	stderr := captureStderr(t, func() {
+		files, ins, del, err := collectDiffStats(Action{
+			Type:   ActGithubPRCreate,
+			Target: "gh pr create --base main",
+		}, repo)
+		if err != nil {
+			t.Fatalf("collectDiffStats: %v", err)
+		}
+		if files != 1 || ins != 15 || del != 0 {
+			t.Fatalf("missing --head should fall back to cwd HEAD, got files=%d ins=%d del=%d", files, ins, del)
+		}
+	})
+
+	if !strings.Contains(stderr, "bounds: using cwd HEAD; pass --head/--base for accurate PR-size measurement") {
+		t.Fatalf("missing --head warning not emitted, stderr=%q", stderr)
+	}
+}
+
+func TestCollectDiffStats_GithubPRCreateOmittedBaseUsesOriginHead(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	runGitBounds(t, repo, "checkout", "-b", "feature/small")
+	writeAndCommitBoundsFile(t, repo, "small.txt", strings.Repeat("a\n", 12), "small branch change")
+	runGitBounds(t, repo, "checkout", "main")
+
+	files, ins, del, err := collectDiffStats(Action{
+		Type:   ActGithubPRCreate,
+		Target: "gh pr create --head feature/small",
+	}, repo)
+	if err != nil {
+		t.Fatalf("collectDiffStats: %v", err)
+	}
+	if files != 1 || ins != 12 || del != 0 {
+		t.Fatalf("omitted --base should default to origin/HEAD target, got files=%d ins=%d del=%d", files, ins, del)
+	}
+}
+
+func initBoundsTestRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	repo := filepath.Join(root, "repo")
+
+	runGitBounds(t, root, "init", "--bare", remote)
+	runGitBounds(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGitBounds(t, root, "clone", remote, repo)
+	runGitBounds(t, repo, "config", "user.email", "test@example.com")
+	runGitBounds(t, repo, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitBounds(t, repo, "add", "README.md")
+	runGitBounds(t, repo, "commit", "-m", "init")
+	runGitBounds(t, repo, "push", "-u", "origin", "main")
+	runGitBounds(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	return repo
+}
+
+func writeAndCommitBoundsFile(t *testing.T, repo, name, contents, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	runGitBounds(t, repo, "add", name)
+	runGitBounds(t, repo, "commit", "-m", message)
+}
+
+func runGitBounds(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll stderr: %v", err)
+	}
+	return string(out)
 }

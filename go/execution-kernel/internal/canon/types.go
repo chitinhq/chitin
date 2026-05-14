@@ -147,6 +147,10 @@ var flagAliases = map[string]string{
 	"git.log:-n":        "max-count",
 	"git.log:--oneline": "format=oneline",
 
+	// gh pr create
+	"gh.pr:-B": "base",
+	"gh.pr:-H": "head",
+
 	// read (head/tail/cat)
 	"read:-n": "lines",
 

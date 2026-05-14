@@ -65,6 +65,12 @@ func flagTakesValue(tool, action, flag string) bool {
 		// git diff
 		"git.diff:stat": false,
 
+		// gh pr create
+		"gh.pr:base": true,
+		"gh.pr:B":    true,
+		"gh.pr:head": true,
+		"gh.pr:H":    true,
+
 		// read (head/tail)
 		"read:lines": true,
 		"read:n":     true,
