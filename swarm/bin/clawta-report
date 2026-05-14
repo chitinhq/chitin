@@ -11,6 +11,8 @@ ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
 BASE_ELO = 1500.0
 BASE_K = 32.0
 K_DECAY_AT_N = 50  # keep in sync with swarm/workflows/_swarm_elo.py
+TERMINAL_LANES = {"codex", "copilot", "gemini", "claude-code"}
+ROUTING_LANE = "clawta"
 
 REPORT_CARDS = [
     {
@@ -136,6 +138,56 @@ def pill(text, tone=""):
     cls = f"pill {tone}".strip()
     return f"<span class='{cls}'>{html.escape(text)}</span>"
 
+def active_dispatch_tickets():
+    """Return unique ticket ids currently owned by dispatch roots/workers.
+
+    Counts both early lobster workflow roots and long-lived `clawta dispatch
+    ticket ...` roots. Child vendor CLIs are intentionally ignored so one
+    worker is counted once.
+    """
+    # NOTE: raw string — the sed backreference \1 must reach sed intact. A
+    # plain "" string turns \1 into the octal escape \x01, which silently
+    # breaks ticket extraction (every row gets filtered out below).
+    # The [[:space:]]* after the colon tolerates spaced --args-json JSON.
+    code, out = sh(r"""{ (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) | grep -oE '"ticket_id":[[:space:]]*"t_[0-9a-f]+"' | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true; (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) | grep -oE 'dispatch ticket t_[0-9a-f]+' | awk '{print $3}' || true; } | sed '/^$/d' | sort -u""", 20)
+    if code != 0:
+        return []
+    tickets = [line.strip() for line in out.splitlines() if re.match(r'^t_[0-9a-f]+$', line.strip())]
+    return sorted(set(tickets))
+
+def runtime_lane_cards():
+    root = os.path.expanduser("~/.openclaw/data/agent-cards")
+    lanes = {}
+    for lane in sorted(TERMINAL_LANES):
+        path = os.path.join(root, f"{lane}.json")
+        if os.path.exists(path):
+            try:
+                data = json.load(open(path))
+            except Exception:
+                data = {}
+            lanes[lane] = {"active": True, "models": [m.get("id", "?") for m in data.get("models", [])]}
+        else:
+            lanes[lane] = {"active": False, "models": []}
+    return lanes
+
+def projection_scenarios(queue_depth, active_count, max_active=1):
+    remaining = max(queue_depth, 0)
+    capacity = max(max_active, 1)
+    # Workers already mid-flight occupy a lane for the first wave before the
+    # queue can use it, so they flow through the same `capacity` lanes as
+    # queued work. With active_count=0 this reduces to ceil(remaining/cap).
+    in_flight = max(active_count, 0)
+    waves = (remaining + in_flight + capacity - 1) // capacity
+    scenarios = []
+    for label, minutes in [("fast", 45), ("expected", 90), ("slow/sticky", 180)]:
+        total_minutes = waves * minutes
+        scenarios.append({
+            "label": label,
+            "worker_minutes": minutes,
+            "eta_seconds": total_minutes * 60,
+        })
+    return scenarios
+
 def board_conn():
     conn = sqlite3.connect(BOARD_DB)
     conn.row_factory = sqlite3.Row
@@ -171,6 +223,36 @@ def pr_check_summary(pr):
     else:
         tone, label = "good", "clean"
     return {"failing": failing, "pending": pending, "success": success, "tone": tone, "label": label}
+
+def lifecycle_snapshot():
+    code, raw = sh("cd /home/red/workspace/chitin && ./swarm/bin/clawta-pr-lifecycle --auto-merge --escalate-to red", 240)
+    if code != 0:
+        return {"items": [], "error": raw[:1000]}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"items": [], "error": raw[:1000]}
+
+def merge_blockers(item):
+    blockers = []
+    if item.get("state") != "OPEN":
+        return ["not open"]
+    if item.get("ticket") is None:
+        blockers.append("unmapped ticket")
+    elif item.get("ticket_status") != "in_progress":
+        blockers.append(f"ticket {item.get('ticket_status') or 'unknown'}")
+    if item.get("mergeable") not in ("MERGEABLE", "CLEAN"):
+        blockers.append(f"merge {item.get('mergeable') or 'unknown'}")
+    if item.get("checks") != "pass":
+        blockers.append(f"checks {item.get('checks') or 'unknown'}")
+    review = item.get("review") or "none"
+    if review != "APPROVE":
+        blockers.append(f"review {review}")
+    if not item.get("review_current_head"):
+        blockers.append("review not current-head")
+    if not blockers and not item.get("auto_merge_ready"):
+        blockers.append(item.get("action") or "not lifecycle-ready")
+    return blockers or ["ready"]
 
 def load_board_state():
     conn = board_conn()
@@ -350,6 +432,38 @@ def load_swarm_health():
     elo_rows = compute_complexity_elo(score_rows, complexity_map_from_comments(comments))
     elo_conn.close()
 
+    runtime_lanes = runtime_lane_cards()
+    enabled_lanes = {lane for lane, meta in runtime_lanes.items() if meta["active"]}
+    dispatchable = [
+        task for task in tasks
+        if task["status"] in ("ready", "todo")
+        and (task["assignee"] or "") in enabled_lanes.union({ROUTING_LANE})
+    ]
+    active_tickets = active_dispatch_tickets()
+    # Current OpenClaw cron is intentionally conservative; keep the report honest
+    # even if no env is available inside the static report runner.
+    max_active = int(os.environ.get("CLAWTA_MAX_ACTIVE_WORKERS", "1"))
+    projections = projection_scenarios(len(dispatchable), len(active_tickets), max_active=max_active)
+
+    lifecycle = lifecycle_snapshot()
+    merge_blocker_rows = []
+    for item in lifecycle.get("items", []):
+        if item.get("state") != "OPEN":
+            continue
+        blockers = merge_blockers(item)
+        merge_blocker_rows.append({
+            "pr": item.get("pr"),
+            "url": item.get("url"),
+            "ticket": item.get("ticket") or "—",
+            "ticket_status": item.get("ticket_status") or "—",
+            "checks": item.get("checks") or "unknown",
+            "review": item.get("review") or "none",
+            "mergeable": item.get("mergeable") or "unknown",
+            "action": item.get("action") or "wait",
+            "blockers": blockers,
+        })
+    merge_blocker_rows.sort(key=lambda row: (row["blockers"] == ["ready"], int(row["pr"] or 0)), reverse=True)
+
     return {
         "tasks": tasks,
         "dispatched_today": dispatched_today,
@@ -358,6 +472,13 @@ def load_swarm_health():
         "blocked_red": blocked_red,
         "pr_lifecycle": pr_lifecycle,
         "elo_rows": elo_rows,
+        "dispatchable_queue": dispatchable,
+        "active_dispatch_tickets": active_tickets,
+        "runtime_lanes": runtime_lanes,
+        "max_active_workers": max_active,
+        "projections": projections,
+        "merge_blockers": merge_blocker_rows,
+        "lifecycle_error": lifecycle.get("error", ""),
     }
 
 def parse_stats(txt):
@@ -461,6 +582,13 @@ def swarm_health():
     blocked_red = data["blocked_red"]
     prs = data["pr_lifecycle"]
     elo_rows = data["elo_rows"][:12]
+    dispatchable_queue = data["dispatchable_queue"]
+    active_dispatch = data["active_dispatch_tickets"]
+    runtime_lanes = data["runtime_lanes"]
+    projections = data["projections"]
+    max_active_workers = data["max_active_workers"]
+    merge_blockers = data["merge_blockers"]
+    lifecycle_error = data.get("lifecycle_error", "")
 
     status_counts = Counter(task["status"] for task in tasks)
     pr_status = Counter(row["checks"]["label"] for row in prs)
@@ -473,7 +601,7 @@ def swarm_health():
     hero = (
         "<section class='hero'>"
         "<div class='section-head'><div><div class='k'>Swarm Dashboard</div><div class='v'>Autopilot health across board, PRs, and judged outcomes</div></div>"
-        f"<div class='inline-stats'><span>{len(dispatched)} unique tickets dispatched today</span><span>{len(dispatch_attempts)} dispatch attempts</span><span>{len(stuck)} stuck in-progress</span><span>{len(blocked_red)} blocked on red</span><span>{len(prs)} open PRs</span></div></div>"
+        f"<div class='inline-stats'><span>{len(dispatched)} unique tickets dispatched today</span><span>{len(dispatch_attempts)} dispatch attempts</span><span>{len(dispatchable_queue)} dispatchable queued</span><span>{len(active_dispatch)}/{max_active_workers} active workers</span><span>{len(stuck)} stuck in-progress</span><span>{len(blocked_red)} blocked on red</span><span>{len(prs)} open PRs</span></div></div>"
         f"{status_pills}"
         "<p class='small muted'>ELO is replayed locally from judged dispatch scores and joined with dispatch-time complexity comments from Hermes so the breakdown stays faithful to operator-local data.</p>"
         "</section>"
@@ -505,24 +633,50 @@ def swarm_health():
         for row in prs[:14]
     ) or "<tr><td colspan='7'>No open PRs returned by GitHub.</td></tr>"
 
+    blocker_rows = ''.join(
+        f"<tr><td><a href='{html.escape(row['url'] or '#')}'>#{html.escape(str(row['pr']))}</a></td><td class='mono'>{html.escape(row['ticket'])}</td><td>{html.escape(row['ticket_status'])}</td><td>{pill(row['checks'], 'good' if row['checks']=='pass' else 'bad' if row['checks']=='fail' else 'warn')}</td><td>{pill(row['review'], 'good' if row['review']=='APPROVE' else 'bad' if row['review']=='REQUEST_CHANGES' else 'warn')}</td><td>{html.escape(row['mergeable'])}</td><td>{html.escape(', '.join(row['blockers']))}</td><td>{html.escape(row['action'])}</td></tr>"
+        for row in merge_blockers[:16]
+    ) or "<tr><td colspan='8'>No open lifecycle-managed PRs returned by Clawta lifecycle.</td></tr>"
+    if lifecycle_error:
+        blocker_rows += f"<tr><td colspan='8'><span class='bad'>Lifecycle snapshot failed:</span> {html.escape(lifecycle_error[:400])}</td></tr>"
+
     elo_table = ''.join(
         f"<tr><td>{html.escape(row['driver'])}</td><td>{html.escape(row['model'])}</td><td>{pill(row['complexity'], 'good' if row['complexity']=='low' else 'warn' if row['complexity']=='med' else 'bad' if row['complexity']=='high' else '')}</td><td>{row['elo_score']:.1f}</td><td>{row['dispatches_count']}</td><td>{row['avg_score']:.1f}</td><td class='mono'>{html.escape(row['last_ticket_id'])}</td></tr>"
         for row in elo_rows
     ) or "<tr><td colspan='7'>No judged dispatches in local ELO yet.</td></tr>"
 
+    projection_rows = ''.join(
+        f"<tr><td>{html.escape(row['label'])}</td><td>{row['worker_minutes']}m</td><td>{age_human(row['eta_seconds'])}</td></tr>"
+        for row in projections
+    )
+    lane_rows = ''.join(
+        f"<tr><td>{html.escape(lane)}</td><td>{pill('active', 'good') if meta['active'] else pill('disabled', 'bad')}</td><td>{html.escape(', '.join(meta['models']) or '—')}</td></tr>"
+        for lane, meta in sorted(runtime_lanes.items())
+    )
+    queue_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['status'])}</td><td>{html.escape(row['assignee'] or '(unassigned)')}</td><td>{html.escape(row['title'])}</td></tr>"
+        for row in dispatchable_queue[:14]
+    ) or "<tr><td colspan='4'>No dispatchable ready/todo tickets for active lanes.</td></tr>"
+
     body = (
         hero
         + "<section class='grid'>"
+        + f"<div class='card'><div class='k'>Dispatchable Queue</div><div class='v'>{len(dispatchable_queue)}</div><div class='small muted'>ready/todo tickets assigned to Clawta or active terminal lanes</div></div>"
+        + f"<div class='card'><div class='k'>Active Workers</div><div class='v'>{len(active_dispatch)}/{max_active_workers}</div><div class='small muted'>{html.escape(', '.join(active_dispatch) or 'none')} currently counted by dispatch roots</div></div>"
         + f"<div class='card'><div class='k'>Dispatched Today</div><div class='v'>{len(dispatched)}</div><div class='small muted'>{len(dispatch_attempts)} transitions to <span class='mono'>in_progress</span> since local midnight</div></div>"
         + f"<div class='card'><div class='k'>Stuck Tickets</div><div class='v bad'>{len(stuck)}</div><div class='small muted'>idle for 90m+ or explicitly watchdog-flagged</div></div>"
         + f"<div class='card'><div class='k'>Blocked Red Queue</div><div class='v warn'>{len(blocked_red)}</div><div class='small muted'>blocked tickets assigned to red</div></div>"
         + f"<div class='card'><div class='k'>Open PR Lifecycle</div><div class='v'>{len(prs)}</div><div class='small muted'>{pr_status.get('failing', 0)} failing · {pr_status.get('pending', 0)} pending · {pr_status.get('clean', 0)} clean</div></div>"
         + "</section>"
         + "<section class='grid-2'>"
+        + f"<div class='card'><div class='section-head'><h2>Queue Projection</h2><span class='small muted'>current cap: {max_active_workers} active worker(s)</span></div><table><tr><th>Scenario</th><th>Avg worker runtime</th><th>Estimated drain time</th></tr>{projection_rows}</table><p class='small muted'>Projection counts dispatch/PR creation only; clean PR lifecycle normally adds check/review time.</p></div>"
+        + f"<div class='card'><div class='section-head'><h2>Lane Health</h2><span class='small muted'>runtime agent-card presence</span></div><table><tr><th>Lane</th><th>Status</th><th>Models</th></tr>{lane_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Dispatchable Queue</h2><span class='small muted'>first 14</span></div><table><tr><th>Ticket</th><th>Status</th><th>Assignee</th><th>Title</th></tr>{queue_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Dispatched Today</h2><a href='{BASE}/clawta-swarm-health-latest.html'>latest asset</a></div><table><tr><th>Ticket</th><th>Title</th><th>Lane</th><th>Dispatched</th><th>PR</th></tr>{dispatched_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Stuck Tickets</h2><span class='small muted'>watchdog + idle heuristic</span></div><ul class='list'>{stuck_items}</ul></div>"
         + "</section>"
         + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Blocked At</th><th>Age</th></tr>{blocked_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Why PRs Are Not Auto-Merging</h2><span class='small muted'>strict lifecycle gate blockers</span></div><table><tr><th>PR</th><th>Ticket</th><th>Ticket Status</th><th>Checks</th><th>Review</th><th>Merge</th><th>Blockers</th><th>Lifecycle Action</th></tr>{blocker_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Open PR Lifecycle</h2><span class='small muted'>GitHub state + check rollups</span></div><table><tr><th>PR</th><th>Ticket</th><th>Head</th><th>Checks</th><th>Merge</th><th>Pass</th><th>Title</th></tr>{pr_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Model-Aware ELO</h2><span class='small muted'>driver + model + complexity replayed from local score history</span></div><table><tr><th>Driver</th><th>Model</th><th>Complexity</th><th>ELO</th><th>Dispatches</th><th>Avg Score</th><th>Last Ticket</th></tr>{elo_table}</table></div>"
     )
