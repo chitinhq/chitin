@@ -10,6 +10,7 @@ from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
 from argus.kanban_ingest import ingest_all_kanban
 from argus.git_ingest import ingest_repo, discover_repos
+from argus.log_ingest import ingest_logs
 
 
 def cmd_index(args) -> int:
@@ -205,6 +206,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        default=str(Path.home() / ".argus" / "cross_source.db"),
                        help="Cross-source SQLite index path")
 
+    # ingest-logs subcommand
+    inl_p = subparsers.add_parser(
+        "ingest-logs",
+        help="One-shot snapshot of hermes + openclaw logs into the cross-source index",
+    )
+    inl_p.add_argument("--hermes-logs",
+                       default=str(Path.home() / ".hermes" / "logs"),
+                       help="Directory containing hermes *.log files")
+    inl_p.add_argument("--openclaw-logs",
+                       default=str(Path.home() / ".openclaw" / "logs"),
+                       help="Directory containing openclaw *.log files")
+    inl_p.add_argument("--xs-db",
+                       default=str(Path.home() / ".argus" / "cross_source.db"),
+                       help="Cross-source SQLite index path")
+
     return p.parse_args(argv)
 
 
@@ -224,8 +240,28 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ingest_kanban(args)
     elif args.cmd == "ingest-git":
         return cmd_ingest_git(args)
+    elif args.cmd == "ingest-logs":
+        return cmd_ingest_logs(args)
 
     return 1
+
+
+def cmd_ingest_logs(args) -> int:
+    """Pull hermes + openclaw logs into the cross-source index (one-shot)."""
+    xs_db = Path(args.xs_db)
+    for source, root in (("hermes", Path(args.hermes_logs)),
+                         ("openclaw", Path(args.openclaw_logs))):
+        if not root.exists():
+            print(f"log ingest: skip source={source} (missing dir {root})", file=sys.stderr)
+            continue
+        summary, _ = ingest_logs(root, source, xs_db)
+        print(
+            f"log ingest: source={source} files={len(summary['files'])} "
+            f"inserted={summary['inserted']} skipped={summary['skipped']} "
+            f"unparsed={summary['unparsed']}",
+            file=sys.stderr,
+        )
+    return 0
 
 
 def cmd_ingest_kanban(args) -> int:

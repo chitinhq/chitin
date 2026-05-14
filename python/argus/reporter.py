@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from argus.detectors import Finding, run_all_detectors
+from argus.cross_detectors import CrossFinding, run_all_cross_detectors
+from argus.log_detectors import run_all_log_detectors
 
 
 def _get_summary_stats(db_path: str) -> dict:
@@ -254,16 +256,18 @@ def generate_daily_report(
     stats = _get_summary_stats(db_path)
     findings = run_all_detectors(db_path)
 
-    # Cross-source findings (Slice 2). Default to ~/.argus/cross_source.db
-    # but degrade silently if the cross-source index doesn't exist yet.
+    # Cross-source findings (Slice 2 + Slice 3). Default to
+    # ~/.argus/cross_source.db; degrade silently if it doesn't exist yet.
     if cross_source_db is None:
         cross_source_db = Path.home() / ".argus" / "cross_source.db"
     cross_findings: list[CrossFinding] = []
     if cross_source_db.exists():
         try:
             cross_findings = run_all_cross_detectors(cross_source_db)
+            cross_findings.extend(run_all_log_detectors(cross_source_db))
+            cross_findings.sort(key=lambda f: (-f.ts_unix, f.subject, f.detector))
         except Exception:
-            cross_findings = []
+            pass
 
     # Build markdown
     lines = [
