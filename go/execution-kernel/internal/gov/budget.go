@@ -161,7 +161,7 @@ func migrateBudget(db *sql.DB) error {
 
 // Create allocates a new envelope row with a fresh ULID.
 func (s *BudgetStore) Create(limits BudgetLimits) (*BudgetEnvelope, error) {
-	id, err := newULID()
+	id, err := NewULID()
 	if err != nil {
 		return nil, err
 	}

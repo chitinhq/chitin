@@ -2,7 +2,6 @@ package replay
 
 import (
 	"bufio"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
-	_ "modernc.org/sqlite"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/sidecar"
 )
 
 // Timeline is the dashboard-ready replay shape for one session chain.
@@ -105,7 +104,7 @@ type sessionEvent struct {
 }
 
 type sidecarStore struct {
-	db *sql.DB
+	store *sidecar.Store
 }
 
 type sidecarBundle struct {
@@ -717,36 +716,34 @@ func openSidecarStore(path string) (*sidecarStore, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	store, err := sidecar.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return &sidecarStore{db: db}, nil
+	return &sidecarStore{store: store}, nil
 }
 
 func (s *sidecarStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.store == nil {
 		return nil
 	}
-	return s.db.Close()
+	return s.store.Close()
 }
 
 func (s *sidecarStore) Get(eventID string) (sidecarBundle, error) {
-	if s == nil || s.db == nil || eventID == "" {
+	if s == nil || s.store == nil || eventID == "" {
 		return sidecarBundle{}, nil
 	}
-	rows, err := s.db.Query(`SELECT blob_type, blob FROM event_blobs WHERE event_id = ?`, eventID)
+	resolved, err := s.store.ResolveEventID(eventID)
 	if err != nil {
 		return sidecarBundle{}, err
 	}
-	defer rows.Close()
+	blobs, err := s.store.GetAll(resolved)
+	if err != nil {
+		return sidecarBundle{}, err
+	}
 	var out sidecarBundle
-	for rows.Next() {
-		var blobType string
-		var blob []byte
-		if err := rows.Scan(&blobType, &blob); err != nil {
-			return sidecarBundle{}, err
-		}
+	for blobType, blob := range blobs {
 		val := decodeSidecarBlob(blob)
 		switch blobType {
 		case "prompt":
@@ -761,15 +758,11 @@ func (s *sidecarStore) Get(eventID string) (sidecarBundle, error) {
 			out.ModelResponse = val
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func decodeSidecarBlob(blob []byte) any {
-	var val any
-	if err := json.Unmarshal(blob, &val); err == nil {
-		return val
-	}
-	return string(blob)
+	return sidecar.DecodeBlob(blob)
 }
 
 func chooseEventID(ev sessionEvent) string {

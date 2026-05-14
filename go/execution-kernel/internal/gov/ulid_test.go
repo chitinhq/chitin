@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewULID_LengthAndAlphabet(t *testing.T) {
-	id, err := newULID()
+	id, err := NewULID()
 	if err != nil {
 		t.Fatalf("newULID: %v", err)
 	}
@@ -22,13 +22,13 @@ func TestNewULID_LengthAndAlphabet(t *testing.T) {
 }
 
 func TestNewULID_TimeSortable(t *testing.T) {
-	a, err := newULID()
+	a, err := NewULID()
 	if err != nil {
 		t.Fatalf("a: %v", err)
 	}
 	// Sleep past the 1ms timestamp resolution so the prefix differs.
 	time.Sleep(2 * time.Millisecond)
-	b, err := newULID()
+	b, err := NewULID()
 	if err != nil {
 		t.Fatalf("b: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestNewULID_NoCollisionsBurst(t *testing.T) {
 	const n = 5000
 	seen := make(map[string]struct{}, n)
 	for i := 0; i < n; i++ {
-		id, err := newULID()
+		id, err := NewULID()
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
@@ -61,7 +61,7 @@ func TestNewULID_NoCollisionsBurst(t *testing.T) {
 // which only the bottom 3 are non-zero (top of the 48-bit timestamp).
 // The first char's alphabet index must therefore be < 8 — i.e. in '0'..'7'.
 func TestNewULID_FirstCharBounded(t *testing.T) {
-	id, err := newULID()
+	id, err := NewULID()
 	if err != nil {
 		t.Fatalf("newULID: %v", err)
 	}

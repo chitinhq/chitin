@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/sidecar"
 )
 
 // cmdChainReplay dispatches `chitin-kernel chain replay [flags]`.
@@ -219,6 +221,53 @@ Flags:
 	}
 }
 
+func cmdChainBlobs(args []string) {
+	eventID := ""
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--event-id="):
+			eventID = a[len("--event-id="):]
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain blobs --event-id=<id>
+
+Return any sidecar blobs captured for a tool-call or decision event.`)
+			os.Exit(0)
+		}
+	}
+	if eventID == "" {
+		exitErr("chain_blobs_no_event_id", "--event-id=<id> required")
+	}
+	store, err := sidecar.Open(filepath.Join(chitinDir(), "sidecar.db"))
+	if err != nil {
+		exitErr("chain_blobs_open", err.Error())
+	}
+	defer store.Close()
+	resolved, err := store.ResolveEventID(eventID)
+	if err != nil {
+		exitErr("chain_blobs_lookup", err.Error())
+	}
+	blobs, err := store.GetAll(resolved)
+	if err != nil {
+		exitErr("chain_blobs_get", err.Error())
+	}
+	out := map[string]any{
+		"event_id":       resolved,
+		"prompt":         nil,
+		"thinking":       nil,
+		"tool_input":     nil,
+		"tool_output":    nil,
+		"model_response": nil,
+	}
+	for blobType, blob := range blobs {
+		out[blobType] = sidecar.DecodeBlob(blob)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		exitErr("chain_blobs_json", err.Error())
+	}
+}
+
 func emptyDash(v string) string {
 	if v == "" {
 		return "-"
@@ -229,13 +278,15 @@ func emptyDash(v string) string {
 // cmdChain dispatches `chitin-kernel chain <subcommand>`.
 func cmdChain(args []string) {
 	if len(args) < 1 {
-		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|sessions|summarize|related|snapshot|stats> [flags]")
+		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|sessions|summarize|related|snapshot|stats|blobs> [flags]")
 	}
 	switch args[0] {
 	case "replay":
 		cmdChainReplay(args[1:])
 	case "sessions":
 		cmdChainSessions(args[1:])
+	case "blobs":
+		cmdChainBlobs(args[1:])
 	case "summarize":
 		cmdChainSummarize(args[1:])
 	case "related":

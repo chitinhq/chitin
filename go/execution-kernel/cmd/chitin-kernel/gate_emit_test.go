@@ -35,7 +35,7 @@ func TestBuildDecisionEvent_DecisionStr(t *testing.T) {
 				RuleID:  "test-rule",
 				Ts:      "2026-05-02T22:00:00Z",
 			}
-			ev := buildDecisionEvent(d, "test-chain", "claude-code")
+			ev, _ := buildDecisionEvent(d, "test-chain", "claude-code")
 			var payload map[string]any
 			if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 				t.Fatalf("payload: %v", err)
@@ -71,7 +71,7 @@ func TestBuildDecisionEvent_CarriesTypedIdentity(t *testing.T) {
 		WorkflowID:        "wf-123",
 	}
 
-	ev := buildDecisionEvent(d, "test-chain", "hermes")
+	ev, _ := buildDecisionEvent(d, "test-chain", "hermes")
 	if ev.AgentInstanceID != "inst-123" {
 		t.Fatalf("AgentInstanceID: got %q want inst-123", ev.AgentInstanceID)
 	}
@@ -116,7 +116,7 @@ func TestBuildDecisionEvent_CarriesTypedIdentity(t *testing.T) {
 
 func TestBuildDecisionEvent_PreservesFullEnvelopeFingerprint(t *testing.T) {
 	full := strings.Repeat("a", 64)
-	ev := buildDecisionEvent(&gov.Decision{
+	ev, _ := buildDecisionEvent(&gov.Decision{
 		Allowed:          true,
 		Mode:             "enforce",
 		RuleID:           "default-allow-shell",
