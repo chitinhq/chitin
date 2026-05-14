@@ -64,6 +64,95 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_tick_demotes_ticket_missing_invariants_and_boundaries(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "t_missinginv",
+                    "missing field",
+                    "Acceptance:\n- add regression test",
+                    "ready",
+                    "codex",
+                    50,
+                    1,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(result["demoted"], ["t_missinginv"])
+        demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
+        self.assertEqual(demote_cmd[:3], [module.KANBAN_FLOW_BIN, "demote", "t_missinginv"])
+        self.assertIn("missing invariants_and_boundaries: field", demote_cmd[3])
+
+    def test_tick_demotes_ticket_with_invariant_but_no_boundaries(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "t_nobounds",
+                    "missing boundary list",
+                    "invariants_and_boundaries: Invariant: parser never returns an empty action.",
+                    "ready",
+                    "codex",
+                    50,
+                    1,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(result["demoted"], ["t_nobounds"])
+        demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
+        self.assertIn("missing explicit boundary list", demote_cmd[3])
+
     def test_tick_blocks_unmerged_pr_before_routing(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +166,9 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                 (
                     "t_probepr00",
                     "probe pr dependency",
+                    "invariants_and_boundaries:\n"
+                    "  Invariant: dependency-gated tickets do not dispatch early.\n"
+                    "  Boundaries: open PR\n\n"
                     "Acceptance.\n\nDepends on PR #99999 before routing.",
                     "ready",
                     "clawta",
@@ -132,10 +224,13 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    (
-                        "t_depprobe",
-                        "probe ticket dependency",
-                        "Depends on t_deadbeef landing first.",
+                (
+                    "t_depprobe",
+                    "probe ticket dependency",
+                    "invariants_and_boundaries:\n"
+                    "  Invariant: dependency-gated tickets do not dispatch early.\n"
+                    "  Boundaries: in-progress dependency\n\n"
+                    "Depends on t_deadbeef landing first.",
                         "ready",
                         "clawta",
                         50,
@@ -144,7 +239,9 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                     (
                         "t_deadbeef",
                         "upstream work",
-                        "body",
+                        "invariants_and_boundaries:\n"
+                        "  Invariant: upstream work keeps its own boundary list.\n"
+                        "  Boundaries: done, archived",
                         "triage",
                         "clawta",
                         40,
@@ -202,6 +299,9 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                             (
                                 "t_depprobe",
                                 "probe ticket dependency",
+                                "invariants_and_boundaries:\n"
+                                "  Invariant: dependency-gated tickets do not dispatch early.\n"
+                                "  Boundaries: in-progress dependency\n\n"
                                 "Depends on t_deadbeef landing first.",
                                 "ready",
                                 "clawta",
@@ -211,7 +311,9 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                             (
                                 "t_deadbeef",
                                 "upstream work",
-                                "body",
+                                "invariants_and_boundaries:\n"
+                                "  Invariant: upstream work has its own boundary list.\n"
+                                "  Boundaries: done, archived",
                                 upstream_status,
                                 "codex",
                                 40,

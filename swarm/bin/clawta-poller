@@ -108,6 +108,9 @@ PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
 PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
 PR_URL_RE = re.compile(r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)/pull/(?P<number>\d+)")
 TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
+INVARIANTS_FIELD_RE = re.compile(
+    r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
+)
 
 
 def log(msg: str) -> None:
@@ -119,6 +122,56 @@ def log(msg: str) -> None:
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def parse_invariants_and_boundaries_field(body: str | None) -> str | None:
+    if not body:
+        return None
+    match = INVARIANTS_FIELD_RE.search(body)
+    if not match:
+        return None
+    value = match.group("value").strip()
+    return value or None
+
+
+def extract_named_boundaries(field_value: str | None) -> list[str]:
+    if not field_value:
+        return []
+    match = re.search(r"(?is)\bboundaries?\s*:\s*(.+)", field_value)
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    raw = raw.splitlines()[0].strip()
+    if not raw or raw.lower() in {"none", "n/a", "na"}:
+        return []
+    parts = re.split(r"\s*,\s*", raw)
+    boundaries: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", part.strip()).strip(" .;")
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        boundaries.append(cleaned)
+    return boundaries
+
+
+def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
+    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
+    if not field_value:
+        return (
+            "missing invariants_and_boundaries: field — triage must name the "
+            "preserved invariant and explicit boundary list before promotion to ready"
+        )
+    if not extract_named_boundaries(field_value):
+        return (
+            "invariants_and_boundaries: missing explicit boundary list — "
+            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -249,6 +302,22 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
 
 
 def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at, status
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+             ORDER BY priority DESC, created_at ASC
+            """,
+            DISPATCHABLE_STATUSES,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_dispatchable_with_bodies() -> list[dict[str, Any]]:
     status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
@@ -769,6 +838,26 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     return demoted
 
 
+def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
+    """Demote ready/todo tickets that skipped the boundary-naming triage field."""
+    candidates = fetch_dispatchable_with_bodies()
+    if not candidates:
+        return []
+    demoted: list[str] = []
+    for ticket in candidates:
+        reason = missing_invariants_reason(ticket)
+        if not reason:
+            continue
+        if demote_ticket(ticket["id"], reason, dry_run):
+            demoted.append(ticket["id"])
+    if demoted:
+        log(
+            "tick: demoted "
+            f"{len(demoted)} ticket(s) missing invariants_and_boundaries"
+        )
+    return demoted
+
+
 # ---------------------------------------------------------------------------
 # Main tick loop
 # ---------------------------------------------------------------------------
@@ -810,21 +899,27 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
-    # Step 2: Block ready/todo tickets with unresolved cross-ticket / cross-PR
+    # Step 2: Reject tickets that reached ready/todo without the mandatory
+    # invariants_and_boundaries triage field. This is the poller's enforcement
+    # point for the triage -> ready contract.
+    invariants_demoted = demote_missing_invariants_and_boundaries(dry_run)
+
+    # Step 3: Block ready/todo tickets with unresolved cross-ticket / cross-PR
     # dependencies so they don't get dispatched before their prerequisites land.
     dependency_blocked = apply_dependency_gate(
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
-    # Step 3: Dispatch already-routed terminal-lane work first so visible
+    # Step 4: Dispatch already-routed terminal-lane work first so visible
     # ready→in_progress movement is not starved by a large clawta routing queue.
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
+    demoted = invariants_demoted + demoted
 
-    # Step 4: Demote ungroomed tickets (no assignee or non-dispatchable).
+    # Step 5: Demote ungroomed tickets (no assignee or non-dispatchable).
     ungroomed_demoted = demote_ungroomed(dry_run)
     demoted.extend(ungroomed_demoted)
 
-    # Step 5: If dispatch capacity remains, route only enough clawta-assigned
+    # Step 6: If dispatch capacity remains, route only enough clawta-assigned
     # tickets to fill that capacity, then immediately dispatch them.
     remaining = max_dispatch - len(dispatched)
     routed: list[str] = []
@@ -835,7 +930,13 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         demoted.extend(more_demoted)
         queue_size = max(queue_size, queue_size_after_route)
 
-    if not dispatched and not demoted and not routed and not dependency_blocked and not dependency_unblocked:
+    if (
+        not dispatched
+        and not demoted
+        and not routed
+        and not dependency_blocked
+        and not dependency_unblocked
+    ):
         log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
 
     return {
