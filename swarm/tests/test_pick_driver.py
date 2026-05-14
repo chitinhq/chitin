@@ -199,6 +199,29 @@ class PickDriverTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Expecting value", result.stderr)
 
+    def test_empty_stdin_is_rejected(self):
+        # Boundary: empty input. Strict-JSON routing must fail fast, not
+        # parse an empty string into a half-formed classify dict.
+        for raw in ("", "   \n\t  "):
+            result = self.run_pick_driver_raw(raw, CLAWTA_EXPLORATION_PERCENT="0")
+            self.assertNotEqual(result.returncode, 0, msg=f"raw={raw!r}")
+            self.assertIn("classify produced no JSON object", result.stderr)
+
+    def test_max_size_classify_payload_still_routes(self):
+        # Boundary: max. A large-but-valid classify payload (many capability
+        # tokens + a long description) must still parse and route cleanly —
+        # strict JSON parsing has no length ceiling of its own.
+        classify = {
+            "complexity": "low",
+            "capabilities": ["python"],
+            "estimated_loc": 10**9,
+            "notes": "x" * 200_000,
+            "extra_tokens": [f"tok-{i}" for i in range(5_000)],
+        }
+        result = self.run_pick_driver(classify, CLAWTA_EXPLORATION_PERCENT="0")
+        self.assertEqual(result["driver"], "copilot")
+        self.assertEqual(result["selection_mode"], "exploitation")
+
 
 if __name__ == "__main__":
     unittest.main()
