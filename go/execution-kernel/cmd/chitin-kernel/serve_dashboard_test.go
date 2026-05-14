@@ -165,3 +165,20 @@ func TestDashboardMux_BoundaryErrorMissingPolicy(t *testing.T) {
 		t.Fatalf("policy error body=%s", rec.Body.String())
 	}
 }
+
+// TestIsLoopbackHost guards the security fix: the unauthenticated
+// dashboard must only ever bind to loopback addresses.
+func TestIsLoopbackHost(t *testing.T) {
+	loopback := []string{"127.0.0.1", "::1", "localhost", "127.0.0.5"}
+	for _, h := range loopback {
+		if !isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = false, want true", h)
+		}
+	}
+	nonLoopback := []string{"0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "example.com", ""}
+	for _, h := range nonLoopback {
+		if isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = true, want false", h)
+		}
+	}
+}

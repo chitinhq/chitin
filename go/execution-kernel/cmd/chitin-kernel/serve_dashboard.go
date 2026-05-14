@@ -30,10 +30,20 @@ func cmdServe(args []string) {
 func cmdServeDashboard(args []string) {
 	fs := flag.NewFlagSet("serve dashboard", flag.ExitOnError)
 	port := fs.Int("port", 9090, "port to bind")
-	host := fs.String("host", "127.0.0.1", "host to bind (default: localhost-only)")
+	host := fs.String("host", "127.0.0.1", "host to bind (loopback only)")
 	cwd := fs.String("cwd", ".", "cwd used to resolve chitin.yaml for /policy")
 	recent := fs.Int("recent", 25, "number of recent sessions to expose")
 	fs.Parse(args)
+
+	// The dashboard serves session timelines, sidecar prompt/tool I/O, and
+	// policy data with no authentication. Binding it to a non-loopback
+	// interface would expose all of that on the network — refuse rather
+	// than ship a quietly-exploitable default.
+	if !isLoopbackHost(*host) {
+		exitErr("dashboard_non_loopback_bind",
+			"refusing to bind the unauthenticated dashboard to non-loopback host "+
+				strconv.Quote(*host)+"; use a loopback address (127.0.0.1, ::1, localhost)")
+	}
 
 	staticDir, err := dashboardStaticDir()
 	if err != nil {
@@ -113,13 +123,25 @@ func dashboardEloResponse() map[string]any {
 }
 
 func writeDashboardJSON(w http.ResponseWriter, body map[string]any) {
+	// Content-Type must be set before WriteHeader — header mutations after
+	// WriteHeader are ignored, which left error responses without a JSON
+	// content type.
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if _, ok := body["error"]; ok {
 		w.WriteHeader(http.StatusBadRequest)
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(body)
+}
+
+// isLoopbackHost reports whether the bind host resolves to loopback only.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func hasStaticAssetExtension(path string) bool {

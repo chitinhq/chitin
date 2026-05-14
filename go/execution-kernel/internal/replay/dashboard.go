@@ -89,10 +89,9 @@ func ListDashboardSessions(limit int) ([]DashboardSession, error) {
 				}
 			}
 		}
-		if summary.Success == nil && len(events) > 0 {
-			success := denyCount == 0
-			summary.Success = &success
-		}
+		// Success is only known from a terminal session_end event. A session
+		// without one is in-progress or aborted — leave Success nil ("unknown")
+		// rather than declaring it successful just because no deny was seen.
 		if delta, ok := lookupEloDelta(summary.TicketID); ok {
 			summary.ELODelta = &delta
 		}
@@ -122,7 +121,10 @@ func ReadDashboardElo(limit int) ([]DashboardEloEntry, bool, error) {
 		limit = 10
 	}
 	dbPath := filepath.Join(os.Getenv("HOME"), ".openclaw", "data", "clawta.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// mode=ro: this is a read-only dashboard lookup — without it sql/sqlite
+	// would create an empty clawta.db when the data dir exists but the DB
+	// does not, masking the "no leaderboard yet" state with a fake-empty one.
+	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
 	if err != nil {
 		return placeholderEloBoard(limit), true, nil
 	}
@@ -135,7 +137,12 @@ func ReadDashboardElo(limit int) ([]DashboardEloEntry, bool, error) {
 	`, limit)
 	if err != nil {
 		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "no such table") || strings.Contains(lower, "unable to open database file") {
+		// "no such column" covers legacy swarm_elo tables that predate the
+		// role/task_class columns — fall back to the placeholder board
+		// rather than erroring the whole dashboard.
+		if strings.Contains(lower, "no such table") ||
+			strings.Contains(lower, "no such column") ||
+			strings.Contains(lower, "unable to open database file") {
 			return placeholderEloBoard(limit), true, nil
 		}
 		return nil, false, err
@@ -144,6 +151,9 @@ func ReadDashboardElo(limit int) ([]DashboardEloEntry, bool, error) {
 	out := make([]DashboardEloEntry, 0, limit)
 	for rows.Next() {
 		var item DashboardEloEntry
+		// last_dispatch_id is nullable in the swarm_elo schema; scan through
+		// sql.NullString so a NULL row doesn't fail the whole query.
+		var lastDispatchID sql.NullString
 		if err := rows.Scan(
 			&item.Driver,
 			&item.Model,
@@ -151,11 +161,12 @@ func ReadDashboardElo(limit int) ([]DashboardEloEntry, bool, error) {
 			&item.TaskClass,
 			&item.EloScore,
 			&item.DispatchesCount,
-			&item.LastDispatchID,
+			&lastDispatchID,
 			&item.LastUpdated,
 		); err != nil {
 			return nil, false, err
 		}
+		item.LastDispatchID = lastDispatchID.String
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -184,7 +195,9 @@ func lookupEloDelta(ticketID string) (float64, bool) {
 		return 0, false
 	}
 	dbPath := filepath.Join(os.Getenv("HOME"), ".openclaw", "data", "clawta.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// mode=ro: read-only lookup; without it a missing clawta.db would be
+	// created empty as a side effect of rendering the dashboard.
+	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
 	if err != nil {
 		return 0, false
 	}
