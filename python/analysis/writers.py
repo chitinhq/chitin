@@ -41,17 +41,22 @@ def _pattern_to_json(p: Pattern) -> dict[str, Any]:
 
 
 def _draft_to_json(d: RuleDraft) -> dict[str, Any]:
+    impact: Optional[dict[str, Any]]
+    if d.predicted_impact is None:
+        impact = None
+    else:
+        impact = {
+            "samples_evaluated": d.predicted_impact.samples_evaluated,
+            "would_allow": d.predicted_impact.would_allow,
+            "would_still_deny": d.predicted_impact.would_still_deny,
+            "method": d.predicted_impact.method,
+        }
     return {
         "kind": d.kind,
         "template": d.template,
         "confidence": d.confidence,
         "rule_yaml": d.rule_yaml,
-        "predicted_impact": {
-            "samples_evaluated": d.predicted_impact.samples_evaluated,
-            "would_allow": d.predicted_impact.would_allow,
-            "would_still_deny": d.predicted_impact.would_still_deny,
-            "method": d.predicted_impact.method,
-        },
+        "predicted_impact": impact,
         "notes": d.notes,
     }
 
@@ -173,16 +178,22 @@ def _render_pattern(p: dict[str, Any], lines: list[str]) -> None:
     lines.append(f"**Candidate rule** ({d['kind']}, {d['confidence']} confidence, "
                  f"template `{d['template']}`):")
     lines.append("")
-    lines.append("```yaml")
-    lines.append(d["rule_yaml"].rstrip())
-    lines.append("```")
-    lines.append("")
+    if d["rule_yaml"].strip():
+        lines.append("```yaml")
+        lines.append(d["rule_yaml"].rstrip())
+        lines.append("```")
+        lines.append("")
     impact = d["predicted_impact"]
-    lines.append(f"**Predicted impact:** samples_evaluated: {impact['samples_evaluated']}, "
-                 f"would_allow: {impact['would_allow']}, "
-                 f"would_still_deny: {impact['would_still_deny']} "
-                 f"(method: {impact['method']})")
-    lines.append("")
+    if impact is not None:
+        lines.append(f"**Predicted impact:** samples_evaluated: {impact['samples_evaluated']}, "
+                     f"would_allow: {impact['would_allow']}, "
+                     f"would_still_deny: {impact['would_still_deny']} "
+                     f"(method: {impact['method']})")
+        lines.append("")
+    else:
+        lines.append("_No predicted impact: diagnostic/research draft surfaces a finding, "
+                     "doesn't propose a rule change._")
+        lines.append("")
     if d["notes"]:
         lines.append(f"_Notes: {d['notes']}_")
         lines.append("")

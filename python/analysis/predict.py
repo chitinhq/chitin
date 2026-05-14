@@ -10,6 +10,27 @@ operator boxes) and adding a heavy dep for a sub-second classifier
 on hundreds of rows is a bad trade. The math here is one numpy line
 expanded to ~30 stdlib lines; readability stays.
 
+Invariants (see SPEC.md):
+    I3  No network. Pure function of input rows.
+    I5  Bad input never aborts a run — handled in loaders, predict is
+        called only with well-formed Decision rows.
+    I8  1-year lookback window in `_cli_train` uses timedelta(days=365),
+        not now.replace(year=year-1) (leap-day crash). Half-open window.
+
+Boundaries:
+    - Empty training set → degenerate model; `predict()` returns base_rate
+      (0.0). `n_samples == 0` is the caller-visible signal.
+    - Unknown action_type / agent at predict time → "<unk>" column. Never
+      raises KeyError.
+    - n_samples < 50 OR |base_rate - 0.5| < 0.05 → `insufficient_signal: true`
+      at the CLI layer. Callers gate decisions on that flag, not on raw probability.
+    - Hour default at predict time uses UTC (training timestamps are UTC);
+      a local-time default on non-UTC hosts would bucket actions into a
+      different time-of-day feature than training saw.
+    - L2 regularization is applied to every weight including bias. Acceptable
+      for the data scale; if bias-shrinkage matters at higher n, exempt the
+      last column explicitly.
+
 Public API:
     extract_features(decisions) -> X, y, vocab
     train(X, y, vocab, ...) -> Model         # vocab is a positional

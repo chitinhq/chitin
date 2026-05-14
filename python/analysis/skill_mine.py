@@ -16,6 +16,22 @@ Two-pass strategy:
   (gh-pr-view, git-status, npm-test, edit-yaml, etc.) and mine
   n-grams over verbs. This is where real workflow shapes surface.
 
+Invariants (see SPEC.md):
+    I3  No network — pure function of events JSONL contents.
+    I5  Bad JSONL lines silently skipped (post-hoc miner, not safety-critical).
+    Determinism: outputs are sorted by `(n_sess * n, n_total)` desc with a
+    stable input ordering — events sorted chronologically per chain. Two runs
+    over identical files produce identical reports.
+
+Boundaries:
+    - Events with no `chain_id` → bucket under "<unknown>" (not dropped).
+    - A chain with zero decision events → silently ignored (no rows yielded).
+    - N-grams of all-same verbs or all-`read-*` / all-`edit-*` → trivial,
+      filtered out (see `is_trivial`).
+    - N-gram threshold: a candidate must appear in ≥3 distinct sessions to
+      surface in the report. Single-session repeats are not skills.
+    - No events files in CHITIN_DIR → exit 2.
+
 Verb extraction rules:
   - shell.exec target starting with "gh "      → gh-<subcommand>
   - shell.exec target starting with "git "     → git-<subcommand>
