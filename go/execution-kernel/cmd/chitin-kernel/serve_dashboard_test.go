@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,5 +85,83 @@ func TestDashboardMux_APIAndSPA(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/session/sess-dash", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "dashboard") {
 		t.Fatalf("spa status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashboardMux_BoundaryEmptySessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+
+	mux := newDashboardMux(t.TempDir(), t.TempDir(), 10)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sessions status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Sessions []struct{} `json:"sessions"`
+		Error    string     `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("sessions json: %v", err)
+	}
+	if body.Error != "" {
+		t.Fatalf("unexpected error: %s", body.Error)
+	}
+	if len(body.Sessions) != 0 {
+		t.Fatalf("sessions len=%d want 0", len(body.Sessions))
+	}
+}
+
+func TestDashboardMux_BoundaryMaxRecentSessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+
+	for i, sessionID := range []string{"sess-old", "sess-mid", "sess-new"} {
+		body := fmt.Sprintf(`{"schema_version":"2","run_id":"run-%[1]s","session_id":"%[1]s","surface":"codex","agent_instance_id":"agent-1","agent_fingerprint":"fp","event_type":"decision","chain_id":"%[1]s","chain_type":"session","seq":0,"this_hash":"h%[1]s","ts":"2026-05-13T10:00:0%[2]dZ","labels":{"driver":"codex","agent_instance_id":"agent-1"},"payload":{"tool_name":"file.read","action_type":"file.read","action_target":"README.md","decision":"allow"}}`+"\n", sessionID, i)
+		if err := os.WriteFile(filepath.Join(home, "events-"+sessionID+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mux := newDashboardMux(t.TempDir(), t.TempDir(), 2)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sessions status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("sessions json: %v", err)
+	}
+	if len(body.Sessions) != 2 {
+		t.Fatalf("sessions len=%d want 2", len(body.Sessions))
+	}
+	if body.Sessions[0].SessionID != "sess-new" || body.Sessions[1].SessionID != "sess-mid" {
+		t.Fatalf("sessions order=%+v; want newest two", body.Sessions)
+	}
+}
+
+func TestDashboardMux_BoundaryErrorMissingPolicy(t *testing.T) {
+	t.Setenv("CHITIN_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	mux := newDashboardMux(t.TempDir(), t.TempDir(), 10)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/policy", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("policy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) || !strings.Contains(rec.Body.String(), "no chitin.yaml") {
+		t.Fatalf("policy error body=%s", rec.Body.String())
 	}
 }
