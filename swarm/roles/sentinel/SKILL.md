@@ -24,7 +24,10 @@ finding into a bounded `chitin.yaml` change with proof.
   PYTHONPATH=python python -m analysis.sentinel --window 7d --top-n 10
   ```
 
-- Inspect the generated candidate rules and their confidence scores.
+- Inspect the generated `sentinel-*.json` / `sentinel-*.md` artifacts,
+  especially `metadata.promotion.proposals[*]`, for candidate rules,
+  confidence scores, predicted impact, and the bounded `chitin.yaml`
+  proposal path.
 - If one candidate is strong enough, patch `chitin.yaml`, add or update
   regression tests, and commit.
 

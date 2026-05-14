@@ -38,6 +38,26 @@ class TicketMetadataTests(unittest.TestCase):
         ticket = {"task": {"body": "Role: reviewer\n"}}
         self.assertEqual(module.resolve_role(ticket), "reviewer")
 
+    def test_resolve_role_routes_sentinel_from_title(self) -> None:
+        module = load_module()
+        ticket = {
+            "task": {
+                "title": "feat(swarm): add sentinel invariant role",
+                "body": "Acceptance:\n- mine the chain",
+            }
+        }
+        self.assertEqual(module.resolve_role(ticket), "sentinel")
+
+    def test_resolve_role_keeps_explicit_role_over_title_inference(self) -> None:
+        module = load_module()
+        ticket = {
+            "task": {
+                "title": "review invariant docs",
+                "body": "role: reviewer\n",
+            }
+        }
+        self.assertEqual(module.resolve_role(ticket), "reviewer")
+
     def test_parse_role_defaults_when_missing(self) -> None:
         module = load_module()
         self.assertEqual(module.parse_role(None), "programmer")

@@ -78,6 +78,7 @@ def write_json(
     window_until: datetime,
     window_size: str,
     stream: str = "decisions",
+    metadata: Optional[dict[str, Any]] = None,
 ) -> None:
     """Write the canonical analysis JSON. Deterministic given fixed inputs (I4).
 
@@ -103,6 +104,8 @@ def write_json(
         "patterns": [_finding_to_json(f) for f in findings],
         "no_template_patterns": list(no_template),
     }
+    if metadata is not None:
+        body["metadata"] = dict(metadata)
     text = json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False)
     path.write_text(text + "\n")
 
@@ -121,7 +124,9 @@ def write_markdown_from_json(json_path: Path, md_path: Path) -> None:
     lines: list[str] = []
 
     until = data["window"]["until"][:10]
-    lines.append(f"# Decisions Analysis — {until}")
+    stream = data.get("stream", "decisions")
+    title = "Sentinel Invariant Proposals" if stream == "sentinel" else "Decisions Analysis"
+    lines.append(f"# {title} — {until}")
     lines.append("")
     lines.append(f"**Window:** {data['window']['size']} "
                  f"({data['window']['since'][:10]} → {until})")
@@ -135,6 +140,9 @@ def write_markdown_from_json(json_path: Path, md_path: Path) -> None:
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    if stream == "sentinel":
+        _render_sentinel_metadata(data.get("metadata", {}), lines)
 
     if not data["patterns"]:
         lines.append("_No deny patterns in this window._")
@@ -160,6 +168,33 @@ def write_markdown_from_json(json_path: Path, md_path: Path) -> None:
         lines.append("")
 
     md_path.write_text("\n".join(lines))
+
+
+def _render_sentinel_metadata(metadata: dict[str, Any], lines: list[str]) -> None:
+    promotion = metadata.get("promotion") if isinstance(metadata, dict) else None
+    if not isinstance(promotion, dict):
+        return
+    lines.append("## Promotion target")
+    lines.append("")
+    lines.append(f"- proposal_path: `{promotion.get('proposal_path', 'chitin.yaml')}`")
+    lines.append(f"- proposal_count: {promotion.get('proposal_count', 0)}")
+    status = promotion.get("status")
+    if status:
+        lines.append(f"- status: {status}")
+    lines.append("")
+    proposals = promotion.get("proposals", [])
+    if proposals:
+        lines.append("## Candidate invariant proposals")
+        lines.append("")
+        for proposal in proposals:
+            lines.append(
+                f"- #{proposal['rank']} {proposal['rule_id']} "
+                f"({proposal['confidence']} confidence) -> "
+                f"`{proposal['proposal_path']}`"
+            )
+        lines.append("")
+    lines.append("---")
+    lines.append("")
 
 
 def _render_pattern(p: dict[str, Any], lines: list[str]) -> None:
