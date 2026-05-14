@@ -162,4 +162,4 @@ Justification:
 
 ## Migration sequence
 
-See `docs/superpowers/plans/2026-05-06-orchestration-code-deletion.md`.
+Orchestration code (`apps/runner/`, `apps/slack-app/`, `infra/temporal/`, `libs/scheduler/`, in-gate peer spawn) was deleted in PRs #397-#400 (2026-05-06 to 2026-05-08). Implementation plan that drove that deletion has been retired now that the work shipped.
