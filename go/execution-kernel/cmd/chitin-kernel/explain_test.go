@@ -42,7 +42,7 @@ rules:
 		t.Fatal(err)
 	}
 	govRows := `{"allowed":false,"mode":"enforce","rule_id":"deny-rm","reason":"dangerous delete","suggestion":"use git rm","corrected_command":"git rm <files>","action_type":"shell.exec","action_target":"rm -rf /tmp/demo","ts":"2026-05-14T12:00:00Z","driver":"codex","agent_instance_id":"agent-1","agent":"agent-1","role":"worker"}` + "\n" +
-		`{"allowed":false,"mode":"monitor","rule_id":"router-heuristic:deny-rm","action_type":"router.signal","action_target":"Bash:rm -rf /tmp/demo","ts":"2026-05-14T12:00:00Z","agent":"agent-1","predicted_blast":0.91,"floundering_score":0.10,"drift_score":0.22}` + "\n"
+		`{"allowed":false,"mode":"monitor","rule_id":"router-heuristic:deny-rm","action_type":"router.signal","action_target":"Bash:rm -rf /tmp/demo","ts":"2026-05-14T12:00:00.123456789Z","agent":"agent-1","predicted_blast":0.91,"floundering_score":0.10,"drift_score":0.22}` + "\n"
 	if err := os.WriteFile(filepath.Join(home, "gov-decisions-2026-05-14.jsonl"), []byte(govRows), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,122 @@ rules:
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q\n%s", want, stdout)
 		}
+	}
+}
+
+func TestCLI_Explain_BoundaryEmpty_NoSignalsOrNearMisses(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := `id: explain-empty
+mode: guide
+rules:
+  - id: allow-status
+    action: shell.exec
+    effect: allow
+    target: "git status"
+    reason: "status is safe"
+`
+	if err := os.WriteFile(filepath.Join(repo, "chitin.yaml"), []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events := `{"schema_version":"2","run_id":"run-empty","session_id":"sess-empty","surface":"codex","agent_instance_id":"agent-empty","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-empty","chain_type":"session","seq":0,"this_hash":"event-empty","ts":"2026-05-14T13:00:00Z","labels":{"driver":"codex","agent_instance_id":"agent-empty","agent":"agent-empty"},"payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"git status","decision":"allow","rule_id":"allow-status"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "events-run-empty.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	govRows := `{"allowed":true,"mode":"guide","rule_id":"allow-status","reason":"status is safe","action_type":"shell.exec","action_target":"git status","ts":"2026-05-14T13:00:00Z","driver":"codex","agent_instance_id":"agent-empty","agent":"agent-empty"}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "gov-decisions-2026-05-14.jsonl"), []byte(govRows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "explain", "event-empty", "--cwd", repo)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{
+		"Signals\n- none recorded for this decision",
+		"Near Misses\n- none",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing %q\n%s", want, stdout)
+		}
+	}
+}
+
+func TestCLI_Explain_BoundaryMax_NearMissLimit(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := `id: explain-max
+mode: enforce
+rules:
+  - id: deny-curl
+    action: shell.exec
+    effect: deny
+    target: "curl"
+    reason: "network shell denied"
+  - id: near-role
+    action: shell.exec
+    effect: allow
+    role: reviewer
+    target: "curl"
+  - id: near-model
+    action: shell.exec
+    effect: allow
+    model: gpt-special
+    target: "curl"
+`
+	if err := os.WriteFile(filepath.Join(repo, "chitin.yaml"), []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events := `{"schema_version":"2","run_id":"run-max","session_id":"sess-max","surface":"codex","agent_instance_id":"agent-max","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-max","chain_type":"session","seq":0,"this_hash":"event-max","ts":"2026-05-14T13:30:00Z","labels":{"driver":"codex","agent_instance_id":"agent-max","agent":"agent-max"},"payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"curl https://example.test","decision":"deny","rule_id":"deny-curl"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "events-run-max.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	govRows := `{"allowed":false,"mode":"enforce","rule_id":"deny-curl","reason":"network shell denied","action_type":"shell.exec","action_target":"curl https://example.test","ts":"2026-05-14T13:30:00Z","driver":"codex","agent_instance_id":"agent-max","agent":"agent-max","role":"worker","model":"gpt-default"}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "gov-decisions-2026-05-14.jsonl"), []byte(govRows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "explain", "event-max", "--cwd", repo, "--near-miss-limit", "1")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "near-role (allow, score=") {
+		t.Fatalf("stdout missing capped near miss\n%s", stdout)
+	}
+	if strings.Contains(stdout, "near-model (allow, score=") {
+		t.Fatalf("stdout exceeded near miss max\n%s", stdout)
+	}
+}
+
+func TestCLI_Explain_BoundaryError_MissingEvent(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := `id: explain-error
+mode: guide
+rules:
+  - id: allow-read
+    action: file.read
+    effect: allow
+`
+	if err := os.WriteFile(filepath.Join(repo, "chitin.yaml"), []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runCLIWithHome(t, home, "explain", "missing-event", "--cwd", repo)
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for missing event")
+	}
+	if !strings.Contains(stderr, "explain_failed") || !strings.Contains(stderr, "missing-event") {
+		t.Fatalf("stderr should explain missing event, got %s", stderr)
 	}
 }
 

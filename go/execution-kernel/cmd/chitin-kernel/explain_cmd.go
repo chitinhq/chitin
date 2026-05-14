@@ -22,6 +22,12 @@ func cmdExplain(args []string) {
 	policyFile := fs.String("policy-file", "", "explicit chitin.yaml path")
 	dir := fs.String("dir", "", "path to chitin state dir (default: $CHITIN_HOME or ~/.chitin)")
 	nearMissLimit := fs.Int("near-miss-limit", 3, "max near-miss rules to show")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: chitin-kernel explain <event-id> [--cwd <path>] [--policy-file <path>] [--dir <path>]\n\n")
+		fmt.Fprintln(fs.Output(), "Emits human-readable text for operator inspection; no stable JSON output contract is currently defined.")
+		fmt.Fprintln(fs.Output(), "\nFlags:")
+		fs.PrintDefaults()
+	}
 	fs.Parse(parseArgs)
 
 	if eventID == "" && fs.NArg() == 1 {

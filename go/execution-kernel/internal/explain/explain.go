@@ -318,7 +318,7 @@ func readSignals(stateDir string, decision gov.Decision, action gov.Action) *Sig
 	if err != nil {
 		return nil
 	}
-	decisionTS, err := time.Parse(time.RFC3339, decision.Ts)
+	decisionTS, err := parseTimestamp(decision.Ts)
 	if err != nil {
 		return nil
 	}
@@ -346,7 +346,7 @@ func readSignals(stateDir string, decision gov.Decision, action gov.Action) *Sig
 			if action.Target != "" && !strings.HasSuffix(d.Action.Target, action.Target) {
 				return
 			}
-			ts, err := time.Parse(time.RFC3339, d.Ts)
+			ts, err := parseTimestamp(d.Ts)
 			if err != nil {
 				return
 			}
@@ -369,6 +369,13 @@ func readSignals(stateDir string, decision gov.Decision, action gov.Action) *Sig
 		})
 	}
 	return best
+}
+
+func parseTimestamp(ts string) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return parsed, nil
+	}
+	return time.Parse(time.RFC3339, ts)
 }
 
 func collectNearMisses(policy gov.Policy, matchedRuleID string, action gov.Action, ctx gov.FingerprintContext, max int) []NearMiss {
