@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
 import sys
 import tempfile
@@ -300,6 +301,43 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(unblocked, ["t_unblock"])
         self.assertEqual(seen[1][0:4], [module.KANBAN_FLOW_BIN, "unblock", "t_unblock", "--author"])
         self.assertIn("Dependency gate cleared: PR #99999", seen[2][-1])
+
+
+class ClawtaPollerRoutingTests(unittest.TestCase):
+    def test_route_ticket_propagates_router_circuit_breaker_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"CLAWTA_ROUTER_MODE": "deterministic", "CLAWTA_FORCE_DRIVER": "codex"},
+            clear=False,
+        ):
+            module = load_module()
+
+        ticket = {
+            "id": "t_routerenv",
+            "title": "router env ticket",
+            "body": "body",
+            "assignee": "clawta",
+            "priority": 50,
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertEqual(cmd, [sys.executable, str(module.PICK_DRIVER)])
+            self.assertEqual(kwargs["timeout"], 60)
+            self.assertEqual(kwargs["env"]["ROUTER_MODE"], "deterministic")
+            self.assertEqual(kwargs["env"]["FORCE_DRIVER"], "codex")
+            self.assertEqual(kwargs["input"], '{"complexity":"low"}')
+            return mock.Mock(
+                returncode=0,
+                stdout='{"driver":"codex","reasoning":"forced"}',
+                stderr="",
+            )
+
+        with mock.patch.object(
+            module, "classify_ticket_for_routing", return_value='{"complexity":"low"}'
+        ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+            driver = module.route_ticket(ticket, dry_run=True)
+
+        self.assertEqual(driver, "codex")
 
 
 if __name__ == "__main__":

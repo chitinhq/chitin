@@ -18,6 +18,26 @@ their canonical owner is the OpenClaw cron substrate.
 
 ## Guard behavior
 
+### Router circuit breaker
+
+If `~/.openclaw/logs/clawta-poller.log` shows `_pick_driver.py` timeouts
+repeatedly over a short window, treat the OpenClaw router as degraded and trip
+the poller-side circuit breaker.
+
+Recommended v1 procedure:
+
+- If `_pick_driver.py timed out` fires 3 times in 10 minutes, set
+  `CLAWTA_ROUTER_MODE=deterministic` in the poller environment and restart the
+  poller.
+- If you need to pin all routing to one lane during the incident, also set
+  `CLAWTA_FORCE_DRIVER=codex` or `CLAWTA_FORCE_DRIVER=gemini` before the
+  restart.
+- Remove the override after the OpenClaw gateway is healthy again so routing
+  can return to the normal `_pick_driver.py` mode.
+
+These `CLAWTA_*` env vars are consumed by `swarm/bin/clawta-poller`, which
+passes them through to `_pick_driver.py` as `ROUTER_MODE` and `FORCE_DRIVER`.
+
 ### Blocked escalator
 
 Command: `clawta-blocked-escalator`
