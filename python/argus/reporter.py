@@ -156,17 +156,36 @@ def _html_escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _render_html(date_str: str, generated: str, stats: dict, findings: list[Finding], summary: str) -> str:
+def _render_html(
+    date_str: str,
+    generated: str,
+    stats: dict,
+    findings: list[Finding],
+    summary: str,
+    cross_findings: Optional[list["CrossFinding"]] = None,
+) -> str:
+    cross_findings = cross_findings or []
     cards = "".join([
         f"<div class='card'><span>Total</span><strong>{stats['total_events']}</strong></div>",
         f"<div class='card'><span>Denies</span><strong>{stats['deny_count']}</strong></div>",
         f"<div class='card'><span>Deny rate</span><strong>{stats['deny_percent']:.1f}%</strong></div>",
-        f"<div class='card'><span>Findings</span><strong>{len(findings)}</strong></div>",
+        f"<div class='card'><span>Chain Findings</span><strong>{len(findings)}</strong></div>",
+        f"<div class='card'><span>Cross-Source</span><strong>{len(cross_findings)}</strong></div>",
     ])
     finding_rows = "".join(
         f"<tr><td>{_html_escape(f.detector)}</td><td>{_html_escape(f.severity)}</td><td>{_html_escape(f.title)}</td><td><pre>{_html_escape(json.dumps(f.details, indent=2))}</pre></td></tr>"
         for f in findings
     ) or "<tr><td colspan='4'>No findings detected.</td></tr>"
+    cross_rows = "".join(
+        "<tr><td>{det}</td><td>{sev}</td><td>{title}</td><td><pre>{det_json}</pre></td><td><pre>{ev}</pre></td></tr>".format(
+            det=_html_escape(f.detector),
+            sev=_html_escape(f.severity),
+            title=_html_escape(f.title),
+            det_json=_html_escape(json.dumps(f.details, indent=2)),
+            ev=_html_escape("\n".join(f.evidence)),
+        )
+        for f in cross_findings
+    ) or "<tr><td colspan='5'>No cross-source findings.</td></tr>"
     top_rules = "".join(f"<li><code>{_html_escape(r['rule_id'])}</code>: {r['count']}</li>" for r in stats['top_deny_rules']) or "<li>None</li>"
     top_agents = "".join(f"<li><code>{_html_escape(a['agent'])}</code>: {a['deny_count']}</li>" for a in stats['top_deny_agents']) or "<li>None</li>"
     return f"""<!doctype html>
@@ -200,7 +219,8 @@ code {{ color:var(--accent); }}
 <section><h2>Executive Summary</h2><p>{_html_escape(summary)}</p></section>
 <section><h2>Top Deny Rules</h2><ul>{top_rules}</ul></section>
 <section><h2>Top Deny Agents</h2><ul>{top_agents}</ul></section>
-<section><h2>Detector Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{finding_rows}</tbody></table></section>
+<section><h2>Chain Detector Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{finding_rows}</tbody></table></section>
+<section><h2>Cross-Source Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th><th>Evidence</th></tr></thead><tbody>{cross_rows}</tbody></table></section>
 </main></body></html>
 """
 
@@ -211,6 +231,7 @@ def generate_daily_report(
     *,
     discord_webhook: Optional[str] = None,
     quiet_day_skip_discord: bool = True,
+    cross_source_db: Optional[Path] = None,
 ) -> Path:
     """Generate daily markdown digest with detector findings and qwen narration.
 
@@ -232,6 +253,17 @@ def generate_daily_report(
     # Gather data
     stats = _get_summary_stats(db_path)
     findings = run_all_detectors(db_path)
+
+    # Cross-source findings (Slice 2). Default to ~/.argus/cross_source.db
+    # but degrade silently if the cross-source index doesn't exist yet.
+    if cross_source_db is None:
+        cross_source_db = Path.home() / ".argus" / "cross_source.db"
+    cross_findings: list[CrossFinding] = []
+    if cross_source_db.exists():
+        try:
+            cross_findings = run_all_cross_detectors(cross_source_db)
+        except Exception:
+            cross_findings = []
 
     # Build markdown
     lines = [
@@ -284,19 +316,36 @@ def generate_daily_report(
     lines.append("\n## Detector Findings\n")
     lines.append(_format_finding_table(findings))
 
+    # Cross-source section (markdown projection)
+    if cross_findings:
+        lines.append("\n## Cross-Source Findings\n")
+        for cf in cross_findings:
+            lines.append(f"- **[{cf.detector}]** {cf.title}\n")
+            if cf.evidence:
+                lines.append(f"    Evidence: {', '.join(cf.evidence)}\n")
+
     # Write markdown compatibility output plus Hermes-style dark HTML/latest contract.
     _atomic_write_text(md_path, "".join(lines))
-    html = _render_html(date_str, now.isoformat(), stats, findings, summary)
+    html = _render_html(
+        date_str,
+        now.isoformat(),
+        stats,
+        findings,
+        summary,
+        cross_findings=cross_findings,
+    )
     _atomic_write_text(report_path, html)
     _atomic_symlink(latest_path, report_path)
 
     # Discord summary: best-effort. Suppressed on quiet days unless the
     # operator opts in to always-post via quiet_day_skip_discord=False.
-    if discord_webhook and (findings or not quiet_day_skip_discord):
+    total_findings = len(findings) + len(cross_findings)
+    if discord_webhook and (total_findings or not quiet_day_skip_discord):
         headline = (
-            f"Argus daily digest {date_str}: {len(findings)} finding(s); "
-            f"deny rate {stats['deny_percent']:.1f}% across {stats['total_events']} events."
-            if findings
+            f"Argus daily digest {date_str}: {len(findings)} chain + "
+            f"{len(cross_findings)} cross-source finding(s); deny rate "
+            f"{stats['deny_percent']:.1f}% across {stats['total_events']} events."
+            if total_findings
             else f"Argus daily digest {date_str}: all quiet ({stats['total_events']} events)."
         )
         _post_discord_summary(discord_webhook, headline, link=None)

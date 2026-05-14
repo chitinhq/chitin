@@ -8,6 +8,8 @@ from pathlib import Path
 
 from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
+from argus.kanban_ingest import ingest_all_kanban
+from argus.git_ingest import ingest_repo, discover_repos
 
 
 def cmd_index(args) -> int:
@@ -178,6 +180,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     query_p = subparsers.add_parser("query", help="Query index with NL question")
     query_p.add_argument("query", nargs="+", help="Natural language question")
 
+    # ingest-kanban subcommand
+    ink_p = subparsers.add_parser(
+        "ingest-kanban",
+        help="Poll ~/.hermes/kanban/boards/*/kanban.db into the cross-source index",
+    )
+    ink_p.add_argument("--boards-root",
+                       default=str(Path.home() / ".hermes" / "kanban" / "boards"),
+                       help="Root directory containing per-board kanban DBs")
+    ink_p.add_argument("--xs-db",
+                       default=str(Path.home() / ".argus" / "cross_source.db"),
+                       help="Cross-source SQLite index path")
+
+    # ingest-git subcommand
+    ing_p = subparsers.add_parser(
+        "ingest-git",
+        help="Poll commits + PRs for tracked repos into the cross-source index",
+    )
+    ing_p.add_argument("--repo", action="append", default=None,
+                       help="Repo path to poll (repeatable). Default: auto-discover under --root")
+    ing_p.add_argument("--root", action="append", default=None,
+                       help="Directory to scan for child .git repos (repeatable)")
+    ing_p.add_argument("--xs-db",
+                       default=str(Path.home() / ".argus" / "cross_source.db"),
+                       help="Cross-source SQLite index path")
+
     return p.parse_args(argv)
 
 
@@ -193,8 +220,52 @@ def main(argv: list[str] | None = None) -> int:
         # Join query args back into a string
         args.query = " ".join(args.query)
         return cmd_query(args)
+    elif args.cmd == "ingest-kanban":
+        return cmd_ingest_kanban(args)
+    elif args.cmd == "ingest-git":
+        return cmd_ingest_git(args)
 
     return 1
+
+
+def cmd_ingest_kanban(args) -> int:
+    """Pull kanban events into the cross-source index."""
+    boards_root = Path(args.boards_root)
+    xs_db = Path(args.xs_db)
+    if not boards_root.exists():
+        print(f"Error: boards root not found: {boards_root}", file=sys.stderr)
+        return 1
+    result = ingest_all_kanban(boards_root, xs_db)
+    print(f"kanban ingest: boards={result['boards']} inserted={result['inserted']} skipped={result['skipped']}",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_ingest_git(args) -> int:
+    """Pull git commits + PRs into the cross-source index for the given repos."""
+    xs_db = Path(args.xs_db)
+    repos: list[Path] = []
+    if args.repo:
+        repos.extend(Path(p) for p in args.repo)
+    if args.root:
+        repos.extend(discover_repos([Path(r) for r in args.root]))
+    if not repos:
+        # Default: cwd if it's a repo
+        cwd = Path.cwd()
+        if (cwd / ".git").exists():
+            repos.append(cwd)
+    if not repos:
+        print("Error: no repos to ingest. Pass --repo PATH or --root DIR.", file=sys.stderr)
+        return 1
+    for r in repos:
+        result = ingest_repo(r, xs_db)
+        print(
+            f"git ingest: repo={result['repo']} "
+            f"commits=+{result['commits_inserted']}/-{result['commits_skipped']} "
+            f"prs=+{result['prs_inserted']}/-{result['prs_skipped']}",
+            file=sys.stderr,
+        )
+    return 0
 
 
 if __name__ == "__main__":
