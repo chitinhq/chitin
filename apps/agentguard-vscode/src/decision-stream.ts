@@ -1,5 +1,5 @@
 import { createConnection } from 'node:net';
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { listEventChainFiles } from './chitin-locator';
 import { parseDecisionEventLine, type DecisionRecord } from './decision-types';
@@ -14,6 +14,9 @@ export interface DecisionStreamOptions {
 
 interface TailCursor {
   offset: number;
+  // Bytes read past the last newline — a JSONL record still mid-write.
+  // Held until the rest of the line arrives so it is never dropped.
+  pending: string;
 }
 
 export class DecisionStream {
@@ -26,6 +29,7 @@ export class DecisionStream {
   private stopTimer: NodeJS.Timeout | null = null;
   private socket: ReturnType<typeof createConnection> | null = null;
   private currentMode: 'socket' | 'tail' | null = null;
+  private stopped = false;
 
   constructor(options: DecisionStreamOptions) {
     this.chitinDir = options.chitinDir;
@@ -43,6 +47,9 @@ export class DecisionStream {
   }
 
   stop(): void {
+    // Mark stopped first: destroying the socket below fires its 'close'
+    // handler, which would otherwise restart the tailer.
+    this.stopped = true;
     if (this.stopTimer) {
       clearInterval(this.stopTimer);
       this.stopTimer = null;
@@ -99,7 +106,11 @@ export class DecisionStream {
             return;
           }
           this.socket = null;
-          this.startTailer();
+          // Only fall back to tailing if the stream is still live — a
+          // close triggered by stop()/dispose must not restart ingestion.
+          if (!this.stopped) {
+            this.startTailer();
+          }
         });
       });
 
@@ -111,7 +122,7 @@ export class DecisionStream {
   }
 
   private startTailer(): void {
-    if (this.stopTimer) {
+    if (this.stopped || this.stopTimer) {
       return;
     }
     this.setMode('tail');
@@ -124,30 +135,48 @@ export class DecisionStream {
   private pollTailFiles(): void {
     for (const file of listEventChainFiles(this.chitinDir)) {
       const fullPath = join(this.chitinDir, file);
-      const prior = this.cursors.get(fullPath) ?? { offset: 0 };
-      let content: string;
+      let fd: number;
       try {
-        content = readFileSync(fullPath, 'utf8');
+        fd = openSync(fullPath, 'r');
       } catch {
         continue;
       }
-      const unread = content.slice(prior.offset);
-      if (!unread) {
-        this.cursors.set(fullPath, { offset: content.length });
-        continue;
-      }
-
-      for (const line of unread.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) {
+      try {
+        const size = fstatSync(fd).size;
+        const prior = this.cursors.get(fullPath) ?? { offset: 0, pending: '' };
+        // A shrunk file was rotated/truncated — restart from the top.
+        let offset = prior.offset > size ? 0 : prior.offset;
+        let pending = prior.offset > size ? '' : prior.pending;
+        if (size === offset) {
+          this.cursors.set(fullPath, { offset, pending });
           continue;
         }
-        const decision = parseDecisionEventLine(trimmed);
-        if (decision) {
-          this.onDecision(decision);
+        // Read only the bytes past the cursor, not the whole file.
+        const buf = Buffer.alloc(size - offset);
+        const bytesRead = readSync(fd, buf, 0, buf.length, offset);
+        const chunk = pending + buf.subarray(0, bytesRead).toString('utf8');
+        const lastNewline = chunk.lastIndexOf('\n');
+        if (lastNewline < 0) {
+          // No complete line yet — keep buffering the partial record.
+          this.cursors.set(fullPath, { offset: offset + bytesRead, pending: chunk });
+          continue;
         }
+        const complete = chunk.slice(0, lastNewline);
+        pending = chunk.slice(lastNewline + 1);
+        for (const line of complete.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          const decision = parseDecisionEventLine(trimmed);
+          if (decision) {
+            this.onDecision(decision);
+          }
+        }
+        this.cursors.set(fullPath, { offset: offset + bytesRead, pending });
+      } finally {
+        closeSync(fd);
       }
-      this.cursors.set(fullPath, { offset: content.length });
     }
   }
 

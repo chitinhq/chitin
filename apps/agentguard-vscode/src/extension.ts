@@ -64,6 +64,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   const openDecision = async (decision: DecisionRecord) => {
+    // openDecision is a registered command, so it can be invoked from the
+    // Command Palette with no argument. Guard rather than crash on a bare
+    // invocation — it only makes sense from a tree-item click.
+    if (!decision || typeof decision.eventId !== 'string') {
+      void vscode.window.showInformationMessage(
+        'Open a Chitin decision from the Agentguard tree view, not the Command Palette.',
+      );
+      return;
+    }
     const workspacePath = workspaceFolders[0]?.uri.fsPath ?? '.';
     let body = '';
     try {

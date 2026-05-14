@@ -61,8 +61,8 @@
     }
   },
   "scripts": {
-    "build": "pnpm exec tsc -p apps/agentguard-vscode/tsconfig.json",
-    "test": "pnpm exec vitest run apps/agentguard-vscode/tests",
+    "build": "pnpm exec tsc -p tsconfig.json",
+    "test": "pnpm exec vitest run tests",
     "package": "mkdir -p ../../dist/apps/agentguard-vscode && pnpm exec vsce package --out ../../dist/apps/agentguard-vscode/chitin-agentguard.vsix"
   },
   "devDependencies": {

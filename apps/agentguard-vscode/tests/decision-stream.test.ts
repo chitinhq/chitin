@@ -75,6 +75,53 @@ describe('DecisionStream', () => {
     stream.stop();
   });
 
+  it('buffers a partial trailing line until its newline arrives', async () => {
+    const chitinDir = tempChitinDir();
+    const chainFile = join(chitinDir, 'events-run-1.jsonl');
+    const partial = sampleDecision.replace('evt-stream', 'evt-stream-partial');
+    // A complete record + a partial second line (no trailing newline).
+    writeFileSync(chainFile, `${sampleDecision}\n${partial.slice(0, 40)}`, 'utf8');
+
+    const received: string[] = [];
+    const stream = new DecisionStream({
+      chitinDir,
+      pollMs: 20,
+      onDecision: (decision) => received.push(decision.eventId),
+    });
+    await stream.start();
+    await waitFor(() => received.includes('evt-stream'));
+    // The partial line must not have been consumed nor skipped — completing
+    // it must still deliver the record.
+    writeFileSync(chainFile, `${sampleDecision}\n${partial}\n`, 'utf8');
+    await waitFor(() => received.includes('evt-stream-partial'));
+    stream.stop();
+  });
+
+  it('does not restart the tailer after stop()', async () => {
+    const chitinDir = tempChitinDir();
+    const chainFile = join(chitinDir, 'events-run-1.jsonl');
+    writeFileSync(chainFile, `${sampleDecision}\n`, 'utf8');
+
+    const received: string[] = [];
+    const stream = new DecisionStream({
+      chitinDir,
+      pollMs: 20,
+      onDecision: (decision) => received.push(decision.eventId),
+    });
+    await stream.start();
+    await waitFor(() => received.includes('evt-stream'));
+    stream.stop();
+    writeFileSync(
+      chainFile,
+      `${sampleDecision}\n${sampleDecision.replace('evt-stream', 'evt-after-stop')}\n`,
+      'utf8',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (received.includes('evt-after-stop')) {
+      throw new Error('tailer kept running after stop()');
+    }
+  });
+
   it('prefers a socket stream when one is available', async () => {
     const chitinDir = tempChitinDir();
     const socketPath = join(chitinDir, 'decisions.sock');

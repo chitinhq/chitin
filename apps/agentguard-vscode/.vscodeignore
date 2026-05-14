@@ -1,6 +1,6 @@
 src/**
 tests/**
 tsconfig.json
+tsconfig.tsbuildinfo
 vitest.config.ts
 node_modules/**
-!node_modules/@types/**
