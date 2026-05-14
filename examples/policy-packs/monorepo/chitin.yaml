@@ -6,7 +6,6 @@ mode: enforce
 bounds:
   max_files_changed: 40
   max_lines_changed: 900
-  max_runtime_seconds: 1500
   per_action:
     git.push:
       max_files_changed: 120
@@ -75,7 +74,7 @@ rules:
 
   - id: guide-root-manifest-writes
     action: file.write
-    effect: guide
+    effect: deny
     target_regex: '(?:^|/)(?:package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|nx\.json|turbo\.json)$'
     reason: "Root-manifest changes affect the whole workspace"
     suggestion: "Confirm the change is intended for the root and not just one package."

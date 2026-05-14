@@ -6,7 +6,6 @@ mode: enforce
 bounds:
   max_files_changed: 30
   max_lines_changed: 700
-  max_runtime_seconds: 1200
   per_action:
     git.push:
       max_files_changed: 80
