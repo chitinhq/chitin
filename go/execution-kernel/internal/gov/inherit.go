@@ -14,6 +14,10 @@ import (
 // contributed (outermost first, innermost last), and an error if no
 // policy was found or a strictness violation was detected.
 func LoadWithInheritance(cwd string) (Policy, []string, error) {
+	return LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{})
+}
+
+func LoadWithInheritanceWithOptions(cwd string, opts PolicyLoadOptions) (Policy, []string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return Policy{}, nil, fmt.Errorf("abs: %w", err)
@@ -43,7 +47,7 @@ func LoadWithInheritance(cwd string) (Policy, []string, error) {
 
 	var merged Policy
 	for i, p := range paths {
-		loaded, err := LoadPolicyFile(p)
+		loaded, err := LoadPolicyFileWithOptions(p, opts)
 		if err != nil {
 			return Policy{}, paths, err
 		}

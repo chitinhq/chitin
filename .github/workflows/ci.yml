@@ -61,6 +61,41 @@ jobs:
         run: go vet ./...
         working-directory: go/execution-kernel
 
+      - name: Verify signed governance policy
+        env:
+          CHITIN_POLICY_PUBLIC_KEY: ${{ vars.CHITIN_POLICY_PUBLIC_KEY || secrets.CHITIN_POLICY_PUBLIC_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.event.pull_request.base.ref }}"
+          else
+            base="HEAD~1"
+          fi
+          # LoadWithInheritance verifies every chitin.yaml on the
+          # inheritance chain, so the gate must fire if any nested
+          # chitin.yaml changed too — not just the repo-root one.
+          changed=$(git diff --name-only "$base"...HEAD | grep -E '(^|/)chitin\.yaml$' || true)
+          if [ -z "$changed" ]; then
+            echo "no chitin.yaml files changed; skipping signed-policy verification"
+            exit 0
+          fi
+          if [ -z "${CHITIN_POLICY_PUBLIC_KEY:-}" ]; then
+            echo "::error::chitin.yaml changed but CHITIN_POLICY_PUBLIC_KEY is not configured as a repository variable/secret; see docs/runbooks/governance-signed-policy.md"
+            exit 1
+          fi
+          status=0
+          while IFS= read -r policy; do
+            [ -n "$policy" ] || continue
+            echo "verifying $policy"
+            if ! go run ./cmd/chitin-kernel policy verify \
+                --policy-file "../../$policy" \
+                --public-key "$CHITIN_POLICY_PUBLIC_KEY"; then
+              echo "::error file=$policy::signature verification failed"
+              status=1
+            fi
+          done <<< "$changed"
+          exit $status
+        working-directory: go/execution-kernel
+
       - name: Go test
         run: go test ./...
         working-directory: go/execution-kernel
