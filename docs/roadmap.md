@@ -68,7 +68,7 @@ The hero sentence names six drivers. Bitrot in any is a hero-sentence bug.
 
 ### Layer Contracts v1 (locked 2026-04-29)
 
-Four invariants: kernel authority, driver constraint (`AllowedDrivers` primitive), routing scope, aggregation role. See `docs/architecture/layer-contracts.md`.
+Four invariants: kernel authority, driver constraint (schema-typed `allowed_drivers` on `ExecutionRequest`; active kernel-side narrowing deferred), routing scope, aggregation role. See `docs/architecture/layer-contracts.md`.
 
 ### F4 — OTEL emit MVP (merged 2026-05-02)
 
@@ -118,7 +118,7 @@ hermes kanban (substrate)
 Concretely:
 
 - `bin/chitin-router-hook` — compiled Go shim; stamps `CHITIN_DRIVER`
-  from `--agent=<cli>`; deferred to caller-set value if exported
+  from `--agent=<cli>`; defers to caller-set value if exported
 - `chitin.yaml` rule `hermes-no-frontier-spawn` — blocks direct
   frontier-CLI spawning from `driver=hermes`; forces the four-hop path
 - `swarm/workflows/kanban-dispatch.lobster` — workflow expressed in

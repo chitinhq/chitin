@@ -100,7 +100,6 @@ install paths, the policy schema, kill switches, and the escalation ladder.
 │   └── adapters/                # operator-installed driver-side adapters
 ├── apps/
 │   ├── cli/                     # operator CLI (`chitin` — events, replay, health, ledger)
-│   ├── mcp-server/              # chitin tools surfaced over MCP
 │   └── openclaw-plugin-governance/ # openclaw before_tool_call plugin
 ├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect)
 ├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,

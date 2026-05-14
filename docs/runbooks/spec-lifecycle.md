@@ -8,8 +8,9 @@ Schema defined in
 
 ## Front-matter schema
 
-Every file under `docs/superpowers/specs/**/*.md` (except `INDEX.md`)
-starts with a YAML front-matter block:
+Every file under `docs/superpowers/specs/**/*.md` (except `INDEX.md`
+and `README.md`, which the linter scripts exempt) starts with a YAML
+front-matter block:
 
 ```yaml
 ---
