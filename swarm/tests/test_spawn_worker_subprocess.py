@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "spawn_worker_subprocess.py"
@@ -99,6 +101,38 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
         )
         self.assertEqual(argv, ["codex", "exec", "--model", "gpt-5.5"])
         self.assertEqual(stdin_text, "")
+
+    def test_summarize_completed_run_detects_zero_commit_session(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=0):
+            summary = module.summarize_completed_run(
+                {"driver": "copilot", "model": "gpt-4.1"},
+                0,
+                "nothing to do\n",
+                "worker exited cleanly\n",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "completed_no_commit")
+        self.assertEqual(summary["exit_reason"], "model-concluded-nothing")
+        self.assertEqual(summary["commit_count_ahead"], 0)
+        self.assertIn("[stdout] nothing to do", summary["transcript_tail"])
+
+    def test_summarize_completed_run_failed_session_is_classified(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=0):
+            summary = module.summarize_completed_run(
+                {"driver": "copilot", "model": "gpt-4.1"},
+                7,
+                "",
+                "traceback",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "session-error")
 
 
 if __name__ == "__main__":
