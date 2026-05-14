@@ -20,3 +20,4 @@ python/analysis/templates/router_heuristic_deny.py # audit: diagnostic template;
 swarm/bin/clawta-pr-fix-dispatcher # PR review verdict parser; unrelated to governance gate decisions
 swarm/bin/clawta-pr-lifecycle # PR lifecycle verdict parser; unrelated to governance gate decisions
 swarm/bin/clawta-pr-reviewer # PR review prompt template; unrelated to governance gate decisions
+swarm/bin/clawta-swarm-daily-audit # PR review verdict aggregator; counts APPROVE/REQUEST_CHANGES/COMMENT for the swarm daily report, not a runtime gate
