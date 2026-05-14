@@ -837,6 +837,7 @@ func cmdGateEvaluate(args []string) {
 	action.Path = *cwd
 
 	absCwd, _ := filepath.Abs(*cwd)
+	reportUnknownToolLogError(os.Stderr, logUnknownTool(chitinDir(), action, *agent, *agent, *tool, absCwd, ""))
 	// --policy-file (or $CHITIN_POLICY_FILE) bypasses the cwd-walk and loads
 	// an explicit policy. Use this when the caller cannot guarantee its cwd
 	// has chitin.yaml above it (e.g. hermes plugin invoked from a worktree

@@ -123,6 +123,38 @@ func TestNormalize_SaveMemoryAndUpdateTopic(t *testing.T) {
 	}
 }
 
+func TestNormalize_DriverCorpusProducesZeroUnknown(t *testing.T) {
+	cases := []HookInput{
+		{ToolName: "run_shell_command", ToolInput: map[string]any{"command": "git status"}, Cwd: "/work"},
+		{ToolName: "read_file", ToolInput: map[string]any{"file_path": "README.md"}, Cwd: "/work"},
+		{ToolName: "read_many_files", ToolInput: map[string]any{"paths": []any{"README.md"}}, Cwd: "/work"},
+		{ToolName: "list_directory", ToolInput: map[string]any{"path": "."}, Cwd: "/work"},
+		{ToolName: "glob", ToolInput: map[string]any{"pattern": "*.go"}, Cwd: "/work"},
+		{ToolName: "search_file_content", ToolInput: map[string]any{"pattern": "TODO"}, Cwd: "/work"},
+		{ToolName: "list_background_processes", ToolInput: map[string]any{}, Cwd: "/work"},
+		{ToolName: "read_background_output", ToolInput: map[string]any{}, Cwd: "/work"},
+		{ToolName: "edit", ToolInput: map[string]any{"file_path": "x.go"}, Cwd: "/work"},
+		{ToolName: "replace", ToolInput: map[string]any{"file_path": "x.go"}, Cwd: "/work"},
+		{ToolName: "write_file", ToolInput: map[string]any{"file_path": "x.go"}, Cwd: "/work"},
+		{ToolName: "web_fetch", ToolInput: map[string]any{"url": "https://example.com"}, Cwd: "/work"},
+		{ToolName: "google_web_search", ToolInput: map[string]any{"query": "x"}, Cwd: "/work"},
+		{ToolName: "save_memory", ToolInput: map[string]any{"content": "x"}, Cwd: "/work"},
+		{ToolName: "update_topic", ToolInput: map[string]any{"summary": "x"}, Cwd: "/work"},
+		{ToolName: "Read", ToolInput: map[string]any{"file_path": "/tmp/x"}, Cwd: "/work"},
+	}
+	for _, in := range cases {
+		t.Run(in.ToolName, func(t *testing.T) {
+			a, err := Normalize(in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type == gov.ActUnknown {
+				t.Fatalf("%s produced ActUnknown", in.ToolName)
+			}
+		})
+	}
+}
+
 func TestNormalize_UnknownToolFailsClosed(t *testing.T) {
 	a, _ := Normalize(HookInput{
 		ToolName:  "future_unreleased_gemini_tool",

@@ -123,6 +123,53 @@ func TestNormalize_sessionSearchIsRead(t *testing.T) {
 	})
 }
 
+func TestNormalize_clarifyIsReadOnly(t *testing.T) {
+	a, err := Normalize(HookInput{
+		Cwd:       "/cwd",
+		ToolName:  "clarify",
+		ToolInput: map[string]any{"prompt": "which branch?"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.Type != gov.ActFileRead {
+		t.Fatalf("Type: got %q, want %q", a.Type, gov.ActFileRead)
+	}
+	if a.Target != "which branch?" {
+		t.Fatalf("Target: got %q, want prompt", a.Target)
+	}
+}
+
+func TestNormalize_AuditCorpusProducesZeroUnknown(t *testing.T) {
+	tools := []HookInput{
+		{ToolName: "kanban_show", ToolInput: map[string]any{"task_id": "t"}},
+		{ToolName: "kanban_block", ToolInput: map[string]any{"reason": "blocked"}},
+		{ToolName: "kanban_comment", ToolInput: map[string]any{"comment": "note"}},
+		{ToolName: "kanban_complete", ToolInput: map[string]any{"summary": "done"}},
+		{ToolName: "kanban_heartbeat", ToolInput: map[string]any{}},
+		{ToolName: "kanban_link", ToolInput: map[string]any{}},
+		{ToolName: "process", ToolInput: map[string]any{"action": "list"}},
+		{ToolName: "skills_list", ToolInput: map[string]any{"category": "all"}},
+		{ToolName: "memory", ToolInput: map[string]any{"content": "remember"}},
+		{ToolName: "skill_manage", ToolInput: map[string]any{"name": "x"}},
+		{ToolName: "todo", ToolInput: map[string]any{"todos": "[]"}},
+		{ToolName: "session_search", ToolInput: map[string]any{"query": "x"}},
+		{ToolName: "browser_navigate", ToolInput: map[string]any{"url": "https://example.com"}},
+		{ToolName: "clarify", ToolInput: map[string]any{"prompt": "x"}},
+	}
+	for _, in := range tools {
+		t.Run(in.ToolName, func(t *testing.T) {
+			a, err := Normalize(in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			if a.Type == gov.ActUnknown {
+				t.Fatalf("%s produced ActUnknown", in.ToolName)
+			}
+		})
+	}
+}
+
 func TestNormalize_webAndBrowserToolsAreHTTPRequest(t *testing.T) {
 	cases := []struct {
 		tool       string
@@ -252,7 +299,7 @@ func TestNormalize_unmappedTools_fallToUnknown(t *testing.T) {
 	// default-deny rejects unless an operator opts a specific tool in.
 	// Note: `process` was previously in this list; it now maps to
 	// ActHermesProcess (see TestNormalize_hermesInternalTools below).
-	for _, tool := range []string{"image_generate", "text_to_speech", "vision_analyze", "cronjob", "clarify"} {
+	for _, tool := range []string{"image_generate", "text_to_speech", "vision_analyze", "cronjob"} {
 		t.Run(tool, func(t *testing.T) {
 			a, err := Normalize(HookInput{
 				ToolName:  tool,

@@ -39,6 +39,8 @@
 //	todo               → file.write, target = todo (session task state).
 //	session_search     → file.read, target = query (past session/memory search).
 //	process            → hermes.process, target = action.
+//	clarify            → file.read, target = prompt/message (chat-only
+//	                     operator clarification; no host side effect).
 //	kanban_*           → kanban.call, target = verb without kanban_ prefix.
 //	mcp__<server>__<tool> → mcp.call (hermes uses the same MCP convention
 //	                     as Claude Code; reuse the parsing).
@@ -47,7 +49,6 @@
 //
 //	image_generate, text_to_speech, vision_analyze — modality-side-effect
 //	cronjob — scheduling action; no clear gov-action peer
-//	clarify — chat-only, no fs/network impact
 //
 // These produce ActUnknown which fail-closes under default-deny — safer
 // than guessing wrong. Add proper types as the surface stabilizes.
@@ -277,6 +278,21 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 			Params: in.ToolInput,
 		}, nil
+
+	case "clarify":
+		target := stringField(in.ToolInput, "prompt")
+		if target == "" {
+			target = stringField(in.ToolInput, "message")
+		}
+		if target == "" {
+			target = "clarify"
+		}
+		return gov.Action{
+			Type:   gov.ActFileRead,
+			Target: target,
+			Path:   in.Cwd,
+			Params: in.ToolInput,
+		}, nil
 	}
 
 	// MCP tool calls — `mcp__<server>__<tool>`. Same shape as the
@@ -310,7 +326,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 	}
 
 	// Forward-compat: unmapped hermes tools (image_generate, cronjob,
-	// clarify, etc.) fall through as ActUnknown. Policy default-deny
+	// etc.) fall through as ActUnknown. Policy default-deny
 	// rejects them unless an operator opts a specific tool in.
 	return gov.Action{
 		Type:   gov.ActUnknown,

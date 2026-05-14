@@ -82,6 +82,8 @@ func SetWarnSink(w io.Writer) { warnSink = w }
 //	                                      effect on the host)
 //	EnterWorktree, ExitWorktree         → git.worktree.add / .remove
 //	PushNotification, RemoteTrigger     → http.request (external send)
+//	Notification                        → http.request (driver/operator
+//	                                      notification side channel)
 //	CronCreate                          → file.write target="cron"
 //	CronDelete                          → file.delete target="cron"
 //	CronList, ScheduleWakeup            → file.read / file.write (schedule
@@ -246,7 +248,7 @@ func Normalize(in HookInput) (gov.Action, error) {
 			Path:   in.Cwd,
 		}, nil
 
-	case "pushnotification", "remotetrigger":
+	case "pushnotification", "remotetrigger", "notification":
 		// Outbound network — http.request shape. Operator can
 		// allowlist by target host through the existing net rules.
 		target := stringField(in.ToolInput, "url")
