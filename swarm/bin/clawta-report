@@ -271,6 +271,38 @@ def load_board_state():
     conn.close()
     return tasks, comments, events, runs
 
+def lifecycle_orphans():
+    conn = board_conn()
+    conn.row_factory = sqlite3.Row
+    done_without_runs = [dict(row) for row in conn.execute(
+        """
+        SELECT t.id, t.title, t.assignee, t.completed_at
+          FROM tasks t
+         WHERE t.status = 'done'
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM task_runs r
+                  WHERE r.task_id = t.id
+               )
+         ORDER BY t.completed_at DESC, t.id DESC
+        """
+    )]
+    runs_without_ticket = [dict(row) for row in conn.execute(
+        """
+        SELECT r.id, r.task_id, r.status, r.started_at, r.ended_at, r.outcome, r.summary
+          FROM task_runs r
+          LEFT JOIN tasks t
+            ON t.id = r.task_id
+         WHERE t.id IS NULL
+         ORDER BY r.started_at DESC, r.id DESC
+        """
+    )]
+    conn.close()
+    return {
+        "done_without_runs": done_without_runs,
+        "runs_without_ticket": runs_without_ticket,
+    }
+
 def complexity_map_from_comments(comments):
     result = {}
     for row in comments:
@@ -548,6 +580,39 @@ def board_audit():
     _,url=save('board-audit', page('Board Audit', 'Leverage, duplicates, CI and blocked-work scan', body))
     print(f"🔍 Clawta board audit: {counts.get('blocked',0)} blocked, {len(dups)} possible duplicate pairs. {url}")
 
+def board_watchdog():
+    orphan_data = lifecycle_orphans()
+    done_without_runs = orphan_data["done_without_runs"]
+    runs_without_ticket = orphan_data["runs_without_ticket"]
+    total_orphans = len(done_without_runs) + len(runs_without_ticket)
+    tone = "good" if total_orphans == 0 else "bad"
+
+    done_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{html.escape(row['assignee'] or '(unassigned)')}</td><td>{fmt_ts(row['completed_at'])}</td></tr>"
+        for row in done_without_runs[:20]
+    ) or "<tr><td colspan='4'>No done tickets are missing task_runs rows.</td></tr>"
+
+    run_rows = ''.join(
+        f"<tr><td>{row['id']}</td><td class='mono'>{html.escape(row['task_id'])}</td><td>{html.escape(row['status'])}</td><td>{fmt_ts(row['started_at'])}</td><td>{fmt_ts(row['ended_at'])}</td><td>{html.escape(row['outcome'] or '—')}</td></tr>"
+        for row in runs_without_ticket[:20]
+    ) or "<tr><td colspan='6'>No orphaned task_runs rows were found.</td></tr>"
+
+    body = (
+        "<section class='hero'>"
+        "<div class='k'>Board Watchdog</div>"
+        f"<div class='v {tone}'>{total_orphans} orphaned lifecycle link(s)</div>"
+        "<p>Flags tickets in <span class='mono'>done</span> with no <span class='mono'>task_runs</span> row, and <span class='mono'>task_runs</span> rows whose ticket no longer exists.</p>"
+        "</section>"
+        "<section class='grid'>"
+        + f"<div class='card'><div class='k'>Done Without Runs</div><div class='v {'good' if not done_without_runs else 'bad'}'>{len(done_without_runs)}</div></div>"
+        + f"<div class='card'><div class='k'>Runs Without Ticket</div><div class='v {'good' if not runs_without_ticket else 'bad'}'>{len(runs_without_ticket)}</div></div>"
+        + "</section>"
+        + f"<div class='card'><div class='section-head'><h2>Done Tickets Missing task_runs</h2><span class='small muted'>terminal state without ledger bridge</span></div><table><tr><th>Ticket</th><th>Title</th><th>Assignee</th><th>Completed</th></tr>{done_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>task_runs Rows Missing Ticket</h2><span class='small muted'>run ledger without kanban owner</span></div><table><tr><th>Run</th><th>Task</th><th>Status</th><th>Started</th><th>Ended</th><th>Outcome</th></tr>{run_rows}</table></div>"
+    )
+    _, url = save('board-watchdog', page('Board Watchdog', 'Lifecycle orphan detection across kanban and run ledger', body))
+    print(f"🚨 Clawta board watchdog: {len(done_without_runs)} done tickets without runs, {len(runs_without_ticket)} orphaned runs. {url}")
+
 def industry():
     q='all:"multi-agent" OR all:"LLM routing" OR all:"AI safety governance"'
     url='http://export.arxiv.org/api/query?search_query='+urllib.parse.quote(q)+'&start=0&max_results=8&sortBy=submittedDate&sortOrder=descending'
@@ -684,13 +749,14 @@ def swarm_health():
     print(f"🧭 Clawta swarm health: {len(dispatched)} dispatched today, {len(stuck)} stuck, {len(blocked_red)} blocked on red. {url}")
 
 if __name__ == '__main__':
-    if len(sys.argv)<2 or sys.argv[1] not in {'swarm-health','chain-summary','standup','board-audit','industry-scan','doc-sync'}:
-        print('usage: clawta-report {swarm-health|chain-summary|standup|board-audit|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
+    if len(sys.argv)<2 or sys.argv[1] not in {'swarm-health','chain-summary','standup','board-audit','board-watchdog','industry-scan','doc-sync'}:
+        print('usage: clawta-report {swarm-health|chain-summary|standup|board-audit|board-watchdog|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
     dispatch = {
         'swarm-health': swarm_health,
         'chain-summary': chain,
         'standup': standup,
         'board-audit': board_audit,
+        'board-watchdog': board_watchdog,
         'industry-scan': industry,
         'doc-sync': doc_sync,
     }
