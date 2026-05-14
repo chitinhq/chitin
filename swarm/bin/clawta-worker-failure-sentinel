@@ -17,6 +17,10 @@ CHANNEL = "channel:1503439202719760405"
 LOOKBACK_SECONDS = int(os.environ.get("CLAWTA_FAILURE_LOOKBACK_SECONDS", "86400"))
 QUARANTINE_THRESHOLD = int(os.environ.get("CLAWTA_FAILURE_QUARANTINE_THRESHOLD", "3"))
 QUARANTINE_WINDOW = int(os.environ.get("CLAWTA_FAILURE_QUARANTINE_WINDOW", "7200"))
+# If Copilot is manually restored and smoke-tested, set this state timestamp.
+# The quarantine counter must ignore failures older than that restore point,
+# otherwise stale failure comments can immediately quarantine a healthy card again.
+COPILOT_HEALTHY_AFTER_KEY = "copilot_healthy_after"
 PATTERNS = [
     re.compile(r"gh pr create failed", re.I),
     re.compile(r"worker failed", re.I),
@@ -107,6 +111,17 @@ def quarantine_copilot() -> bool:
     return True
 
 
+def copilot_quarantine_since(now: int, state: dict) -> int:
+    """Return earliest comment timestamp that may count toward quarantine.
+
+    A manual restore + smoke test records `copilot_healthy_after` in state.
+    Failures before that checkpoint are stale evidence and must not immediately
+    re-quarantine the restored card.
+    """
+    copilot_healthy_after = int(state.get(COPILOT_HEALTHY_AFTER_KEY, 0) or 0)
+    return max(now - QUARANTINE_WINDOW, copilot_healthy_after)
+
+
 def main() -> int:
     state = load_state()
     last = int(state.get("last_comment_id", 0))
@@ -157,13 +172,15 @@ def main() -> int:
                 lines.append(f"  - `{f['task']}` — {f['title']} — {snippet}")
 
         # Quarantine Copilot automatically if repeated recent failures are observed.
+        # Honor a manual restore/smoke checkpoint: only failures after that point count.
+        quarantine_since = copilot_quarantine_since(now, state)
         recent_copilot = conn.execute(
             """
-            SELECT c.id, c.body FROM task_comments c
+            SELECT c.id, c.body, c.created_at FROM task_comments c
             WHERE c.created_at >= ? AND (c.body LIKE '%swarm/copilot-%' OR c.body LIKE '%Starting dispatch to copilot%' OR c.body LIKE '%dispatching to copilot%' OR c.body LIKE '%-> copilot%')
             ORDER BY c.id DESC
             """,
-            (now - QUARANTINE_WINDOW,),
+            (quarantine_since,),
         ).fetchall()
         copilot_fail_count = sum(1 for r in recent_copilot if any(p.search(r["body"] or "") for p in PATTERNS))
         quarantined = set(state.get("quarantined", []))
@@ -171,8 +188,9 @@ def main() -> int:
             moved = quarantine_copilot()
             quarantined.add("copilot")
             state["quarantined"] = sorted(quarantined)
-            lines.append(f"- **copilot quarantine:** {copilot_fail_count} failures in the last {QUARANTINE_WINDOW//60}m; runtime card {'moved out of routing' if moved else 'already absent'}.")
-            lines.append("- Poller should run with `TERMINAL_LANES=codex,claude-code,gemini` until cleared.")
+            window_min = max(0, (now - quarantine_since) // 60)
+            lines.append(f"- **copilot quarantine:** {copilot_fail_count} failures since last healthy checkpoint ({window_min}m window); runtime card {'moved out of routing' if moved else 'already absent'}.")
+            lines.append("- Poller should run with `TERMINAL_LANES=codex,gemini` until cleared and re-smoked.")
 
         send_discord("\n".join(lines))
 

@@ -6,6 +6,8 @@ git pull --ff-only origin main >/tmp/clawta-pr-owner-pull.log 2>&1
 pull_rc=$?
 ./swarm/bin/clawta-pr-reviewer --max-prs 3 >/tmp/clawta-pr-owner-reviewer.json 2>/tmp/clawta-pr-owner-reviewer.err
 review_rc=$?
+./swarm/bin/clawta-pr-fix-dispatcher --max-prs "${CLAWTA_PR_FIX_MAX_PRS:-1}" >/tmp/clawta-pr-owner-fix-dispatcher.json 2>/tmp/clawta-pr-owner-fix-dispatcher.err
+fix_rc=$?
 if ./swarm/bin/clawta-pr-lifecycle --help 2>&1 | grep -q -- '--escalate-to'; then
   ./swarm/bin/clawta-pr-lifecycle --apply --auto-merge --escalate-to red >/tmp/clawta-pr-owner-lifecycle.json 2>/tmp/clawta-pr-owner-lifecycle.err
 else
@@ -13,10 +15,11 @@ else
 fi
 life_rc=$?
 
-PULL_RC=$pull_rc REVIEW_RC=$review_rc LIFE_RC=$life_rc python3 - <<'PY'
+PULL_RC=$pull_rc REVIEW_RC=$review_rc FIX_RC=$fix_rc LIFE_RC=$life_rc python3 - <<'PY'
 import json, os, pathlib
 pull_rc = int(os.environ.get('PULL_RC', '1'))
 review_rc = int(os.environ.get('REVIEW_RC', '1'))
+fix_rc = int(os.environ.get('FIX_RC', '1'))
 life_rc = int(os.environ.get('LIFE_RC', '1'))
 print('🦞 swarm PR owner cron')
 if pull_rc:
@@ -30,6 +33,18 @@ try:
         print(f'- reviewer failed rc={review_rc}: ' + pathlib.Path('/tmp/clawta-pr-owner-reviewer.err').read_text(errors='ignore')[-300:].replace('\n',' '))
 except Exception as e:
     print(f'- reviewer summary unavailable: {e}')
+try:
+    f=json.load(open('/tmp/clawta-pr-owner-fix-dispatcher.json'))
+    dispatched=f.get('dispatched') or []
+    skipped=f.get('skipped') or []
+    if dispatched:
+        print('- fix-dispatcher: dispatched ' + ', '.join('#'+str(x.get('pr','?')) for x in dispatched[:8]))
+    elif fix_rc:
+        print(f'- fix-dispatcher failed rc={fix_rc}: ' + pathlib.Path('/tmp/clawta-pr-owner-fix-dispatcher.err').read_text(errors='ignore')[-300:].replace('\n',' '))
+    else:
+        print(f'- fix-dispatcher: no dispatches ({len(skipped)} skipped)')
+except Exception as e:
+    print(f'- fix-dispatcher summary unavailable: {e}')
 try:
     l=json.load(open('/tmp/clawta-pr-owner-lifecycle.json'))
     actions=[]

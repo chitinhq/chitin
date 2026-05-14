@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG=${CLAWTA_POLLER_SAFE_TICK_LOG:-/home/red/.openclaw/logs/clawta-poller-safe-tick.log}
+mkdir -p "$(dirname "$LOG")"
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+log() { echo "$(ts) $*" | tee -a "$LOG"; }
+
+MAX_ACTIVE_WORKERS=${CLAWTA_MAX_ACTIVE_WORKERS:-1}
+MAX_LOAD=${CLAWTA_MAX_LOAD:-12}
+MAX_DISPATCH=${CLAWTA_MAX_DISPATCH:-1}
+TERMINAL_LANES=${TERMINAL_LANES:-codex,copilot,gemini}
+CLAWTA_POLLER_BIN=${CLAWTA_POLLER_BIN:-/home/red/.local/bin/clawta-poller}
+
+# Count active dispatch roots by ticket id; avoid counting child codex/vendor processes twice.
+# There are two valid active shapes:
+# - lobster workflow roots while orchestration is still running (`--args-json {"ticket_id":...}`)
+# - long-lived `clawta dispatch ticket t_xxx to DRIVER` roots while the worker subprocess runs
+# Empty pgrep/grep output is capacity-available, not failure.
+active_matches=$(
+  {
+    (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) \
+      | grep -oE '"ticket_id":"t_[0-9a-f]+"' \
+      | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true
+    (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) \
+      | grep -oE 'dispatch ticket t_[0-9a-f]+' \
+      | awk '{print $3}' || true
+  } || true
+)
+active_tickets=$(printf '%s\n' "$active_matches" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')
+active_tickets=${active_tickets:-0}
+
+load1=$(awk '{print $1}' /proc/loadavg)
+load_high=$(awk -v l="$load1" -v m="$MAX_LOAD" 'BEGIN { print (l > m) ? 1 : 0 }')
+
+if [ "$active_tickets" -ge "$MAX_ACTIVE_WORKERS" ]; then
+  log "skip: active_dispatch_tickets=$active_tickets >= max=$MAX_ACTIVE_WORKERS load1=$load1"
+  exit 0
+fi
+
+if [ "$load_high" = "1" ]; then
+  log "skip: load1=$load1 > max=$MAX_LOAD active_dispatch_tickets=$active_tickets"
+  exit 0
+fi
+
+log "run: active_dispatch_tickets=$active_tickets load1=$load1 max_dispatch=$MAX_DISPATCH lanes=$TERMINAL_LANES"
+exec env TERMINAL_LANES="$TERMINAL_LANES" CLAWTA_ROUTER_MODE="${CLAWTA_ROUTER_MODE:-deterministic}" "$CLAWTA_POLLER_BIN" --once --max-dispatch "$MAX_DISPATCH"

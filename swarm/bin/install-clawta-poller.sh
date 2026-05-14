@@ -35,7 +35,7 @@ case "${mode}" in
 esac
 
 mkdir -p "$LOCAL_BIN"
-for tool in clawta-poller clawta-blocked-escalator clawta-stale-worker-watchdog; do
+for tool in clawta-poller clawta-poller-safe-tick clawta-blocked-escalator clawta-stale-worker-watchdog clawta-worker-failure-sentinel; do
   ln -sfn "$REPO_ROOT/swarm/bin/$tool" "$LOCAL_BIN/$tool"
   echo "linked: $LOCAL_BIN/$tool → $REPO_ROOT/swarm/bin/$tool"
 done
@@ -88,7 +88,7 @@ install_openclaw_cron() {
     "clawta-kanban-poller" \
     "2m" \
     "Autonomous kanban dispatch tick. Reads ready terminal-lane tickets, sequences via LLM, dispatches top-N via lobster. See chitin swarm/bin/clawta-poller." \
-    "clawta-poller --once --max-dispatch 2"
+    "TERMINAL_LANES=codex,copilot,gemini CLAWTA_MAX_ACTIVE_WORKERS=1 CLAWTA_MAX_LOAD=12 CLAWTA_MAX_DISPATCH=1 CLAWTA_ROUTER_MODE=deterministic flock -n /tmp/clawta-kanban-poller.lock clawta-poller-safe-tick"
   ensure_openclaw_cron_job \
     "clawta-blocked-escalator" \
     "10m" \
