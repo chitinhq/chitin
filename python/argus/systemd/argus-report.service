@@ -1,0 +1,12 @@
+[Unit]
+Description=Argus Observatory Daily Report Generator
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/argus/env
+ExecStart=%h/.local/bin/argus report --report-dir %h/.chitin/reports
+StandardOutput=journal
+StandardError=journal
