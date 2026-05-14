@@ -67,19 +67,19 @@ class CopilotReviewWebhookTests(unittest.TestCase):
         }
         calls: list[list[str]] = []
 
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
+        def fake_run(args, **kwargs):
+            calls.append(args)
             return mock.Mock(returncode=0, stdout='{"id":"t_followup"}', stderr="")
 
-        with mock.patch.object(module, "run", side_effect=fake_run):
+        with mock.patch.object(module, "hermes", side_effect=fake_run):
             result = module.process_event("pull_request_review", payload, dry_run=False, delivery_id="delivery-1")
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(result["ticket"], "t_084e79e0")
         self.assertEqual(result["findings"], 2)
         self.assertEqual(result["followups"], 1)
-        self.assertIn(["hermes", "kanban", "--board", "chitin", "comment", "t_084e79e0", "--author", "copilot-review-webhook", mock.ANY], calls)
-        create_calls = [cmd for cmd in calls if cmd[:5] == ["hermes", "kanban", "--board", "chitin", "create"]]
+        self.assertIn(["kanban", "--board", "chitin", "comment", "t_084e79e0", "--author", "copilot-review-webhook", mock.ANY], calls)
+        create_calls = [cmd for cmd in calls if cmd[:4] == ["kanban", "--board", "chitin", "create"]]
         self.assertEqual(len(create_calls), 1)
         self.assertIn("--idempotency-key", create_calls[0])
         self.assertIn("--parent", create_calls[0])
