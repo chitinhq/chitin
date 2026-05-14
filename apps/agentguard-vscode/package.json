@@ -1,0 +1,116 @@
+{
+  "name": "chitin-agentguard",
+  "displayName": "Chitin Agentguard",
+  "version": "0.1.0",
+  "description": "VS Code view over the live chitin decision chain.",
+  "private": true,
+  "publisher": "chitinhq",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chitinhq/chitin"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:.chitin",
+    "onCommand:chitinAgentguard.openDecision"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "chitinAgentguard.openDecision",
+        "title": "Chitin: Open Decision Details"
+      },
+      {
+        "command": "chitinAgentguard.refresh",
+        "title": "Chitin: Refresh Decision View"
+      }
+    ],
+    "configuration": {
+      "title": "Chitin Agentguard",
+      "properties": {
+        "chitinAgentguard.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local socket path for a live decision stream. When unset or unavailable, the extension tails the chitin event JSONL files."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "chitinAgentguard",
+          "title": "Chitin",
+          "icon": "resources/chitin.svg"
+        }
+      ]
+    },
+    "views": {
+      "chitinAgentguard": [
+        {
+          "id": "chitinDecisions",
+          "name": "Recent Decisions"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "pnpm exec tsc -p apps/agentguard-vscode/tsconfig.json",
+    "test": "pnpm exec vitest run apps/agentguard-vscode/tests",
+    "package": "mkdir -p ../../dist/apps/agentguard-vscode && pnpm exec vsce package --out ../../dist/apps/agentguard-vscode/chitin-agentguard.vsix"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.2"
+  },
+  "nx": {
+    "sourceRoot": "apps/agentguard-vscode/src",
+    "projectType": "application",
+    "tags": [
+      "type:app",
+      "scope:app",
+      "layer:cli",
+      "lang:ts",
+      "runtime:vscode"
+    ],
+    "targets": {
+      "build": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsc -p apps/agentguard-vscode/tsconfig.json",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec vitest run apps/agentguard-vscode/tests",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "package": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "mkdir -p ../../dist/apps/agentguard-vscode && pnpm exec vsce package --out ../../dist/apps/agentguard-vscode/chitin-agentguard.vsix",
+          "cwd": "apps/agentguard-vscode"
+        }
+      },
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "pnpm exec tsc -p apps/agentguard-vscode/tsconfig.json && pnpm exec vitest run apps/agentguard-vscode/tests",
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          "^validate"
+        ]
+      }
+    }
+  }
+}
