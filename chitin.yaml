@@ -334,29 +334,23 @@ rules:
     action: unknown
     effect: deny
     reason: "Unknown tools are denied — the action vocabulary is a closed enum. If Normalize returns ActUnknown, extend the normalizer rather than broadening this rule."
-
-# Router policy (added 2026-05-03; see also TS substrate in PR #230).
-#
-# When the operator opts in (touch ~/.chitin/router-enabled), the
-# kernel's `router evaluate --hook-stdin` engages: kernel verdict →
-# heuristics (in-process Go) → optional advisor consultation
-# (claude -p subprocess) → composed response.
-#
-# Cold-start: ~26ms (Go binary). Most tool calls SKIP the advisor
-# (deterministic checks pass + no heuristic fires).
-# Router policy (added 2026-05-03).
-#
-# When the operator opts in (touch ~/.chitin/router-enabled), the
-# chitin-router-hook wrapper engages: kernel verdict → heuristics →
-# optional advisor consultation → composed response.
-#
-# To disable globally: rm ~/.chitin/router-enabled (instant; no
-# config edit needed). To disable selectively per-heuristic, set
-# .heuristics.<name>.enabled to false here.
-#
-# Cost shape: most tool calls SKIP the advisor (deterministic checks
-# pass + no heuristic fires). Advisor only fires when blast_radius
-# is above threshold OR floundering detected OR kernel denied.
+  # Router policy (added 2026-05-03; see also TS substrate in PR #230).
+  #
+  # When the operator opts in (touch ~/.chitin/router-enabled), the
+  # kernel's `router evaluate --hook-stdin` engages: kernel verdict →
+  # heuristics (in-process Go) → composed response.
+  #
+  # Cold-start: ~26ms (Go binary).
+  #
+  # LLM consultation lives DOWNSTREAM of the gate now — hermes'
+  # `approvals.mode: smart` for hermes-driven tools, operator-wired
+  # chain consumers for everything else. The in-gate `claude -p`
+  # advisor was culled 2026-05-08; see
+  # docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
+  #
+  # To disable globally: rm ~/.chitin/router-enabled (instant; no
+  # config edit needed). To disable selectively per-heuristic, set
+  # .heuristics.<name>.enabled to false here.
 router:
   enabled: true
   heuristics:
@@ -381,10 +375,3 @@ router:
       # Per-tier thresholds are a follow-up — needs kernel schema change.
       max_loop_count: 2
       max_stall_seconds: 90
-  advisor:
-    enabled: true
-    when: [blast_radius_above_threshold, floundering_detected]
-    chain:
-      max_depth: 3
-      tier_steps: [T2, T3, T4]
-    model: claude-code-headless
