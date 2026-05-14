@@ -73,7 +73,13 @@ jobs:
           # LoadWithInheritance verifies every chitin.yaml on the
           # inheritance chain, so the gate must fire if any nested
           # chitin.yaml changed too — not just the repo-root one.
-          changed=$(git diff --name-only "$base"...HEAD | grep -E '(^|/)chitin\.yaml$' || true)
+          #
+          # examples/ and docs/ chitin.yaml files are templates the kernel
+          # never loads at runtime (operators copy + edit them), so they are
+          # intentionally unsigned and must not trip the signed-policy gate.
+          changed=$(git diff --name-only "$base"...HEAD \
+            | grep -E '(^|/)chitin\.yaml$' \
+            | grep -vE '^(examples|docs)/' || true)
           if [ -z "$changed" ]; then
             echo "no chitin.yaml files changed; skipping signed-policy verification"
             exit 0
