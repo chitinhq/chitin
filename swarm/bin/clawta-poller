@@ -396,6 +396,16 @@ def check_pr_dependency(ref: DependencyRef, pr_cache: dict[str, tuple[bool, str]
     return outcome
 
 
+# An upstream ticket blocks downstream dispatch only while it is still
+# uncertain — i.e. in `triage` or `blocked`. Once hermes has groomed it
+# into `todo`/`ready` or a worker has picked it up (`in_progress`), or it
+# has finished (`done`/`archived`), the downstream can advance. Treating
+# `ready`/`todo` as blocking caused the 2026-05-13 board-watchdog 30-
+# ticket triage↔ready oscillation: hermes promoted, poller blocked,
+# hermes re-promoted on the next tick.
+UNRESOLVED_DEP_STATUSES = ("triage", "blocked")
+
+
 def check_ticket_dependency(ref: DependencyRef, ticket_cache: dict[str, tuple[bool, str]]) -> tuple[bool, str]:
     assert ref.ticket_id is not None
     cached = ticket_cache.get(ref.key)
@@ -409,7 +419,8 @@ def check_ticket_dependency(ref: DependencyRef, ticket_cache: dict[str, tuple[bo
         outcome = (False, f"{ref.label} (missing from kanban)")
     else:
         status = str(row[0]).lower()
-        outcome = (status in ("done", "archived"), ref.label if status in ("done", "archived") else f"{ref.label} (status={status})")
+        resolved = status not in UNRESOLVED_DEP_STATUSES
+        outcome = (resolved, ref.label if resolved else f"{ref.label} (status={status})")
     ticket_cache[ref.key] = outcome
     return outcome
 
@@ -653,123 +664,6 @@ def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
         else:
             log(f"tick: {t['id']} routing failed; leaving for next tick")
     return routed
-
-
-# ---------------------------------------------------------------------------
-# Sequencer — ask LLM which tickets to dispatch and in what order
-# ---------------------------------------------------------------------------
-
-def sequence_with_llm(tickets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ask the frontier LLM how to sequence. Returns a list of action dicts.
-
-    Each entry: {"ticket_id": "...", "action": "dispatch"|"demote",
-                 "reason": "...", "rank": int (only for dispatch)}.
-    Falls back to FIFO dispatch if the LLM call fails or parses badly.
-    """
-    if not tickets:
-        return []
-
-    fallback = [
-        {"ticket_id": t["id"], "action": "dispatch", "reason": "fifo fallback (LLM unavailable)", "rank": i + 1}
-        for i, t in enumerate(tickets)
-    ]
-
-    queue_text = "\n\n".join(
-        f"## {t['id']}  (assignee={t['assignee']}, priority={t['priority']})\n"
-        f"Title: {t['title']}\n{(t['body'] or '')[:400]}"
-        for t in tickets
-    )
-
-    prompt = f"""You are the clawta dispatch sequencer. You see the current ready queue for the chitin swarm. Decide which tickets should be dispatched (in what order), and flag any that should be demoted back to triage because they are not actually ready (vague body, missing acceptance, blocked by an open question, scope creep, etc.).
-
-# Queue ({len(tickets)} tickets)
-
-{queue_text}
-
-# Output
-
-Reply with ONLY a JSON object (no prose, no markdown fence):
-{{
-  "actions": [
-    {{"ticket_id": "t_xxx", "action": "dispatch", "rank": 1, "reason": "<short>"}},
-    {{"ticket_id": "t_yyy", "action": "demote", "reason": "<specific reason: what's missing>"}}
-  ]
-}}
-
-Rules:
-- Every ticket in the queue MUST appear in actions exactly once.
-- ranks for dispatch are sequential 1..N, no gaps. Demotions have no rank.
-- "reason" for dispatch is a sentence on why this is the right order. "reason" for demote must cite the specific gap (e.g. "body lacks acceptance criteria", "depends on unmerged PR #519", "research question not narrow enough").
-- If everything looks dispatch-ready, demote nothing.
-"""
-
-    try:
-        result = subprocess.run(
-            [OPENCLAW_BIN, "agent", "--agent", SEQUENCER_AGENT, "--message", prompt],
-            capture_output=True,
-            text=True,
-            timeout=240,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log(f"sequence_with_llm: openclaw call failed ({e}); falling back to FIFO")
-        return fallback
-
-    if result.returncode != 0:
-        log(f"sequence_with_llm: openclaw rc={result.returncode}; falling back to FIFO")
-        return fallback
-
-    body = result.stdout or ""
-    match = re.search(r"\{[^{}]*\"actions\"[^{}]*\[.*?\][^{}]*\}", body, re.DOTALL)
-    if not match:
-        match = re.search(r"\{.*\"actions\".*\}", body, re.DOTALL)
-    if not match:
-        log(f"sequence_with_llm: no JSON in clawta reply ({body[:200]!r}); falling back to FIFO")
-        return fallback
-
-    try:
-        parsed = json.loads(match.group(0))
-    except json.JSONDecodeError as e:
-        log(f"sequence_with_llm: JSON parse failed ({e}); falling back to FIFO")
-        return fallback
-
-    actions = parsed.get("actions")
-    if not isinstance(actions, list):
-        log(f"sequence_with_llm: missing 'actions' list; falling back to FIFO")
-        return fallback
-
-    valid_ids = {t["id"] for t in tickets}
-    cleaned = []
-    seen_ids = set()
-    for a in actions:
-        if not isinstance(a, dict):
-            continue
-        tid = a.get("ticket_id")
-        act = a.get("action")
-        if tid not in valid_ids or tid in seen_ids:
-            continue
-        if act not in ("dispatch", "demote"):
-            continue
-        seen_ids.add(tid)
-        cleaned.append({
-            "ticket_id": tid,
-            "action": act,
-            "reason": str(a.get("reason", ""))[:400],
-            "rank": int(a.get("rank", 0)) if act == "dispatch" else None,
-        })
-
-    if seen_ids != valid_ids:
-        log(
-            f"sequence_with_llm: LLM didn't account for all tickets "
-            f"(missing: {sorted(valid_ids - seen_ids)}); falling back to FIFO"
-        )
-        return fallback
-
-    cleaned_dispatch = sorted(
-        [a for a in cleaned if a["action"] == "dispatch"],
-        key=lambda x: x["rank"] or 0,
-    )
-    cleaned_demote = [a for a in cleaned if a["action"] == "demote"]
-    return cleaned_dispatch + cleaned_demote
 
 
 # ---------------------------------------------------------------------------
