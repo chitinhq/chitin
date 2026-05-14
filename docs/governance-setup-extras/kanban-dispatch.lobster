@@ -392,6 +392,18 @@ steps:
       CHITIN_REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
       FAILURE_POLICY="$CHITIN_REPO/swarm/lib/dispatch_failure_policy.py"
 
+      dispatch_details() {
+        jq -cn \
+          --arg driver "${1:-}" \
+          --arg branch "${2:-}" \
+          --arg returncode "${3:-}" \
+          '{
+            driver: $driver
+          }
+          + (if $branch != "" then {branch: $branch} else {} end)
+          + (if $returncode != "" then {returncode: ($returncode | tonumber)} else {} end)'
+      }
+
       plan_dispatch_failure() {
         local mode="$1"
         local failure_class="$2"
@@ -451,7 +463,8 @@ steps:
             ;;
           failed)
             MSG="🦞 ${ticket_id}: worker failed: $WORKER_ERROR"
-            plan_dispatch_failure explicit "worker_nonzero_exit" "$MSG" "{\"driver\":\"$DRIVER\",\"returncode\":$WORKER_RETURNCODE}" >/dev/null
+            DETAILS=$(dispatch_details "$DRIVER" "" "$WORKER_RETURNCODE")
+            plan_dispatch_failure explicit "worker_nonzero_exit" "$MSG" "$DETAILS" >/dev/null
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow block ${ticket_id} "$MSG" --author clawta 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
@@ -476,11 +489,8 @@ steps:
       WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/swarm-*-${ticket_id}*/ 2>/dev/null | head -1)
       if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
-        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-        # Slice D: failure path — block the ticket so it isn't silently lost.
-        kanban-flow block ${ticket_id} "worker completed but produced no worktree" --author clawta 2>/dev/null || true
-        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
-        exit 0
+        DETAILS=$(dispatch_details "$DRIVER")
+        apply_retryable_failure "missing_worktree" "$MSG" "$DETAILS"
       fi
       if ! cd "$WORKTREE"; then
         MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
@@ -492,7 +502,8 @@ steps:
       BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
-        apply_retryable_failure "empty_branch" "$MSG" "{\"driver\":\"$DRIVER\",\"branch\":\"$BRANCH\"}"
+        DETAILS=$(dispatch_details "$DRIVER" "$BRANCH")
+        apply_retryable_failure "empty_branch" "$MSG" "$DETAILS"
       fi
       # Push (idempotent — git push on already-up-to-date is fine).
       git push -u origin "$BRANCH" 2>&1 | tail -3 || true
@@ -509,7 +520,8 @@ steps:
       fi
       if [[ -z "$PR_URL" ]]; then
         MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed."
-        apply_retryable_failure "gh_pr_create_failed" "$MSG" "{\"driver\":\"$DRIVER\",\"branch\":\"$BRANCH\"}"
+        DETAILS=$(dispatch_details "$DRIVER" "$BRANCH")
+        apply_retryable_failure "gh_pr_create_failed" "$MSG" "$DETAILS"
       else
         MSG="🦞 ${ticket_id}: PR opened; ticket remains in_progress for review/merge. Branch: $BRANCH. PR: $PR_URL"
         # PR opened — record the URL on the ticket. Ticket stays in

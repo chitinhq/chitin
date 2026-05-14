@@ -184,6 +184,9 @@ def _history_summary(record: DispatchFailureRecord) -> str:
     if record.failure_class == "silent_worker_death":
         quiet = details.get("quiet_seconds")
         return f"silent at {quiet}s" if quiet is not None else "silent"
+    if record.failure_class == "missing_worktree":
+        worktree = details.get("worktree")
+        return f"no worktree ({worktree})" if worktree else "no worktree"
     if record.failure_class == "empty_branch":
         branch = details.get("branch") or "unknown"
         return f"empty branch ({branch})"
@@ -240,9 +243,9 @@ def _escalation_comment(
 ) -> str:
     history = format_history(db_path, ticket_id, records)
     if records and all(record.failure_class == "silent_worker_death" for record in records):
-        header = f"Watchdog: ticket bounced {retry_limit}x with silent worker death."
+        header = f"Watchdog: ticket bounced {retry_limit}× with silent worker death."
     else:
-        header = f"Dispatch watchdog: ticket bounced {retry_limit}x on retry-eligible infrastructure failures."
+        header = f"Dispatch watchdog: ticket bounced {retry_limit}× on retry-eligible infrastructure failures."
     lines = [header, "Dispatch history:"]
     lines.extend(f"  {item['time']} {item['driver']} -> {item['summary']}" for item in history)
     lines.append(
