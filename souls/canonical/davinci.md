@@ -93,8 +93,8 @@ The lens is the method, not the costume.
 **Scope note (2026-04-20, Phase D+E+F dogfood-debt-ledger scope
 completed — Phase F closed at F4 Socrates trip):** Per quorum
 2026-04-13 and the Knuth→da Vinci handoff after Phase C, da Vinci
-was the lens for Phases D/E/F of the dogfood-debt-ledger plan
-(`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md`).
+was the lens for Phases D/E/F of the dogfood-debt-ledger plan (now
+retired post-ship).
 
 Completed under this scope:
 

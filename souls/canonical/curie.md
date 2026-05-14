@@ -95,13 +95,13 @@ the method, not the costume.
 
 **Scope note (2026-04-19, completed):** Curie's Phase B restart
 investigation handoff is complete. The lab note at
-`docs/observations/2026-04-19-hook-payload-capture.md` confirmed
+`docs/archive/observations/2026-04-19-hook-payload-capture.md` confirmed
 SessionStart, SubagentStop, and PreCompact hook payloads via the
 empirical loop (hypothesis-first, decision rule, distribution table,
 explicit nulls, forced trial). Three ELO awards logged to
 `souls/elo.md` (1500 → 1503). Phase B implementation handed to Knuth
 per quorum vote at
-`docs/observations/quorums/2026-04-19-phase-b-finish.md`. Curie returns
+`docs/archive/observations/quorums/2026-04-19-phase-b-finish.md`. Curie returns
 to library standby; next activation when a measurable experiment
 appears.
 

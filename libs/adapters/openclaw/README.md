@@ -1,16 +1,8 @@
 # OpenClaw Adapter
 
-**Status:** Investigation phase. Install path verified 2026-04-20 (Task
-F1); the four SPIKE questions are answered below by observation (Task
-F2). The adapter-implementation design addendum that consumes these
-answers lives at
-`docs/superpowers/specs/2026-04-20-openclaw-adapter-implementation-design.md`
-(Task F3).
-
-Tracked under:
-
-- Plan — `docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md`, Phase F
-- Parent spec — `docs/superpowers/specs/2026-04-19-dogfood-debt-ledger-design.md`, §"openclaw workstream"
+Adapter implementation notes. The OpenClaw `before_tool_call` plugin path
+shipped via `apps/openclaw-plugin-governance/`; this directory carries the
+investigation/spike notes that fed that ship.
 
 ## What OpenClaw is
 

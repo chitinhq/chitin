@@ -66,9 +66,9 @@ stamps `CHITIN_DRIVER` and dispatches to the per-vendor normalizer.
 
 The hero sentence names six drivers. Bitrot in any is a hero-sentence bug.
 
-### Layer Contracts v1 (locked 2026-04-29; #2 restated 2026-05-13)
+### Layer Contracts v1 (locked 2026-04-29)
 
-Four invariants: kernel authority, driver constraint (schema-typed `allowed_drivers` + leaf-gate enforcement; active kernel narrowing deferred per the 2026-04-30 addendum), routing scope, aggregation role. See `docs/architecture/layer-contracts.md`.
+Four invariants: kernel authority, driver constraint (schema-typed `allowed_drivers` on `ExecutionRequest`; active kernel-side narrowing deferred), routing scope, aggregation role. See `docs/architecture/layer-contracts.md`.
 
 ### F4 — OTEL emit MVP (merged 2026-05-02)
 
@@ -98,7 +98,7 @@ External-survey audit through three lenses (Knuth correctness, da Vinci architec
 - Half-finished orchestration cull: `apps/runner/` shells, `apps/slack-app/` shells, `infra/temporal/`, 122 stale `tmp/result-swarm-*.json`, 7 swarm-flavored Python analyzers. Finished in this rev.
 - `libs/scheduler/` + `apps/cli/src/commands/scheduler.ts` — orchestration in disguise. Deleted.
 - `internal/router/spawn_peer.go` + `cmd/chitin-kernel/router_hook_escalate.go` — out-of-loop peer-spawn weaker than hermes' in-loop `delegate_task`. Deleted (~1055 LOC).
-- 4 specs marked `superseded`: predictive-execution, local-worker (+addendum), scheduler-design, escalate-design. Moved to `docs/superpowers/superseded/`.
+- 4 specs marked `superseded`: predictive-execution, local-worker (+addendum), scheduler-design, escalate-design. Removed in the 2026-05-13 doc purge.
 - Knuth correctness fixes: `RecordDenial` error propagation, `LoadWithInheritance` policy validation, empty-entry rejection in `path_under` / `branches` / `action`.
 
 Net result: ~5000+ LOC removed; chitin's surface tightened to the moat.
@@ -147,6 +147,7 @@ machine the swarm walks.
 | **S11-2** | `kanban-dispatch.lobster` slices 2-5: clawta classify, step-output interpolation, `spawn_worker`, per-leaf-CLI smoke | Pipeline scaffold exists; the four leaf-CLI legs aren't yet end-to-end-tested. |
 | **S12** | `swarm-audit` reads via CLI + emits `swarm.audit.summary` chain events | Today's audit greps raw JSONL and writes a log file Hermes can't ingest. Two small CLI flags + a Python refactor make the chain the canonical observability surface. |
 | **D1** | Chain-mined driver conformance gaps | High-leverage work comes from real `default-deny-unknown` rows: extend per-driver normalizers, then redeploy hooks/binaries so the chain proves the gap closed. |
+| **AD** | `AllowedDrivers` as active kernel primitive | Layer Contract v1 #2 says the kernel exposes the primitive; today it's a passive schema field on `ExecutionRequest` (the Lobster `pick_driver` step ranks by cost from agent cards without asking the kernel what's allowed). With the swarm in-tree, `_pick_driver.py` and the kernel are one step apart — wire it, or update the contract. |
 
 ## Deferred
 
@@ -158,8 +159,6 @@ Real ideas waiting for operator demand or an asymmetric-strength signal:
 - **Policy packs** — per-domain rule bundles (security, cost, compliance) operators install via `chitin-kernel install-pack`. Step 4 of the strategic arc.
 - **Semantic indexer over chain events** — vectorize chain payloads for fuzzy retrieval. Built on top of the 2026-05-12 event-emission contract.
 - **Web/TUI dashboard** — chitin-dashboard spec; data source is the same CLI surface the 2026-05-12 spec aligns swarm-audit with.
-- **`chitin-kernel task validate` (active `allowed_drivers` narrowing)** — Layer Contract v1 #2 originally posited an active kernel primitive that narrows `allowed_drivers` per policy before dispatch. The 2026-04-30 addendum deferred this; the 2026-05-13 contract restatement codified the deferral. Today's schema-typed `allowed_drivers` + leaf-gate enforcement is sufficient. Wire the active narrowing path when ledger signal shows the cost-ranked picker drifting from policy intent.
-- **`init-claude-code.ts` → `chitin-kernel install --surface=claude-code` convergence** — the TS path still writes `~/.claude/settings.json` directly. Different settings.json shape than the kernel's `hookinstall.InstallGlobal` (the TS path stamps `_tag: chitin-v2` + `env.CHITIN_WORKSPACE`); converging requires reconciling those shapes. Low risk to leave; should land when the kernel's install grows the missing fields or the TS shape is no longer needed.
 
 ## What chitin still does NOT do
 

@@ -117,7 +117,7 @@ Copilot review + adversarial review pass. Invariants held:
 Scope extended 2026-04-20 to Phase A re-implementation on main without
 a new quorum per the "keep practices, drop ceremony" feedback.
 Validate-and-improve rationale captured at
-`docs/observations/2026-04-20-phase-a-restart-notes.md`. Knuth returns
+`docs/archive/observations/2026-04-20-phase-a-restart-notes.md`. Knuth returns
 to library standby; da Vinci resumes default for Phases D/E/F
 (cross-surface architecture) per quorum 2026-04-13.
 

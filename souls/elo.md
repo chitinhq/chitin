@@ -151,7 +151,7 @@ trainer's note, not a benchmark.
   greay work curie".
 
 - **Curie +1 → 1502.** Folded SessionStart + SubagentStop captures
-  into `docs/observations/2026-04-19-hook-payload-capture.md` with the
+  into `docs/archive/observations/2026-04-19-hook-payload-capture.md` with the
   empirical loop applied cleanly: hypothesis + decision rule first,
   distribution table (not just means), variance flagged not averaged
   away (Pre/Post 41 vs 39 mismatch surfaced as an open question), and

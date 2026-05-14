@@ -39,7 +39,7 @@ function had **zero callers** outside its own test files —
 package's own `index.ts`, `package.json`, and README.
 
 The 2026-05-03 MCP-gate-coverage audit
-(`docs/observations/2026-05-03-mcp-gate-coverage-audit.md` §7)
+(`docs/archive/observations/2026-05-03-mcp-gate-coverage-audit.md` §7)
 already noted this:
 
 > 7. **TS governance libs** (`libs/governance/src/classifier.ts`)
