@@ -2,10 +2,8 @@ name: pages
 
 on:
   push:
-    branches: [main]
     paths:
       - "web/**"
-      - "docs/roadmap.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -13,18 +11,14 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  # Read-only access to PRs so web/build.mjs's `gh pr list` can fetch
-  # the recent-merges feed at build time. Without this the call returns
-  # 404/empty and the page renders the "GitHub data unavailable"
-  # placeholder.
-  pull-requests: read
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -32,25 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: build site
-        run: node web/build.mjs
-        env:
-          # gh CLI on the runner uses GH_TOKEN. Without this the
-          # `gh pr list` call in web/build.mjs fails auth and the
-          # build emits the placeholder "GitHub data unavailable" row.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: configure pages
         uses: actions/configure-pages@v5
 
       - name: upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: web
 
       - name: deploy
         id: deploy
