@@ -3,23 +3,26 @@
 // chitin-kernel for hot-path speed (~10ms; pure Go, no LLM).
 //
 // Pipeline (post-cull, audit Tier 6 — 2026-05-08):
-//   stdin (Claude Code PreToolUse JSON)
-//     ↓
-//   step 1: kernel verdict (gov.Gate.Evaluate via evalHookStdin)
-//     ↓
-//   step 2: heuristics (BlastRadius, Floundering, Drift) +
-//     operator-declared plugins
-//     ↓
-//   step 3: stamp heuristic-signal scores onto the chain via
-//     gov.Decision so downstream consumers can route follow-ups
-//     ↓
-//   step 4: emit kernel verdict; chitin never spawns an LLM in-line
+//
+//	stdin (Claude Code PreToolUse JSON)
+//	  ↓
+//	step 1: kernel verdict (gov.Gate.Evaluate via evalHookStdin)
+//	  ↓
+//	step 2: heuristics (BlastRadius, Floundering, Drift) +
+//	  operator-declared plugins
+//	  ↓
+//	step 3: stamp heuristic-signal scores onto the chain via
+//	  gov.Decision so downstream consumers can route follow-ups
+//	  ↓
+//	step 4: emit kernel verdict; chitin never spawns an LLM in-line
 //
 // LLM consultation lives downstream of the gate now: hermes'
 // `approvals.mode: smart` for hermes-driven tools, operator-wired
 // chain consumers for other drivers. See
 // docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
 package router
+
+import kdrift "github.com/chitinhq/chitin/go/execution-kernel/internal/drift"
 
 // HookInput is the inbound shape from Claude Code's PreToolUse hook.
 type HookInput struct {
@@ -39,9 +42,9 @@ type HookOutput struct {
 
 // HeuristicScore is the result of one heuristic running over a HookInput.
 type HeuristicScore struct {
-	Score  float64            `json:"score"`         // 0.0-1.0
-	Fired  bool               `json:"fired"`         // score >= configured threshold
-	Reason string             `json:"reason"`        // short telemetry tag
+	Score  float64            `json:"score"`  // 0.0-1.0
+	Fired  bool               `json:"fired"`  // score >= configured threshold
+	Reason string             `json:"reason"` // short telemetry tag
 	Axis   map[string]float64 `json:"axis,omitempty"`
 }
 
@@ -54,10 +57,13 @@ type HeuristicOutcome struct {
 
 // HeuristicConfig — per-heuristic policy from chitin.yaml.
 type HeuristicConfig struct {
-	Enabled           bool    `yaml:"enabled" json:"enabled"`
-	Threshold         float64 `yaml:"threshold,omitempty" json:"threshold,omitempty"`
-	MaxLoopCount      int     `yaml:"max_loop_count,omitempty" json:"max_loop_count,omitempty"`
-	MaxStallSeconds   int     `yaml:"max_stall_seconds,omitempty" json:"max_stall_seconds,omitempty"`
+	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	Threshold       float64 `yaml:"threshold,omitempty" json:"threshold,omitempty"`
+	MaxLoopCount    int     `yaml:"max_loop_count,omitempty" json:"max_loop_count,omitempty"`
+	MaxStallSeconds int     `yaml:"max_stall_seconds,omitempty" json:"max_stall_seconds,omitempty"`
+	WarnThreshold   float64 `yaml:"warn_threshold,omitempty" json:"warn_threshold,omitempty"`
+	HaltThreshold   float64 `yaml:"halt_threshold,omitempty" json:"halt_threshold,omitempty"`
+	MaxTurns        int     `yaml:"max_turns,omitempty" json:"max_turns,omitempty"`
 }
 
 // PluginConfig — declared plugin from chitin.yaml `router.plugins[]`.
@@ -66,9 +72,9 @@ type HeuristicConfig struct {
 // wire protocol.
 type PluginConfig struct {
 	Name      string                 `yaml:"name" json:"name"`
-	Type      string                 `yaml:"type" json:"type"`           // heuristic | pre-action
-	Runtime   string                 `yaml:"runtime" json:"runtime"`     // python3 | node | bun | bash
-	Module    string                 `yaml:"module" json:"module"`       // path to script
+	Type      string                 `yaml:"type" json:"type"`       // heuristic | pre-action
+	Runtime   string                 `yaml:"runtime" json:"runtime"` // python3 | node | bun | bash
+	Module    string                 `yaml:"module" json:"module"`   // path to script
 	Config    map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
 	TimeoutMs int                    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 	// Sandbox — opt-in subprocess isolation via bubblewrap. See
@@ -115,6 +121,13 @@ func DefaultPolicy() Policy {
 				Enabled:         true,
 				MaxLoopCount:    3,
 				MaxStallSeconds: 600,
+			},
+			"drift": {
+				Enabled:       true,
+				Threshold:     0.6,
+				WarnThreshold: kdrift.DefaultConfig().WarnThreshold,
+				HaltThreshold: kdrift.DefaultConfig().HaltThreshold,
+				MaxTurns:      kdrift.DefaultConfig().MaxTurns,
 			},
 		},
 	}

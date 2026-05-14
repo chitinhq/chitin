@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
+	kdrift "github.com/chitinhq/chitin/go/execution-kernel/internal/drift"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
 )
@@ -71,6 +78,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 	// Load router policy (separate from gov.Policy — this is the
 	// router's own configuration surface)
 	policy := router.LoadPolicy(absCwd)
+	routesPolicy, _ := router.LoadRoutesPolicy(absCwd)
 
 	// Step 1: kernel verdict via evalHookStdin's pure core
 	var kernelOut bytes.Buffer
@@ -114,19 +122,26 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			outcome.AnyFired = true
 		}
 	}
-	// Drift score — pure function over (input, chain). Threshold
-	// reuses blast_radius's when configured (drift's "high-blast
-	// out-of-scope" branch references it); falls back to 0.5.
-	driftThreshold := 0.5
-	if cfg, ok := policy.Heuristics["blast_radius"]; ok && cfg.Threshold > 0 {
-		driftThreshold = cfg.Threshold
-	}
-	if !chainEventsLoaded {
-		chainEvents = router.ReadChainEvents(payload.SessionID)
-	}
-	driftScore := router.DetectDrift(hookInput, chainEvents, driftThreshold)
-	if driftScore.Fired {
-		outcome.AnyFired = true
+	// Drift is gated on router.heuristics.drift.enabled — when an operator
+	// disables it, the detector must not run, score, route, or emit.
+	// driftResult stays zero-valued in that case (Eval.Action == ActionNone,
+	// Score == 0), which the downstream kill/stamp paths already treat as
+	// "no drift signal".
+	driftCfg := policy.Heuristics["drift"]
+	var driftResult router.DriftResult
+	var driftScore router.HeuristicScore
+	var driftRoutingDecision string
+	if driftCfg.Enabled {
+		if !chainEventsLoaded {
+			chainEvents = router.ReadChainEvents(payload.SessionID)
+		}
+		driftResult = router.EvaluateDrift(hookInput, chainEvents, driftCfg)
+		driftScore = driftResult.Score
+		if driftScore.Fired {
+			outcome.AnyFired = true
+		}
+		driftRoutingDecision = resolveDriftRoutingDecision(routesPolicy, hookInput, driftResult.Eval)
+		emitDriftEvents(errOut, agent, hookInput, driftResult.Eval, driftRoutingDecision, noRecord)
 	}
 
 	// Run plugins (operator-declared, in any runtime). Each plugin
@@ -145,6 +160,19 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 
 	kernelVerdict := parseKernelVerdict(kernelOut.Bytes(), kernelCode)
 
+	if driftResult.Eval.Action == kdrift.ActionKill {
+		composed := map[string]string{
+			"decision": "block",
+			"reason":   "drift-kill: " + driftResult.Eval.Reason,
+		}
+		body, _ := json.Marshal(composed)
+		_, _ = out.Write(body)
+		_, _ = out.Write([]byte{'\n'})
+		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, true, "drift-kill", driftRoutingDecision, noRecord)
+		writeRouterTelemetry(errOut, "drift-kill", outcome, kernelVerdict)
+		return claudecode.ExitBlock
+	}
+
 	// Pre-action analysis short-circuit: if any plugin fired with
 	// block=true, deny immediately with the plugin's reason. Pre-
 	// action plugins have authoritative verdict (e.g., "no commit
@@ -159,7 +187,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			body, _ := json.Marshal(composed)
 			_, _ = out.Write(body)
 			_, _ = out.Write([]byte{'\n'})
-			stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, true, "pre-action-block:"+r.Name, noRecord)
+			stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, true, "pre-action-block:"+r.Name, driftRoutingDecision, noRecord)
 			writeRouterTelemetry(errOut, "pre-action-block", outcome, kernelVerdict)
 			return claudecode.ExitBlock
 		}
@@ -172,7 +200,7 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 	// non-zero — read-only tools whose scores are trivially zero
 	// don't need a stamping row.
 	if hasNonZeroSignal(outcome, driftScore) {
-		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, kernelVerdict.Denied, kernelDecisionLabel(kernelVerdict.Denied), noRecord)
+		stampHeuristicSignals(errOut, agent, hookInput, outcome, driftScore, kernelVerdict.Denied, kernelDecisionLabel(kernelVerdict.Denied), driftRoutingDecision, noRecord)
 	}
 
 	// Emit kernel verdict (deny or allow) — never altered by
@@ -244,7 +272,7 @@ func hasNonZeroSignal(o router.HeuristicOutcome, drift router.HeuristicScore) bo
 // Mode is "monitor" because the row is advisory: the kernel + plugin
 // pre-block produced the authoritative verdict already on the
 // preceding row; this row is signal metadata, not enforcement.
-func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.HookInput, outcome router.HeuristicOutcome, drift router.HeuristicScore, kernelDeny bool, ruleID string, noRecord bool) {
+func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.HookInput, outcome router.HeuristicOutcome, drift router.HeuristicScore, kernelDeny bool, ruleID, routingDecision string, noRecord bool) {
 	if noRecord {
 		return
 	}
@@ -266,11 +294,7 @@ func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.Hook
 		d.FlounderingScore = outcome.Floundering.Score
 	}
 	d.DriftScore = drift.Score
-	// RoutingDecision left empty when no escalation route is wired
-	// (chitin-routes.yaml absent or disabled). A future commit can
-	// resolve a candidate via router.RouteFor and stamp the rationale
-	// here when policy.RoutesEnabled — for tonight's cull, the
-	// signals are enough; consumers can re-derive the candidate.
+	d.RoutingDecision = routingDecision
 
 	if err := gov.WriteLog(d, chitinDir()); err != nil {
 		writeJSONLine(errOut, map[string]string{
@@ -278,6 +302,121 @@ func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.Hook
 			"err":     err.Error(),
 		})
 	}
+}
+
+func resolveDriftRoutingDecision(routesPolicy router.RoutesPolicy, hookInput router.HookInput, eval kdrift.Evaluation) string {
+	switch eval.Action {
+	case kdrift.ActionKill:
+		return "drift.kill"
+	case kdrift.ActionDemote:
+		// Demote is route-only in the kernel hook: chitin stamps the routing
+		// decision and emits drift events, while substrates decide how to move
+		// or resize a running worker.
+		if d, err := router.RouteFor(router.RouteRequest{
+			Signal:           "drift",
+			Severity:         "score>=" + formatScore(eval.Score),
+			ToolCall:         hookInput.ToolInput,
+			WorkerWorkflowID: "",
+		}, routesPolicy); err == nil {
+			return "drift.demote:" + d.Rationale
+		}
+		return "drift.demote"
+	default:
+		return ""
+	}
+}
+
+func formatScore(score float64) string {
+	return strings.TrimRight(strings.TrimRight(strconvFormatFloat(score), "0"), ".")
+}
+
+func strconvFormatFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', 2, 64)
+}
+
+func emitDriftEvents(errOut io.Writer, agent string, hookInput router.HookInput, eval kdrift.Evaluation, routingDecision string, noRecord bool) {
+	if noRecord || hookInput.SessionID == "" || !eval.Detected {
+		return
+	}
+	detectionPayload := map[string]any{
+		"phase":              "detection",
+		"tool_name":          hookInput.ToolName,
+		"target_path":        eval.Target,
+		"score":              eval.Score,
+		"reason":             eval.Reason,
+		"entry_id":           eval.Intent.EntryID,
+		"task_class":         eval.Intent.TaskClass,
+		"file_paths":         eval.Intent.FilePaths,
+		"turn_count":         eval.State.TurnCount,
+		"paths_total":        eval.State.PathsTotal,
+		"paths_out_of_scope": eval.State.PathsOutOfScope,
+	}
+	if err := emitRouterEvent(hookInput.SessionID, agent, detectionPayload); err != nil {
+		writeJSONLine(errOut, map[string]string{"warning": "drift_detection_emit_failed", "err": err.Error()})
+	}
+	if eval.Action == kdrift.ActionNone {
+		return
+	}
+	actionPayload := map[string]any{
+		"phase":            "action",
+		"action":           string(eval.Action),
+		"tool_name":        hookInput.ToolName,
+		"target_path":      eval.Target,
+		"score":            eval.Score,
+		"reason":           eval.Reason,
+		"entry_id":         eval.Intent.EntryID,
+		"task_class":       eval.Intent.TaskClass,
+		"routing_decision": routingDecision,
+	}
+	if err := emitRouterEvent(hookInput.SessionID, agent, actionPayload); err != nil {
+		writeJSONLine(errOut, map[string]string{"warning": "drift_action_emit_failed", "err": err.Error()})
+	}
+}
+
+func emitRouterEvent(sessionID, surface string, payload map[string]any) error {
+	if sessionID == "" {
+		return nil
+	}
+	cdir := chitinDir()
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		return err
+	}
+	idx, err := chain.OpenIndex(filepath.Join(cdir, "chain_index.sqlite"))
+	if err != nil {
+		return err
+	}
+	defer idx.Close()
+	if err := idx.RebuildFromJSONL(cdir); err != nil {
+		return err
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	em := &emit.Emitter{
+		LogPath: filepath.Join(cdir, "events-"+sessionID+".jsonl"),
+		Index:   idx,
+	}
+	ev := &event.Event{
+		SchemaVersion:    "2",
+		RunID:            sessionID,
+		SessionID:        sessionID,
+		Surface:          surface,
+		AgentInstanceID:  surface,
+		AgentFingerprint: hashString(surface),
+		EventType:        "drift",
+		ChainID:          sessionID,
+		ChainType:        "session",
+		Ts:               time.Now().UTC().Format(time.RFC3339Nano),
+		Labels:           map[string]string{"agent": surface},
+		Payload:          body,
+	}
+	return em.Emit(ev)
+}
+
+func hashString(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // targetForSignal extracts a short identifier of what the action

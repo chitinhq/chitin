@@ -65,6 +65,7 @@ graphify-out/graph.json
 
 # Analysis stream outputs
 python/analysis/out/
+bench/out/
 
 # Python build / venv artifacts
 python/analysis/*.egg-info/

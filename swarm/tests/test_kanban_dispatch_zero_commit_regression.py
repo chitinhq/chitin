@@ -30,7 +30,19 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         installer = INSTALLER.read_text()
 
         self.assertIn("worker_failure_report.py", installer)
+        self.assertIn("pr_failure_report.py", installer)
         self.assertIn("spawn_worker_subprocess.py", installer)
+
+    def test_pr_create_failure_path_surfaces_gh_output(self):
+        workflow = CANONICAL.read_text()
+
+        self.assertIn('GH_PR_STDOUT_FILE=$(mktemp)', workflow)
+        self.assertIn('GH_PR_STDERR_FILE=$(mktemp)', workflow)
+        self.assertIn('--arg stdout "${GH_PR_STDOUT:-}"', workflow)
+        self.assertIn('--arg stderr "${GH_PR_STDERR:-}"', workflow)
+        self.assertIn('python3 "$HOME/.openclaw/workflows/pr_failure_report.py"', workflow)
+        self.assertIn("printf '%s\\n' \"$BLOCK_REASON\"", workflow)
+        self.assertIn('kanban-flow block ${ticket_id} "$BLOCK_REASON"', workflow)
 
 
 if __name__ == "__main__":

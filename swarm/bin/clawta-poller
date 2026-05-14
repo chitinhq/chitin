@@ -159,6 +159,11 @@ def extract_named_boundaries(field_value: str | None) -> list[str]:
     return boundaries
 
 
+def is_parent_hierarchy_prefix(prefix: str) -> bool:
+    normalized = prefix.strip().replace("*", "").lower()
+    return normalized.endswith("parent:")
+
+
 def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
     field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
     if not field_value:
@@ -448,6 +453,9 @@ def extract_dependency_refs(body: str | None, *, self_ticket_id: str | None = No
         )
 
     for match in TICKET_REF_RE.finditer(body):
+        prefix = body[max(0, match.start() - 32):match.start()]
+        if is_parent_hierarchy_prefix(prefix):
+            continue
         ticket_id = match.group(0)
         if self_ticket_id and ticket_id == self_ticket_id:
             continue

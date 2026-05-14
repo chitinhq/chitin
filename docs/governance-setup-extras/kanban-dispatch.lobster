@@ -498,16 +498,42 @@ steps:
       if [[ -n "$EXISTING" ]]; then
         PR_URL="$EXISTING"
       else
-        # gh pr create outputs the URL on success. Capture last line.
-        PR_URL=$(gh pr create \
+        # gh pr create writes the PR URL on stdout when it succeeds, but
+        # the useful diagnostics are often on stderr when it fails. Keep
+        # both streams so the block comment and dispatch log preserve the
+        # actual gh-side reason.
+        GH_PR_STDOUT_FILE=$(mktemp)
+        GH_PR_STDERR_FILE=$(mktemp)
+        GH_PR_EXIT=0
+        if gh pr create \
           --title "$(git log -1 --pretty=%s)" \
           --body "Closes ticket ${ticket_id} (dispatched via clawta to $DRIVER). Auto-opened by kanban-dispatch.lobster finalize step. Branch $BRANCH." \
-          2>&1 | grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' | head -1 || echo "")
+          >"$GH_PR_STDOUT_FILE" 2>"$GH_PR_STDERR_FILE"; then
+          :
+        else
+          GH_PR_EXIT=$?
+        fi
+        GH_PR_STDOUT=$(cat "$GH_PR_STDOUT_FILE" 2>/dev/null || true)
+        GH_PR_STDERR=$(cat "$GH_PR_STDERR_FILE" 2>/dev/null || true)
+        rm -f "$GH_PR_STDOUT_FILE" "$GH_PR_STDERR_FILE"
+        PR_URL=$(printf '%s' "$GH_PR_STDOUT" | grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' | head -1 || echo "")
       fi
       if [[ -z "$PR_URL" ]]; then
-        MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed."
-        # Slice D: PR failed — block so it gets human attention.
-        kanban-flow crash ${ticket_id} "branch $BRANCH pushed but gh pr create failed" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
+        REPORT=$(jq -nc \
+          --arg stdout "${GH_PR_STDOUT:-}" \
+          --arg stderr "${GH_PR_STDERR:-}" \
+          --argjson exit_code "${GH_PR_EXIT:-0}" \
+          '{stdout:$stdout, stderr:$stderr, exit_code:$exit_code}' \
+          | python3 "$HOME/.openclaw/workflows/pr_failure_report.py" --ticket-id ${ticket_id} --branch "$BRANCH" 2>/dev/null || true)
+        MSG=$(printf '%s' "$REPORT" | jq -r '.message // empty' 2>/dev/null || true)
+        BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
+        [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed. stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
+        [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="branch $BRANCH pushed but gh pr create failed: stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
+        # Slice D: PR failed — surface the detail (#650) and finalize the
+        # task_run via `crash` so the run ledger keeps the chain link (#646).
+        printf '%s\n' "$BLOCK_REASON"
+        printf '%s\n' "$MSG"
+        kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       else
         MSG="🦞 ${ticket_id}: PR opened; ticket remains in_progress for review/merge. Branch: $BRANCH. PR: $PR_URL"
         # PR opened — record the URL on the ticket. Ticket stays in
