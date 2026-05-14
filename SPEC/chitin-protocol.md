@@ -76,14 +76,14 @@ Every event row MUST contain these top-level fields.
 | Field | Type | Rules |
 |------|------|-------|
 | `schema_version` | string | MUST be `"2"` |
-| `run_id` | string | UUID |
-| `session_id` | string | UUID |
+| `run_id` | string | Non-empty run identifier |
+| `session_id` | string | Non-empty session identifier |
 | `surface` | string | Non-empty driver/substrate identifier such as `codex`, `claude-code`, `openclaw` |
 | `driver_identity.user` | string | Non-empty |
 | `driver_identity.machine_id` | string | Non-empty |
 | `driver_identity.machine_fingerprint` | string | 64-char lowercase SHA-256 hex |
-| `agent_instance_id` | string | UUID |
-| `parent_agent_id` | string or null | UUID when present |
+| `agent_instance_id` | string | Non-empty agent instance identifier |
+| `parent_agent_id` | string or null | Non-empty when present |
 | `agent_fingerprint` | string | 64-char lowercase SHA-256 hex |
 | `event_type` | string | Member of the frozen event-type set in this spec |
 | `chain_id` | string | Non-empty logical chain identifier |
@@ -147,6 +147,14 @@ Reserved but not part of `v0.1`:
 - `policy_decided`
 - `rewritten`
 - `denied`
+
+Router and sentinel-facing signals are not `v0.1` chain event types.
+Current kernel router work stamps signal metadata such as
+`predicted_blast`, `floundering_score`, `drift_score`, and
+`routing_decision` onto `gov-decisions-*.jsonl` rows with
+`action_type:"router.signal"`. Those governance decision rows are
+outside this `events-*.jsonl` wire contract, so a value such as `drift`
+is a signal name, not a conforming `v0.1` `event_type`.
 
 ## Payload Schemas
 
@@ -469,6 +477,13 @@ A consumer conforms to protocol `v0.1` if it:
 
 - New optional fields may be added to payloads or labels in a backward-
   compatible way.
+- `run_id`, `session_id`, `agent_instance_id`, and `parent_agent_id`
+  MAY be UUIDs, but protocol `v0.1` requires only stable non-empty
+  strings. Drivers and tests currently use substrate-native identifiers
+  such as `sess-sidecar` and `agent-1`.
+- Router signal rows in `gov-decisions-*.jsonl` are outside this
+  compatibility contract unless a future protocol version promotes them
+  into canonical chain events.
 - A new top-level envelope field, a changed hash rule, a changed action
   enum member meaning, or a changed severity threshold requires a new
   protocol version.
