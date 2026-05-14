@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+WORKFLOW = Path(__file__).resolve().parents[1] / "workflows" / "_swarm_elo.py"
+spec = importlib.util.spec_from_loader("swarm_elo_lib", SourceFileLoader("swarm_elo_lib", str(WORKFLOW)))
+assert spec is not None and spec.loader is not None
+elo = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(elo)
+
+
+def print_json(rows: list[dict]) -> None:
+    print(json.dumps(rows, indent=2))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Inspect swarm ELO scores.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    board = sub.add_parser("leaderboard", help="Show ELO leaderboard")
+    board.add_argument("--task-class")
+    board.add_argument("--limit", type=int, default=10)
+    board.add_argument(
+        "--aggregate-by",
+        choices=sorted(elo.AGGREGATE_GROUPS.keys()),
+        default=None,
+        help="Aggregate broader cuts such as driver+model+task_class",
+    )
+
+    recent = sub.add_parser("recent", help="Show recent judged dispatches")
+    recent.add_argument("--limit", type=int, default=20)
+
+    args = ap.parse_args()
+    conn = elo.open_db()
+
+    if args.cmd == "leaderboard":
+        if args.aggregate_by:
+            rows = elo.aggregate_scores(conn, group_by=args.aggregate_by, limit=args.limit, task_class=args.task_class)
+        else:
+            rows = elo.leaderboard(conn, task_class=args.task_class, limit=args.limit)
+        print_json(rows)
+        return 0
+
+    if args.cmd == "recent":
+        print_json(elo.recent_scores(conn, limit=args.limit))
+        return 0
+
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
