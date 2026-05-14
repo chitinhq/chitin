@@ -19,10 +19,25 @@ type chainCursor struct {
 	ThisHash string
 }
 
+// validEventTypes / validChainTypes mirror the canonical EventSchema
+// discriminated union — EmitEvent rejects anything outside them so the
+// SDK can't emit JSONL the kernel's schema would reject.
+var validEventTypes = map[string]bool{
+	"session_start": true, "user_prompt": true, "assistant_turn": true,
+	"compaction": true, "session_end": true, "intended": true,
+	"executed": true, "failed": true, "model_turn": true,
+	"webhook_received": true, "webhook_failed": true, "session_stuck": true,
+}
+
+var validChainTypes = map[string]bool{
+	"session": true, "tool_call": true,
+}
+
 type Run struct {
 	Manifest RunManifest
 	events   []Event
 	chains   map[string]chainCursor
+	closed   bool
 }
 
 func NewRun(input RunManifestInput) (*Run, error) {
@@ -37,8 +52,16 @@ func NewRun(input RunManifestInput) (*Run, error) {
 }
 
 func (r *Run) EmitEvent(eventType string, payload any, opts EmitOptions) (Event, error) {
+	// A session_end closes the run — the kernel emitter rejects appends
+	// after the terminal tail, so the SDK enforces the same.
+	if r.closed {
+		return Event{}, fmt.Errorf("run is finalized; no further events may be emitted")
+	}
 	if eventType == "" {
 		return Event{}, fmt.Errorf("eventType is required")
+	}
+	if !validEventTypes[eventType] {
+		return Event{}, fmt.Errorf("unknown event_type %q", eventType)
 	}
 	chainID := opts.ChainID
 	if chainID == "" {
@@ -48,9 +71,19 @@ func (r *Run) EmitEvent(eventType string, payload any, opts EmitOptions) (Event,
 	if chainType == "" {
 		chainType = "session"
 	}
-	parentChainID := opts.ParentChainID
-	if parentChainID == nil && chainType == "tool_call" {
-		parentChainID = &r.Manifest.SessionID
+	if !validChainTypes[chainType] {
+		return Event{}, fmt.Errorf("unknown chain_type %q", chainType)
+	}
+	// Copy pointer-typed inputs by value: the event is hashed now but
+	// JSONL() re-marshals it later, so a caller mutating *opts.ParentChainID
+	// (or the manifest's SessionID) afterwards must not change the event.
+	var parentChainID *string
+	if opts.ParentChainID != nil {
+		v := *opts.ParentChainID
+		parentChainID = &v
+	} else if chainType == "tool_call" {
+		v := r.Manifest.SessionID
+		parentChainID = &v
 	}
 	cursor, ok := r.chains[chainID]
 	seq := int64(0)
@@ -92,13 +125,25 @@ func (r *Run) EmitEvent(eventType string, payload any, opts EmitOptions) (Event,
 		return Event{}, err
 	}
 	event.ThisHash = thisHash
+	// Replace the caller's payload reference with the JSON-round-tripped
+	// snapshot used for hashing. Otherwise a caller mutating a map/slice
+	// payload after EmitEvent would make JSONL() re-marshal different
+	// content than this_hash was computed over.
+	if snap, ok := eventMap["payload"]; ok {
+		event.Payload = snap
+	}
 	r.chains[chainID] = chainCursor{Seq: event.Seq, ThisHash: event.ThisHash}
 	r.events = append(r.events, event)
 	return event, nil
 }
 
 func (r *Run) Finalize(payload SessionEndPayload, opts EmitOptions) (Event, error) {
-	return r.EmitEvent("session_end", payload, opts)
+	event, err := r.EmitEvent("session_end", payload, opts)
+	if err != nil {
+		return Event{}, err
+	}
+	r.closed = true
+	return event, nil
 }
 
 func (r *Run) Events() []Event {

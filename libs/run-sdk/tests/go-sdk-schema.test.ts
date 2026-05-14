@@ -5,7 +5,9 @@ import { EventSchema } from '@chitin/contracts';
 describe('Go SDK schema parity', () => {
   it('emits events that validate against the canonical event schema', () => {
     const output = execFileSync(
-      process.env.GO_BINARY ?? '/usr/local/go/bin/go',
+      // Resolve `go` from PATH by default — CI's setup-go installs it
+      // outside /usr/local/go, so a hardcoded path fails there.
+      process.env.GO_BINARY ?? 'go',
       ['run', './cmd/sdk-fixture'],
       {
         cwd: new URL('../../../go/run-sdk/', import.meta.url),

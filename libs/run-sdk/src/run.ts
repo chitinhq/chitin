@@ -29,12 +29,18 @@ export class Run {
   readonly manifest: RunManifest;
   private readonly eventsInternal: Event[] = [];
   private readonly chainState = new Map<string, ChainCursor>();
+  private closed = false;
 
   constructor(manifest: RunManifest) {
     this.manifest = manifest;
   }
 
   emitEvent(input: EmitEventInput): Event {
+    // A session_end closes the run — the kernel emitter rejects any event
+    // appended after the terminal tail, so the SDK enforces the same.
+    if (this.closed) {
+      throw new Error('run is finalized; no further events may be emitted');
+    }
     const chainId = input.chainId ?? this.manifest.session_id;
     const chainType = input.chainType ?? 'session';
     const cursor = this.chainState.get(chainId);
@@ -60,10 +66,22 @@ export class Run {
       payload: input.payload,
     };
 
-    const event = EventSchema.parse({
-      ...candidate,
-      this_hash: hashEvent(candidate),
-    });
+    // Parse first, then hash the schema-normalized event. EventSchema
+    // strips unknown payload keys — hashing the raw candidate would bake
+    // stripped keys into this_hash, so the stored event wouldn't verify.
+    // Parse needs a schema-valid this_hash, so use a placeholder, then
+    // hash with this_hash blanked (the contract hashEvent expects).
+    const normalized = EventSchema.parse({ ...candidate, this_hash: '0'.repeat(64) });
+    const event: Event = {
+      ...normalized,
+      this_hash: hashEvent({ ...normalized, this_hash: '' }),
+    };
+    // Freeze before storing + returning: the same object is the internal
+    // record and the caller's handle; a mutation must not be able to make
+    // toJSONL() diverge from this_hash.
+    Object.freeze(event);
+    Object.freeze(event.payload);
+    Object.freeze(event.labels);
 
     this.chainState.set(chainId, { seq: event.seq, thisHash: event.this_hash });
     this.eventsInternal.push(event);
@@ -71,11 +89,13 @@ export class Run {
   }
 
   finalize(payload: SessionEndPayload, input: Omit<EmitEventInput, 'eventType' | 'payload'> = {}): Event {
-    return this.emitEvent({
+    const event = this.emitEvent({
       ...input,
       eventType: 'session_end',
       payload,
     });
+    this.closed = true;
+    return event;
   }
 
   get events(): readonly Event[] {

@@ -88,4 +88,66 @@ describe('@chitin/run-sdk', () => {
 
     expect(run.toJSONL()).toContain('"event_type":"session_start"');
   });
+
+  const sessionStartPayload = {
+    cwd: '/tmp',
+    client_info: { name: 'sdk-test', version: '1.0.0' },
+    model: { name: 'demo', provider: 'demo' },
+    system_prompt_hash: '0'.repeat(64),
+    tool_allowlist_hash: '1'.repeat(64),
+    agent_version: '1.0.0',
+  };
+
+  it('empty boundary: a run with no events emits empty JSONL', () => {
+    const run = createRun(manifest());
+    expect(run.events).toHaveLength(0);
+    expect(run.toJSONL()).toBe('');
+  });
+
+  it('max boundary: a long chain keeps strict seq + prev_hash progression', () => {
+    const run = createRun(manifest());
+    let prev = run.emitEvent({ eventType: 'session_start', payload: sessionStartPayload });
+    for (let i = 1; i < 200; i++) {
+      const next = run.emitEvent({ eventType: 'session_start', payload: sessionStartPayload });
+      expect(next.seq).toBe(i);
+      expect(next.prev_hash).toBe(prev.this_hash);
+      prev = next;
+    }
+    expect(run.events).toHaveLength(200);
+  });
+
+  it('error boundary: emitEvent after finalize throws, and events are frozen', () => {
+    const run = createRun(manifest());
+    const started = run.emitEvent({ eventType: 'session_start', payload: sessionStartPayload });
+    // Emitted events are frozen — a mutation must not be able to make
+    // toJSONL() diverge from this_hash.
+    expect(() => {
+      (started as { seq: number }).seq = 999;
+    }).toThrow();
+    run.finalize({
+      reason: 'clean',
+      totals: {
+        turn_count: 1,
+        tool_call_count: 0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_duration_ms: 1,
+      },
+    });
+    expect(() =>
+      run.emitEvent({ eventType: 'assistant_turn', payload: { text: 'after end' } }),
+    ).toThrow(/finalized/);
+  });
+
+  it('hashes the schema-normalized payload, not caller-supplied extra keys', () => {
+    const run = createRun(manifest());
+    const event = run.emitEvent({
+      eventType: 'session_start',
+      // `bogus` is not in the session_start payload schema — Zod strips it,
+      // and this_hash must still verify against the stored (stripped) event.
+      payload: { ...sessionStartPayload, bogus: 'should-be-stripped' } as typeof sessionStartPayload,
+    });
+    expect((event.payload as Record<string, unknown>).bogus).toBeUndefined();
+    expect(EventSchema.parse(event)).toEqual(event);
+  });
 });

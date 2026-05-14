@@ -3,7 +3,10 @@ package manifest
 import (
 	"crypto/rand"
 	"fmt"
+	"regexp"
 )
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type DriverIdentity struct {
 	User               string `json:"user"`
@@ -42,6 +45,8 @@ func NewRunManifest(input RunManifestInput) (RunManifest, error) {
 		if err != nil {
 			return RunManifest{}, err
 		}
+	} else if !isUUID(runID) {
+		return RunManifest{}, fmt.Errorf("run_id must be a UUID")
 	}
 	sessionID := input.SessionID
 	if sessionID == "" {
@@ -50,6 +55,8 @@ func NewRunManifest(input RunManifestInput) (RunManifest, error) {
 		if err != nil {
 			return RunManifest{}, err
 		}
+	} else if !isUUID(sessionID) {
+		return RunManifest{}, fmt.Errorf("session_id must be a UUID")
 	}
 	agentInstanceID := input.AgentInstanceID
 	if agentInstanceID == "" {
@@ -58,6 +65,19 @@ func NewRunManifest(input RunManifestInput) (RunManifest, error) {
 		if err != nil {
 			return RunManifest{}, err
 		}
+	} else if !isUUID(agentInstanceID) {
+		return RunManifest{}, fmt.Errorf("agent_instance_id must be a UUID")
+	}
+	// Copy the ParentAgentID value rather than storing the caller's pointer:
+	// a later mutation of *input.ParentAgentID would otherwise change the
+	// manifest identity (and every event hashed from it) after the fact.
+	var parentAgentID *string
+	if input.ParentAgentID != nil {
+		if !isUUID(*input.ParentAgentID) {
+			return RunManifest{}, fmt.Errorf("parent_agent_id must be a UUID")
+		}
+		v := *input.ParentAgentID
+		parentAgentID = &v
 	}
 	if input.Surface == "" {
 		return RunManifest{}, fmt.Errorf("surface is required")
@@ -75,7 +95,7 @@ func NewRunManifest(input RunManifestInput) (RunManifest, error) {
 		Surface:          input.Surface,
 		DriverIdentity:   input.DriverIdentity,
 		AgentInstanceID:  agentInstanceID,
-		ParentAgentID:    input.ParentAgentID,
+		ParentAgentID:    parentAgentID,
 		AgentFingerprint: input.AgentFingerprint,
 		Labels:           cloneLabels(input.Labels),
 	}, nil
@@ -122,4 +142,8 @@ func isLowerHex64(input string) bool {
 		}
 	}
 	return true
+}
+
+func isUUID(input string) bool {
+	return uuidPattern.MatchString(input)
 }

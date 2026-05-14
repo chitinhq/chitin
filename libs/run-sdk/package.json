@@ -1,7 +1,7 @@
 {
   "name": "@chitin/run-sdk",
   "version": "0.0.1",
-  "private": false,
+  "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
