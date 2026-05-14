@@ -349,10 +349,9 @@ def emit_result(
 
 def main() -> None:
     raw = sys.stdin.read()
-    start = raw.find("{")
-    if start < 0:
+    if not raw.strip():
         raise SystemExit("classify produced no JSON object")
-    classify = json.loads(raw[start:])
+    classify = json.loads(raw)
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
 

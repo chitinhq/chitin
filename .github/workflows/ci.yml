@@ -51,6 +51,12 @@ jobs:
           fi
           find node_modules -name 'better_sqlite3.node' | head
 
+      - name: Strict router stdin contract
+        run: python3 -m unittest swarm.tests.test_pick_driver.PickDriverTests.test_rejects_prefixed_stdout_noise_before_json
+
+      - name: Plugin registration stdout contract
+        run: pnpm exec vitest run apps/openclaw-plugin-governance/test/bridge.test.ts -t "keeps plugin registration stdout-clean by using the logger only"
+
       # Go type generator is v1-shaped; v2 Event struct is hand-maintained in
       # go/execution-kernel/internal/event/event.go during Phase 1.5.
       # Re-enable once the generator emits v2 (envelope + discriminated payload).

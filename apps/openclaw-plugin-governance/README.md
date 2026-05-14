@@ -6,7 +6,7 @@ This plugin attaches **chitin** to openclaw's lifecycle hooks. Once enabled, eve
 
 ## What you get
 
-- **`before_tool_call` gate** — every tool call dispatched by openclaw's pi-agent-core harness is run past `chitin-kernel gate evaluate` before execution. Block / allow / params-rewrite all supported.
+- **`before_tool_call` gate** — every tool call dispatched by openclaw's pi-agent-core harness is run past chitin before execution. Exec-shaped tools use `chitin-kernel gate evaluate --hook-stdin`; the general path uses `chitin-kernel router evaluate --hook-stdin`.
 - **`subagent_spawning` gate** — block disallowed subagents (e.g., enforce that `claude-code` cannot be spawned as a worker driver under Anthropic ToS).
 - **`before_install` gate** — block plugin/skill installs by class (e.g., `git`-kind installs in worker mode).
 - **Hash-linked event chain** — chitin records every gate decision with a deterministic hash chain (audit-grade replay).
@@ -29,6 +29,12 @@ openclaw plugins install @chitinhq/openclaw-plugin-governance
 The `--dangerously-force-unsafe-install` flag is currently required because the plugin shells out to the `chitin-kernel` binary via `child_process.spawn` — that's the integration mechanism, not a smell. (The plugin marketplace allowlist will resolve this in a future release.)
 
 After install, openclaw rewrites `~/.openclaw/openclaw.json` to wire the plugin in. Restart the gateway to apply changes if you're running one.
+
+## Stdout invariant
+
+Plugin code MUST NOT write to stdout during registration or hook handling. Openclaw and downstream consumers treat stdout as a structured transport for JSON/hook protocol payloads, so any plugin stdout corrupts the stream.
+
+Use `api.logger` for diagnostics. In current openclaw loader versions, `logger.warn` and `logger.error` route to stderr; `logger.info` may route to stdout, so this plugin intentionally uses warn-level logging for registration and denial diagnostics.
 
 ## Configure
 

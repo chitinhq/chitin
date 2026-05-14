@@ -44,6 +44,38 @@ class PickDriverTest(unittest.TestCase):
                 env=env,
             )
 
+    def run_picker_raw(self, raw_input, cards, *, llm_json=None, extra_env=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp) / "cards"
+            cards_dir.mkdir()
+            for name, payload in cards.items():
+                (cards_dir / name).write_text(payload, encoding="utf-8")
+
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_clawta = bin_dir / "clawta"
+            fake_clawta.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' {json.dumps(json.dumps(llm_json or {}))}\n",
+                encoding="utf-8",
+            )
+            fake_clawta.chmod(0o755)
+
+            env = os.environ.copy()
+            env["OPENCLAW_AGENT_CARDS_DIR"] = str(cards_dir)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            if extra_env:
+                env.update(extra_env)
+
+            return subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=raw_input,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+
     def test_llm_choice_missing_required_capability_falls_back(self):
         classify = {"complexity": "med", "capabilities": ["go", "debug"]}
         cards = {
@@ -202,6 +234,26 @@ class PickDriverTest(unittest.TestCase):
         self.assertEqual(payload["card_load_errors"], 1)
         self.assertIn("card load error", payload["reasoning"])
         self.assertIn("failed to load agent card", result.stderr)
+
+    def test_rejects_prefixed_stdout_noise_before_json(self):
+        cards = {
+            "codex.json": json.dumps(
+                {
+                    "id": "codex",
+                    "capabilities": [{"skill": "python"}],
+                    "models": [{"id": "gpt-5.5", "premium_cost": 2.0}],
+                }
+            )
+        }
+
+        result = self.run_picker_raw(
+            '_pick_driver compatibility noise\n{"complexity":"low","capabilities":["python"]}',
+            cards,
+            llm_json={"driver": "codex", "model": "gpt-5.5", "reasoning": "valid"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expecting value", result.stderr)
 
 
 if __name__ == "__main__":
