@@ -389,6 +389,49 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -uo pipefail  # NOT -e: each step below is best-effort
       DRIVER='$pick_driver.json.driver'
+      CHITIN_REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+      FAILURE_POLICY="$CHITIN_REPO/swarm/lib/dispatch_failure_policy.py"
+
+      plan_dispatch_failure() {
+        local mode="$1"
+        local failure_class="$2"
+        local reason="$3"
+        local details_json="${4:-\{\}}"
+        python3 "$FAILURE_POLICY" "$mode" \
+          --db-path "${KANBAN_DB:-$HOME/.hermes/kanban/boards/chitin/kanban.db}" \
+          --ticket-id "${ticket_id}" \
+          --failure-class "$failure_class" \
+          --reason "$reason" \
+          --details-json "$details_json" 2>/dev/null || echo ""
+      }
+
+      apply_retryable_failure() {
+        local failure_class="$1"
+        local reason="$2"
+        local details_json="${3:-\{\}}"
+        local plan
+        plan=$(plan_dispatch_failure retryable "$failure_class" "$reason" "$details_json")
+        if [[ -z "$plan" ]]; then
+          kanban-flow block ${ticket_id} "$reason" --author clawta 2>/dev/null || true
+          hermes kanban --board chitin comment ${ticket_id} --author clawta "$reason" 2>/dev/null || true
+          openclaw message send --channel discord --account default --text "🦞 ${ticket_id}: $reason" 2>/dev/null || true
+          exit 0
+        fi
+        local action count comment block_reason
+        action=$(echo "$plan" | jq -r '.action // "escalate"')
+        count=$(echo "$plan" | jq -r '.dispatch_failure_count // 0')
+        comment=$(echo "$plan" | jq -r '.comment // empty')
+        block_reason=$(echo "$plan" | jq -r '.block_reason // empty')
+        if [[ "$action" == "retry" ]]; then
+          kanban-flow retry-dispatch ${ticket_id} "$comment" --author clawta 2>/dev/null || true
+          hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 ${ticket_id}: retry-eligible dispatch failure ${count}/3. Reset for fresh dispatch." 2>/dev/null || true
+          exit 0
+        fi
+        kanban-flow block ${ticket_id} "$block_reason" --author clawta 2>/dev/null || true
+        hermes kanban --board chitin comment ${ticket_id} --author clawta "$comment" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$comment" 2>/dev/null || true
+        exit 0
+      }
 
       # Check worker result from spawn_worker step
       RESULT_FILE="/tmp/dispatch-worker-result-${ticket_id}.json"
@@ -396,6 +439,7 @@ steps:
         WORKER_RESULT=$(cat "$RESULT_FILE")
         WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
         WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
+        WORKER_RETURNCODE=$(echo "$WORKER_RESULT" | jq -r '.returncode // -1')
 
         case "$WORKER_STATUS" in
           timeout)
@@ -407,8 +451,9 @@ steps:
             ;;
           failed)
             MSG="🦞 ${ticket_id}: worker failed: $WORKER_ERROR"
+            plan_dispatch_failure explicit "worker_nonzero_exit" "$MSG" "{\"driver\":\"$DRIVER\",\"returncode\":$WORKER_RETURNCODE}" >/dev/null
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "worker failed" --author clawta 2>/dev/null || true
+            kanban-flow block ${ticket_id} "$MSG" --author clawta 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
@@ -447,11 +492,7 @@ steps:
       BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
-        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-        # Slice D: failure path — block, don't leave in_progress with no PR.
-        kanban-flow block ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta 2>/dev/null || true
-        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
-        exit 0
+        apply_retryable_failure "empty_branch" "$MSG" "{\"driver\":\"$DRIVER\",\"branch\":\"$BRANCH\"}"
       fi
       # Push (idempotent — git push on already-up-to-date is fine).
       git push -u origin "$BRANCH" 2>&1 | tail -3 || true
@@ -468,8 +509,7 @@ steps:
       fi
       if [[ -z "$PR_URL" ]]; then
         MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed."
-        # Slice D: PR failed — block so it gets human attention.
-        kanban-flow block ${ticket_id} "branch $BRANCH pushed but gh pr create failed" --author clawta 2>/dev/null || true
+        apply_retryable_failure "gh_pr_create_failed" "$MSG" "{\"driver\":\"$DRIVER\",\"branch\":\"$BRANCH\"}"
       else
         MSG="🦞 ${ticket_id}: PR opened; ticket remains in_progress for review/merge. Branch: $BRANCH. PR: $PR_URL"
         # PR opened — record the URL on the ticket. Ticket stays in

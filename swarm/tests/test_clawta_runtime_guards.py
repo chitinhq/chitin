@@ -44,7 +44,15 @@ def make_db(root: Path) -> Path:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id TEXT NOT NULL,
           kind TEXT NOT NULL,
-          payload TEXT
+          payload TEXT,
+          created_at INTEGER
+        );
+        CREATE TABLE task_comments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          author TEXT,
+          body TEXT,
+          created_at INTEGER
         );
         """
     )
@@ -190,11 +198,19 @@ class StaleWatchdogTests(unittest.TestCase):
             quiet_seconds=1500,
             reason="stale in_progress without PR or active worker after 3000s; dispatch log quiet 1500s",
         )
+        decision = type(
+            "Decision",
+            (),
+            {
+                "block_reason": "3 silent worker deaths; the ticket spec or the swarm infra needs operator review",
+                "comment": "Watchdog: ticket bounced 3x with silent worker death.\nDispatch history:\n  17:36 codex -> silent at 3136s",
+            },
+        )()
         with mock.patch.object(module, "run", side_effect=fake_run):
-            module.block_ticket(escalation)
+            module.block_ticket(escalation, decision)
 
         self.assertEqual(seen[0][0], str(module.KANBAN_FLOW_BIN))
-        self.assertEqual(seen[0][1:5], ["block", "t_2", escalation.reason, "--author"])
+        self.assertEqual(seen[0][1:5], ["block", "t_2", decision.block_reason, "--author"])
         self.assertEqual(
             seen[1],
             [
@@ -207,7 +223,70 @@ class StaleWatchdogTests(unittest.TestCase):
                 module.RED_ASSIGNEE,
             ],
         )
-        self.assertIn("Stale-worker watchdog escalated to red:", seen[2][-1])
+        self.assertIn("Watchdog: ticket bounced 3x with silent worker death.", seen[2][-1])
+
+    def test_retries_first_two_silent_failures_then_escalates_on_third(self) -> None:
+        module = load_module(STALE_WATCHDOG, "clawta_stale_watchdog_retry")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = make_db(root)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, status, assignee, title, priority, created_at, started_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("t_retry", "in_progress", "codex", "retry me", 10, 1_000, 1_100),
+            )
+            conn.executemany(
+                """
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    ("t_retry", "clawta", "clawta-poller dispatching to codex. Sequence reason: first", 1_200),
+                    ("t_retry", "clawta", "clawta-poller dispatching to codex. Sequence reason: second", 1_500),
+                    ("t_retry", "clawta", "clawta-poller dispatching to codex. Sequence reason: third", 1_800),
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                return None
+
+            escalation = module.Escalation(
+                id="t_retry",
+                assignee="codex",
+                title="retry me",
+                age_seconds=3000,
+                quiet_seconds=3136,
+                reason="stale in_progress without PR or active worker after 3000s; dispatch log quiet 3136s",
+            )
+
+            with mock.patch.object(module, "KANBAN_DB", db_path), mock.patch.object(
+                module, "run", side_effect=fake_run
+            ), mock.patch.object(module, "RETRY_LIMIT", 3):
+                first = module.handle_escalation(escalation)
+                escalation.quiet_seconds = 3210
+                escalation.reason = "stale in_progress without PR or active worker after 3200s; dispatch log quiet 3210s"
+                second = module.handle_escalation(escalation)
+                escalation.quiet_seconds = 1788
+                escalation.reason = "stale in_progress without PR or active worker after 1800s; dispatch log quiet 1788s"
+                third = module.handle_escalation(escalation)
+
+        self.assertEqual(first.action, "retry")
+        self.assertEqual(second.action, "retry")
+        self.assertEqual(third.action, "escalate")
+        self.assertEqual(seen[0][0:2], [str(module.KANBAN_FLOW_BIN), "retry-dispatch"])
+        self.assertEqual(seen[1][0:2], [str(module.KANBAN_FLOW_BIN), "retry-dispatch"])
+        self.assertEqual(seen[2][0:2], [str(module.KANBAN_FLOW_BIN), "block"])
+        self.assertIn("3 silent worker deaths", seen[2][3])
+        self.assertEqual(seen[3][0:6], [module.HERMES_BIN, "kanban", "--board", module.BOARD, "assign", "t_retry"])
+        self.assertIn("Watchdog: ticket bounced 3x with silent worker death.", seen[4][-1])
 
 
 if __name__ == "__main__":

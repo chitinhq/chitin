@@ -11,6 +11,7 @@ Thresholds:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sqlite3
@@ -36,6 +37,7 @@ KANBAN_DB = Path(
     )
 )
 REPO_ROOT = Path(os.environ.get("CHITIN_REPO", Path(__file__).resolve().parents[2]))
+POLICY_HELPER = REPO_ROOT / "swarm" / "lib" / "dispatch_failure_policy.py"
 KANBAN_FLOW_BIN = Path(
     os.environ.get("KANBAN_FLOW_BIN", str(REPO_ROOT / "scripts" / "kanban-flow"))
 )
@@ -44,6 +46,20 @@ OPENCLAW_LOG_DIR = Path(
 )
 STALE_AFTER = int(os.environ.get("CLAWTA_STALE_AFTER_SECONDS", "2700"))
 QUIET_AFTER = int(os.environ.get("CLAWTA_QUIET_AFTER_SECONDS", "1200"))
+RETRY_LIMIT = int(os.environ.get("CLAWTA_DISPATCH_RETRY_LIMIT", "3"))
+
+
+def load_policy_helper():
+    spec = importlib.util.spec_from_file_location("dispatch_failure_policy", POLICY_HELPER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load dispatch failure helper: {POLICY_HELPER}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+dispatch_failure_policy = load_policy_helper()
 
 
 @dataclass
@@ -176,9 +192,9 @@ def find_stale_candidates(now: int | None = None) -> tuple[list[InProgressTicket
     return checked, stale
 
 
-def block_ticket(escalation: Escalation) -> None:
+def block_ticket(escalation: Escalation, decision) -> None:
     run(
-        [str(KANBAN_FLOW_BIN), "block", escalation.id, escalation.reason, "--author", AUTHOR],
+        [str(KANBAN_FLOW_BIN), "block", escalation.id, decision.block_reason, "--author", AUTHOR],
         check=True,
         timeout=45,
     )
@@ -196,10 +212,45 @@ def block_ticket(escalation: Escalation) -> None:
             escalation.id,
             "--author",
             AUTHOR,
-            f"Stale-worker watchdog escalated to red: {escalation.reason}",
+            decision.comment,
         ],
         check=True,
     )
+
+
+def retry_ticket(escalation: Escalation, decision) -> None:
+    run(
+        [
+            str(KANBAN_FLOW_BIN),
+            "retry-dispatch",
+            escalation.id,
+            decision.comment,
+            "--author",
+            AUTHOR,
+        ],
+        check=True,
+        timeout=45,
+    )
+
+
+def handle_escalation(escalation: Escalation):
+    decision = dispatch_failure_policy.plan_retryable_failure(
+        KANBAN_DB,
+        ticket_id=escalation.id,
+        failure_class="silent_worker_death",
+        reason=escalation.reason,
+        details={
+            "assignee": escalation.assignee,
+            "age_seconds": escalation.age_seconds,
+            "quiet_seconds": escalation.quiet_seconds,
+        },
+        retry_limit=RETRY_LIMIT,
+    )
+    if decision.action == "retry":
+        retry_ticket(escalation, decision)
+    else:
+        block_ticket(escalation, decision)
+    return decision
 
 
 def notify(changed: Sequence[Escalation]) -> None:
@@ -240,14 +291,17 @@ def main() -> int:
     args = parse_args()
     checked, stale = find_stale_candidates()
     changed: list[Escalation] = []
+    escalated: list[Escalation] = []
     if not args.dry_run:
         for item in stale:
             try:
-                block_ticket(item)
+                decision = handle_escalation(item)
                 changed.append(item)
+                if decision.action == "escalate":
+                    escalated.append(item)
             except subprocess.CalledProcessError as exc:
                 print(f"{item.id}: watchdog failed: {exc.stderr[-300:]}", file=sys.stderr)
-        notify(changed)
+        notify(escalated)
     else:
         changed = stale
 

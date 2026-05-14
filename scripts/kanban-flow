@@ -37,6 +37,10 @@
 #       ready|todo → triage. Comments with reason. Used by clawta when a
 #       ticket isn't actually ready to dispatch.
 #
+#   kanban-flow retry-dispatch <id> <reason...> [--author NAME] [--assignee NAME]
+#       in_progress → triage → ready. Used for retry-eligible dispatch
+#       infrastructure failures so the poller can pick the ticket up again.
+#
 #   kanban-flow done <id> --result "<summary>" [--author NAME]
 #       in_progress → done. Comments with result.
 #
@@ -206,6 +210,26 @@ case "$cmd" in
     sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
     emit_transition "$id" "$from" triage "$author"
     echo "$id: $from → triage ($reason)"
+    ;;
+  retry-dispatch)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    reason="${REST[*]:1}"
+    [[ -n "$reason" ]] || die "missing reason"
+    assert_status "$id" in_progress
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Retrying dispatch after infrastructure failure: $reason" >/dev/null
+    flip_status "$id" triage 0 0
+    sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+    emit_transition "$id" in_progress triage "$author" '{"retry_dispatch":true}'
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready for redispatch at $(date -Iseconds)" >/dev/null
+    flip_status "$id" ready 0 0
+    if [[ -z "$assignee_override" ]]; then
+      sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+    else
+      sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
+    fi
+    emit_transition "$id" triage ready "$author" '{"retry_dispatch":true}'
+    echo "$id: in_progress → triage → ready ($reason)"
     ;;
   ready)
     parse_flags "$@"
