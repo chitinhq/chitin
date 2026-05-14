@@ -108,6 +108,9 @@ PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
 PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
 PR_URL_RE = re.compile(r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)/pull/(?P<number>\d+)")
 TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
+PARENT_REF_PREFIX_RE = re.compile(
+    r"(?i)(?:^|[\n\s])(?:\*\*?parent(?::\*?\*?|\*?\*?)?|parent):?\s*$"
+)
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
 )
@@ -408,6 +411,9 @@ def extract_dependency_refs(body: str | None, *, self_ticket_id: str | None = No
         )
 
     for match in TICKET_REF_RE.finditer(body):
+        prefix = body[max(0, match.start() - 32):match.start()]
+        if PARENT_REF_PREFIX_RE.search(prefix):
+            continue
         ticket_id = match.group(0)
         if self_ticket_id and ticket_id == self_ticket_id:
             continue

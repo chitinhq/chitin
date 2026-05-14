@@ -64,6 +64,25 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_extract_dependency_refs_ignores_parent_hierarchy_refs(self) -> None:
+        module = load_module()
+
+        refs = module.extract_dependency_refs(
+            "\n".join(
+                [
+                    "**Parent:** t_feedface",
+                    "Depends on: t_deadbeef",
+                    "Blocks: t_cafebabe",
+                    "Plain mention t_8badf00d still counts.",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            [ref.ticket_id for ref in refs if ref.kind == "ticket"],
+            ["t_deadbeef", "t_cafebabe", "t_8badf00d"],
+        )
+
     def test_tick_demotes_ticket_missing_invariants_and_boundaries(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
