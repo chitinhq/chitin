@@ -119,7 +119,8 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertIn("PR #99999", block_cmd[3])
         self.assertIn("state=open", block_cmd[3])
 
-    def test_tick_blocks_incomplete_ticket_dependency_before_routing(self) -> None:
+    def test_tick_blocks_triage_ticket_dependency_before_routing(self) -> None:
+        """An upstream stuck in triage is uncertain — block downstream until it advances."""
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             db_path = make_db(Path(tmp))
@@ -143,8 +144,8 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                         "t_deadbeef",
                         "upstream work",
                         "body",
-                        "in_progress",
-                        "codex",
+                        "triage",
+                        "clawta",
                         40,
                         2,
                     ),
@@ -175,7 +176,70 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(result["dependency_blocked"], ["t_depprobe"])
         block_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
         self.assertIn("t_deadbeef", block_cmd[3])
-        self.assertIn("status=in_progress", block_cmd[3])
+        self.assertIn("status=triage", block_cmd[3])
+
+    def test_tick_does_not_block_when_upstream_is_groomed(self) -> None:
+        """Upstreams in ready/todo/in_progress/done are advancing — don't block downstream.
+
+        Regression for board-watchdog 2026-05-13: 30-ticket triage↔ready
+        oscillation caused by the poller blocking tickets whose upstream
+        was already in ready/in_progress, contradicting hermes' grooming
+        semantics that promoted them in the first place.
+        """
+        module = load_module()
+        for upstream_status in ("ready", "todo", "in_progress", "done"):
+            with self.subTest(upstream_status=upstream_status):
+                with tempfile.TemporaryDirectory() as tmp:
+                    db_path = make_db(Path(tmp))
+                    conn = sqlite3.connect(db_path)
+                    conn.executemany(
+                        """
+                        INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                "t_depprobe",
+                                "probe ticket dependency",
+                                "Depends on t_deadbeef landing first.",
+                                "ready",
+                                "clawta",
+                                50,
+                                1,
+                            ),
+                            (
+                                "t_deadbeef",
+                                "upstream work",
+                                "body",
+                                upstream_status,
+                                "codex",
+                                40,
+                                2,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    def fake_run(cmd, **kwargs):
+                        if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "block":
+                            raise AssertionError(
+                                f"unexpected block call for upstream {upstream_status}: {cmd}"
+                            )
+                        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+                    with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                        module, "run_invariant_repairs", return_value={"skipped": "test"}
+                    ), mock.patch.object(
+                        module, "fetch_routable", return_value=[]
+                    ), mock.patch.object(
+                        module, "fetch_ready_for_terminal_lanes", return_value=[]
+                    ), mock.patch.object(
+                        module.subprocess, "run", side_effect=fake_run
+                    ):
+                        result = module.tick(max_dispatch=1, dry_run=False)
+
+                self.assertEqual(result["dependency_blocked"], [])
 
     def test_auto_unblocks_dependency_ticket_when_pr_merges(self) -> None:
         module = load_module()
