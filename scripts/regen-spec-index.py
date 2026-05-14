@@ -32,10 +32,7 @@ except ImportError:
 
 
 INDEX_PATH = Path("docs/superpowers/specs/INDEX.md")
-ROOTS = (
-    Path("docs/superpowers/specs"),
-    Path("docs/superpowers/superseded"),
-)
+ROOTS = (Path("docs/superpowers/specs"),)
 EXEMPT_NAMES = {"INDEX.md", "README.md"}
 
 STATUS_ORDER = ("open", "amended", "implemented", "draft", "superseded")

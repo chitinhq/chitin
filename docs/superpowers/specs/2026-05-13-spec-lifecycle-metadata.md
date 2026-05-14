@@ -1,5 +1,5 @@
 ---
-status: open
+status: amended
 owner: claude-code
 kanban: t_5f50f6a8
 implementation_pr: null
@@ -11,10 +11,25 @@ effective_to: null
 # Spec: spec lifecycle metadata + index
 
 Date: 2026-05-13
-Status: spec — open
+Status: spec — amended
 Kanban: `t_5f50f6a8` (priority 25)
-Source: `docs/audits/2026-05-13-architecture-audit.md` — Top finding 4
+Source: `docs/archive/audits/2026-05-13-architecture-audit.md` — Top finding 4
 Author: claude-code (operator-controlled, spec writer)
+
+## Amendment Log
+
+- **2026-05-13 (doc purge)** — Two structural simplifications:
+  1. `docs/superpowers/superseded/` and `docs/superpowers/observations/`
+     subdirs are retired. Superseded specs stay in
+     `docs/superpowers/specs/` with `status: superseded`. The `status`
+     field alone carries the signal; the directory split was redundant.
+  2. Linter + regenerator scripts ship as `scripts/check-spec-frontmatter.py`
+     and `scripts/regen-spec-index.py` (Python, not shell).
+
+  The schema, status enum, and INDEX.md flow below are accurate as
+  shipped. Body references to `/superseded/`, `/observations/`, and the
+  superpowers README are historical context, not current directory
+  structure.
 
 ## Problem
 

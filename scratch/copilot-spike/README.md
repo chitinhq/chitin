@@ -4,9 +4,9 @@
 chitin can integrate Copilot CLI with inline governance for a live demo
 on 2026-05-07.
 
-See `docs/superpowers/specs/2026-04-23-copilot-sdk-spike-design.md` for
-the full spec and `docs/superpowers/plans/2026-04-23-copilot-sdk-spike.md`
-for the execution plan.
+The spike completed: the Copilot CLI integration ships as
+`chitin-kernel drive copilot` (in-kernel SDK wrapper). The original spike
+spec + plan have been retired now that the work shipped.
 
 ## Directory layout
 
@@ -18,9 +18,8 @@ for the execution plan.
 Each directory has its own `main.go`, `go.mod`, `README.md`, and
 `RESULT.md` (evidence).
 
-The findings report lands at
-`docs/superpowers/specs/2026-04-25-copilot-sdk-spike-findings.md` when
-the ladder completes.
+The findings have been folded into `chitin-kernel drive copilot`; the
+findings report has been retired post-ship.
 
 ## Running a rung locally
 
