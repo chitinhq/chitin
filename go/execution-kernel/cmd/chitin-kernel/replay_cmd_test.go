@@ -9,6 +9,65 @@ import (
 	"time"
 )
 
+func TestCLI_ChainReplay_JSONAndText(t *testing.T) {
+	home := t.TempDir()
+	body := `{"schema_version":"2","run_id":"run-1","session_id":"sess-cli","surface":"codex","agent_instance_id":"agent-1","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-cli","chain_type":"session","seq":0,"this_hash":"h1","ts":"2026-05-13T10:00:00Z","labels":{"driver":"codex","agent_instance_id":"agent-1"},"payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"echo hi","decision":"allow","rule_id":"allow-shell"}}` + "\n" +
+		`{"schema_version":"2","run_id":"run-1","session_id":"sess-cli","surface":"codex","agent_instance_id":"agent-1","agent_fingerprint":"fp","event_type":"post_tool_use","chain_id":"sess-cli","chain_type":"session","seq":1,"this_hash":"h2","ts":"2026-05-13T10:00:01Z","labels":{"driver":"codex","agent_instance_id":"agent-1"},"payload":{"tool_name":"shell.exec","duration_ms":25}}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "events-run-1.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gov := `{"allowed":true,"mode":"enforce","rule_id":"allow-shell","action_type":"shell.exec","action_target":"echo hi","ts":"2026-05-13T10:00:00Z","driver":"codex","agent_instance_id":"agent-1","agent":"agent-1","cost_usd":0.5}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "gov-decisions-2026-05-13.jsonl"), []byte(gov), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "chain", "replay", "--session=sess-cli")
+	if code != 0 {
+		t.Fatalf("json exit=%d stderr=%s", code, stderr)
+	}
+	var got struct {
+		SessionID string `json:"session_id"`
+		Summary   struct {
+			ToolCallCount int     `json:"tool_call_count"`
+			TotalCostUSD  float64 `json:"total_cost_usd"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("parse replay json: %v\n%s", err, stdout)
+	}
+	if got.SessionID != "sess-cli" || got.Summary.ToolCallCount != 1 || got.Summary.TotalCostUSD != 0.5 {
+		t.Fatalf("unexpected replay json: %+v", got)
+	}
+
+	stdout, stderr, code = runCLIWithHome(t, home, "chain", "replay", "--session=sess-cli", "--format=text")
+	if code != 0 {
+		t.Fatalf("text exit=%d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "session sess-cli") || !strings.Contains(stdout, "shell.exec") {
+		t.Fatalf("text output missing expected content: %s", stdout)
+	}
+}
+
+func TestCLI_ChainSessions_Recent(t *testing.T) {
+	home := t.TempDir()
+	rows := map[string]string{
+		"a": `{"schema_version":"2","run_id":"a","session_id":"sess-old","surface":"codex","agent_instance_id":"a1","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-old","chain_type":"session","seq":0,"this_hash":"h1","ts":"2026-05-13T09:00:00Z","labels":{"driver":"codex","agent_instance_id":"a1"},"payload":{"tool_name":"file.read"}}` + "\n",
+		"b": `{"schema_version":"2","run_id":"b","session_id":"sess-new","surface":"codex","agent_instance_id":"a2","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-new","chain_type":"session","seq":0,"this_hash":"h2","ts":"2026-05-13T12:00:00Z","labels":{"driver":"hermes","agent_instance_id":"a2"},"payload":{"tool_name":"shell.exec"}}` + "\n",
+	}
+	for runID, body := range rows {
+		if err := os.WriteFile(filepath.Join(home, "events-"+runID+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := runCLIWithHome(t, home, "chain", "sessions", "--recent=1")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "sess-new") {
+		t.Fatalf("expected most recent session in output, got %s", stdout)
+	}
+}
+
 func TestCLI_ChainStats_WindowHours(t *testing.T) {
 	home := t.TempDir()
 	now := time.Now().UTC()

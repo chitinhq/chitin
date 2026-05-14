@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,43 +11,46 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
 )
 
-// cmdChainReplay dispatches `chitin-kernel chain replay <session_id>`.
-// Re-evaluates a recorded session's gate decisions against the
-// current policy at cwd; prints diffs.
-//
-// Flags:
-//
-//	--session=<id>   session_id to replay (or "latest" for most recent)
-//	--json           emit JSON report instead of human-readable
-//	--policy-cwd=<d> cwd for policy resolution (default: $PWD)
+// cmdChainReplay dispatches `chitin-kernel chain replay [flags]`.
 func cmdChainReplay(args []string) {
 	sessionID := ""
-	jsonOut := false
-	policyCwd, _ := os.Getwd()
+	format := "json"
+	from := ""
+	to := ""
+	driver := ""
+	tool := ""
 	for _, a := range args {
 		switch {
 		case strings.HasPrefix(a, "--session="):
 			sessionID = a[len("--session="):]
-		case a == "--json":
-			jsonOut = true
-		case strings.HasPrefix(a, "--policy-cwd="):
-			policyCwd = a[len("--policy-cwd="):]
+		case strings.HasPrefix(a, "--format="):
+			format = a[len("--format="):]
+		case strings.HasPrefix(a, "--from="):
+			from = a[len("--from="):]
+		case strings.HasPrefix(a, "--to="):
+			to = a[len("--to="):]
+		case strings.HasPrefix(a, "--driver="):
+			driver = a[len("--driver="):]
+		case strings.HasPrefix(a, "--tool="):
+			tool = a[len("--tool="):]
 		case a == "--help" || a == "-h":
 			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain replay [flags]
 
-Re-evaluate a recorded session's gate decisions against the current
-router policy at the specified cwd.
+Build a structured session timeline from chain events, joined decision
+rows, and optional sidecar blobs.
 
 Flags:
-  --session=<id>     session_id to replay (or "latest" for the
-                     most recently-modified ~/.chitin/events-*.jsonl)
-  --json             emit JSON report instead of human-readable
-  --policy-cwd=<d>   cwd for policy resolution (default: $PWD)
+  --session=<id>     session_id / chain_id to replay (or "latest")
+  --format=<f>       json | text (default: json)
+  --from=<ts>        include events at/after RFC3339 timestamp
+  --to=<ts>          include events at/before RFC3339 timestamp
+  --driver=<name>    include only one driver
+  --tool=<name>      include only one tool
 
 Examples:
   chitin-kernel chain replay --session=latest
-  chitin-kernel chain replay --session=8dc93816-... --json | jq
-  chitin-kernel chain replay --session=latest --policy-cwd=/path/to/proposed/policy/dir`)
+  chitin-kernel chain replay --session=8dc93816-... --format=text
+  chitin-kernel chain replay --session=latest --driver=codex --tool=shell.exec`)
 			os.Exit(0)
 		}
 	}
@@ -63,18 +65,27 @@ Examples:
 		sessionID = latest
 	}
 
-	result, err := replay.Run(context.Background(), sessionID, policyCwd)
+	timeline, err := replay.BuildTimeline(replay.ReplayOptions{
+		SessionID: sessionID,
+		From:      from,
+		To:        to,
+		Driver:    driver,
+		Tool:      tool,
+	})
 	if err != nil {
 		exitErr("chain_replay_failed", err.Error())
 	}
 
-	if jsonOut {
-		if err := replay.WriteJSONReport(os.Stdout, result); err != nil {
+	switch format {
+	case "json":
+		if err := replay.WriteTimelineJSON(os.Stdout, timeline); err != nil {
 			exitErr("chain_replay_json", err.Error())
 		}
-		return
+	case "text":
+		replay.WriteTimelineText(os.Stdout, timeline)
+	default:
+		exitErr("chain_replay_format", "--format must be json or text")
 	}
-	replay.WriteHumanReport(os.Stdout, result)
 }
 
 // cmdChainSummarize dispatches `chitin-kernel chain summarize`.
@@ -165,15 +176,66 @@ func cmdChainRelated(args []string) {
 	}
 }
 
-// cmdChain dispatches `chitin-kernel chain <subcommand>`. Today
-// `replay`, `summarize`, and `related` are wired here.
+func cmdChainSessions(args []string) {
+	recent := 10
+	format := "text"
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--recent="):
+			if n, err := strconv.Atoi(a[len("--recent="):]); err == nil {
+				recent = n
+			}
+		case strings.HasPrefix(a, "--format="):
+			format = a[len("--format="):]
+		case a == "--help" || a == "-h":
+			fmt.Fprintln(os.Stderr, `Usage: chitin-kernel chain sessions [flags]
+
+List recent session chains.
+
+Flags:
+  --recent=<n>       number of sessions to list (default: 10)
+  --format=<f>       text | json (default: text)`)
+			os.Exit(0)
+		}
+	}
+	sessions, err := replay.ListRecentSessions(recent)
+	if err != nil {
+		exitErr("chain_sessions_failed", err.Error())
+	}
+	switch format {
+	case "json":
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(sessions); err != nil {
+			exitErr("chain_sessions_json", err.Error())
+		}
+	case "text":
+		for _, s := range sessions {
+			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%d\n",
+				s.LastTs, s.SessionID, emptyDash(s.Driver), emptyDash(s.Agent), s.Events)
+		}
+	default:
+		exitErr("chain_sessions_format", "--format must be text or json")
+	}
+}
+
+func emptyDash(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+
+// cmdChain dispatches `chitin-kernel chain <subcommand>`.
 func cmdChain(args []string) {
 	if len(args) < 1 {
-		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|summarize|related|snapshot|stats> [flags]")
+		exitErr("chain_no_subcommand", "usage: chitin-kernel chain <replay|sessions|summarize|related|snapshot|stats> [flags]")
 	}
 	switch args[0] {
 	case "replay":
 		cmdChainReplay(args[1:])
+	case "sessions":
+		cmdChainSessions(args[1:])
 	case "summarize":
 		cmdChainSummarize(args[1:])
 	case "related":
