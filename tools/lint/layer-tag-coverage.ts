@@ -79,9 +79,9 @@ export function extractScopeTagsFromPackageJson(
  * Pull the `sourceTag` strings from a `depConstraints` array — the
  * shape ESLint loads from `eslint.config.mjs` at runtime.
  *
- * Defensive: only tags starting with `layer:` are returned, mirroring
- * the linter's scope (other depConstraint shapes — e.g., `scope:*` —
- * are out of scope here).
+ * Defensive: only tags starting with `prefix` are returned, so callers
+ * can ask for `layer:` or `scope:` (or any other namespace) without
+ * picking up unrelated tags.
  */
 export function extractDepConstraintTags(
   depConstraints: ReadonlyArray<{ sourceTag?: unknown }>,
@@ -307,10 +307,11 @@ export async function lintLayerTagCoverage(opts: {
 
 function printCoverageResult(
   label: string,
+  kind: string,
   gaps: CoverageGaps,
 ): void {
   if (gaps.missing.length > 0) {
-    console.error(`${label}: ERROR — ${label.split(':')[0]} tags without depConstraints:`);
+    console.error(`${label}: ERROR — ${kind} tags without depConstraints:`);
     for (const { tag, foundIn } of gaps.missing) {
       console.error(`  ${tag}`);
       for (const path of foundIn) {
@@ -336,8 +337,8 @@ async function main(): Promise<void> {
     eslintConfigPath: eslintConfig,
   });
 
-  printCoverageResult('layer-tag-coverage', result.layer);
-  printCoverageResult('scope-tag-coverage', result.scope);
+  printCoverageResult('layer-tag-coverage', 'layer', result.layer);
+  printCoverageResult('scope-tag-coverage', 'scope', result.scope);
 
   if (result.layer.missing.length > 0 || result.scope.missing.length > 0) {
     console.error('');
