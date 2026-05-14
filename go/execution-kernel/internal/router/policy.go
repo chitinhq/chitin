@@ -117,40 +117,14 @@ func parseRouterSection(routerYaml string) Policy {
 				}
 			}
 			policy.Heuristics[subsection] = h
-		} else if section == "advisor" {
-			switch {
-			case key == "enabled":
-				policy.Advisor.Enabled = value == "true"
-			case key == "model":
-				policy.Advisor.Model = strings.Trim(value, `"'`)
-			case key == "when" && strings.HasPrefix(value, "["):
-				inside := strings.Trim(value, "[]")
-				policy.Advisor.When = parseInlineList(inside)
-			case subsection == "chain" && key == "max_depth":
-				if n, err := strconv.Atoi(value); err == nil {
-					policy.Advisor.Chain.MaxDepth = n
-				}
-			case subsection == "chain" && key == "tier_steps" && strings.HasPrefix(value, "["):
-				inside := strings.Trim(value, "[]")
-				policy.Advisor.Chain.TierSteps = parseInlineList(inside)
-			}
 		}
+		// section == "advisor" is silently ignored. The in-gate advisor
+		// was culled 2026-05-08; old chitin.yaml files may still have
+		// the block, but we no longer parse it. See
+		// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
 	}
 
 	return policy
-}
-
-func parseInlineList(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		p = strings.Trim(p, `"'`)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func findFirstMatch(lines []string, re *regexp.Regexp) []string {
@@ -182,7 +156,7 @@ func LoadPolicy(cwd string) Policy {
 	// Plugins use a real YAML parse since they're a list-of-maps
 	// shape the hand-rolled parser doesn't handle. Failures here
 	// just leave Plugins empty (graceful no-op — the rest of the
-	// hand-rolled parse already populated heuristics + advisor).
+	// hand-rolled parse already populated heuristics).
 	policy.Plugins = parsePluginsViaYAML(string(data))
 	return policy
 }

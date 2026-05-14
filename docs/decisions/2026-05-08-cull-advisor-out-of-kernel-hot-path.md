@@ -86,10 +86,6 @@ from cross-driver chain telemetry:
   declared subprocess heuristics. Pre-action `block=true` plugins
   remain authoritative deny-now signals; they are deterministic
   checks, not judgment calls.
-- `AdvisorConfig` parser stub in `types.go` and `policy.go` — kept
-  parse-and-ignore so existing operator chitin.yaml files with a
-  `router.advisor:` block continue to load cleanly. The kernel
-  never reads the parsed config.
 
 ## New behavior: heuristic signals stamped on the chain
 
@@ -161,3 +157,38 @@ shape that hard means it isn't pulling its weight as differentiation.
 - 0 new dependencies
 - All tests green (`go test ./...` 963 passed in 26 packages)
 - Build clean (`go build ./...`, `go vet ./...`)
+
+## Follow-up: stub removal (2026-05-13)
+
+The "parse-and-ignore" `AdvisorConfig` stub kept on 2026-05-08 (for
+backwards-compat with chitin.yaml files that still had a
+`router.advisor:` block) is removed in this follow-up:
+
+- `AdvisorConfig` struct deleted from `internal/router/types.go`.
+- `Policy.Advisor` field deleted; `DefaultPolicy()` no longer
+  populates it.
+- The `section == "advisor"` parser branch in
+  `internal/router/policy.go` is replaced with a silent ignore — an
+  old chitin.yaml that still has the block continues to load (the
+  block's keys are read but discarded), but no `Advisor*` symbol
+  exists in the kernel anymore.
+- The `router.advisor:` block in `chitin.yaml` is removed by the
+  operator (governance-self-modification rule prevents the kernel
+  from rewriting its own gate config).
+
+Rationale: the stub's purpose was a graceful migration window. A
+week later, every operator-controlled chitin.yaml has been audited;
+the stub is now just confusing residue that suggests an active
+advisor path. Removing it makes the architecture honest: chitin's
+router emits signals, downstream consumers handle LLM second
+opinions, full stop.
+
+Net change (this follow-up):
+- ~50 LOC removed across `types.go`, `policy.go`, `chitin.yaml`
+- Tests still green
+- `--no-advisor` flag on `simulate_cmd.go` kept as a documented
+  no-op (unchanged from the 2026-05-08 cull)
+- Historical breadcrumb comments preserved in `router_hook.go`,
+  `simulate_cmd.go`, `gov/{decision,policy}.go`, and the test
+  sentinels in `router_hook_test.go` — those are tripwires for
+  "the advisor path crept back in," not residue
