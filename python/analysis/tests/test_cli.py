@@ -97,3 +97,25 @@ def test_cli_deterministic_with_fixed_now(tmp_path, fixtures_dir):
     a = list(a_dir.glob("*.json"))[0].read_bytes()
     b = list(b_dir.glob("*.json"))[0].read_bytes()
     assert a == b
+
+
+def test_sentinel_cli_alias_runs_decisions_pipeline(tmp_path, fixtures_dir):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_fixture(decisions_dir, fixtures_dir)
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "analysis.sentinel",
+         "--window", "100d",
+         "--top-n", "5",
+         "--out-dir", str(out_dir),
+         "--decisions-dir", str(decisions_dir),
+         "--now", "2026-04-30T12:00:00+00:00"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    body = json.loads(list(out_dir.glob("*.json"))[0].read_text())
+    assert body["stream"] == "decisions"
+    assert body["patterns"]
