@@ -31,11 +31,11 @@ func hermesEnvelopeTemplate() *event.Event {
 }
 
 // realCaptureBytes returns the Phase B real capture bytes, checked in at
-// docs/observations/2026-04-21-hermes-post-api-request-capture.jsonl.
+// docs/archive/observations/2026-04-21-hermes-post-api-request-capture.jsonl.
 func realCaptureBytes(t *testing.T) []byte {
 	t.Helper()
 	// Walk up from internal/ingest/ to repo root to locate the observation file.
-	path := filepath.Join("..", "..", "..", "..", "docs", "observations",
+	path := filepath.Join("..", "..", "..", "..", "docs", "archive", "observations",
 		"2026-04-21-hermes-post-api-request-capture.jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -56,7 +56,7 @@ func TestEmitHermesTurns_RealCaptureEndToEnd(t *testing.T) {
 
 	// The Phase B capture has 22 post_api_request events and 59 supporting
 	// events (on_session_start/end, pre_tool_call, post_tool_call). See
-	// docs/observations/2026-04-21-hermes-post-api-request-capture.md.
+	// docs/archive/observations/2026-04-21-hermes-post-api-request-capture.md.
 	if len(turns) != 22 {
 		t.Fatalf("want 22 turns from real capture, got %d", len(turns))
 	}
