@@ -13,7 +13,7 @@
     "vendor"
   ],
   "scripts": {
-    "test": "vitest run tests"
+    "test": "vitest run 000-boundary-coverage.test.ts tests"
   },
   "nx": {
     "sourceRoot": "apps/cli/src",
@@ -28,7 +28,7 @@
       "test": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "pnpm exec vitest run apps/cli/tests",
+          "command": "pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
           "cwd": "{workspaceRoot}"
         }
       },
@@ -42,7 +42,7 @@
       "validate": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "pnpm exec tsc -b apps/cli/tsconfig.json && pnpm exec vitest run apps/cli/tests",
+          "command": "pnpm exec tsc -b apps/cli/tsconfig.json && pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
           "cwd": "{workspaceRoot}"
         },
         "dependsOn": [
