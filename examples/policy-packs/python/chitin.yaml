@@ -1,0 +1,127 @@
+id: chitin-pack-python
+name: Python governance pack
+description: Baseline governance for Python repos with virtualenv, publishing, and interpreter-mutation guardrails.
+mode: enforce
+
+bounds:
+  max_files_changed: 30
+  max_lines_changed: 700
+  max_runtime_seconds: 1200
+  per_action:
+    git.push:
+      max_files_changed: 80
+      max_lines_changed: 2000
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
+  no-rm-recursive: guide
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-commit-to-protected: enforce
+  no-protected-push: enforce
+  no-env-file-write: enforce
+  no-remote-code-exec: enforce
+  protected-credential-path-write: enforce
+
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+    suggestion: "Delete only the files you intend to remove."
+
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+    suggestion: "Use a targeted delete or git rm on named files."
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to a feature branch and merge through review"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.env(?:\.[^/]+)?$'
+    reason: "Environment files often contain secrets and stay operator-managed"
+
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.config/gh/|\.pypirc|\.bashrc|\.zshrc|\.profile|\.netrc)'
+    reason: "Credential and shell-init files cannot be modified by agents"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh|python)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Fetching and immediately executing remote code is blocked"
+
+  - id: no-pypirc-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.pypirc$'
+    reason: "Package index credentials stay operator-managed"
+
+  - id: no-system-python-mutation
+    action: shell.exec
+    effect: deny
+    target_regex: '\bpip(?:3)?\s+install\b.*--break-system-packages\b|\bpython(?:3)?\s+-m\s+pip\s+install\b.*--break-system-packages\b'
+    reason: "System interpreter mutation is blocked"
+    suggestion: "Create or activate a virtual environment first."
+
+  - id: no-broad-python-upgrade
+    action: shell.exec
+    effect: deny
+    target_regex: '\bpip(?:3)?\s+install\s+(?:-U|--upgrade)\b|\bpython(?:3)?\s+-m\s+pip\s+install\s+(?:-U|--upgrade)\b'
+    reason: "Broad interpreter-level upgrades create noisy, risky drift"
+    suggestion: "Pin and review the specific dependency change first."
+
+  - id: no-python-publish
+    action: shell.exec
+    effect: deny
+    target_regex: '\btwine\s+upload\b|\bpoetry\s+publish\b'
+    reason: "Publishing Python artifacts is a human-controlled release action"
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-read
+    action: [git.diff, git.log, git.status]
+    effect: allow
+    reason: "Git inspection is safe"
+
+  - id: allow-tests
+    action: test.run
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.merge]
+    effect: allow
+    reason: "Standard git operations are allowed on non-protected branches"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Pushes to non-protected branches are allowed"

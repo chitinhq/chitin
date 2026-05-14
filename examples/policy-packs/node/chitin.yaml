@@ -1,0 +1,121 @@
+id: chitin-pack-node
+name: Node.js governance pack
+description: Baseline governance for Node.js repos with package-manager, publishing, and token-file guardrails.
+mode: enforce
+
+bounds:
+  max_files_changed: 30
+  max_lines_changed: 700
+  max_runtime_seconds: 1200
+  per_action:
+    git.push:
+      max_files_changed: 80
+      max_lines_changed: 2000
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
+  no-rm-recursive: guide
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-commit-to-protected: enforce
+  no-protected-push: enforce
+  no-env-file-write: enforce
+  no-remote-code-exec: enforce
+  protected-credential-path-write: enforce
+
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+    suggestion: "Delete only the files you intend to remove."
+
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+    suggestion: "Use a targeted delete or git rm on named files."
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to a feature branch and merge through review"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.env(?:\.[^/]+)?$'
+    reason: "Environment files often contain secrets and stay operator-managed"
+
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.config/gh/|\.npmrc|\.bashrc|\.zshrc|\.profile|\.netrc)'
+    reason: "Credential and shell-init files cannot be modified by agents"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh|node)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Fetching and immediately executing remote code is blocked"
+
+  - id: no-npmrc-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.npmrc$'
+    reason: "Registry credentials and publish config stay operator-managed"
+
+  - id: no-node-publish
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:npm|pnpm)\s+publish\b|\byarn\s+npm\s+publish\b'
+    reason: "Publishing packages is a human-controlled release action"
+    suggestion: "Build or pack the artifact and hand it to the release workflow."
+
+  - id: no-forced-audit-fix
+    action: shell.exec
+    effect: deny
+    target_regex: '\bnpm\s+audit\s+fix\s+--force\b|\byarn\s+upgrade\b.*\b--latest\b|\bpnpm\s+up\b.*\b--latest\b'
+    reason: "Forced dependency churn can hide breaking changes"
+    suggestion: "Review the vulnerable package and upgrade it explicitly."
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-read
+    action: [git.diff, git.log, git.status]
+    effect: allow
+    reason: "Git inspection is safe"
+
+  - id: allow-tests
+    action: test.run
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.merge]
+    effect: allow
+    reason: "Standard git operations are allowed on non-protected branches"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Pushes to non-protected branches are allowed"

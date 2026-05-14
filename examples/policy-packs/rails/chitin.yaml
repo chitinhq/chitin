@@ -1,0 +1,125 @@
+id: chitin-pack-rails
+name: Rails governance pack
+description: Baseline governance for Rails apps with database, credentials, and Bundler guardrails.
+mode: enforce
+
+bounds:
+  max_files_changed: 35
+  max_lines_changed: 800
+  max_runtime_seconds: 1200
+  per_action:
+    git.push:
+      max_files_changed: 90
+      max_lines_changed: 2200
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
+  no-rm-recursive: guide
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-commit-to-protected: enforce
+  no-protected-push: enforce
+  no-env-file-write: enforce
+  no-remote-code-exec: enforce
+  protected-credential-path-write: enforce
+
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to a feature branch and merge through review"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.env(?:\.[^/]+)?$'
+    reason: "Environment files often contain secrets and stay operator-managed"
+
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.netrc)'
+    reason: "Credential and shell-init files cannot be modified by agents"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh|ruby)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Fetching and immediately executing remote code is blocked"
+
+  - id: no-rails-master-key-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)config/master\.key$'
+    reason: "Rails master key stays operator-managed"
+
+  - id: no-rails-db-destroy
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:bin/rails|bundle\s+exec\s+rails|rake)\s+db:(?:drop|reset)\b'
+    reason: "Destructive database lifecycle commands are blocked"
+
+  - id: no-rails-credentials-edit
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:bin/rails|bundle\s+exec\s+rails)\s+credentials:edit\b'
+    reason: "Credential editing remains operator-managed"
+    suggestion: "Discuss the required credential change in code or docs, not by mutating secrets."
+
+  - id: no-bundle-update-all
+    action: shell.exec
+    effect: deny
+    target_regex: '\bbundle\s+update(?:\s|$)'
+    reason: "Blanket gem updates are noisy and risky"
+    suggestion: "Upgrade a named gem instead."
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-read
+    action: [git.diff, git.log, git.status]
+    effect: allow
+    reason: "Git inspection is safe"
+
+  - id: allow-tests
+    action: test.run
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.merge]
+    effect: allow
+    reason: "Standard git operations are allowed on non-protected branches"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Pushes to non-protected branches are allowed"

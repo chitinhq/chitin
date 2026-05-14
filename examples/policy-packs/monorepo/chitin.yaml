@@ -1,0 +1,124 @@
+id: chitin-pack-monorepo
+name: Monorepo governance pack
+description: Baseline governance for workspace repos with recursive dependency, publish, and graph-wide task guardrails.
+mode: enforce
+
+bounds:
+  max_files_changed: 40
+  max_lines_changed: 900
+  max_runtime_seconds: 1500
+  per_action:
+    git.push:
+      max_files_changed: 120
+      max_lines_changed: 3000
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
+  no-rm-recursive: guide
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-commit-to-protected: enforce
+  no-protected-push: enforce
+  no-env-file-write: enforce
+  no-remote-code-exec: enforce
+  protected-credential-path-write: enforce
+
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to a feature branch and merge through review"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.env(?:\.[^/]+)?$'
+    reason: "Environment files often contain secrets and stay operator-managed"
+
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.netrc)'
+    reason: "Credential and shell-init files cannot be modified by agents"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh|node|python)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Fetching and immediately executing remote code is blocked"
+
+  - id: guide-root-manifest-writes
+    action: file.write
+    effect: guide
+    target_regex: '(?:^|/)(?:package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|nx\.json|turbo\.json)$'
+    reason: "Root-manifest changes affect the whole workspace"
+    suggestion: "Confirm the change is intended for the root and not just one package."
+
+  - id: no-recursive-latest-upgrade
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:pnpm|yarn|npm)\b.*\b(?:-r|--recursive|workspaces)\b.*\b(?:up|update|upgrade)\b.*\b--latest\b|\bpnpm\s+-r\s+up\b'
+    reason: "Recursive latest-version sweeps create broad workspace churn"
+
+  - id: no-recursive-publish
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:pnpm|yarn|npm)\b.*\b(?:-r|--recursive|workspaces)\b.*\b(?:publish|version)\b|\bchangeset\s+publish\b|\blerna\s+publish\b'
+    reason: "Publishing or versioning the whole workspace is a human-controlled release action"
+
+  - id: no-run-many-all
+    action: shell.exec
+    effect: deny
+    target_regex: '\bnx\s+run-many\b.*\b--all\b|\bturbo\s+run\b.*\b--filter=\.\.\.'
+    reason: "Graph-wide task fan-out should be narrowed to the packages involved in the change"
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-read
+    action: [git.diff, git.log, git.status]
+    effect: allow
+    reason: "Git inspection is safe"
+
+  - id: allow-tests
+    action: test.run
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.merge]
+    effect: allow
+    reason: "Standard git operations are allowed on non-protected branches"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Pushes to non-protected branches are allowed"
