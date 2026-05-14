@@ -62,6 +62,10 @@ def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
                 stdin_text = prompt
                 continue
             if driver == "gemini":
+                # gemini CLI: `-p ""` selects non-interactive mode while
+                # leaving the prompt body to be read from stdin. The empty
+                # argv slot is the flag value, not the prompt — the real
+                # prompt travels via stdin_text so it stays off argv.
                 argv.append("")
                 stdin_text = prompt
                 continue
@@ -71,6 +75,8 @@ def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
         argv.append(arg)
 
     if prompt and driver == "gemini" and "{prompt}" not in args_template:
+        # Card has no {prompt} placeholder: append `-p ""` ourselves so the
+        # gemini CLI still runs non-interactively and consumes stdin_text.
         argv.extend(["-p", ""])
         stdin_text = prompt
 

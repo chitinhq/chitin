@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -107,6 +108,37 @@ class FixDispatcherTests(unittest.TestCase):
         stdin_text = stdin_payloads[0]
         self.assertIn("Review comment:", stdin_text)
         self.assertIn(review, stdin_text)
+
+    def test_dispatch_worker_cleans_up_prompt_file_when_popen_errors(self):
+        # Boundary: error. If Popen raises, the temp prompt file — which holds
+        # the review/ticket body — must still be removed, not leaked to disk.
+        module = load_module()
+        created_files = []
+        real_named_tmp = tempfile.NamedTemporaryFile
+
+        def recording_named_tmp(*args, **kwargs):
+            handle = real_named_tmp(*args, **kwargs)
+            created_files.append(handle.name)
+            return handle
+
+        pr = {"number": 88, "title": "x", "headRefName": "swarm/codex-fix", "url": "https://example/pr/88"}
+        review = "Review body."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "pr-88"
+            worktree.mkdir()
+            with mock.patch.object(module, "WORKTREE_ROOT", Path(tmp)), \
+                 mock.patch.object(module, "ensure_worktree", return_value=worktree), \
+                 mock.patch.object(module.tempfile, "NamedTemporaryFile", side_effect=recording_named_tmp), \
+                 mock.patch.object(module.subprocess, "Popen", side_effect=FileNotFoundError("codex")):
+                with self.assertRaises(FileNotFoundError):
+                    module.dispatch_worker(pr, review, dry_run=False)
+
+        self.assertEqual(len(created_files), 1)
+        self.assertFalse(
+            os.path.exists(created_files[0]),
+            "temp prompt file leaked to disk after Popen error",
+        )
 
 
 if __name__ == "__main__":

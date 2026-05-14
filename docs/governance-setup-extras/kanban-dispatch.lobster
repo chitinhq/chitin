@@ -328,13 +328,17 @@ steps:
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
       # session tracking via parent_chain_id in chain ledger.
-      SPAWN_CONFIG=$(jq -n \
+      #
+      # The prompt is fed to jq over stdin (--rawfile /dev/stdin), not as
+      # --arg, so the full ticket body never lands in jq's argv / ps output
+      # or risks ARG_MAX. Everything else passed to jq is small + non-sensitive.
+      SPAWN_CONFIG=$(printf '%s' "$PROMPT" | jq -n \
         --arg driver "$DRIVER" \
         --arg model "$MODEL" \
         --arg worktree "$WORKTREE_DIR" \
         --arg branch "$BRANCH" \
         --arg cmd "$CMD" \
-        --arg prompt "$PROMPT" \
+        --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
         '{
           driver: $driver,

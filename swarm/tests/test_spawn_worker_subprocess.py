@@ -65,6 +65,41 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
         self.assertEqual(argv, ["chitin-kernel", "drive", "copilot", "--model", "gpt-4.1", "--cwd", "."])
         self.assertEqual(stdin_text, "ticket body here")
 
+    def test_prepare_worker_command_max_size_prompt_stays_off_argv(self):
+        # Boundary: max. A very large ticket body must travel via stdin_text,
+        # never argv — that is the whole point of the change (ps visibility +
+        # ARG_MAX). Check every stdin-routed driver.
+        module = load_module()
+        huge_prompt = "x" * 500_000
+        for driver, cmd in (("codex", "codex"), ("copilot", "chitin-kernel"), ("gemini", "gemini")):
+            argv, stdin_text = module.prepare_worker_command(
+                {
+                    "driver": driver,
+                    "cmd": cmd,
+                    "model": "m",
+                    "prompt": huge_prompt,
+                    "args": ["--model", "{model}", "{prompt}"],
+                }
+            )
+            self.assertEqual(stdin_text, huge_prompt, msg=driver)
+            self.assertNotIn(huge_prompt, argv, msg=driver)
+
+    def test_prepare_worker_command_missing_prompt_does_not_crash(self):
+        # Boundary: error. A config with no "prompt" key must not raise — the
+        # helper falls back to an empty prompt, still routed via stdin so the
+        # {prompt} placeholder never becomes a literal argv entry.
+        module = load_module()
+        argv, stdin_text = module.prepare_worker_command(
+            {
+                "driver": "codex",
+                "cmd": "codex",
+                "model": "gpt-5.5",
+                "args": ["exec", "--model", "{model}", "{prompt}"],
+            }
+        )
+        self.assertEqual(argv, ["codex", "exec", "--model", "gpt-5.5"])
+        self.assertEqual(stdin_text, "")
+
 
 if __name__ == "__main__":
     unittest.main()

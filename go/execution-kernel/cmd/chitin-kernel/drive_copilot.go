@@ -78,6 +78,15 @@ func resolveCopilotPrompt(args []string, interactive bool, stdin io.Reader) (str
 		return "", nil
 	}
 
+	// If stdin is an interactive terminal (not a pipe or file), no prompt is
+	// coming — return the usage error immediately instead of blocking on
+	// ReadAll waiting for an EOF the operator has no way to send.
+	if f, ok := stdin.(*os.File); ok {
+		if stat, statErr := f.Stat(); statErr == nil && stat.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("prompt required unless --interactive")
+		}
+	}
+
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return "", fmt.Errorf("read stdin: %w", err)
