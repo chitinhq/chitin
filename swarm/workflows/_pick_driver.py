@@ -28,6 +28,7 @@ Output schema (stdout JSON):
 """
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,26 @@ CARDS_DIR = os.path.expanduser(
     os.environ.get("OPENCLAW_AGENT_CARDS_DIR", "~/.openclaw/data/agent-cards")
 )
 LLM_TIMEOUT_SECONDS = 60
+DEFAULT_EXPLORATION_PERCENT = 0
+DEFAULT_EXPLORATION_MAX_CANDIDATES = 2
+HIGH_RISK_LEVELS = {"high", "irreversible"}
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def load_cards(cards_dir: str = CARDS_DIR) -> tuple[list[dict], list[str]]:
@@ -113,7 +134,7 @@ def max_model_cost(card: dict) -> float:
     )
 
 
-def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[dict]]:
+def deterministic_ranked_candidates(classify: dict, cards: list[dict]) -> list[dict]:
     """Capability-filter plus complexity-aware driver rank."""
     caps_needed = set(classify.get("capabilities", []))
     candidates = [c for c in cards if caps_needed.issubset(card_capabilities(c))]
@@ -139,8 +160,13 @@ def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[di
     else:
         ranked = sorted(candidates, key=min_model_cost)
 
+    return ranked
+
+
+def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[dict]]:
+    ranked = deterministic_ranked_candidates(classify, cards)
     pick = ranked[0] if ranked else {"id": "unassigned"}
-    return pick, candidates
+    return pick, ranked
 
 
 def sorted_models(card: dict) -> list[dict]:
@@ -183,6 +209,18 @@ def select_model(card: dict, classify: dict) -> str | None:
 def cheapest_model(card: dict) -> str | None:
     models = sorted_models(card)
     return models[0].get("id") if models else None
+
+
+def stronger_model(card: dict, classify: dict) -> str | None:
+    models = sorted_models(card)
+    if not models:
+        return None
+    bucket = complexity_bucket(classify)
+    if bucket == "medium":
+        return models[-1].get("id")
+    if len(models) >= 2:
+        return models[1].get("id")
+    return models[0].get("id")
 
 
 def cards_summary_for_llm(cards: list[dict]) -> list[dict]:
@@ -289,6 +327,79 @@ def validate_llm_pick(
     return chosen_card, None
 
 
+def normalize_risk_level(classify: dict) -> str:
+    raw = str(classify.get("risk_level", "medium")).strip().lower()
+    if raw in {"low", "medium", "high", "irreversible"}:
+        return raw
+    return "medium"
+
+
+def stable_roll(classify: dict, salt: str) -> int:
+    payload = json.dumps(classify, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(f"{salt}:{payload}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def exploration_settings() -> dict[str, object]:
+    percent = env_int("CLAWTA_EXPLORATION_PERCENT", DEFAULT_EXPLORATION_PERCENT)
+    percent = max(0, min(percent, 100))
+    max_candidates = env_int(
+        "CLAWTA_EXPLORATION_MAX_CANDIDATES", DEFAULT_EXPLORATION_MAX_CANDIDATES
+    )
+    max_candidates = max(0, max_candidates)
+    return {
+        "percent": percent,
+        "max_candidates": max_candidates,
+        "allow_high_risk": env_flag("CLAWTA_EXPLORATION_ALLOW_HIGH_RISK", False),
+        "allow_governance_critical": env_flag(
+            "CLAWTA_EXPLORATION_ALLOW_GOVERNANCE_CRITICAL", False
+        ),
+    }
+
+
+def exploration_eligibility(
+    classify: dict, settings: dict[str, object]
+) -> tuple[bool, str | None]:
+    percent = int(settings["percent"])
+    if percent <= 0:
+        return False, "exploration disabled"
+    if complexity_bucket(classify) not in {"low", "medium"}:
+        return False, "exploration restricted to low/medium complexity"
+    risk_level = normalize_risk_level(classify)
+    if risk_level in HIGH_RISK_LEVELS and not bool(settings["allow_high_risk"]):
+        return False, f"risk_level={risk_level} excluded from exploration"
+    if bool(classify.get("governance_critical")) and not bool(
+        settings["allow_governance_critical"]
+    ):
+        return False, "governance-critical work excluded from exploration"
+    return True, None
+
+
+def choose_exploration_candidate(
+    classify: dict, ranked_candidates: list[dict], settings: dict[str, object]
+) -> tuple[dict | None, list[dict], str | None]:
+    eligible, reason = exploration_eligibility(classify, settings)
+    if not eligible:
+        return None, [], reason
+    if len(ranked_candidates) <= 1:
+        return None, [], "no alternate capability-matching candidates"
+
+    max_candidates = int(settings["max_candidates"])
+    if max_candidates <= 0:
+        return None, [], "exploration candidate pool is disabled"
+
+    pool = ranked_candidates[1 : 1 + max_candidates]
+    if not pool:
+        return None, [], "no bounded exploration candidates available"
+
+    roll = stable_roll(classify, "exploration-percent") % 100
+    if roll >= int(settings["percent"]):
+        return None, pool, f"stable roll {roll} >= exploration percent {settings['percent']}"
+
+    choice = pool[stable_roll(classify, "exploration-choice") % len(pool)]
+    return choice, pool, None
+
+
 def emit_result(
     *,
     driver: str | None,
@@ -297,8 +408,10 @@ def emit_result(
     caps_needed: set[str],
     candidates_considered: int,
     router_mode: str,
+    selection_mode: str,
     reasoning: str,
     card_load_errors: int,
+    exploration_candidates_considered: int,
 ) -> None:
     print(
         json.dumps(
@@ -309,9 +422,11 @@ def emit_result(
                 "caps_needed": sorted(caps_needed),
                 "candidates_considered": candidates_considered,
                 "router_mode": router_mode,
+                "selection_mode": selection_mode,
                 "elo_consulted": False,
                 "reasoning": reasoning,
                 "card_load_errors": card_load_errors,
+                "exploration_candidates_considered": exploration_candidates_considered,
             }
         )
     )
@@ -337,12 +452,40 @@ def main() -> None:
             caps_needed=caps_needed,
             candidates_considered=1,
             router_mode="forced",
+            selection_mode="exploitation",
             reasoning="FORCE_DRIVER env var bypassed routing logic",
             card_load_errors=len(load_errors),
+            exploration_candidates_considered=0,
         )
         return
 
     router_mode = os.environ.get("ROUTER_MODE", "llm").strip().lower()
+    ranked_candidates = deterministic_ranked_candidates(classify, cards)
+    exploration_choice, exploration_pool, exploration_reason = choose_exploration_candidate(
+        classify, ranked_candidates, exploration_settings()
+    )
+    if exploration_choice is not None:
+        driver_id = str(exploration_choice.get("id") or "unassigned")
+        model = stronger_model(exploration_choice, classify)
+        reasoning = (
+            f"controlled exploration: chose {driver_id} from "
+            f"{len(exploration_pool)} bounded alternate capability-matching candidates"
+        )
+        if load_errors:
+            reasoning = f"{reasoning}; {len(load_errors)} card load error(s)"
+        emit_result(
+            driver=driver_id,
+            model=model,
+            classify=classify,
+            caps_needed=caps_needed,
+            candidates_considered=len(ranked_candidates),
+            router_mode="deterministic",
+            selection_mode="exploration",
+            reasoning=reasoning,
+            card_load_errors=len(load_errors),
+            exploration_candidates_considered=len(exploration_pool),
+        )
+        return
 
     llm_rejection = None
     if router_mode == "llm":
@@ -356,8 +499,10 @@ def main() -> None:
                 caps_needed=caps_needed,
                 candidates_considered=len(cards),
                 router_mode="llm",
+                selection_mode="exploitation",
                 reasoning=llm_result.get("reasoning", ""),
                 card_load_errors=len(load_errors),
+                exploration_candidates_considered=len(exploration_pool),
             )
             return
 
@@ -368,6 +513,11 @@ def main() -> None:
         reasoning = "no candidates covered required capabilities"
     elif llm_rejection:
         reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + complexity-aware model rank"
+    elif exploration_reason:
+        reasoning = (
+            f"deterministic capability-filter + complexity-aware model rank; "
+            f"{exploration_reason}"
+        )
     else:
         reasoning = "deterministic capability-filter + complexity-aware model rank"
     if load_errors:
@@ -380,8 +530,10 @@ def main() -> None:
         caps_needed=caps_needed,
         candidates_considered=len(candidates),
         router_mode="deterministic",
+        selection_mode="exploitation",
         reasoning=reasoning,
         card_load_errors=len(load_errors),
+        exploration_candidates_considered=len(exploration_pool),
     )
 
 

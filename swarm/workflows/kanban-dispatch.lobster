@@ -147,7 +147,8 @@ steps:
       COMMENT=$(printf '%s' "$REASONING" | python3 /home/red/.openclaw/workflows/clawta_decisions.py record \
         --ticket-id ${ticket_id} \
         --driver $pick_driver.json.driver \
-        --model $pick_driver.json.model)
+        --model $pick_driver.json.model \
+        --selection-mode $pick_driver.json.selection_mode)
       hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
 

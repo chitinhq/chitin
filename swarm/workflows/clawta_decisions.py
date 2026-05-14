@@ -31,11 +31,22 @@ def connect(db_path: Path) -> sqlite3.Connection:
           ticket_id TEXT NOT NULL,
           driver TEXT NOT NULL,
           model TEXT NOT NULL,
+          selection_mode TEXT NOT NULL DEFAULT 'exploitation',
           reasoning TEXT NOT NULL,
           ts TEXT NOT NULL
         )
         """
     )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(clawta_decisions)")
+    }
+    if "selection_mode" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE clawta_decisions
+            ADD COLUMN selection_mode TEXT NOT NULL DEFAULT 'exploitation'
+            """
+        )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_clawta_decisions_ticket_ts
@@ -51,13 +62,16 @@ def normalize_reasoning(raw: str) -> str:
     return text or "No routing reasoning was returned by Clawta."
 
 
-def emit_chain(ticket_id: str, driver: str, model: str, reasoning: str, ts: str) -> None:
+def emit_chain(
+    ticket_id: str, driver: str, model: str, selection_mode: str, reasoning: str, ts: str
+) -> None:
     chitin_dir = Path(os.environ.get("CHITIN_HOME", Path.home() / ".chitin")).expanduser()
     chain_id = f"clawta-routing-{ticket_id}"
     payload = {
         "ticket_id": ticket_id,
         "driver": driver,
         "model": model,
+        "selection_mode": selection_mode,
         "reasoning": reasoning,
         "ts": ts,
     }
@@ -81,6 +95,7 @@ def emit_chain(ticket_id: str, driver: str, model: str, reasoning: str, ts: str)
             "agent": "clawta",
             "driver": driver,
             "model": model,
+            "selection_mode": selection_mode,
             "workflow_id": "kanban-dispatch",
         },
         "payload": payload,
@@ -109,20 +124,23 @@ def emit_chain(ticket_id: str, driver: str, model: str, reasoning: str, ts: str)
 
 def record(args: argparse.Namespace) -> int:
     reasoning = normalize_reasoning(sys.stdin.read())
+    selection_mode = args.selection_mode
     ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     conn = connect(Path(args.db).expanduser())
     with conn:
         conn.execute(
             """
-            INSERT INTO clawta_decisions(ticket_id, driver, model, reasoning, ts)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO clawta_decisions(ticket_id, driver, model, selection_mode, reasoning, ts)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (args.ticket_id, args.driver, args.model, reasoning, ts),
+            (args.ticket_id, args.driver, args.model, selection_mode, reasoning, ts),
         )
     conn.close()
     if not args.no_chain:
-        emit_chain(args.ticket_id, args.driver, args.model, reasoning, ts)
-    print(f"Routing: {args.driver}/{args.model} chosen because {reasoning}")
+        emit_chain(args.ticket_id, args.driver, args.model, selection_mode, reasoning, ts)
+    print(
+        f"Routing ({selection_mode}): {args.driver}/{args.model} chosen because {reasoning}"
+    )
     return 0
 
 
@@ -135,7 +153,7 @@ def latest(args: argparse.Namespace) -> int:
         params.append(args.driver)
     row = conn.execute(
         f"""
-        SELECT ticket_id, driver, model, reasoning, ts
+        SELECT ticket_id, driver, model, selection_mode, reasoning, ts
         FROM clawta_decisions
         WHERE {where}
         ORDER BY ts DESC, id DESC
@@ -151,15 +169,16 @@ def latest(args: argparse.Namespace) -> int:
         "ticket_id": row[0],
         "driver": row[1],
         "model": row[2],
-        "reasoning": row[3],
-        "ts": row[4],
+        "selection_mode": row[3],
+        "reasoning": row[4],
+        "ts": row[5],
     }
     if args.json:
         print(json.dumps(data, sort_keys=True))
     else:
         print(
             f"{data['ticket_id']} was dispatched to {data['driver']}/{data['model']} "
-            f"because {data['reasoning']}"
+            f"via {data['selection_mode']} because {data['reasoning']}"
         )
     return 0
 
@@ -174,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--ticket-id", required=True)
     record_parser.add_argument("--driver", required=True)
     record_parser.add_argument("--model", required=True)
+    record_parser.add_argument(
+        "--selection-mode",
+        choices=("exploration", "exploitation"),
+        default="exploitation",
+    )
     record_parser.add_argument("--no-chain", action="store_true")
     record_parser.set_defaults(func=record)
 
