@@ -112,3 +112,18 @@ func TestInScope_ErrorMalformedGlobReturnsFalse(t *testing.T) {
 		t.Fatal("InScope=true want false for malformed glob")
 	}
 }
+
+func TestInScope_RelativePatternMatchesAbsoluteTarget(t *testing.T) {
+	// Intent file_paths are repo-relative; a tool target can be absolute.
+	// A plain (non-glob) relative pattern must still match the absolute
+	// path by path-suffix, otherwise scope checks miss every absolute path.
+	if !InScope("/repo/apps/cli/src/main.ts", []string{"apps/cli/src/main.ts"}) {
+		t.Fatal("InScope=false; relative pattern should match absolute target by path-suffix")
+	}
+	if !InScope("apps/cli/src/main.ts", []string{"apps/cli/src/main.ts"}) {
+		t.Fatal("InScope=false; exact relative match should hold")
+	}
+	if InScope("/repo/docs/readme.md", []string{"apps/cli/src/main.ts"}) {
+		t.Fatal("InScope=true; unrelated path must not match")
+	}
+}

@@ -236,8 +236,14 @@ func matchPattern(path, pattern string) bool {
 	if strings.HasSuffix(pattern, "**") {
 		return strings.HasPrefix(path, strings.TrimSuffix(pattern, "**"))
 	}
-	matched, err := filepath.Match(pattern, path)
-	return err == nil && matched
+	if matched, err := filepath.Match(pattern, path); err == nil && matched {
+		return true
+	}
+	// Intent file_paths are typically repo-relative (e.g. apps/cli/src/main.ts)
+	// while a tool target can be absolute (/repo/apps/cli/src/main.ts). Treat
+	// the pattern as matching when it is a path-suffix of the target so scope
+	// checks don't silently miss every absolute path.
+	return path == pattern || strings.HasSuffix(path, "/"+pattern)
 }
 
 func truncate(s string, n int) string {

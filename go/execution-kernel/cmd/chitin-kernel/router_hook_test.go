@@ -231,6 +231,42 @@ routes:
 	}
 }
 
+// TestEvalRouterHookStdin_DriftDisabledSkipsDetection covers the Copilot
+// finding: the drift heuristic must honor `router.heuristics.drift.enabled:
+// false` — the same off-task scenario that drift-kill blocks on must NOT
+// kill and must NOT emit drift events when drift is disabled.
+func TestEvalRouterHookStdin_DriftDisabledSkipsDetection(t *testing.T) {
+	sessionID := "drift-off"
+	env := setupHookEnv(t, baselinePolicy+`
+router:
+  enabled: true
+  heuristics:
+    drift:
+      enabled: false
+`)
+	intentFile := filepath.Join(env.chitin, "events-"+sessionID+".jsonl")
+	intentLine := `{"ts":"2026-05-14T00:00:00Z","event_type":"intent","payload":{"entry_id":"t1","task_class":"fix","file_paths":["apps/cli/src/**"]}}
+{"ts":"2026-05-14T00:00:01Z","event_type":"decision","payload":{"decision":"allow","action_type":"file.write","action_target":"docs/README.md"}}`
+	if err := os.WriteFile(intentFile, []byte(intentLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Edit",
+		"tool_input": map[string]any{"file_path": "docs/ops.md"},
+		"cwd":        env.cwd,
+		"session_id": sessionID,
+	})
+	var out, errOut bytes.Buffer
+	code := evalRouterHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+	if code == claudecode.ExitBlock {
+		t.Fatalf("code=block; drift disabled must not kill. stdout=%q", out.String())
+	}
+	data, _ := os.ReadFile(intentFile)
+	if strings.Contains(string(data), `"event_type":"drift"`) {
+		t.Fatalf("drift disabled but drift events emitted:\n%s", string(data))
+	}
+}
+
 // TestHasNonZeroSignal_BoundaryCases pins the predicate that decides
 // whether the router stamps a heuristic-signal row. The predicate
 // drives chain bloat: too eager and every read-only tool call writes

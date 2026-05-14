@@ -122,17 +122,27 @@ func evalRouterHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag
 			outcome.AnyFired = true
 		}
 	}
+	// Drift is gated on router.heuristics.drift.enabled — when an operator
+	// disables it, the detector must not run, score, route, or emit.
+	// driftResult stays zero-valued in that case (Eval.Action == ActionNone,
+	// Score == 0), which the downstream kill/stamp paths already treat as
+	// "no drift signal".
 	driftCfg := policy.Heuristics["drift"]
-	if !chainEventsLoaded {
-		chainEvents = router.ReadChainEvents(payload.SessionID)
+	var driftResult router.DriftResult
+	var driftScore router.HeuristicScore
+	var driftRoutingDecision string
+	if driftCfg.Enabled {
+		if !chainEventsLoaded {
+			chainEvents = router.ReadChainEvents(payload.SessionID)
+		}
+		driftResult = router.EvaluateDrift(hookInput, chainEvents, driftCfg)
+		driftScore = driftResult.Score
+		if driftScore.Fired {
+			outcome.AnyFired = true
+		}
+		driftRoutingDecision = resolveDriftRoutingDecision(routesPolicy, hookInput, driftResult.Eval)
+		emitDriftEvents(errOut, agent, hookInput, driftResult.Eval, driftRoutingDecision, noRecord)
 	}
-	driftResult := router.EvaluateDrift(hookInput, chainEvents, driftCfg)
-	driftScore := driftResult.Score
-	if driftScore.Fired {
-		outcome.AnyFired = true
-	}
-	driftRoutingDecision := resolveDriftRoutingDecision(routesPolicy, hookInput, driftResult.Eval)
-	emitDriftEvents(errOut, agent, hookInput, driftResult.Eval, driftRoutingDecision, noRecord)
 
 	// Run plugins (operator-declared, in any runtime). Each plugin
 	// is its own subprocess; failures fall through (logged to
