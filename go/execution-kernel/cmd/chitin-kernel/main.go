@@ -62,6 +62,8 @@ func main() {
 		cmdGate(args)
 	case "policy":
 		cmdPolicy(args)
+	case "explain":
+		cmdExplain(args)
 	case "envelope":
 		cmdEnvelope(args)
 	case "decisions":
