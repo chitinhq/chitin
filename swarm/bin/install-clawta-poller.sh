@@ -16,8 +16,8 @@ usage() {
   cat <<'USAGE'
 Usage: install-clawta-poller.sh [openclaw|systemd|both]
 
-  openclaw   Register clawta-kanban-poller as an openclaw cron job (default).
-             Visible in `openclaw cron list`. Lives in openclaw's substrate.
+  openclaw   Register the poller plus runtime guard jobs as OpenClaw cron
+             (default). Visible in `openclaw cron list`.
              Requires openclaw + a running gateway.
   systemd    Install a user systemd timer firing every 2 minutes.
              Standalone path for boxes without openclaw.
@@ -35,8 +35,10 @@ case "${mode}" in
 esac
 
 mkdir -p "$LOCAL_BIN"
-ln -sfn "$REPO_ROOT/swarm/bin/clawta-poller" "$LOCAL_BIN/clawta-poller"
-echo "linked: $LOCAL_BIN/clawta-poller → $REPO_ROOT/swarm/bin/clawta-poller"
+for tool in clawta-poller clawta-blocked-escalator clawta-stale-worker-watchdog; do
+  ln -sfn "$REPO_ROOT/swarm/bin/$tool" "$LOCAL_BIN/$tool"
+  echo "linked: $LOCAL_BIN/$tool → $REPO_ROOT/swarm/bin/$tool"
+done
 
 # Also ensure kanban-flow is reachable; some boxes may have installed the
 # poller before kanban-flow's symlink.
@@ -45,20 +47,19 @@ if [[ -x "$REPO_ROOT/scripts/kanban-flow" ]]; then
   echo "linked: $LOCAL_BIN/kanban-flow → $REPO_ROOT/scripts/kanban-flow"
 fi
 
-install_openclaw_cron() {
-  if ! command -v openclaw >/dev/null 2>&1; then
-    echo "openclaw: CLI not on PATH; skipping openclaw cron registration." >&2
-    return 1
-  fi
-  # Idempotent: if a job with this name already exists, skip add.
-  if openclaw cron list 2>/dev/null | grep -q '^[a-f0-9-]\+ clawta-kanban-poller '; then
-    echo "openclaw cron: job 'clawta-kanban-poller' already registered."
+ensure_openclaw_cron_job() {
+  local name="$1"
+  local every="$2"
+  local description="$3"
+  local command="$4"
+  if openclaw cron list 2>/dev/null | grep -q "^[a-f0-9-]\\+ ${name} "; then
+    echo "openclaw cron: job '$name' already registered."
     return 0
   fi
   openclaw cron add \
-    --name "clawta-kanban-poller" \
-    --description "Autonomous kanban dispatch tick. Reads ready terminal-lane tickets, sequences via LLM, dispatches top-N via lobster. See chitin swarm/bin/clawta-poller." \
-    --every 2m \
+    --name "$name" \
+    --description "$description" \
+    --every "$every" \
     --agent glm-agent \
     --session isolated \
     --light-context \
@@ -67,15 +68,37 @@ install_openclaw_cron() {
     --no-deliver \
     --message "Run exactly one command, no commentary, no other tool calls:
 
-  clawta-poller --once --max-dispatch 2
+  ${command}
 
-After the exec tool returns (whether the command has finished or is still running in the background), reply with exactly the word 'ok' and nothing else. Do not retry. Do not investigate failures — those are logged in ~/.openclaw/logs/clawta-poller.log.
+After the exec tool returns (whether the command has finished or is still running in the background), reply with exactly the word 'ok' and nothing else. Do not retry. Do not investigate failures — those are logged in ~/.openclaw/logs/.
 
-The closing 'ok' token is REQUIRED — without it the cron metrics report the run as 'couldn't generate a response' even though the dispatch fired correctly. Newer codex-backed models (gpt-5.4+) emit an empty final-answer block when the system prompt says 'just exit', which the cron run-tracker labels as an error." \
+The closing 'ok' token is REQUIRED — without it the cron metrics report the run as 'couldn't generate a response' even though the command fired correctly." \
     >/dev/null
-  echo "openclaw cron: 'clawta-kanban-poller' registered (every 2m)."
-  echo "  inspect: openclaw cron show clawta-kanban-poller"
-  echo "  runs:    openclaw cron runs --name clawta-kanban-poller"
+  echo "openclaw cron: '$name' registered (${every})."
+  echo "  inspect: openclaw cron show $name"
+  echo "  runs:    openclaw cron runs --name $name"
+}
+
+install_openclaw_cron() {
+  if ! command -v openclaw >/dev/null 2>&1; then
+    echo "openclaw: CLI not on PATH; skipping openclaw cron registration." >&2
+    return 1
+  fi
+  ensure_openclaw_cron_job \
+    "clawta-kanban-poller" \
+    "2m" \
+    "Autonomous kanban dispatch tick. Reads ready terminal-lane tickets, sequences via LLM, dispatches top-N via lobster. See chitin swarm/bin/clawta-poller." \
+    "clawta-poller --once --max-dispatch 2"
+  ensure_openclaw_cron_job \
+    "clawta-blocked-escalator" \
+    "10m" \
+    "Escalate blocked non-red swarm tickets to the operator lane. See chitin swarm/bin/clawta-blocked-escalator." \
+    "clawta-blocked-escalator"
+  ensure_openclaw_cron_job \
+    "clawta-stale-worker-watchdog" \
+    "10m" \
+    "Block and escalate stale in_progress swarm tickets with no PR, no worker, and no log movement. See chitin swarm/bin/clawta-stale-worker-watchdog." \
+    "clawta-stale-worker-watchdog"
 }
 
 install_systemd_timer() {
@@ -109,4 +132,7 @@ esac
 
 echo ""
 echo "Poller log: ~/.openclaw/logs/clawta-poller.log"
-echo "Dry-run any time: clawta-poller --dry-run"
+echo "Dry-run any time:"
+echo "  clawta-poller --dry-run"
+echo "  clawta-blocked-escalator --dry-run --json"
+echo "  clawta-stale-worker-watchdog --dry-run --json"

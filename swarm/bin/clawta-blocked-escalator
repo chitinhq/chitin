@@ -1,21 +1,169 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd /home/red/workspace/chitin
-changed=()
-while IFS=$'\t' read -r id assignee title; do
-  [[ -n "${id:-}" ]] || continue
-  hermes kanban --board chitin assign "$id" red >/dev/null
-  hermes kanban --board chitin comment "$id" --author clawta \
-    "Escalating blocked ticket to red: blocked swarm work should be operator-owned until unblocked, re-groomed, or manually repaired. Previous assignee: ${assignee:-unassigned}." >/dev/null || true
-  changed+=("$id (${assignee:-unassigned}) — $title")
-done < <(sqlite3 -tabs /home/red/.hermes/kanban/boards/chitin/kanban.db \
-  "SELECT id, coalesce(assignee,''), title FROM tasks WHERE status='blocked' AND coalesce(assignee,'') != 'red' ORDER BY priority DESC, created_at ASC;")
+#!/usr/bin/env python3
+"""Escalate blocked swarm tickets to the operator lane (`red`).
 
-if (( ${#changed[@]} )); then
-  {
-    echo "🦞 Blocked-ticket escalator moved ${#changed[@]} ticket(s) to red:"
-    printf -- '- `%s`\n' "${changed[@]}"
-  } | /home/red/.vite-plus/bin/openclaw message send --channel discord --account default --text-file - >/dev/null 2>&1 || true
-fi
+This helper is designed for unattended OpenClaw cron execution. It is
+idempotent: tickets already assigned to `red` are skipped.
+"""
 
-printf 'blocked escalator: %d changed\n' "${#changed[@]}"
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Sequence
+
+
+BOARD = os.environ.get("SWARM_BOARD", "chitin")
+RED_ASSIGNEE = os.environ.get("CLAWTA_RED_ASSIGNEE", "red")
+AUTHOR = os.environ.get("CLAWTA_AUTHOR", "clawta")
+HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
+)
+KANBAN_DB = Path(
+    os.environ.get(
+        "KANBAN_DB",
+        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
+    )
+)
+
+
+@dataclass
+class BlockedTicket:
+    id: str
+    assignee: str
+    title: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    return parser.parse_args()
+
+
+def list_candidates(db_path: Path | None = None) -> list[BlockedTicket]:
+    db_path = KANBAN_DB if db_path is None else db_path
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, coalesce(assignee, ''), title
+              FROM tasks
+             WHERE status = 'blocked'
+               AND coalesce(assignee, '') != ?
+             ORDER BY priority DESC, created_at ASC
+            """,
+            (RED_ASSIGNEE,),
+        ).fetchall()
+    return [BlockedTicket(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+
+def run(cmd: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(cmd),
+        text=True,
+        capture_output=True,
+        check=check,
+        timeout=30,
+    )
+
+
+def reassign(ticket: BlockedTicket) -> None:
+    run(
+        [HERMES_BIN, "kanban", "--board", BOARD, "assign", ticket.id, RED_ASSIGNEE],
+        check=True,
+    )
+    previous = ticket.assignee or "unassigned"
+    run(
+        [
+            HERMES_BIN,
+            "kanban",
+            "--board",
+            BOARD,
+            "comment",
+            ticket.id,
+            "--author",
+            AUTHOR,
+            (
+                "Escalating blocked ticket to red: blocked swarm work should be "
+                "operator-owned until unblocked, re-groomed, or manually repaired. "
+                f"Previous assignee: {previous}."
+            ),
+        ],
+        check=True,
+    )
+
+
+def notify(changed: Sequence[BlockedTicket]) -> None:
+    if not changed:
+        return
+    body = "\n".join(
+        [
+            f"Blocked-ticket escalator moved {len(changed)} ticket(s) to red:",
+            *[
+                f"- `{ticket.id} ({ticket.assignee or 'unassigned'}) - {ticket.title}`"
+                for ticket in changed
+            ],
+        ]
+    )
+    subprocess.run(
+        [
+            OPENCLAW_BIN,
+            "message",
+            "send",
+            "--channel",
+            "discord",
+            "--account",
+            "default",
+            "--text",
+            body,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def main() -> int:
+    args = parse_args()
+    candidates = list_candidates()
+    changed: list[BlockedTicket] = []
+
+    if not args.dry_run:
+        for ticket in candidates:
+            try:
+                reassign(ticket)
+                changed.append(ticket)
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"{ticket.id}: escalation failed: {exc.stderr[-300:]}",
+                    file=sys.stderr,
+                )
+        notify(changed)
+    else:
+        changed = candidates
+
+    summary = {
+        "checked": len(candidates),
+        "changed": len(changed),
+        "dry_run": args.dry_run,
+        "tickets": [asdict(ticket) for ticket in changed],
+    }
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print(
+            f"blocked escalator: {summary['changed']} changed"
+            + (" (dry-run)" if args.dry_run else "")
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

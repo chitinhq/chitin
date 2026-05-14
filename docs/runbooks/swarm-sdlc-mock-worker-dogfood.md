@@ -126,6 +126,8 @@ the closing operator chose (or chose not) to file.
 The manual walk validates the lifecycle. The autonomous walk
 (clawta-poller → lobster → worker with role inlining) needs a
 separate ticket: mark a ticket `ready` with `--assignee codex` or
-similar, install the poller via `swarm/bin/install-clawta-poller.sh`,
-and watch the board state transitions arrive without operator
-intervention.
+similar, install the poller/runtime guards via
+`swarm/bin/install-clawta-poller.sh`, and watch the board state
+transitions arrive without operator intervention. The repo-owned
+runtime guard thresholds and OpenClaw cron ownership are documented in
+`docs/runbooks/swarm-runtime-guards.md`.
