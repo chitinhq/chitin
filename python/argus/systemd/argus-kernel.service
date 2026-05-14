@@ -1,0 +1,22 @@
+[Unit]
+Description=Argus Observatory Research Kernel (continuous LLM-backed loop)
+After=network-online.target argus-indexer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/argus/env
+ExecStart=%h/.local/bin/argus kernel
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+# Be polite about resource use — the operator's opencode shares the same GPU.
+Nice=10
+CPUWeight=20
+
+[Install]
+WantedBy=default.target
