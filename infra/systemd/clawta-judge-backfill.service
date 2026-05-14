@@ -1,0 +1,11 @@
+[Unit]
+Description=Clawta swarm judge backfill
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=red
+WorkingDirectory=/home/red/workspace/chitin
+Environment=PATH=/home/red/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/red/workspace/chitin/swarm/workflows/judge_backfill.py

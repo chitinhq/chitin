@@ -311,6 +311,9 @@ steps:
         echo "spawn_worker: selected model $MODEL is not present on driver=$DRIVER card" >&2
         exit 1
       fi
+      ROLE="${ROLE:-programmer}"
+      hermes kanban --board chitin comment "$TICKET_ID" --author clawta \
+        "dispatch driver=$DRIVER model=$MODEL role=$ROLE" 2>/dev/null || true
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
       ARGS_JSON=$(jq -c --arg model "$MODEL" \
         '.invocation.args | map(if . == "{model}" then $model else . end)' \
