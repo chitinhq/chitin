@@ -36,9 +36,10 @@ func cmdWorktreeStatus(args []string) {
 	}
 
 	rows, err := worktree.Status(context.Background(), worktree.Options{
-		RepoDir: *repoDir,
-		Now:     time.Now().UTC(),
-		Stale:   *stale,
+		RepoDir:    *repoDir,
+		Now:        time.Now().UTC(),
+		Stale:      *stale,
+		WriteCache: !*jsonOut && !*pruneEligible,
 	})
 	if err != nil {
 		exitErr("worktree_status", err.Error())
