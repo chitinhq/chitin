@@ -298,7 +298,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             capture_output=True,
             text=True,
             timeout=60,
-            env={**os.environ, "ROUTER_MODE": "llm"},
+            env={**os.environ, "ROUTER_MODE": "deterministic"},
         )
         if result.returncode != 0:
             log(f"route_ticket({ticket['id']}): _pick_driver rc={result.returncode}; skipping")
@@ -335,15 +335,20 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         return None
 
 
-def route_clawta_assigned(dry_run: bool) -> list[str]:
-    """Route all clawta-assigned tickets through _pick_driver.
+def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
+    """Route a bounded batch of clawta-assigned tickets through _pick_driver.
 
-    Returns list of ticket IDs that were successfully routed.
+    Routing can involve slow LLM calls. Keep each cron tick bounded so
+    terminal-lane ready tickets do not starve behind a large clawta routing
+    backlog. Returns ticket IDs successfully routed.
     """
     routable = fetch_routable()
     if not routable:
         return []
-    log(f"tick: {len(routable)} routing-lane ({ROUTING_LANE}) ticket(s) to resolve")
+    total = len(routable)
+    if limit is not None and limit > 0:
+        routable = routable[:limit]
+    log(f"tick: routing {len(routable)}/{total} routing-lane ({ROUTING_LANE}) ticket(s)")
     routed: list[str] = []
     for t in routable:
         driver = route_ticket(t, dry_run)
@@ -569,43 +574,58 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
 # Main tick loop
 # ---------------------------------------------------------------------------
 
+def dispatch_ready_batch(max_dispatch: int, dry_run: bool) -> tuple[list[str], list[str], int]:
+    """Dispatch a bounded terminal-lane batch.
+
+    Do not feed a huge ready queue to the sequencer when max_dispatch is small:
+    a slow sequencer should not block visible ready→in_progress movement.
+    """
+    queue = fetch_ready_for_terminal_lanes()
+    if not queue or max_dispatch <= 0:
+        return [], [], len(queue)
+
+    total = len(queue)
+    batch = queue[:max_dispatch]
+    log(f"tick: dispatching {len(batch)}/{total} ready terminal-lane ticket(s) by priority/FIFO")
+    dispatched: list[str] = []
+    demoted: list[str] = []
+
+    for t in batch:
+        tid = t["id"]
+        assignee = t["assignee"]
+        reason = "ready terminal-lane ticket; dispatching by priority/FIFO without re-demoting from truncated body"
+        if dispatch_ticket(tid, assignee, reason, dry_run):
+            dispatched.append(tid)
+    return dispatched, demoted, total
+
+
 def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
-    # Step 0: Self-heal safe board/finalize invariants before starting new work
+    # Step 0: Self-heal safe board/finalize invariants before starting new work.
     invariants = run_invariant_repairs(dry_run)
 
-    # Step 1: Route clawta-assigned tickets through _pick_driver
-    routed = route_clawta_assigned(dry_run)
+    # Step 1: Dispatch already-routed terminal-lane work first so visible
+    # ready→in_progress movement is not starved by a large clawta routing queue.
+    dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
 
-    # Step 2: Demote ungroomed tickets (no assignee or non-dispatchable)
+    # Step 2: Demote ungroomed tickets (no assignee or non-dispatchable).
     ungroomed_demoted = demote_ungroomed(dry_run)
+    demoted.extend(ungroomed_demoted)
 
-    # Step 3: Fetch tickets ready for dispatch (terminal-lane assigned)
-    queue = fetch_ready_for_terminal_lanes()
-    if not queue:
+    # Step 3: If dispatch capacity remains, route only enough clawta-assigned
+    # tickets to fill that capacity, then immediately dispatch them.
+    remaining = max_dispatch - len(dispatched)
+    routed: list[str] = []
+    if remaining > 0:
+        routed = route_clawta_assigned(dry_run, limit=remaining)
+        more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
+        dispatched.extend(more_dispatched)
+        demoted.extend(more_demoted)
+        queue_size = max(queue_size, queue_size_after_route)
+
+    if not dispatched and not demoted and not routed:
         log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
-        return {"dispatched": [], "demoted": ungroomed_demoted, "routed": routed, "invariants": invariants, "queue_size": 0}
 
-    log(f"tick: {len(queue)} ready tickets in terminal lanes")
-    plan = sequence_with_llm(queue)
-
-    by_id = {t["id"]: t for t in queue}
-    dispatched: list[str] = []
-    demoted: list[str] = list(ungroomed_demoted)
-
-    for action in plan:
-        tid = action["ticket_id"]
-        if action["action"] == "dispatch":
-            if len(dispatched) >= max_dispatch:
-                log(f"tick: cap reached ({max_dispatch}); deferring {tid}")
-                continue
-            assignee = by_id[tid]["assignee"]
-            if dispatch_ticket(tid, assignee, action["reason"], dry_run):
-                dispatched.append(tid)
-        elif action["action"] == "demote":
-            if demote_ticket(tid, action["reason"], dry_run):
-                demoted.append(tid)
-
-    return {"dispatched": dispatched, "demoted": demoted, "routed": routed, "invariants": invariants, "queue_size": len(queue)}
+    return {"dispatched": dispatched, "demoted": demoted, "routed": routed, "invariants": invariants, "queue_size": queue_size}
 
 
 def main() -> int:
