@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "../../dist/out-tsc/libs/run-sdk"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../contracts/tsconfig.lib.json" }]
+}
