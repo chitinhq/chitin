@@ -1,14 +1,78 @@
 #!/usr/bin/env python3
-import html, json, os, re, subprocess, sys, textwrap, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+import html, json, os, re, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from datetime import datetime
 
 ASSETS = "/home/red/labs/local-ai-lab/wiki/assets"
 BASE = "http://100.115.89.9:8888"
 ACCENT = "#58a6ff"
+BOARD_DB = os.path.expanduser("~/.hermes/kanban/boards/chitin/kanban.db")
+ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
+BASE_ELO = 1500.0
+BASE_K = 32.0
+K_DECAY_AT_N = 50  # keep in sync with swarm/workflows/_swarm_elo.py
+
+REPORT_CARDS = [
+    {
+        "kind": "swarm-health",
+        "title": "🧭 Swarm Health",
+        "href": "clawta-swarm-health-latest.html",
+        "schedule": "On demand / operator refresh",
+        "desc": "Dispatched today, stuck tickets, blocked red queue, open PR lifecycle, and model-aware ELO by driver/model/complexity.",
+        "tags": ["dashboard", "swarm", "elo"],
+    },
+    {
+        "kind": "chain-summary",
+        "title": "🛡️ Chain Summary",
+        "href": "clawta-chain-summary-latest.html",
+        "schedule": "8am + 8pm America/Detroit",
+        "desc": "24h vs 7d governance stats, denial rate, top denied tools, unknown bucket flags, and Clawta action notes.",
+        "tags": ["chain", "governance"],
+    },
+    {
+        "kind": "industry-scan",
+        "title": "🔬 Industry Scan",
+        "href": "clawta-industry-scan-latest.html",
+        "schedule": "Daily 9am America/Detroit",
+        "desc": "Recent agent/governance research, relevance ratings, and implications for Chitin.",
+        "tags": ["research", "arXiv"],
+    },
+    {
+        "kind": "standup",
+        "title": "📋 Grooming Standup",
+        "href": "clawta-standup-latest.html",
+        "schedule": "Every 6h",
+        "desc": "Board health, active work, blocked/stale items, recently completed tickets, and next actions.",
+        "tags": ["kanban", "standup"],
+    },
+    {
+        "kind": "board-audit",
+        "title": "🔍 Board Audit",
+        "href": "clawta-board-audit-latest.html",
+        "schedule": "Every 2h",
+        "desc": "Leverage scoring, duplicate detection, failing CI, stale/blocked items, and recommended interventions.",
+        "tags": ["audit", "CI"],
+    },
+    {
+        "kind": "board-watchdog",
+        "title": "🚨 Board Watchdog",
+        "href": "clawta-board-watchdog-latest.html",
+        "schedule": "Every 10m",
+        "desc": "Auto-groom loop detector: promote/demote churn, dependency deadlocks, and operator intervention calls.",
+        "tags": ["watchdog", "routing"],
+    },
+    {
+        "kind": "doc-sync",
+        "title": "📝 Doc Sync",
+        "href": "clawta-doc-sync-latest.html",
+        "schedule": "Weekly Monday 9am",
+        "desc": "Wiki/doc drift, telemetry updates, pages touched, and documentation tasks.",
+        "tags": ["docs", "wiki"],
+    },
+]
 
 STYLE = r"""
-*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;line-height:1.55}.wrap{max-width:1100px;margin:0 auto;padding:2rem}a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}.nav{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin-bottom:1.5rem;color:#8b949e}.brand{color:#58a6ff;font-weight:700}h1{margin:.1rem 0 .4rem;font-size:2rem;color:#f0f6fc}.sub{color:#8b949e;margin:0 0 1.5rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}.card,.hero{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:1rem 1.1rem;margin-bottom:1rem}.hero{border-color:#58a6ff}.k{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#8b949e}.v{font-size:1.6rem;font-weight:800;color:#f0f6fc}.good{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}pre{white-space:pre-wrap;background:#0b1017;border:1px solid #30363d;border-radius:10px;padding:1rem;overflow:auto}table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:12px;overflow:hidden}th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid #30363d}th{color:#8b949e;font-weight:600}.bar{height:.55rem;background:#30363d;border-radius:999px;overflow:hidden}.bar>span{display:block;height:100%;background:#58a6ff}.pill{display:inline-block;padding:.12rem .5rem;border-radius:999px;background:#0d2137;color:#79c0ff;font-size:.78rem;margin:.15rem .25rem .15rem 0}.footer{margin-top:2rem;padding-top:1rem;border-top:1px solid #21262d;color:#8b949e;font-size:.85rem}@media(max-width:650px){.wrap{padding:1rem}.nav{display:block}.v{font-size:1.3rem}}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#131d2e 0,#0d1117 45%,#090c12 100%);color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;line-height:1.55}.wrap{max-width:1180px;margin:0 auto;padding:2rem}a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}.nav{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin-bottom:1.5rem;color:#8b949e}.brand{color:#58a6ff;font-weight:700}h1,h2,h3{color:#f0f6fc}h1{margin:.1rem 0 .4rem;font-size:2.1rem}.sub{color:#8b949e;margin:0 0 1.5rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}.grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem}.card,.hero{background:rgba(22,27,34,.92);border:1px solid #30363d;border-radius:16px;padding:1rem 1.1rem;margin-bottom:1rem;box-shadow:0 20px 40px rgba(0,0,0,.18)}.hero{border-color:#58a6ff;background:linear-gradient(180deg,rgba(20,32,50,.95),rgba(14,20,29,.95))}.k{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#8b949e}.v{font-size:1.75rem;font-weight:800;color:#f0f6fc}.good{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}.muted{color:#8b949e}.small{font-size:.9rem}.stack>*+*{margin-top:.55rem}pre{white-space:pre-wrap;background:#0b1017;border:1px solid #30363d;border-radius:12px;padding:1rem;overflow:auto}table{width:100%;border-collapse:collapse;background:rgba(22,27,34,.92);border:1px solid #30363d;border-radius:14px;overflow:hidden}th,td{text-align:left;padding:.6rem .75rem;border-bottom:1px solid #30363d;vertical-align:top}th{color:#8b949e;font-weight:600;font-size:.84rem;text-transform:uppercase;letter-spacing:.05em}.bar{height:.55rem;background:#30363d;border-radius:999px;overflow:hidden}.bar>span{display:block;height:100%;background:#58a6ff}.pill{display:inline-block;padding:.16rem .55rem;border-radius:999px;background:#0d2137;color:#79c0ff;font-size:.78rem;margin:.15rem .25rem .15rem 0}.pill.good{background:rgba(63,185,80,.12);color:#3fb950}.pill.warn{background:rgba(210,153,34,.14);color:#d29922}.pill.bad{background:rgba(248,81,73,.14);color:#f85149}.list{list-style:none;padding:0;margin:0}.list li{padding:.65rem 0;border-bottom:1px solid #21262d}.list li:last-child{border-bottom:0}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.footer{margin-top:2rem;padding-top:1rem;border-top:1px solid #21262d;color:#8b949e;font-size:.85rem}.section-head{display:flex;justify-content:space-between;gap:1rem;align-items:baseline;margin:.25rem 0 .9rem}.badge-dot{display:inline-block;width:.6rem;height:.6rem;border-radius:999px;margin-right:.45rem;vertical-align:middle}.badge-dot.good{background:#3fb950}.badge-dot.warn{background:#d29922}.badge-dot.bad{background:#f85149}.inline-stats{display:flex;flex-wrap:wrap;gap:.5rem 1rem;color:#8b949e;font-size:.92rem}.index-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}.index-card{background:rgba(22,27,34,.92);border:1px solid #30363d;border-radius:14px;padding:1.1rem;box-shadow:0 12px 28px rgba(0,0,0,.18)}.index-card:hover{border-color:#58a6ff}.index-card h2{font-size:1.05rem;margin:.1rem 0 .35rem}.index-card .schedule{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.8rem;color:#8b949e;margin:.35rem 0 .7rem}.index-card .desc{font-size:.92rem}@media(max-width:720px){.wrap{padding:1rem}.nav{display:block}.v{font-size:1.38rem}th:nth-child(n+5),td:nth-child(n+5){display:none}}
 """
 
 def sh(cmd, timeout=120):
@@ -23,6 +87,25 @@ def page(title, subtitle, body):
     now = datetime.now().strftime("%Y-%m-%d %H:%M %Z")
     return f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>{STYLE}</style></head><body><main class='wrap'><nav class='nav'><div class='brand'>🦞 Clawta Reports</div><div><a href='{BASE}/clawta-index.html'>📊 Reports Home</a></div></nav><h1>{html.escape(title)}</h1><p class='sub'>{html.escape(subtitle)} · generated {html.escape(now)}</p>{body}<footer class='footer'>Generated by Clawta/OpenClaw · <a href='{BASE}/clawta-index.html'>reports index</a></footer></main></body></html>"""
 
+def render_index():
+    cards = []
+    for report in REPORT_CARDS:
+        tags = ''.join(f"<span class='pill'>{html.escape(tag)}</span>" for tag in report["tags"])
+        cards.append(
+            f"""<article class='index-card'><h2><a href='{report["href"]}'>{report["title"]}</a></h2><div class='schedule'>{html.escape(report["schedule"])}</div><p class='desc'>{html.escape(report["desc"])}</p>{tags}</article>"""
+        )
+    body = (
+        "<header><div class='k'>Clawta</div><h1>Clawta Reports</h1>"
+        "<p class='sub'>Dark HTML reports for Chitin swarm operations. Latest files are refreshed in place so operators can keep one stable URL per surface.</p></header>"
+        f"<section class='index-grid'>{''.join(cards)}</section>"
+        "<p class='small'><a href='index.html'>← Shared reports home</a></p>"
+    )
+    return page("Clawta Reports", "Static dashboards for Chitin swarm operations", body)
+
+def update_index():
+    os.makedirs(ASSETS, exist_ok=True)
+    open(os.path.join(ASSETS, "clawta-index.html"), "w").write(render_index())
+
 def save(kind, html_text, dated=True):
     os.makedirs(ASSETS, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M" if dated else "%Y-%m-%d")
@@ -30,7 +113,252 @@ def save(kind, html_text, dated=True):
     latest = os.path.join(ASSETS, f"clawta-{kind}-latest.html")
     open(path, "w").write(html_text)
     open(latest, "w").write(html_text)
+    update_index()
     return path, f"{BASE}/clawta-{kind}-latest.html"
+
+def fmt_ts(ts):
+    if not ts:
+        return "—"
+    return datetime.fromtimestamp(int(ts)).astimezone().strftime("%Y-%m-%d %H:%M")
+
+def age_human(seconds):
+    seconds = max(int(seconds), 0)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+def pill(text, tone=""):
+    cls = f"pill {tone}".strip()
+    return f"<span class='{cls}'>{html.escape(text)}</span>"
+
+def board_conn():
+    conn = sqlite3.connect(BOARD_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def open_prs():
+    _, raw = sh("gh pr list --repo chitinhq/chitin --state open --json number,title,headRefName,state,mergeStateStatus,updatedAt,isDraft,statusCheckRollup", 180)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+def pr_ticket_id(pr):
+    match = re.search(r'([0-9a-f]{8})', pr.get('headRefName', ''))
+    return f"t_{match.group(1)}" if match else None
+
+def pr_check_summary(pr):
+    rollup = pr.get("statusCheckRollup") or []
+    failing = pending = success = 0
+    for check in rollup:
+        status = (check.get("status") or "").upper()
+        conclusion = (check.get("conclusion") or "").upper()
+        if status != "COMPLETED":
+            pending += 1
+        elif conclusion == "SUCCESS":
+            success += 1
+        else:
+            failing += 1
+    if failing:
+        tone, label = "bad", "failing"
+    elif pending:
+        tone, label = "warn", "pending"
+    else:
+        tone, label = "good", "clean"
+    return {"failing": failing, "pending": pending, "success": success, "tone": tone, "label": label}
+
+def load_board_state():
+    conn = board_conn()
+    tasks = [dict(row) for row in conn.execute(
+        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id FROM tasks"
+    )]
+    comments = [dict(row) for row in conn.execute(
+        "SELECT task_id, author, body, created_at FROM task_comments ORDER BY created_at"
+    )]
+    events = [dict(row) for row in conn.execute(
+        "SELECT task_id, kind, payload, created_at, run_id FROM task_events ORDER BY created_at"
+    )]
+    runs = [dict(row) for row in conn.execute(
+        "SELECT id, task_id, status, started_at, ended_at, outcome, last_heartbeat_at, summary FROM task_runs"
+    )]
+    conn.close()
+    return tasks, comments, events, runs
+
+def complexity_map_from_comments(comments):
+    result = {}
+    for row in comments:
+        match = re.search(r'complexity\s+(low|med|high)', row['body'], re.I)
+        if match:
+            result[row['task_id']] = match.group(1).lower()
+    return result
+
+def compute_complexity_elo(scores, complexity_map):
+    grouped = defaultdict(list)
+    for row in scores:
+        grouped[(row["driver"], row["model"], complexity_map.get(row["ticket_id"], "unknown"))].append(row)
+    rows = []
+    for (driver, model, complexity), group in grouped.items():
+        rating = BASE_ELO
+        count = 0
+        for item in sorted(group, key=lambda r: (r["scored_at"], r["ticket_id"])):
+            k = BASE_K / (1.0 + count / K_DECAY_AT_N)
+            norm = max(-1.0, min(1.0, (int(item["total_score"]) - 15.0) / 10.0))
+            rating += k * norm
+            count += 1
+        avg_score = sum(int(item["total_score"]) for item in group) / len(group)
+        rows.append({
+            "driver": driver,
+            "model": model,
+            "complexity": complexity,
+            "elo_score": rating,
+            "dispatches_count": len(group),
+            "avg_score": avg_score,
+            "last_ticket_id": max(group, key=lambda r: r["scored_at"])["ticket_id"],
+            "last_scored_at": max(group, key=lambda r: r["scored_at"])["scored_at"],
+        })
+    return sorted(rows, key=lambda r: (r["elo_score"], r["dispatches_count"]), reverse=True)
+
+def load_swarm_health():
+    tasks, comments, events, runs = load_board_state()
+    prs = open_prs()
+    pr_by_ticket = {}
+    for pr in prs:
+        ticket = pr_ticket_id(pr)
+        if ticket:
+            pr_by_ticket[ticket] = pr
+    task_by_id = {task["id"]: task for task in tasks}
+
+    now = int(time.time())
+    day_start = int(datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    latest_event = {}
+    latest_in_progress = {}
+    for event in events:
+        latest_event[event["task_id"]] = max(latest_event.get(event["task_id"], 0), int(event["created_at"]))
+        if event["kind"] == "status_transition":
+            try:
+                payload = json.loads(event["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if payload.get("to") == "in_progress":
+                latest_in_progress[event["task_id"]] = max(
+                    latest_in_progress.get(event["task_id"], 0),
+                    int(event["created_at"]),
+                )
+
+    dispatch_attempts = []
+    for event in events:
+        if event["kind"] != "status_transition" or int(event["created_at"]) < day_start:
+            continue
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if payload.get("to") != "in_progress":
+            continue
+        task = task_by_id.get(event["task_id"])
+        if not task:
+            continue
+        dispatch_attempts.append({
+            "id": task["id"],
+            "title": task["title"],
+            "assignee": task["assignee"] or "(unassigned)",
+            "status": task["status"],
+            "created_at": int(event["created_at"]),
+            "pr": pr_by_ticket.get(task["id"]),
+        })
+    dispatch_attempts.sort(key=lambda row: row["created_at"], reverse=True)
+    dispatched_today = []
+    seen_dispatch = set()
+    for row in dispatch_attempts:
+        if row["id"] in seen_dispatch:
+            continue
+        seen_dispatch.add(row["id"])
+        dispatched_today.append(row)
+
+    stuck = []
+    task_comments = defaultdict(list)
+    for comment in comments:
+        task_comments[comment["task_id"]].append(comment)
+    runs_by_task = defaultdict(list)
+    for run in runs:
+        runs_by_task[run["task_id"]].append(run)
+    for task in tasks:
+        if task["status"] != "in_progress":
+            continue
+        last_evt = latest_event.get(task["id"], task["started_at"] or task["created_at"] or now)
+        last_hb = task["last_heartbeat_at"] or (
+            max((r["last_heartbeat_at"] or 0) for r in runs_by_task[task["id"]]) if runs_by_task[task["id"]] else 0
+        )
+        idle_seconds = now - max(last_evt, last_hb or 0)
+        in_progress_since = latest_in_progress.get(task["id"], task["started_at"] or task["created_at"] or 0)
+        stale_markers = [
+            c for c in task_comments[task["id"]]
+            if c["created_at"] >= in_progress_since
+            and re.search(r'(stale-worker watchdog|blocked:\s*stale|stale in_progress)', c["body"], re.I)
+        ]
+        if idle_seconds < 5400 and not stale_markers:
+            continue
+        stuck.append({
+            "id": task["id"],
+            "title": task["title"],
+            "assignee": task["assignee"] or "(unassigned)",
+            "started_at": task["started_at"] or task["created_at"],
+            "idle_seconds": idle_seconds,
+            "last_event_at": last_evt,
+            "stale_note": stale_markers[-1]["body"] if stale_markers else "",
+            "pr": pr_by_ticket.get(task["id"]),
+        })
+    stuck.sort(key=lambda row: (bool(row["pr"]), row["idle_seconds"]), reverse=True)
+
+    blocked_red = []
+    for task in tasks:
+        if task["status"] == "blocked" and (task["assignee"] or "") == "red":
+            blocked_red.append({
+                "id": task["id"],
+                "title": task["title"],
+                "priority": task["priority"] or 0,
+                "blocked_at": latest_event.get(task["id"], task["created_at"]),
+                "age_seconds": now - latest_event.get(task["id"], task["created_at"]),
+            })
+    blocked_red.sort(key=lambda row: (row["priority"], row["age_seconds"]), reverse=True)
+
+    pr_lifecycle = []
+    for pr in prs:
+        summary = pr_check_summary(pr)
+        pr_lifecycle.append({
+            "ticket_id": pr_ticket_id(pr) or "—",
+            "number": pr["number"],
+            "title": pr["title"],
+            "head": pr["headRefName"],
+            "is_draft": pr.get("isDraft", False),
+            "merge_state": pr.get("mergeStateStatus") or "UNKNOWN",
+            "updated_at": pr.get("updatedAt"),
+            "checks": summary,
+        })
+    pr_lifecycle.sort(key=lambda row: row["updated_at"], reverse=True)
+
+    elo_conn = sqlite3.connect(ELO_DB)
+    elo_conn.row_factory = sqlite3.Row
+    score_rows = [dict(row) for row in elo_conn.execute(
+        "SELECT ticket_id, driver, model, task_class, total_score, scored_at FROM swarm_dispatch_scores ORDER BY scored_at"
+    )]
+    elo_rows = compute_complexity_elo(score_rows, complexity_map_from_comments(comments))
+    elo_conn.close()
+
+    return {
+        "tasks": tasks,
+        "dispatched_today": dispatched_today,
+        "dispatch_attempts": dispatch_attempts,
+        "stuck": stuck,
+        "blocked_red": blocked_red,
+        "pr_lifecycle": pr_lifecycle,
+        "elo_rows": elo_rows,
+    }
 
 def parse_stats(txt):
     rows=[]; total=None
@@ -124,10 +452,88 @@ def doc_sync():
     _,u=save('doc-sync', page('Doc Sync', 'Wiki drift and documentation task scan', body), dated=False)
     print(f"📝 Clawta doc sync: {len(stale)} drift/attention candidates. {u}")
 
+def swarm_health():
+    data = load_swarm_health()
+    tasks = data["tasks"]
+    dispatched = data["dispatched_today"]
+    dispatch_attempts = data["dispatch_attempts"]
+    stuck = data["stuck"]
+    blocked_red = data["blocked_red"]
+    prs = data["pr_lifecycle"]
+    elo_rows = data["elo_rows"][:12]
+
+    status_counts = Counter(task["status"] for task in tasks)
+    pr_status = Counter(row["checks"]["label"] for row in prs)
+    status_pills = ''.join([
+        pill(f"{status_counts.get('in_progress', 0)} in progress", "warn"),
+        pill(f"{status_counts.get('blocked', 0)} blocked", "bad"),
+        pill(f"{status_counts.get('ready', 0)} ready", "good"),
+        pill(f"{pr_status.get('failing', 0)} PRs failing checks", "bad"),
+    ])
+    hero = (
+        "<section class='hero'>"
+        "<div class='section-head'><div><div class='k'>Swarm Dashboard</div><div class='v'>Autopilot health across board, PRs, and judged outcomes</div></div>"
+        f"<div class='inline-stats'><span>{len(dispatched)} unique tickets dispatched today</span><span>{len(dispatch_attempts)} dispatch attempts</span><span>{len(stuck)} stuck in-progress</span><span>{len(blocked_red)} blocked on red</span><span>{len(prs)} open PRs</span></div></div>"
+        f"{status_pills}"
+        "<p class='small muted'>ELO is replayed locally from judged dispatch scores and joined with dispatch-time complexity comments from Hermes so the breakdown stays faithful to operator-local data.</p>"
+        "</section>"
+    )
+
+    dispatched_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{html.escape(row['assignee'])}</td><td>{fmt_ts(row['created_at'])}</td><td>{pill('open PR', 'good') if row['pr'] else pill('no PR', 'warn')}</td></tr>"
+        for row in dispatched[:12]
+    ) or "<tr><td colspan='5'>No dispatch transitions to in_progress recorded today.</td></tr>"
+
+    stuck_parts = []
+    for row in stuck[:10]:
+        pr_text = f"PR #{row['pr']['number']}" if row["pr"] else "no PR yet"
+        note_html = f"<div class='small bad'>{html.escape(row['stale_note'][:240])}</div>" if row["stale_note"] else ""
+        stuck_parts.append(
+            f"<li><span class='mono'>{html.escape(row['id'])}</span> {html.escape(row['title'])}"
+            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · {pr_text}</div>"
+            f"{note_html}</li>"
+        )
+    stuck_items = ''.join(stuck_parts) or "<li>No currently-stuck in-progress tickets under the 90m+ / watchdog heuristic.</li>"
+
+    blocked_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td></tr>"
+        for row in blocked_red[:12]
+    ) or "<tr><td colspan='5'>No blocked tickets currently assigned to red.</td></tr>"
+
+    pr_rows = ''.join(
+        f"<tr><td>{'#'+str(row['number'])}</td><td class='mono'>{html.escape(row['ticket_id'])}</td><td>{html.escape(row['head'])}</td><td>{pill('draft', 'warn') if row['is_draft'] else pill(row['checks']['label'], row['checks']['tone'])}</td><td>{html.escape(row['merge_state'])}</td><td>{row['checks']['success']}/{row['checks']['success'] + row['checks']['pending'] + row['checks']['failing']}</td><td>{html.escape(row['title'])}</td></tr>"
+        for row in prs[:14]
+    ) or "<tr><td colspan='7'>No open PRs returned by GitHub.</td></tr>"
+
+    elo_table = ''.join(
+        f"<tr><td>{html.escape(row['driver'])}</td><td>{html.escape(row['model'])}</td><td>{pill(row['complexity'], 'good' if row['complexity']=='low' else 'warn' if row['complexity']=='med' else 'bad' if row['complexity']=='high' else '')}</td><td>{row['elo_score']:.1f}</td><td>{row['dispatches_count']}</td><td>{row['avg_score']:.1f}</td><td class='mono'>{html.escape(row['last_ticket_id'])}</td></tr>"
+        for row in elo_rows
+    ) or "<tr><td colspan='7'>No judged dispatches in local ELO yet.</td></tr>"
+
+    body = (
+        hero
+        + "<section class='grid'>"
+        + f"<div class='card'><div class='k'>Dispatched Today</div><div class='v'>{len(dispatched)}</div><div class='small muted'>{len(dispatch_attempts)} transitions to <span class='mono'>in_progress</span> since local midnight</div></div>"
+        + f"<div class='card'><div class='k'>Stuck Tickets</div><div class='v bad'>{len(stuck)}</div><div class='small muted'>idle for 90m+ or explicitly watchdog-flagged</div></div>"
+        + f"<div class='card'><div class='k'>Blocked Red Queue</div><div class='v warn'>{len(blocked_red)}</div><div class='small muted'>blocked tickets assigned to red</div></div>"
+        + f"<div class='card'><div class='k'>Open PR Lifecycle</div><div class='v'>{len(prs)}</div><div class='small muted'>{pr_status.get('failing', 0)} failing · {pr_status.get('pending', 0)} pending · {pr_status.get('clean', 0)} clean</div></div>"
+        + "</section>"
+        + "<section class='grid-2'>"
+        + f"<div class='card'><div class='section-head'><h2>Dispatched Today</h2><a href='{BASE}/clawta-swarm-health-latest.html'>latest asset</a></div><table><tr><th>Ticket</th><th>Title</th><th>Lane</th><th>Dispatched</th><th>PR</th></tr>{dispatched_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Stuck Tickets</h2><span class='small muted'>watchdog + idle heuristic</span></div><ul class='list'>{stuck_items}</ul></div>"
+        + "</section>"
+        + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Blocked At</th><th>Age</th></tr>{blocked_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Open PR Lifecycle</h2><span class='small muted'>GitHub state + check rollups</span></div><table><tr><th>PR</th><th>Ticket</th><th>Head</th><th>Checks</th><th>Merge</th><th>Pass</th><th>Title</th></tr>{pr_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Model-Aware ELO</h2><span class='small muted'>driver + model + complexity replayed from local score history</span></div><table><tr><th>Driver</th><th>Model</th><th>Complexity</th><th>ELO</th><th>Dispatches</th><th>Avg Score</th><th>Last Ticket</th></tr>{elo_table}</table></div>"
+    )
+    _, url = save('swarm-health', page('Swarm Health', 'Board throughput, PR lifecycle, and judged model performance', body))
+    print(f"🧭 Clawta swarm health: {len(dispatched)} dispatched today, {len(stuck)} stuck, {len(blocked_red)} blocked on red. {url}")
+
 if __name__ == '__main__':
-    if len(sys.argv)<2 or sys.argv[1] not in {'chain-summary','standup','board-audit','industry-scan','doc-sync'}:
-        print('usage: clawta-report {chain-summary|standup|board-audit|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
+    if len(sys.argv)<2 or sys.argv[1] not in {'swarm-health','chain-summary','standup','board-audit','industry-scan','doc-sync'}:
+        print('usage: clawta-report {swarm-health|chain-summary|standup|board-audit|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
     dispatch = {
+        'swarm-health': swarm_health,
         'chain-summary': chain,
         'standup': standup,
         'board-audit': board_audit,
