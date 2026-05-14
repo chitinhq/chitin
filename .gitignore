@@ -76,3 +76,5 @@ python/argus/build/
 __pycache__/
 *.pyc
 chitin.yaml.sig
+
+.angular

@@ -1,0 +1,493 @@
+#!/usr/bin/env node
+// Chitin Console — local read-only API server.
+//
+// Aggregates data from the operator's local state stores for the
+// Angular console frontend. Everything here is read-only and localhost
+// bound by default.
+//
+// Sources:
+//   ~/.hermes/kanban/boards/<board>/kanban.db   — tickets, runs, events
+//   ~/.openclaw/data/clawta.db                  — swarm ELO + dispatch scores
+//   ~/.openclaw/data/clawta_decisions.db        — per-ticket dispatch decisions
+//   ~/.argus/index.db                           — argus observatory index
+//   ~/.chitin/gov-decisions-<date>.jsonl        — chain ledger / replay source
+//   <repo>/chitin.yaml                          — policy (read-only)
+
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+
+const PORT = Number(process.env.CHITIN_CONSOLE_PORT || 7878);
+const HOST = process.env.CHITIN_CONSOLE_HOST || '127.0.0.1';
+const HOME = os.homedir();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = process.env.CHITIN_REPO_ROOT
+  || path.resolve(__dirname, '..', '..', '..');
+
+const KANBAN_ROOT = process.env.HERMES_KANBAN_ROOT || path.join(HOME, '.hermes', 'kanban');
+const CURRENT_BOARD = (() => {
+  try { return fs.readFileSync(path.join(KANBAN_ROOT, 'current'), 'utf8').trim(); }
+  catch { return 'chitin'; }
+})();
+const BOARD_DB = path.join(KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
+const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
+  || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
+const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
+const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
+const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
+
+let kanbanDB = null;
+let argusDB = null;
+let clawtaDecisionsDB = null;
+let clawtaDB = null;
+
+function openIfExists(p, readonly = true) {
+  try {
+    if (!fs.existsSync(p)) return null;
+    return new Database(p, { readonly, fileMustExist: true });
+  } catch (e) {
+    console.warn(`[console-api] could not open ${p}: ${e.message}`);
+    return null;
+  }
+}
+
+function reopen() {
+  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
+  kanbanDB           = openIfExists(BOARD_DB);
+  argusDB            = openIfExists(ARGUS_DB);
+  clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
+  clawtaDB           = openIfExists(CLAWTA_DB);
+}
+reopen();
+
+function json(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(payload);
+}
+const notFound  = (res) => json(res, 404, { error: 'not_found' });
+const serverErr = (res, e) => json(res, 500, { error: 'server_error', detail: String(e?.message || e) });
+
+// ---------- Helpers ----------
+function* readJsonl(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { yield JSON.parse(line); } catch {}
+  }
+}
+
+function listLedgerFiles({ maxDays = 14 } = {}) {
+  try {
+    const files = fs.readdirSync(CHAIN_LEDGER_DIR)
+      .filter(f => /^gov-decisions-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+      .map(f => path.join(CHAIN_LEDGER_DIR, f))
+      .map(p => ({ path: p, mtime: fs.statSync(p).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, maxDays);
+    return files.map(f => f.path);
+  } catch { return []; }
+}
+
+// ---------- Endpoints ----------
+function getStats() {
+  if (!kanbanDB) return { board: CURRENT_BOARD, lanes: {} };
+  const rows = kanbanDB.prepare("SELECT status, COUNT(*) as n FROM tasks GROUP BY status").all();
+  const lanes = Object.fromEntries(rows.map(r => [r.status, r.n]));
+  const last7 = kanbanDB.prepare(
+    "SELECT COUNT(*) as n FROM tasks WHERE completed_at IS NOT NULL AND completed_at > strftime('%s','now') - 7*86400"
+  ).get().n;
+  const inFlight = kanbanDB.prepare("SELECT COUNT(*) as n FROM tasks WHERE status='in_progress'").get().n;
+  const ages = kanbanDB.prepare(
+    "SELECT (strftime('%s','now') - created_at) AS age FROM tasks WHERE status IN ('ready','todo','triage') ORDER BY age"
+  ).all().map(r => r.age);
+  const median = ages.length ? ages[Math.floor(ages.length / 2)] : 0;
+  let successRate = null, runsLast24 = 0, runsCompleted24 = 0;
+  try {
+    const sr = kanbanDB.prepare(`
+      SELECT
+        SUM(CASE WHEN outcome='completed' THEN 1 ELSE 0 END) AS ok,
+        COUNT(*) AS total
+      FROM task_runs
+      WHERE ended_at IS NOT NULL AND ended_at > strftime('%s','now') - 7*86400
+    `).get();
+    if (sr.total) successRate = sr.ok / sr.total;
+    const r24 = kanbanDB.prepare(`
+      SELECT
+        SUM(CASE WHEN outcome='completed' THEN 1 ELSE 0 END) AS ok,
+        COUNT(*) AS total
+      FROM task_runs WHERE ended_at IS NOT NULL AND ended_at > strftime('%s','now') - 86400
+    `).get();
+    runsLast24 = r24.total; runsCompleted24 = r24.ok;
+  } catch {}
+  return {
+    board: CURRENT_BOARD,
+    lanes,
+    completedLast7Days: last7,
+    inFlight,
+    medianAgeSecondsActive: median,
+    successRate7d: successRate,
+    runsLast24,
+    runsCompleted24,
+    generatedAt: Date.now(),
+  };
+}
+
+function listTasks(query) {
+  if (!kanbanDB) return { board: CURRENT_BOARD, tasks: [] };
+  const status   = query.get('status');
+  const assignee = query.get('assignee');
+  const search   = query.get('q');
+  const limit    = Math.min(Number(query.get('limit') || 500), 2000);
+
+  const conds = [];
+  const params = {};
+  if (status) {
+    const list = status.split(',').map(s => s.trim()).filter(Boolean);
+    conds.push(`status IN (${list.map((_, i) => `@s${i}`).join(',')})`);
+    list.forEach((s, i) => { params[`s${i}`] = s; });
+  }
+  if (assignee) { conds.push('assignee = @assignee'); params.assignee = assignee; }
+  if (search) {
+    conds.push('(LOWER(title) LIKE @q OR LOWER(body) LIKE @q OR id LIKE @qid)');
+    params.q = `%${search.toLowerCase()}%`;
+    params.qid = `%${search}%`;
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+  const sql = `
+    SELECT id, title, status, assignee, priority, created_at, started_at, completed_at,
+           workspace_kind, workspace_path, tenant, current_run_id,
+           workflow_template_id, current_step_key, consecutive_failures, max_retries,
+           last_heartbeat_at, idempotency_key,
+           CASE WHEN body IS NULL THEN 0 ELSE 1 END AS has_body
+    FROM tasks
+    ${where}
+    ORDER BY
+      CASE status
+        WHEN 'in_progress' THEN 0
+        WHEN 'triage' THEN 1
+        WHEN 'ready' THEN 2
+        WHEN 'todo' THEN 3
+        WHEN 'done' THEN 4
+        ELSE 5
+      END,
+      priority DESC, created_at DESC
+    LIMIT @limit
+  `;
+  params.limit = limit;
+  const rows = kanbanDB.prepare(sql).all(params);
+  return { board: CURRENT_BOARD, count: rows.length, tasks: rows };
+}
+
+function getTask(id) {
+  if (!kanbanDB) return null;
+  const task = kanbanDB.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return null;
+  const events = kanbanDB.prepare(
+    'SELECT id, run_id, kind, payload, created_at FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 300'
+  ).all(id);
+  const runs = kanbanDB.prepare(
+    'SELECT id, profile, step_key, status, started_at, ended_at, outcome, summary, error FROM task_runs WHERE task_id = ? ORDER BY started_at DESC'
+  ).all(id);
+  let comments = [];
+  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  let links = [];
+  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  let clawtaDecisions = [];
+  if (clawtaDecisionsDB) {
+    try {
+      clawtaDecisions = clawtaDecisionsDB.prepare(
+        'SELECT id, driver, model, selection_mode, reasoning, ts FROM clawta_decisions WHERE ticket_id = ? ORDER BY ts DESC LIMIT 25'
+      ).all(id);
+    } catch {}
+  }
+  return { task, runs, events, comments, links, clawtaDecisions };
+}
+
+function listAssignees() {
+  if (!kanbanDB) return { assignees: [] };
+  const rows = kanbanDB.prepare(`
+    SELECT assignee, COUNT(*) AS n
+    FROM tasks
+    WHERE assignee IS NOT NULL AND assignee != ''
+    GROUP BY assignee
+    ORDER BY n DESC
+  `).all();
+  return { assignees: rows };
+}
+
+function listRunsRecent(query) {
+  if (!kanbanDB) return { runs: [] };
+  const limit = Math.min(Number(query.get('limit') || 50), 500);
+  const rows = kanbanDB.prepare(`
+    SELECT r.id, r.task_id, t.title AS task_title, t.assignee AS task_assignee,
+           r.profile, r.step_key, r.status,
+           r.started_at, r.ended_at, r.outcome, r.summary, r.error
+    FROM task_runs r
+    LEFT JOIN tasks t ON t.id = r.task_id
+    ORDER BY r.started_at DESC
+    LIMIT ?
+  `).all(limit);
+  return { runs: rows };
+}
+
+function listArgusFindings(query) {
+  if (!argusDB) return { findings: [], note: 'argus index unavailable' };
+  const limit = Math.min(Number(query.get('limit') || 100), 500);
+  const candidates = [
+    `SELECT * FROM findings ORDER BY ts DESC LIMIT ?`,
+    `SELECT * FROM findings ORDER BY created_at DESC LIMIT ?`,
+    `SELECT * FROM findings ORDER BY id DESC LIMIT ?`,
+  ];
+  for (const sql of candidates) {
+    try { return { findings: argusDB.prepare(sql).all(limit) }; }
+    catch {}
+  }
+  try {
+    const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
+    return { findings: [], tables };
+  } catch (e) { return { findings: [], error: e.message }; }
+}
+
+function argusInfo() {
+  if (!argusDB) return { available: false };
+  try {
+    const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
+    const counts = {};
+    for (const t of tables) {
+      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch {}
+    }
+    return { available: true, tables, counts };
+  } catch (e) { return { available: true, error: e.message }; }
+}
+
+function listEloLeaderboard() {
+  if (!clawtaDB) return { rows: [] };
+  try {
+    const rows = clawtaDB.prepare(`
+      SELECT id, driver, model, role, task_class, complexity_bucket,
+             elo_score, dispatches_count, last_dispatch_id,
+             first_scored_at, last_updated
+      FROM swarm_elo
+      ORDER BY elo_score DESC
+      LIMIT 200
+    `).all();
+    return { rows };
+  } catch (e) { return { rows: [], error: e.message }; }
+}
+
+function chainKey(evt) {
+  return evt.chain_id || evt.session_id || evt.envelope_id || null;
+}
+
+function listSessions(query) {
+  const limit = Math.min(Number(query.get('limit') || 50), 500);
+  const sessions = new Map();
+  for (const file of listLedgerFiles({ maxDays: 14 })) {
+    for (const evt of readJsonl(file)) {
+      const sid = chainKey(evt);
+      if (!sid) continue;
+      let s = sessions.get(sid);
+      if (!s) {
+        s = {
+          chain_id: sid,
+          driver: evt.driver,
+          agent: evt.agent,
+          role: evt.role,
+          firstTs: evt.ts,
+          lastTs: evt.ts,
+          events: 0,
+          allowed: 0,
+          denied: 0,
+          heuristic: 0,
+          costUsd: 0,
+          inputBytes: 0,
+          tools: new Set(),
+          tickets: new Set(),
+          actions: new Map(),
+        };
+        sessions.set(sid, s);
+      }
+      s.events += 1;
+      if (!s.driver && evt.driver) s.driver = evt.driver;
+      if (!s.agent  && evt.agent)  s.agent = evt.agent;
+      if (!s.role   && evt.role)   s.role  = evt.role;
+      const a = (evt.allowed === true) || evt.decision === 'allow';
+      const d = (evt.allowed === false) || evt.decision === 'deny';
+      const h = evt.decision === 'heuristic-allow' || evt.effect === 'heuristic';
+      if (a) s.allowed += 1;
+      if (d) s.denied += 1;
+      if (h) s.heuristic += 1;
+      if (typeof evt.cost_usd === 'number') s.costUsd += evt.cost_usd;
+      if (typeof evt.input_bytes === 'number') s.inputBytes += evt.input_bytes;
+      if (evt.tool_name)    s.tools.add(evt.tool_name);
+      else if (evt.action_type) s.tools.add(evt.action_type);
+      if (evt.ticket_id)    s.tickets.add(evt.ticket_id);
+      if (evt.action_type) s.actions.set(evt.action_type, (s.actions.get(evt.action_type) || 0) + 1);
+      if (!s.firstTs || (evt.ts && evt.ts < s.firstTs)) s.firstTs = evt.ts;
+      if (evt.ts && evt.ts > s.lastTs) s.lastTs = evt.ts;
+    }
+  }
+  const arr = Array.from(sessions.values()).map(s => ({
+    ...s,
+    tools: Array.from(s.tools),
+    tickets: Array.from(s.tickets),
+    actions: Object.fromEntries(s.actions),
+  }));
+  arr.sort((a, b) => String(b.lastTs || '').localeCompare(String(a.lastTs || '')));
+  return { sessions: arr.slice(0, limit), totalSeen: arr.length };
+}
+
+function getSession(chainId) {
+  const events = [];
+  for (const file of listLedgerFiles({ maxDays: 30 })) {
+    for (const evt of readJsonl(file)) {
+      const sid = chainKey(evt);
+      if (sid !== chainId) continue;
+      events.push(evt);
+    }
+  }
+  if (!events.length) return null;
+  events.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  let costUsd = 0, inputBytes = 0, allowed = 0, denied = 0, heuristic = 0;
+  const toolCounts = new Map();
+  const ruleCounts = new Map();
+  for (const e of events) {
+    if (typeof e.cost_usd === 'number') costUsd += e.cost_usd;
+    if (typeof e.input_bytes === 'number') inputBytes += e.input_bytes;
+    if (e.allowed === true) allowed += 1;
+    else if (e.allowed === false) denied += 1;
+    if (e.decision === 'heuristic-allow') heuristic += 1;
+    const tool = e.tool_name || e.action_type || 'unknown';
+    toolCounts.set(tool, (toolCounts.get(tool) || 0) + 1);
+    if (e.rule_id) ruleCounts.set(e.rule_id, (ruleCounts.get(e.rule_id) || 0) + 1);
+  }
+  return {
+    chain_id: chainId,
+    eventCount: events.length,
+    firstTs: events[0].ts,
+    lastTs: events[events.length - 1].ts,
+    driver: events.find(e => e.driver)?.driver,
+    agent: events.find(e => e.agent)?.agent,
+    role: events.find(e => e.role)?.role,
+    costUsd, inputBytes, allowed, denied, heuristic,
+    toolCounts: Object.fromEntries([...toolCounts.entries()].sort((a, b) => b[1] - a[1])),
+    ruleCounts: Object.fromEntries([...ruleCounts.entries()].sort((a, b) => b[1] - a[1])),
+    events,
+  };
+}
+
+function getPolicy() {
+  try {
+    const raw = fs.readFileSync(POLICY_FILE, 'utf8');
+    const stat = fs.statSync(POLICY_FILE);
+    return { path: POLICY_FILE, size: stat.size, modified: stat.mtimeMs, content: raw };
+  } catch (e) { return { path: POLICY_FILE, error: e.message }; }
+}
+
+function getAnalyzerSuggestions() {
+  return {
+    enabled: false,
+    note: 'Analyzer cron (slice 5 of the dashboard epic) not yet implemented. ' +
+          'Once `analyzer-cron.lobster` ships, this endpoint will read from ' +
+          'analyzer_suggestions(id, type, target, diff, rationale, applied, created_at).',
+    suggestions: [],
+  };
+}
+
+function listClawtaDecisions(query) {
+  if (!clawtaDecisionsDB) return { decisions: [] };
+  const limit = Math.min(Number(query.get('limit') || 100), 500);
+  try {
+    const rows = clawtaDecisionsDB.prepare(`
+      SELECT id, ticket_id, driver, model, selection_mode, reasoning, ts
+      FROM clawta_decisions ORDER BY ts DESC LIMIT ?
+    `).all(limit);
+    return { decisions: rows };
+  } catch (e) { return { decisions: [], error: e.message }; }
+}
+
+function getCostHistogram() {
+  const bins = new Array(24).fill(0);
+  const now = Date.now();
+  for (const file of listLedgerFiles({ maxDays: 2 })) {
+    for (const evt of readJsonl(file)) {
+      if (typeof evt.cost_usd !== 'number' || !evt.ts) continue;
+      const t = Date.parse(evt.ts);
+      if (Number.isNaN(t)) continue;
+      const hoursAgo = Math.floor((now - t) / 3_600_000);
+      if (hoursAgo < 0 || hoursAgo >= 24) continue;
+      bins[23 - hoursAgo] += evt.cost_usd;
+    }
+  }
+  return { bins, totalUsd: bins.reduce((a, b) => a + b, 0) };
+}
+
+// ---------- Routing ----------
+const handlers = [
+  [/^\/api\/health$/,                () => ({ ok: true, board: CURRENT_BOARD, ts: Date.now() })],
+  [/^\/api\/stats$/,                 () => getStats()],
+  [/^\/api\/tasks$/,                 (req, q) => listTasks(q)],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1])],
+  [/^\/api\/assignees$/,             () => listAssignees()],
+  [/^\/api\/runs\/recent$/,          (req, q) => listRunsRecent(q)],
+  [/^\/api\/argus\/info$/,           () => argusInfo()],
+  [/^\/api\/argus\/findings$/,       (req, q) => listArgusFindings(q)],
+  [/^\/api\/elo$/,                   () => listEloLeaderboard()],
+  [/^\/api\/sessions$/,              (req, q) => listSessions(q)],
+  [/^\/api\/sessions\/([a-zA-Z0-9_\-:.]+)$/, (req, q, m) => getSession(decodeURIComponent(m[1]))],
+  [/^\/api\/policy$/,                () => getPolicy()],
+  [/^\/api\/suggestions$/,           () => getAnalyzerSuggestions()],
+  [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
+  [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
+];
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'content-type',
+    });
+    res.end();
+    return;
+  }
+  if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
+  const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  for (const [re, fn] of handlers) {
+    const m = url.pathname.match(re);
+    if (m) {
+      try {
+        const out = fn(req, url.searchParams, m);
+        if (out == null) return notFound(res);
+        return json(res, 200, out);
+      } catch (e) { return serverErr(res, e); }
+    }
+  }
+  notFound(res);
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
+  console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
+  console.log(`[chitin-console-api] kanban=${BOARD_DB} (${kanbanDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
+});
+
+process.on('SIGINT',  () => { server.close(); process.exit(0); });
+process.on('SIGTERM', () => { server.close(); process.exit(0); });

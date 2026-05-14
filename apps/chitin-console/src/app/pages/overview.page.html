@@ -1,0 +1,156 @@
+@if (loading()) {
+  <cc-loader message="Aggregating chain ledger + kanban + ELO" />
+} @else {
+  <section class="page-head">
+    <div>
+      <h1 class="title">Overview</h1>
+      <p class="subtitle mono">board · {{ stats()?.board ?? '–' }}</p>
+    </div>
+  </section>
+
+  <section class="kpis" aria-label="key metrics">
+    <cc-kpi-card label="ready" [value]="stats()?.lanes?.ready ?? 0" tone="glow"></cc-kpi-card>
+    <cc-kpi-card label="in-flight" [value]="stats()?.inFlight ?? 0" tone="run"></cc-kpi-card>
+    <cc-kpi-card label="triage" [value]="stats()?.lanes?.triage ?? 0" tone="warn"></cc-kpi-card>
+    <cc-kpi-card label="done 7d" [value]="stats()?.completedLast7Days ?? 0"></cc-kpi-card>
+    <cc-kpi-card label="p50 age (active)"
+      [value]="ageFromMsAgo(stats()?.medianAgeSecondsActive ?? 0)"></cc-kpi-card>
+    <cc-kpi-card label="success 7d"
+      [value]="fmtPct(stats()?.successRate7d, 1)"
+      [tone]="(stats()?.successRate7d ?? 0) >= 0.5 ? 'run' : 'warn'"></cc-kpi-card>
+  </section>
+
+  <section class="grid-2">
+    <div class="plate panel">
+      <header class="panel-head">
+        <h2 class="section-title"><span class="pulse"></span> live runs · 24h</h2>
+        <a routerLink="/sessions" class="link mono">all sessions →</a>
+      </header>
+      <div class="panel-body scrollable">
+        @if (runs().length === 0) {
+          <cc-empty-state title="No runs yet" body="task_runs is empty for this window."></cc-empty-state>
+        } @else {
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>ticket</th>
+                <th>title</th>
+                <th>status</th>
+                <th>started</th>
+                <th>outcome</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (r of runs(); track r.id) {
+                <tr class="row-hover" [routerLink]="['/tickets']" [queryParams]="{ id: r.task_id }">
+                  <td class="mono small">{{ shortenId(r.task_id, 8, 4) }}</td>
+                  <td class="ellipsis">{{ r.task_title || '–' }}</td>
+                  <td><cc-status-pill [status]="r.status"></cc-status-pill></td>
+                  <td class="mono small text-muted">{{ ageFromEpochSeconds(r.started_at) }} ago</td>
+                  <td>
+                    @if (r.outcome) {
+                      <cc-status-pill [status]="r.outcome"></cc-status-pill>
+                    } @else { <span class="text-dim mono small">—</span> }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
+    </div>
+
+    <div class="plate panel">
+      <header class="panel-head">
+        <h2 class="section-title">recent sessions</h2>
+        <a routerLink="/sessions" class="link mono">browse →</a>
+      </header>
+      <div class="panel-body scrollable">
+        @if (sessions().length === 0) {
+          <cc-empty-state
+            title="No chain sessions"
+            body="No gov-decisions-*.jsonl files found in ~/.chitin. Run any gated tool to populate the ledger."></cc-empty-state>
+        } @else {
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>chain</th>
+                <th>driver</th>
+                <th>events</th>
+                <th>cost</th>
+                <th>last</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (s of sessions(); track s.chain_id) {
+                <tr class="row-hover" [routerLink]="['/sessions', s.chain_id]">
+                  <td class="mono small">{{ shortenId(s.chain_id, 8, 4) }}</td>
+                  <td class="mono small text-muted">{{ s.driver || '–' }}</td>
+                  <td class="mono small">
+                    <span class="text-run">{{ s.allowed }}</span>
+                    <span class="text-dim"> / </span>
+                    <span class="text-danger">{{ s.denied }}</span>
+                  </td>
+                  <td class="mono small text-glow">{{ fmtUsd(s.costUsd, 3) }}</td>
+                  <td class="mono small text-muted">{{ fmtTs(s.lastTs) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="plate panel">
+      <header class="panel-head">
+        <h2 class="section-title">cost · 24h hourly</h2>
+        <span class="mono small text-muted">total {{ fmtUsd(cost()?.totalUsd ?? 0, 4) }}</span>
+      </header>
+      <div class="panel-body padded">
+        <cc-sparkbar [data]="cost()?.bins ?? []" ariaLabel="cost per hour over 24h"></cc-sparkbar>
+        <div class="axis mono small text-dim">
+          <span>−24h</span><span>−18h</span><span>−12h</span><span>−6h</span><span>now</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="plate panel">
+      <header class="panel-head">
+        <h2 class="section-title">swarm ELO · top 8</h2>
+        <a routerLink="/elo" class="link mono">leaderboard →</a>
+      </header>
+      <div class="panel-body scrollable">
+        @if (elo().length === 0) {
+          <cc-empty-state title="No ELO scores" body="swarm_elo table is empty."></cc-empty-state>
+        } @else {
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>driver / model</th>
+                <th>class</th>
+                <th class="num">ELO</th>
+                <th class="num">runs</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (e of elo(); track e.id) {
+                <tr>
+                  <td>
+                    <span class="mono small">{{ e.driver }}</span>
+                    <span class="text-dim mono small"> · </span>
+                    <span class="mono small text-glow">{{ e.model }}</span>
+                  </td>
+                  <td class="mono small text-muted">{{ e.task_class || '–' }}</td>
+                  <td class="num mono small text-chitin">{{ e.elo_score.toFixed(0) }}</td>
+                  <td class="num mono small text-muted">{{ e.dispatches_count }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
+    </div>
+  </section>
+}
