@@ -313,10 +313,9 @@ class TestDryRun:
         _create_test_db(tmp_path / "kanban.db")
         _insert_task(tmp_path / "kanban.db", "t_dry01", consecutive_failures=0)
 
-        # Note: find_stale_candidates DOES increment the counter even in dry-run,
-        # because the increment happens before the retry/escalate decision. This is
-        # intentional — the counter reflects reality (the ticket WAS stale again).
-        # The invariant is that auto_retry_ticket / block_ticket_with_history are NOT called.
+        # Invariant: --dry-run is fully side-effect free. find_stale_candidates
+        # only *predicts* the post-increment count; it must not touch the DB,
+        # and main() must not call auto_retry_ticket / block_ticket_with_history.
         with patch.object(wd, "has_active_worker", return_value=False), \
              patch.object(wd, "has_pr", return_value=False), \
              patch.object(wd, "quiet_seconds", return_value=1500), \
@@ -337,6 +336,69 @@ class TestDryRun:
         data = json.loads(output)
         assert data["dry_run"] is True
         assert data["retried"] == 1
-        # The key invariant: no side-effect calls were made
+        # No side-effect calls were made...
         mock_retry.assert_not_called()
         mock_block.assert_not_called()
+        # ...and the persisted counter is untouched (the report's "1" is a
+        # prediction of what the count *would* become, not a write).
+        assert wd.get_consecutive_failures(tmp_path / "kanban.db", "t_dry01") == 0
+
+    def test_legacy_schema_without_counter_escalates(self, tmp_path):
+        """Boundary: a board predating the consecutive_failures column.
+
+        The retry counter can never advance there, so a silent death must
+        escalate immediately instead of auto-retrying forever.
+        """
+        wd = _import_watchdog(tmp_path)
+        db = tmp_path / "kanban.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT,
+                assignee TEXT, status TEXT NOT NULL DEFAULT 'ready',
+                priority INTEGER DEFAULT 0, created_by TEXT,
+                created_at INTEGER NOT NULL, started_at INTEGER,
+                completed_at INTEGER, spawn_failures INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+                run_id INTEGER, kind TEXT NOT NULL, payload TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+                status TEXT NOT NULL, started_at INTEGER NOT NULL,
+                ended_at INTEGER, outcome TEXT, error TEXT
+            );
+            CREATE TABLE task_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+                author TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+            );
+        """)
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO tasks (id, title, assignee, status, priority, created_at, started_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("t_legacy01", "legacy", "codex", "in_progress", 50, now - 3200, now - 3200),
+        )
+        conn.commit()
+        conn.close()
+        assert wd.schema_supports_retry_tracking(db) is False
+        with patch.object(wd, "has_active_worker", return_value=False), \
+             patch.object(wd, "has_pr", return_value=False), \
+             patch.object(wd, "quiet_seconds", return_value=1500):
+            checked, retried, escalated = wd.find_stale_candidates(max_retries=3)
+        assert len(retried) == 0
+        assert len(escalated) == 1
+
+    def test_empty_board_yields_no_candidates(self, tmp_path):
+        """Boundary: empty board (no in_progress tickets) → nothing to do."""
+        wd = _import_watchdog(tmp_path)
+        _create_test_db(tmp_path / "kanban.db")
+        with patch.object(wd, "has_active_worker", return_value=False), \
+             patch.object(wd, "has_pr", return_value=False), \
+             patch.object(wd, "quiet_seconds", return_value=1500):
+            checked, retried, escalated = wd.find_stale_candidates(max_retries=3)
+        assert checked == []
+        assert retried == []
+        assert escalated == []

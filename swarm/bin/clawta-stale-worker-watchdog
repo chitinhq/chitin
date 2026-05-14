@@ -192,10 +192,27 @@ def get_consecutive_failures(db_path: Path, ticket_id: str) -> int:
         return 0
 
 
+def schema_supports_retry_tracking(db_path: Path) -> bool:
+    """True if the tasks table has the consecutive_failures column.
+
+    Older boards predate retry tracking. On those, the retry counter can
+    never advance, so callers must escalate silent deaths immediately
+    rather than auto-retrying forever against a counter stuck at zero.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        return "consecutive_failures" in cols
+    except sqlite3.OperationalError:
+        return False
+
+
 def increment_consecutive_failures(db_path: Path, ticket_id: str, failure_class: str, reason: str) -> int:
     """Increment consecutive_failures and update last_failure_error. Returns new count.
 
-    No-ops if the columns don't exist (older schemas), returning 1.
+    No-ops if the column doesn't exist (older schemas), returning 0 — callers
+    must gate retry decisions on schema_supports_retry_tracking() rather than
+    trusting this return value on legacy boards.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -212,9 +229,9 @@ def increment_consecutive_failures(db_path: Path, ticket_id: str, failure_class:
                 "SELECT consecutive_failures FROM tasks WHERE id = ?",
                 (ticket_id,),
             ).fetchone()
-        return int(row[0]) if row else 1
+        return int(row[0]) if row else 0
     except sqlite3.OperationalError:
-        return 1
+        return 0
 
 
 def get_dispatch_history(db_path: Path, ticket_id: str, limit: int = 5) -> list[dict]:
@@ -399,6 +416,7 @@ def find_stale_candidates(
     checked = list_in_progress(now=now)
     retried: list[Escalation] = []
     escalated: list[Escalation] = []
+    retry_tracking = schema_supports_retry_tracking(KANBAN_DB)
 
     for ticket in checked:
         if has_pr(KANBAN_DB, ticket.id):
@@ -417,9 +435,12 @@ def find_stale_candidates(
         # Classify the failure
         failure_class = classify_failure(ticket.id, KANBAN_DB)
 
-        # Get current failure count and increment atomically
+        # find_stale_candidates is a pure classifier: it predicts the
+        # post-increment count but never mutates the DB here, so `--dry-run`
+        # is side-effect free. The real increment happens in main()'s
+        # non-dry-run path, immediately before the retry/escalate action.
         current_failures = get_consecutive_failures(KANBAN_DB, ticket.id)
-        new_count = increment_consecutive_failures(KANBAN_DB, ticket.id, failure_class, reason)
+        predicted_count = current_failures + 1
 
         escalation = Escalation(
             id=ticket.id,
@@ -429,14 +450,19 @@ def find_stale_candidates(
             quiet_seconds=quiet,
             reason=reason,
             failure_class=failure_class,
-            consecutive_failures=new_count,
+            consecutive_failures=predicted_count,
             max_retries=max_retries,
         )
 
         if failure_class == FailureClass.EXPLICIT_FAILURE:
             # Explicit failures never auto-retry — escalate immediately
             escalated.append(escalation)
-        elif new_count < max_retries:
+        elif not retry_tracking:
+            # Legacy board without a consecutive_failures column: the retry
+            # counter can never advance, so auto-retrying would loop forever.
+            # Escalate to the operator instead of retrying blind.
+            escalated.append(escalation)
+        elif predicted_count < max_retries:
             # Silent death with retries remaining — auto-retry
             retried.append(escalation)
         else:
@@ -456,12 +482,21 @@ def main() -> int:
     if not args.dry_run:
         for item in retried:
             try:
+                # Persist the failure count here — find_stale_candidates only
+                # predicted it. Increment before the action so a crash mid-loop
+                # still records the attempt.
+                increment_consecutive_failures(
+                    KANBAN_DB, item.id, item.failure_class, item.reason
+                )
                 auto_retry_ticket(item)
                 retried_done.append(item)
             except subprocess.CalledProcessError as exc:
                 print(f"{item.id}: auto-retry failed: {exc.stderr[-300:]}", file=sys.stderr)
         for item in escalated:
             try:
+                increment_consecutive_failures(
+                    KANBAN_DB, item.id, item.failure_class, item.reason
+                )
                 block_ticket_with_history(item)
                 escalated_done.append(item)
             except subprocess.CalledProcessError as exc:
