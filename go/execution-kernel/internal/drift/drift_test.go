@@ -27,6 +27,21 @@ func TestEvaluate_InScope(t *testing.T) {
 	}
 }
 
+func TestEvaluate_EmptyIntentScopeDoesNotDetect(t *testing.T) {
+	events := []Event{
+		{EventType: "intent", Payload: map[string]interface{}{
+			"entry_id": "t1", "task_class": "fix", "file_paths": []interface{}{},
+		}},
+	}
+	got := Evaluate(Observation{ToolName: "Edit", TargetPath: "docs/README.md"}, events, DefaultConfig())
+	if got.Detected {
+		t.Fatal("Detected=true want false for empty intent scope")
+	}
+	if got.Reason != "no-intent-recorded" {
+		t.Fatalf("Reason=%q want no-intent-recorded", got.Reason)
+	}
+}
+
 func TestEvaluate_DemoteThenKill(t *testing.T) {
 	events := []Event{
 		{EventType: "intent", Payload: map[string]interface{}{
@@ -52,6 +67,28 @@ func TestEvaluate_DemoteThenKill(t *testing.T) {
 	}
 }
 
+func TestEvaluate_MaxTurnsCapsTurnScore(t *testing.T) {
+	events := []Event{
+		{EventType: "intent", Payload: map[string]interface{}{
+			"entry_id": "t1", "task_class": "fix", "file_paths": []interface{}{"apps/cli/src/**"},
+		}},
+	}
+	for i := 0; i < 10; i++ {
+		events = append(events, Event{
+			EventType: "decision",
+			Payload: map[string]interface{}{
+				"decision":      "allow",
+				"action_type":   "file.write",
+				"action_target": "apps/cli/src/main.ts",
+			},
+		})
+	}
+	got := Evaluate(Observation{ToolName: "Edit", TargetPath: "apps/cli/src/other.ts"}, events, Config{MaxTurns: 2})
+	if got.Score != 0.4 {
+		t.Fatalf("Score=%.2f want 0.40 with max turn score capped", got.Score)
+	}
+}
+
 func TestInScopeSupportsRecursiveGlobsAndAbsolutePaths(t *testing.T) {
 	cases := []struct {
 		path string
@@ -66,5 +103,12 @@ func TestInScopeSupportsRecursiveGlobsAndAbsolutePaths(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("InScope(%q)= %v want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestInScope_ErrorMalformedGlobReturnsFalse(t *testing.T) {
+	got := InScope("apps/cli/src/main.ts", []string{"apps/cli/src/["})
+	if got {
+		t.Fatal("InScope=true want false for malformed glob")
 	}
 }

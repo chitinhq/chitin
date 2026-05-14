@@ -299,6 +299,9 @@ func resolveDriftRoutingDecision(routesPolicy router.RoutesPolicy, hookInput rou
 	case kdrift.ActionKill:
 		return "drift.kill"
 	case kdrift.ActionDemote:
+		// Demote is route-only in the kernel hook: chitin stamps the routing
+		// decision and emits drift events, while substrates decide how to move
+		// or resize a running worker.
 		if d, err := router.RouteFor(router.RouteRequest{
 			Signal:           "drift",
 			Severity:         "score>=" + formatScore(eval.Score),
