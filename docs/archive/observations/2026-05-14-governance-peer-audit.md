@@ -14,9 +14,11 @@ that worth turning into kernel work rather than substrate work?
 
 ## Answer
 
-The meaningful kernel-side gap is not "approvals" or "LLM judges" because
-those were already culled to Hermes by decision
-`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`. The real gap is
+The meaningful kernel-side gap is not "approvals" or "LLM judges": operator
+approvals were culled to Hermes by
+`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`, and the in-gate
+LLM advisor/judge was removed separately by
+`docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md`. The real gap is
 that chitin still treats outbound network and MCP access as coarse default-allow
 surfaces (`http.request`, `mcp.call`) while both DefenseClaw and AGT push much
 harder on pre-exec trust boundaries around external capabilities. A follow-up
@@ -31,8 +33,11 @@ Chitin's current kernel strengths are the ones the repo already claims:
 - Cross-driver typed action vocabulary in
   `go/execution-kernel/internal/gov/action.go`
 - Declarative typed policy and bounds in `chitin.yaml`
-- Tamper-evident decision chain and heuristic signal stamping in
-  `go/execution-kernel/internal/gov/policy.go` and
+- Tamper-evident decision chain (hash-linked events in
+  `go/execution-kernel/internal/emit` + `internal/chain`) and heuristic
+  signal stamping in `go/execution-kernel/cmd/chitin-kernel`;
+  `go/execution-kernel/internal/gov/policy.go` defines the decision fields,
+  and the kernel-hot-path scoping is in
   `docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md`
 - Kernel-only enforcement boundary in
   `docs/decisions/2026-05-06-execution-governance-runtime-positioning.md`
@@ -46,7 +51,9 @@ Evidence in-repo:
 - `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md:47-62` says
   approvals stay in Hermes while chitin keeps typed policy, bounds, and chain.
 - `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md:30-46` excludes
-  orchestration and approval-system ownership from chitin's remit.
+  orchestration and dispatch from chitin's remit; approval-system ownership is
+  separately deferred to Hermes by
+  `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`.
 
 ## Peer gaps vs chitin
 
