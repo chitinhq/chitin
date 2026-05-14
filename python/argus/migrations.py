@@ -184,6 +184,15 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_file_path ON events(file_path)",
         ],
     ),
+    (
+        8,
+        "events_payload_json_legacy_backfill",
+        [
+            # Some pre-cross-source operator DBs have migration 1 recorded
+            # from before payload_json existed. Cross-source ingest needs it.
+            "ALTER TABLE events ADD COLUMN payload_json TEXT",
+        ],
+    ),
 ]
 
 
