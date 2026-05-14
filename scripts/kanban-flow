@@ -160,12 +160,14 @@ except Exception:
   body="$(printf '%s' "$summary_json" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 print(
-  "Chain cost summary: "
-  f"session {d['session_id']} | "
-  f"${d['total_cost_usd']:.4f} | "
-  f"{d['total_tokens']} tokens | "
-  f"{d['dispatch_count']} dispatches | "
-  f"{d['success_rate']*100:.1f}% success"
+  (
+    "Chain cost summary: "
+    "session {session_id} | "
+    "${total_cost_usd:.4f} | "
+    "{total_tokens} tokens | "
+    "{dispatch_count} dispatches | "
+    "{success_pct:.1f}% success"
+  ).format(success_pct=d["success_rate"]*100, **d)
 )')" || return 0
   hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null || true
 }

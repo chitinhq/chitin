@@ -222,6 +222,72 @@ func TestFindSessionForTicket(t *testing.T) {
 	}
 }
 
+func TestBuildTimeline_BoundaryEmptyFilteredTimeline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-empty-filter.jsonl"), mustJSON(t, map[string]any{
+		"schema_version": "2", "run_id": "run-empty", "session_id": "sess-empty", "surface": "codex",
+		"agent_instance_id": "agent-empty", "agent_fingerprint": "fp", "event_type": "decision",
+		"chain_id": "sess-empty", "chain_type": "session", "seq": 0, "this_hash": "empty0",
+		"ts": "2026-05-13T13:00:00Z", "labels": map[string]any{"driver": "codex"},
+		"payload": map[string]any{"tool_name": "file.read", "decision": "allow"},
+	})+"\n")
+
+	timeline, err := BuildTimeline(ReplayOptions{SessionID: "sess-empty", Driver: "hermes"})
+	if err != nil {
+		t.Fatalf("BuildTimeline empty filter: %v", err)
+	}
+	if len(timeline.Steps) != 0 || timeline.StartedAt != "" || timeline.EndedAt != "" {
+		t.Fatalf("empty filtered timeline should have no visible window: %+v", timeline)
+	}
+	if len(timeline.Summary.CostTimeline) != 0 {
+		t.Fatalf("empty filtered timeline cost points=%+v", timeline.Summary.CostTimeline)
+	}
+}
+
+func TestListRecentSessions_BoundaryMaxLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	for _, session := range []struct {
+		id string
+		ts string
+	}{
+		{id: "sess-old", ts: "2026-05-13T13:00:00Z"},
+		{id: "sess-new", ts: "2026-05-13T14:00:00Z"},
+	} {
+		writeReplayFile(t, filepath.Join(home, "events-"+session.id+".jsonl"), mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": session.id, "session_id": session.id, "surface": "codex",
+			"agent_instance_id": "agent", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": session.id, "chain_type": "session", "seq": 0, "this_hash": session.id,
+			"ts": session.ts, "labels": map[string]any{"driver": "codex"},
+			"payload": map[string]any{"tool_name": "file.read"},
+		})+"\n")
+	}
+
+	sessions, err := ListRecentSessions(1)
+	if err != nil {
+		t.Fatalf("ListRecentSessions max limit: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-new" {
+		t.Fatalf("sessions=%+v, want only most recent max-limited result", sessions)
+	}
+}
+
+func TestBuildTimeline_BoundaryErrorMissingSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	_, err := BuildTimeline(ReplayOptions{SessionID: "missing-session"})
+	if err == nil {
+		t.Fatal("expected error for missing session")
+	}
+	if !strings.Contains(err.Error(), "no chain events for session missing-session") {
+		t.Fatalf("error=%q, want missing-session context", err.Error())
+	}
+}
+
 func TestBuildTimeline_Filters(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CHITIN_HOME", home)

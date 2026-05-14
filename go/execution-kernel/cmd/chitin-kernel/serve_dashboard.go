@@ -283,9 +283,17 @@ function renderArea(summary) {
   const maxY = Math.max(...points.map((point) => point.cumulative_usd || 0), 0.0001);
   const xFor = (index) => left + ((w - left - right) * index / Math.max(points.length - 1, 1));
   const yFor = (value) => h - bottom - ((h - top - bottom) * value / maxY);
-  const stacked = drivers.map((driver) => {
-    const upper = points.map((point, index) => [xFor(index), yFor((point.driver_costs_usd || {})[driver] || 0)]);
-    const lower = points.map((point, index) => [xFor(index), yFor(0)]);
+  const stacked = drivers.map((driver, driverIndex) => {
+    const upper = points.map((point, pointIndex) => {
+      const driverCosts = point.driver_costs_usd || {};
+      const lowerValue = drivers.slice(0, driverIndex).reduce((sum, name) => sum + (driverCosts[name] || 0), 0);
+      return [xFor(pointIndex), yFor(lowerValue + (driverCosts[driver] || 0))];
+    });
+    const lower = points.map((point, pointIndex) => {
+      const driverCosts = point.driver_costs_usd || {};
+      const lowerValue = drivers.slice(0, driverIndex).reduce((sum, name) => sum + (driverCosts[name] || 0), 0);
+      return [xFor(pointIndex), yFor(lowerValue)];
+    });
     const path = "M " + upper.map((pair) => pair.join(" ")).join(" L ") + " L " + lower.reverse().map((pair) => pair.join(" ")).join(" L ") + " Z";
     return { driver, path };
   });
