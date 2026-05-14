@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/claudecode"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/router"
@@ -133,6 +136,98 @@ router:
 	}
 	if !strings.Contains(telemetry["kernel_reason"].(string), "no rm -rf") {
 		t.Fatalf("kernel_reason missing policy reason: %v", telemetry["kernel_reason"])
+	}
+}
+
+func TestEvalRouterHookStdin_DriftKillBlocksAndEmitsEvents(t *testing.T) {
+	sessionID := "drift-kill"
+	env := setupHookEnv(t, baselinePolicy+`
+router:
+  enabled: true
+  heuristics:
+    drift:
+      enabled: true
+      warn_threshold: 0.3
+      halt_threshold: 0.6
+      max_turns: 8
+`)
+	intentFile := filepath.Join(env.chitin, "events-"+sessionID+".jsonl")
+	intentLine := `{"ts":"2026-05-14T00:00:00Z","event_type":"intent","payload":{"entry_id":"t1","task_class":"fix","file_paths":["apps/cli/src/**"]}}
+{"ts":"2026-05-14T00:00:01Z","event_type":"decision","payload":{"decision":"allow","action_type":"file.write","action_target":"docs/README.md"}}`
+	if err := os.WriteFile(intentFile, []byte(intentLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Edit",
+		"tool_input": map[string]any{"file_path": "docs/ops.md"},
+		"cwd":        env.cwd,
+		"session_id": sessionID,
+	})
+	var out, errOut bytes.Buffer
+	code := evalRouterHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+	if code != claudecode.ExitBlock {
+		t.Fatalf("code=%d want block; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "drift-kill") {
+		t.Fatalf("stdout=%q want drift-kill reason", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(env.chitin, "events-"+sessionID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), `"event_type":"drift"`) < 2 {
+		t.Fatalf("expected detection+action drift events, got:\n%s", string(data))
+	}
+}
+
+func TestEvalRouterHookStdin_DriftDemoteStampsRoutingDecision(t *testing.T) {
+	sessionID := "drift-demote"
+	env := setupHookEnv(t, baselinePolicy+`
+router:
+  enabled: true
+  heuristics:
+    drift:
+      enabled: true
+      warn_threshold: 0.3
+      halt_threshold: 0.9
+      max_turns: 8
+`)
+	intentFile := filepath.Join(env.chitin, "events-"+sessionID+".jsonl")
+	intentLine := `{"ts":"2026-05-14T00:00:00Z","event_type":"intent","payload":{"entry_id":"t1","task_class":"fix","file_paths":["apps/cli/src/**"]}}`
+	if err := os.WriteFile(intentFile, []byte(intentLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env.cwd, "chitin-routes.yaml"), []byte(`version: 1
+enabled: true
+rules:
+  - name: drift-high
+    signal: drift
+    severity: "score>=0.3"
+    route: reasoning_depth
+routes:
+  reasoning_depth:
+    - driver: copilot
+      model: gpt-5.5
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tool_name":  "Edit",
+		"tool_input": map[string]any{"file_path": "docs/README.md"},
+		"cwd":        env.cwd,
+		"session_id": sessionID,
+	})
+	var out, errOut bytes.Buffer
+	code := evalRouterHookStdin(bytes.NewReader(body), &out, &errOut, "claude-code", "", "", false, false)
+	if code != 0 {
+		t.Fatalf("code=%d want allow; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	decisionLog, err := os.ReadFile(filepath.Join(env.chitin, "gov-decisions-"+time.Now().UTC().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decisionLog), `"routing_decision":"drift.demote:`) {
+		t.Fatalf("expected drift demote routing decision, got:\n%s", string(decisionLog))
 	}
 }
 
