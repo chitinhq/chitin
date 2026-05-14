@@ -30,6 +30,9 @@ func setupHookEnv(t *testing.T, policyYAML string) *hookTestEnv {
 	prev := os.Getenv("CHITIN_HOME")
 	_ = os.Setenv("CHITIN_HOME", chitin)
 	t.Cleanup(func() { _ = os.Setenv("CHITIN_HOME", prev) })
+	prevEnvelope := os.Getenv("CHITIN_BUDGET_ENVELOPE")
+	_ = os.Unsetenv("CHITIN_BUDGET_ENVELOPE")
+	t.Cleanup(func() { _ = os.Setenv("CHITIN_BUDGET_ENVELOPE", prevEnvelope) })
 	return &hookTestEnv{cwd: cwd, chitin: chitin}
 }
 
@@ -1196,6 +1199,9 @@ func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
 	prev := os.Getenv("CHITIN_HOME")
 	_ = os.Setenv("CHITIN_HOME", tmpHome)
 	t.Cleanup(func() { _ = os.Setenv("CHITIN_HOME", prev) })
+	prevEnvelope := os.Getenv("CHITIN_BUDGET_ENVELOPE")
+	_ = os.Unsetenv("CHITIN_BUDGET_ENVELOPE")
+	t.Cleanup(func() { _ = os.Setenv("CHITIN_BUDGET_ENVELOPE", prevEnvelope) })
 
 	// Stage a policy in a temp dir; cwd will be a SEPARATE temp dir
 	// with no chitin.yaml in its inheritance chain.
@@ -1243,11 +1249,11 @@ func TestEvalHookStdin_PolicyFileOverridesCwdInheritance(t *testing.T) {
 
 func TestIsClawtaDriveCarveout(t *testing.T) {
 	cases := []struct {
-		name   string
-		agent  string
-		cmd    string
-		atype  gov.ActionType
-		want   bool
+		name  string
+		agent string
+		cmd   string
+		atype gov.ActionType
+		want  bool
 	}{
 		// Allowed: agent=clawta + chitin-kernel drive <lane>
 		{"clawta drive copilot", "clawta", "chitin-kernel drive copilot --model gpt-4.1 'do work'", gov.ActShellExec, true},

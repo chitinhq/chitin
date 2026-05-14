@@ -25,6 +25,10 @@ func (f fakeRunner) Run(_ context.Context, dir string, name string, args ...stri
 	return out, nil
 }
 
+func prListKey(branch string) string {
+	return "/repo|gh pr list --state all --head " + branch + " --json number,state,headRefName,mergedAt"
+}
+
 func TestStatusBuildsRowsSortedAndTagged(t *testing.T) {
 	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	ts := func(ageDays int) []byte {
@@ -50,10 +54,10 @@ func TestStatusBuildsRowsSortedAndTagged(t *testing.T) {
 			"HEAD d",
 			"branch refs/heads/topic/no-ticket",
 		}, "\n")),
-		repo + "|gh pr list --state all --limit 200 --json number,state,headRefName,mergedAt": []byte(`[
-			{"number": 10, "state": "OPEN", "headRefName": "swarm/codex-c083fd6d", "mergedAt": null},
-			{"number": 11, "state": "MERGED", "headRefName": "codex/old-branch", "mergedAt": "2026-05-01T12:00:00Z"}
-		]`),
+		prListKey("main"):                                       []byte(`[]`),
+		prListKey("swarm/codex-c083fd6d"):                       []byte(`[{"number": 10, "state": "OPEN", "headRefName": "swarm/codex-c083fd6d", "mergedAt": null}]`),
+		prListKey("codex/old-branch"):                           []byte(`[{"number": 11, "state": "MERGED", "headRefName": "codex/old-branch", "mergedAt": "2026-05-01T12:00:00Z"}]`),
+		prListKey("topic/no-ticket"):                            []byte(`[]`),
 		"/repo|git log -1 --format=%ct":                         ts(0),
 		"/cache/swarm-codex-t_c083fd6d|git log -1 --format=%ct": ts(1),
 		"/cache/swarm-old-t_11111111|git log -1 --format=%ct":   ts(9),
@@ -125,10 +129,9 @@ func TestStatusStaleFilterAndPruneOutput(t *testing.T) {
 				"worktree /cache/none-old",
 				"branch refs/heads/swarm/codex-cccccccc",
 			}, "\n")),
-			"/repo|gh pr list --state all --limit 200 --json number,state,headRefName,mergedAt": []byte(`[
-				{"number": 1, "state": "OPEN", "headRefName": "swarm/codex-aaaaaaaa", "mergedAt": null},
-				{"number": 2, "state": "MERGED", "headRefName": "swarm/codex-bbbbbbbb", "mergedAt": "2026-05-05T11:59:59Z"}
-			]`),
+			prListKey("swarm/codex-aaaaaaaa"):         []byte(`[{"number": 1, "state": "OPEN", "headRefName": "swarm/codex-aaaaaaaa", "mergedAt": null}]`),
+			prListKey("swarm/codex-bbbbbbbb"):         []byte(`[{"number": 2, "state": "MERGED", "headRefName": "swarm/codex-bbbbbbbb", "mergedAt": "2026-05-05T11:59:59Z"}]`),
+			prListKey("swarm/codex-cccccccc"):         []byte(`[]`),
 			"/cache/open|git log -1 --format=%ct":     []byte("1777723200\n"),
 			"/cache/merged|git log -1 --format=%ct":   []byte("1777723200\n"),
 			"/cache/none-old|git log -1 --format=%ct": []byte("1777204800\n"),
@@ -157,7 +160,7 @@ func TestStatusCacheWriteIsOptInAndBestEffort(t *testing.T) {
 			"worktree /repo",
 			"branch refs/heads/main",
 		}, "\n")),
-		"/repo|gh pr list --state all --limit 200 --json number,state,headRefName,mergedAt": []byte(`[]`),
+		prListKey("main"):               []byte(`[]`),
 		"/repo|git log -1 --format=%ct": []byte(fmt.Sprintf("%d\n", now.Unix())),
 	}}
 
@@ -205,6 +208,68 @@ func TestStatusTagsRowsWhenGitHubEnrichmentUnavailable(t *testing.T) {
 	}
 	if !hasTag(rows[0].Tags, "github-unavailable") {
 		t.Fatalf("missing github-unavailable tag: %+v", rows[0])
+	}
+}
+
+func TestStatusLeavesOldOpenPRsOutOfPruneEligible(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	ts := func(ageDays int) []byte {
+		return []byte(fmt.Sprintf("%d\n", now.Add(-time.Duration(ageDays)*24*time.Hour).Unix()))
+	}
+
+	rows, err := Status(context.Background(), Options{
+		RepoDir: "/repo",
+		Now:     now,
+		Runner: fakeRunner{outputs: map[string][]byte{
+			"/repo|git worktree list --porcelain": []byte(strings.Join([]string{
+				"worktree /cache/swarm-codex-t_deadbeef",
+				"branch refs/heads/swarm/codex-deadbeef",
+				"",
+				"worktree /cache/swarm-codex-t_feedface",
+				"branch refs/heads/swarm/codex-feedface",
+			}, "\n")),
+			prListKey("swarm/codex-deadbeef"):                       []byte(`[{"number": 401, "state": "OPEN", "headRefName": "swarm/codex-deadbeef", "mergedAt": null}]`),
+			prListKey("swarm/codex-feedface"):                       []byte(`[]`),
+			"/cache/swarm-codex-t_deadbeef|git log -1 --format=%ct": ts(30),
+			"/cache/swarm-codex-t_feedface|git log -1 --format=%ct": ts(30),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(rows), 2; got != want {
+		t.Fatalf("len(rows) = %d, want %d", got, want)
+	}
+
+	var openRow, staleRow Row
+	for _, row := range rows {
+		switch row.Branch {
+		case "swarm/codex-deadbeef":
+			openRow = row
+		case "swarm/codex-feedface":
+			staleRow = row
+		}
+	}
+
+	if got := openRow.PRState; got != PRStateOpen {
+		t.Fatalf("open row pr_state = %q, want %q", got, PRStateOpen)
+	}
+	if hasTag(openRow.Tags, "stale") {
+		t.Fatalf("open row incorrectly marked stale: %+v", openRow)
+	}
+	if got := staleRow.PRState; got != PRStateNone {
+		t.Fatalf("stale row pr_state = %q, want %q", got, PRStateNone)
+	}
+	if !hasTag(staleRow.Tags, "stale") {
+		t.Fatalf("stale row missing stale tag: %+v", staleRow)
+	}
+
+	pruneEligible := FormatPruneEligible(filterStale(rows))
+	if strings.Contains(pruneEligible, "/cache/swarm-codex-t_deadbeef") {
+		t.Fatalf("prune output incorrectly included open-pr worktree: %q", pruneEligible)
+	}
+	if !strings.Contains(pruneEligible, "/cache/swarm-codex-t_feedface") {
+		t.Fatalf("prune output missing stale worktree: %q", pruneEligible)
 	}
 }
 

@@ -94,14 +94,14 @@ func Status(ctx context.Context, opts Options) ([]Row, error) {
 		return nil, fmt.Errorf("git worktree list: %w", err)
 	}
 	worktrees := parseGitWorktrees(rawWorktrees)
-	prs, githubUnavailable, err := fetchPRs(ctx, opts)
+	prs, err := fetchPRs(ctx, opts, worktrees)
 	if err != nil {
 		return nil, err
 	}
 
 	rows := make([]Row, 0, len(worktrees))
 	for _, wt := range worktrees {
-		row, err := buildRow(ctx, opts, wt, prs, githubUnavailable)
+		row, err := buildRow(ctx, opts, wt, prs)
 		if err != nil {
 			return nil, err
 		}
@@ -147,29 +147,42 @@ func parseGitWorktrees(raw []byte) []gitWorktree {
 	return out
 }
 
-func fetchPRs(ctx context.Context, opts Options) (map[string]prInfo, bool, error) {
-	ghCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	defer cancel()
+func fetchPRs(ctx context.Context, opts Options, worktrees []gitWorktree) (map[string]prInfo, error) {
+	byBranch := make(map[string]prInfo, len(worktrees))
+	seen := make(map[string]struct{}, len(worktrees))
+	for _, wt := range worktrees {
+		if wt.Branch == "" || wt.Branch == "HEAD" {
+			continue
+		}
+		if _, ok := seen[wt.Branch]; ok {
+			continue
+		}
+		seen[wt.Branch] = struct{}{}
 
-	raw, err := opts.Runner.Run(ghCtx, opts.RepoDir, "gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,state,headRefName,mergedAt")
-	if err != nil {
-		// gh is useful enrichment, not a reason to suppress local worktree state.
-		return map[string]prInfo{}, true, nil
-	}
-	var prs []prInfo
-	if err := json.Unmarshal(raw, &prs); err != nil {
-		return nil, false, fmt.Errorf("parse gh pr list: %w", err)
-	}
-	byBranch := make(map[string]prInfo, len(prs))
-	for _, pr := range prs {
-		if pr.HeadRefName != "" {
-			byBranch[pr.HeadRefName] = pr
+		ghCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		raw, err := opts.Runner.Run(ghCtx, opts.RepoDir, "gh", "pr", "list", "--state", "all", "--head", wt.Branch, "--json", "number,state,headRefName,mergedAt")
+		cancel()
+		if err != nil {
+			// gh is useful enrichment, not a reason to suppress local worktree state.
+			byBranch[wt.Branch] = prInfo{State: PRStateUnknown, HeadRefName: wt.Branch}
+			continue
+		}
+
+		var prs []prInfo
+		if err := json.Unmarshal(raw, &prs); err != nil {
+			return nil, fmt.Errorf("parse gh pr list for branch %s: %w", wt.Branch, err)
+		}
+		for _, pr := range prs {
+			if pr.HeadRefName == wt.Branch {
+				byBranch[wt.Branch] = pr
+				break
+			}
 		}
 	}
-	return byBranch, false, nil
+	return byBranch, nil
 }
 
-func buildRow(ctx context.Context, opts Options, wt gitWorktree, prs map[string]prInfo, githubUnavailable bool) (Row, error) {
+func buildRow(ctx context.Context, opts Options, wt gitWorktree, prs map[string]prInfo) (Row, error) {
 	rawTS, err := opts.Runner.Run(ctx, wt.Path, "git", "log", "-1", "--format=%ct")
 	if err != nil {
 		return Row{}, fmt.Errorf("git log %s: %w", wt.Path, err)
@@ -182,9 +195,6 @@ func buildRow(ctx context.Context, opts Options, wt gitWorktree, prs map[string]
 
 	pr := prs[wt.Branch]
 	prState := normalizePRState(pr.State)
-	if githubUnavailable {
-		prState = PRStateUnknown
-	}
 	ageDays := int(opts.Now.Sub(last) / (24 * time.Hour))
 	if ageDays < 0 {
 		ageDays = 0
@@ -202,7 +212,7 @@ func buildRow(ctx context.Context, opts Options, wt gitWorktree, prs map[string]
 		MergedAt:     normalizedOptionalTimeString(pr.MergedAt),
 	}
 	row.Tags = tagsFor(row, opts.Now)
-	if githubUnavailable {
+	if row.PRState == PRStateUnknown {
 		row.Tags = append(row.Tags, "github-unavailable")
 	}
 	return row, nil
