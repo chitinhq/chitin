@@ -53,15 +53,19 @@ def detect_stale_beliefs(
 
     conn = _ro(xs_db)
     try:
-        rows = conn.execute(
-            """
-            SELECT id, agent, subject, claim, ts_recorded
-            FROM beliefs
-            WHERE ts_recorded < ?
-            ORDER BY ts_recorded ASC
-            """,
-            (age_threshold,),
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, agent, subject, claim, ts_recorded
+                FROM beliefs
+                WHERE ts_recorded < ?
+                ORDER BY ts_recorded ASC
+                """,
+                (age_threshold,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # beliefs table not initialized yet — degrade to zero findings.
+            rows = []
     finally:
         conn.close()
 
@@ -105,13 +109,16 @@ def detect_belief_without_evidence(
     xs = _ro(xs_db)
     chain = _ro(chain_db)
     try:
-        beliefs = xs.execute(
-            """
-            SELECT id, agent, subject, claim
-            FROM beliefs
-            WHERE subject LIKE 'capability.%'
-            """
-        ).fetchall()
+        try:
+            beliefs = xs.execute(
+                """
+                SELECT id, agent, subject, claim
+                FROM beliefs
+                WHERE subject LIKE 'capability.%'
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            beliefs = []
     finally:
         xs.close()
 
@@ -173,10 +180,13 @@ def detect_capability_without_belief(
     chain = _ro(chain_db)
     try:
         # Build {agent: set(skills)} from card beliefs.
-        cap_rows = xs.execute(
-            "SELECT agent, subject FROM beliefs WHERE subject LIKE 'capability.%'"
-        ).fetchall()
         agent_skills: dict[str, set[str]] = {}
+        try:
+            cap_rows = xs.execute(
+                "SELECT agent, subject FROM beliefs WHERE subject LIKE 'capability.%'"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            cap_rows = []
         for row in cap_rows:
             agent_skills.setdefault(row["agent"], set()).add(
                 row["subject"].removeprefix("capability.").lower()

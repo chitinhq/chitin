@@ -17,6 +17,7 @@ from argus.beliefs import (
     ingest_wiki,
 )
 from argus.cross_source_db import init_cross_source_db
+from argus.findings import collect_findings, render_findings_json
 
 
 def cmd_index(args) -> int:
@@ -212,6 +213,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        default=str(Path.home() / ".argus" / "cross_source.db"),
                        help="Cross-source SQLite index path")
 
+    # findings subcommand (Slice 5: Hermes standup-fold contract)
+    fnd_p = subparsers.add_parser(
+        "findings",
+        help="Emit JSON-encoded findings since <ts> for downstream Hermes fold",
+    )
+    fnd_p.add_argument("--since", type=int, default=0,
+                       help="Unix ts; only emit findings at or after this time")
+    fnd_p.add_argument("--xs-db",
+                       default=str(Path.home() / ".argus" / "cross_source.db"),
+                       help="Cross-source SQLite index path")
+    fnd_p.add_argument("--indent", type=int, default=None,
+                       help="Pretty-print JSON with this indent (default: compact)")
+    fnd_p.add_argument("--limit", type=int, default=None,
+                       help="Cap output to top-N findings (after severity sort)")
+
     # ingest-beliefs subcommand (Slice 4)
     inb_p = subparsers.add_parser(
         "ingest-beliefs",
@@ -250,8 +266,21 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ingest_git(args)
     elif args.cmd == "ingest-beliefs":
         return cmd_ingest_beliefs(args)
+    elif args.cmd == "findings":
+        return cmd_findings(args)
 
     return 1
+
+
+def cmd_findings(args) -> int:
+    """Emit structured findings JSON for Hermes' standup-fold consumer."""
+    chain_db = Path(args.db_path)
+    xs_db = Path(args.xs_db)
+    findings = collect_findings(chain_db, xs_db, since_ts=args.since)
+    if args.limit is not None:
+        findings = findings[: args.limit]
+    print(render_findings_json(findings, indent=args.indent))
+    return 0
 
 
 def cmd_ingest_beliefs(args) -> int:
