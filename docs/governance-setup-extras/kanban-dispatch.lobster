@@ -367,7 +367,7 @@ steps:
       printf '%s' "$WORKER_RESULT" > "$RESULT_FILE"
 
       # Return appropriate exit code based on worker result
-      if [[ "$WORKER_STATUS" != "completed" ]]; then
+      if [[ "$WORKER_STATUS" != "completed" && "$WORKER_STATUS" != "completed_no_commit" ]]; then
         echo "spawn_worker: worker failed with status=$WORKER_STATUS" >&2
         exit 1
       fi
@@ -411,10 +411,21 @@ steps:
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
-          failed)
-            MSG="🦞 ${ticket_id}: worker failed: $WORKER_ERROR"
+          completed_no_commit)
+            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id})
+            MSG=$(printf '%s' "$REPORT" | jq -r '.message')
+            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason')
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "worker failed" --author clawta 2>/dev/null || true
+            kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
+            openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+            exit 0
+            ;;
+          failed)
+            REPORT=$(printf '%s' "$WORKER_RESULT" | python3 "$HOME/.openclaw/workflows/worker_failure_report.py" --ticket-id ${ticket_id})
+            MSG=$(printf '%s' "$REPORT" | jq -r '.message')
+            BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason')
+            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
