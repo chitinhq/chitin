@@ -189,6 +189,13 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_source_checkpoints_source ON source_checkpoints(source)",
         ],
     ),
+    (
+        9,
+        "events_payload_json_for_upgraded_log_ingest",
+        [
+            "ALTER TABLE events ADD COLUMN payload_json TEXT",
+        ],
+    ),
 ]
 
 

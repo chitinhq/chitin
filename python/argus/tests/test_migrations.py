@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from argus import migrations
-from argus.indexer import init_db
+from argus.indexer import init_db, insert_event
 
 
 def _legacy_conn(db: Path) -> sqlite3.Connection:
@@ -41,6 +41,16 @@ def _legacy_conn(db: Path) -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def _mark_migrations_applied(conn: sqlite3.Connection, versions: range) -> None:
+    migrations._ensure_migrations_table(conn)
+    for version in versions:
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_ts) VALUES (?, ?, ?)",
+            (version, f"legacy_{version}", 0),
+        )
+    conn.commit()
 
 
 def test_migrations_apply_idempotently():
@@ -98,6 +108,34 @@ def test_log_columns_and_checkpoint_table_added():
         assert {"kind", "subject", "source_ref"}.issubset(event_cols)
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "source_checkpoints" in tables
+        conn.close()
+
+
+def test_upgrade_existing_slice_db_can_insert_payload_json_events():
+    """Existing DBs with migration 1 recorded but no payload_json can ingest logs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "i.db"
+        conn = _legacy_conn(db)
+        conn.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'chain'")
+        _mark_migrations_applied(conn, range(1, 7))
+
+        migrations.apply_pending(conn)
+
+        event_cols = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        assert {"kind", "subject", "source_ref", "payload_json"}.issubset(event_cols)
+        assert insert_event(
+            conn,
+            source="hermes",
+            kind="hermes_standup",
+            ts="2026-05-13T08:00:00+00:00",
+            source_ref="/tmp/hermes.log:1",
+            subject="t_deadbeef",
+            payload={"raw": "2026-05-13T08:00:00Z standup"},
+        )
+        row = conn.execute(
+            "SELECT payload_json FROM events WHERE source = 'hermes'"
+        ).fetchone()
+        assert row["payload_json"] == '{"raw": "2026-05-13T08:00:00Z standup"}'
         conn.close()
 
 

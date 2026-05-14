@@ -32,6 +32,47 @@ def _ok_result(kind: str | None, subject: str | None = None) -> PatternResult:
     return PatternResult(matched=True, kind=kind, subject=subject, payload={})
 
 
+def test_ingest_log_file_empty_boundary_records_checkpoint(monkeypatch):
+    monkeypatch.setattr("argus.logs._extract_via_qwen", lambda *args, **kwargs: _ok_result("hermes_standup"))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        db_path = root / "index.db"
+        log_path = root / "empty.log"
+        log_path.write_text("")
+
+        conn = init_db(db_path)
+        migrations.apply_pending(conn)
+        inserted, unparsed = ingest_log_file(conn, source="hermes", file_path=log_path)
+        assert inserted == 0
+        assert unparsed == 0
+        checkpoint = migrations.get_checkpoint(conn, f"hermes:{log_path}")
+        assert checkpoint is not None
+        assert checkpoint["offset"] == 0
+        conn.close()
+
+
+def test_ingest_log_file_error_boundary_records_unparsed(monkeypatch):
+    monkeypatch.setattr(
+        "argus.logs._extract_via_qwen",
+        lambda *args, **kwargs: PatternResult(matched=False, unparsed_reason="error:test"),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        db_path = root / "index.db"
+        log_path = root / "error.log"
+        log_path.write_text("2026-05-13T08:00:00Z workflow failed\n")
+
+        conn = init_db(db_path)
+        migrations.apply_pending(conn)
+        inserted, unparsed = ingest_log_file(conn, source="openclaw", file_path=log_path)
+        assert inserted == 0
+        assert unparsed == 1
+        row = conn.execute("SELECT kind, reason FROM events WHERE source = 'openclaw'").fetchone()
+        assert row["kind"] == "unparsed"
+        assert row["reason"] == "error:test"
+        conn.close()
+
+
 def test_ingest_log_file_reopens_after_rotation(monkeypatch):
     monkeypatch.setattr("argus.logs._extract_via_qwen", lambda *args, **kwargs: _ok_result("hermes_standup"))
     with tempfile.TemporaryDirectory() as tmpdir:
