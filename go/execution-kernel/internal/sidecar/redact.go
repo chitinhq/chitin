@@ -71,12 +71,35 @@ func redactValue(key string, value any) any {
 }
 
 func sensitiveKey(key string) bool {
+	// Match the raw key and a snake-cased form of it: the patterns are
+	// snake/kebab-oriented, so without this camelCase keys like authToken,
+	// sessionId, or cookieValue would slip through unredacted.
+	normalized := camelToSnake(key)
 	for _, pattern := range sensitiveKeyPatterns {
-		if pattern.MatchString(key) {
+		if pattern.MatchString(key) || pattern.MatchString(normalized) {
 			return true
 		}
 	}
 	return false
+}
+
+// camelToSnake inserts an underscore before each uppercase rune that follows
+// a lowercase rune or digit, turning authToken -> auth_Token so the
+// snake/kebab sensitiveKeyPatterns can match it. Acronym runs (APIKey) are
+// left intact; those already match the patterns in their raw form.
+func camelToSnake(s string) string {
+	var b strings.Builder
+	var prev rune
+	for i, r := range s {
+		isUpper := r >= 'A' && r <= 'Z'
+		prevLowerOrDigit := (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9')
+		if i > 0 && isUpper && prevLowerOrDigit {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+	return b.String()
 }
 
 func redactText(s string) string {

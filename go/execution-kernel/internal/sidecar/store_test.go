@@ -83,6 +83,46 @@ func TestStorePrunesExpiredRows(t *testing.T) {
 	}
 }
 
+// TestStorePruneRemovesOrphanAliases covers the Copilot/Clawta finding:
+// pruneExpired deleted expired event_blobs but left their event_aliases
+// behind, so aliases accumulated forever and resolved to empty events.
+func TestStorePruneRemovesOrphanAliases(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sidecar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// An expired blob plus its alias.
+	oldTS := time.Now().UTC().Add(-(RetentionDays + 1) * 24 * time.Hour).Unix()
+	if _, err := store.db.Exec(
+		`INSERT INTO event_blobs (event_id, blob_type, blob, redacted, ts) VALUES (?, ?, ?, 0, ?)`,
+		"evt-old", "prompt", []byte(`"old"`), oldTS,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutAlias("toolu-old", "evt-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutAlias("toolu-new", "evt-new"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh Put inserts evt-new's blob, then prunes: the expired blob and
+	// its now-orphaned alias go; the live alias stays.
+	if err := store.Put("evt-new", "prompt", []byte(`"new"`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// ResolveEventID returns the id itself when the alias is gone.
+	if got, _ := store.ResolveEventID("toolu-old"); got != "toolu-old" {
+		t.Fatalf("orphan alias not pruned: resolved to %q", got)
+	}
+	if got, _ := store.ResolveEventID("toolu-new"); got != "evt-new" {
+		t.Fatalf("live alias was lost: resolved to %q", got)
+	}
+}
+
 func TestDecodeBlob(t *testing.T) {
 	if got := DecodeBlob([]byte(`{"ok":true}`)); got == nil {
 		t.Fatal("expected decoded json object")

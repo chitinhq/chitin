@@ -89,15 +89,12 @@ func (s *Store) Put(eventID, blobType string, body []byte) error {
 	if _, ok := validBlobTypes[blobType]; !ok {
 		return ErrInvalidBlobType
 	}
-	if err := s.pruneExpired(time.Now().UTC()); err != nil {
-		return err
-	}
 	redactedBody, changed := RedactBytes(body)
 	cappedBody, truncated := capBlob(redactedBody)
 	if truncated {
 		changed = true
 	}
-	_, err := s.db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT INTO event_blobs (event_id, blob_type, blob, redacted, ts)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(event_id, blob_type) DO UPDATE SET
@@ -105,8 +102,13 @@ func (s *Store) Put(eventID, blobType string, body []byte) error {
 		   redacted = excluded.redacted,
 		   ts = excluded.ts`,
 		eventID, blobType, cappedBody, changed, time.Now().UTC().Unix(),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	// Prune *after* the insert: orphan-alias pruning keys off event_blobs,
+	// and capturePreToolSidecar writes the alias before this first blob —
+	// pruning first would delete that fresh alias before its blob landed.
+	return s.pruneExpired(time.Now().UTC())
 }
 
 func (s *Store) Get(eventID, blobType string) ([]byte, error) {
@@ -190,7 +192,16 @@ func (s *Store) ResolveEventID(id string) (string, error) {
 
 func (s *Store) pruneExpired(now time.Time) error {
 	cutoff := now.Add(-RetentionDays * 24 * time.Hour).Unix()
-	_, err := s.db.Exec(`DELETE FROM event_blobs WHERE ts < ?`, cutoff)
+	if _, err := s.db.Exec(`DELETE FROM event_blobs WHERE ts < ?`, cutoff); err != nil {
+		return err
+	}
+	// event_aliases rows have no timestamp of their own, so they cannot age
+	// out directly. Drop any alias whose event_id no longer has a blob —
+	// otherwise aliases accumulate forever and resolve to empty events.
+	_, err := s.db.Exec(
+		`DELETE FROM event_aliases
+		 WHERE event_id NOT IN (SELECT DISTINCT event_id FROM event_blobs)`,
+	)
 	return err
 }
 

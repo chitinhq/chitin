@@ -392,6 +392,56 @@ func TestEvalHookStdin_CapturesSidecarBlobsAcrossPreAndPostToolUse(t *testing.T)
 	}
 }
 
+// TestEvalHookStdin_PostToolUseCapturesErrorAsToolOutput covers the Copilot
+// finding: a failed tool call carries its failure in `error`, not
+// `tool_response`, so capturing only tool_response left failures with a
+// blank tool_output sidecar.
+func TestEvalHookStdin_PostToolUseCapturesErrorAsToolOutput(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, stderr, code := runHookCall(t, env, map[string]any{
+		"session_id":  "sess-err",
+		"tool_use_id": "toolu_err_1",
+		"tool_name":   "Bash",
+		"tool_input":  map[string]any{"command": "echo fail"},
+		"prompt":      "run a command that fails",
+	}, "")
+	if code != 0 {
+		t.Fatalf("pretool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	stdout, stderr, code = runHookCall(t, env, map[string]any{
+		"session_id":      "sess-err",
+		"hook_event_name": "PostToolUse",
+		"tool_use_id":     "toolu_err_1",
+		"tool_name":       "Bash",
+		"error":           "command failed: exit status 1",
+	}, "")
+	if code != 0 {
+		t.Fatalf("posttool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	store, err := sidecar.Open(filepath.Join(env.chitin, "sidecar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	eventID, err := store.ResolveEventID("toolu_err_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolOutput, err := store.Get(eventID, "tool_output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolOutput == nil {
+		t.Fatal("tool_output blob missing for failed tool call (error field not captured)")
+	}
+	if !strings.Contains(string(toolOutput), "command failed: exit status 1") {
+		t.Fatalf("tool_output missing error payload: %s", toolOutput)
+	}
+}
+
 func TestEvalHookStdin_HermesExecuteCodeSubprocessRmRfDenied(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	stdout, _, code := runHookCallAsAgent(t, env, "hermes", map[string]any{

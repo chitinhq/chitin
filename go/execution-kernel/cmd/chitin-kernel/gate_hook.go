@@ -690,7 +690,14 @@ func handlePostToolUse(rawPayload map[string]any, payload claudecode.HookInput, 
 		return claudecode.ExitAllow
 	}
 
+	// A successful tool call carries its result in tool_response; a failed
+	// one carries the failure in `error` instead. Capture whichever is
+	// present as tool_output so the sidecar is never blank for failures.
 	if body, ok := marshalField(rawPayload["tool_response"]); ok {
+		if err := store.Put(eventID, "tool_output", body); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
+		}
+	} else if body, ok := marshalField(rawPayload["error"]); ok {
 		if err := store.Put(eventID, "tool_output", body); err != nil {
 			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
 		}
@@ -725,6 +732,10 @@ func capturePreToolSidecar(cdir string, rawPayload map[string]any, payload claud
 			writeJSONLine(errOut, map[string]string{"warning": "sidecar_alias_failed", "message": err.Error()})
 		}
 	}
+	// Slice 1: the "prompt" blob intentionally stores the full PreToolUse
+	// hook payload (tool_name, tool_input, prompt, transcript_path, ...),
+	// not just an isolated prompt string. `chitin chain blobs` consumers
+	// should treat blob_type=prompt as the raw hook payload for now.
 	if raw, ok := marshalField(rawPayload); ok {
 		if err := store.Put(eventID, "prompt", raw); err != nil {
 			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
