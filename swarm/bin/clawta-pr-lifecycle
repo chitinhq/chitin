@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,10 @@ REVIEW_MARKER_RE = re.compile(r"<!--\s*clawta-reviewer:v1(?:\s+head=([0-9a-f]{7,
 LIFECYCLE_MARKER = "<!-- clawta-lifecycle:v1"
 TICKET_RE = re.compile(r"t_[a-f0-9]{8}")
 VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(APPROVE|REQUEST_CHANGES|COMMENT)", re.I)
+CLAWTA_DECISIONS = Path.home() / ".openclaw" / "workflows" / "clawta_decisions.py"
+REQUEST_CHANGES_TIMEOUT_HOURS = int(
+    os.environ.get("CLAWTA_REQUEST_CHANGES_TIMEOUT_HOURS", "12")
+)
 
 
 def log(msg: str) -> None:
@@ -149,8 +154,53 @@ def latest_review(comments_: list[dict[str, Any]]) -> dict[str, str] | None:
             continue
         verdict_match = VERDICT_RE.search(body)
         verdict = verdict_match.group(1).upper() if verdict_match else "COMMENT"
-        latest = {"body": body, "head": marker.group(1) or "", "verdict": verdict}
+        latest = {
+            "body": body,
+            "head": marker.group(1) or "",
+            "verdict": verdict,
+            "created_at": str(c.get("created_at") or ""),
+        }
     return latest
+
+
+def parse_github_timestamp(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def request_changes_stale(review: dict[str, str] | None) -> bool:
+    if review is None or review.get("verdict") != "REQUEST_CHANGES":
+        return False
+    created_at = parse_github_timestamp(review.get("created_at"))
+    if created_at is None:
+        return False
+    return created_at <= datetime.now(timezone.utc) - timedelta(
+        hours=REQUEST_CHANGES_TIMEOUT_HOURS
+    )
+
+
+def mark_routing_outcome(ticket_id: str | None, outcome: str, failure_kind: str = "") -> None:
+    if not ticket_id:
+        return
+    run(
+        [
+            sys.executable,
+            str(CLAWTA_DECISIONS),
+            "mark-outcome",
+            "--ticket-id",
+            ticket_id,
+            "--outcome",
+            outcome,
+            "--failure-kind",
+            failure_kind,
+        ],
+        timeout=30,
+        check=False,
+    )
 
 
 def has_lifecycle_marker(comments_: list[dict[str, Any]], kind: str, head: str) -> bool:
@@ -319,6 +369,7 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
         "gate_status": gate_status,          # NEW
         "gate_diagnostic": gate_diagnostic,  # NEW
         "action": action,
+        "request_changes_stale": request_changes_stale(review),
     }
 
 
@@ -470,6 +521,7 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
             elif item["action"] == "regression-gate-fail":
                 # Invariant broken on this head. Comment + reassign ticket; no merge.
                 post_regression_gate_comment(item, apply, request_changes=True)
+                mark_routing_outcome(item.get("ticket"), "failure", "ci_fail")
                 assign_ticket_to_operator(item, "red", apply)
                 item["applied"] = "gate-fail" if apply else "would-gate-fail"
             elif item["action"] == "regression-gate-error":
@@ -483,6 +535,12 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
                     item["applied"] = f"{item['applied']}+{escalation_applied}"
                 else:
                     item["applied"] = escalation_applied
+            if item.get("checks") == "fail":
+                mark_routing_outcome(item.get("ticket"), "failure", "ci_fail")
+            elif item.get("request_changes_stale"):
+                mark_routing_outcome(
+                    item.get("ticket"), "failure", "request_changes_timeout"
+                )
         except Exception as e:
             item["applied"] = "error"
             item["error"] = str(e)[-500:]

@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "_pick_driver.py"
+DECISIONS_SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "clawta_decisions.py"
 
 
 CARDS = {
@@ -221,6 +222,84 @@ class PickDriverTests(unittest.TestCase):
         result = self.run_pick_driver(classify, CLAWTA_EXPLORATION_PERCENT="0")
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
+
+    def test_recent_same_shape_failures_demote_lane_for_fifth_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp) / "cards"
+            cards_dir.mkdir()
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            db = Path(tmp) / "clawta_decisions.db"
+            for idx in range(4):
+                ticket_id = f"t_fail{idx:04d}"
+                record = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "record",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--driver",
+                        "copilot",
+                        "--model",
+                        "gpt-4.1",
+                        "--shape-bucket",
+                        "low|python",
+                        "--no-chain",
+                    ],
+                    input="copilot selected for low python work",
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(record.returncode, 0, msg=record.stderr)
+                outcome = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "mark-outcome",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--outcome",
+                        "failure",
+                        "--failure-kind",
+                        "empty_branch",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(outcome.returncode, 0, msg=outcome.stderr)
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "deterministic",
+                "CLAWTA_EXPLORATION_PERCENT": "0",
+                "CLAWTA_DECISIONS_DB": str(db),
+                "CLAWTA_FAILURE_FILTER_THRESHOLD": "3",
+                "CLAWTA_FAILURE_FILTER_WINDOW_HOURS": "6",
+                "CLAWTA_FAILURE_FILTER_LOOKBACK_HOURS": "24",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            payload = json.loads(result.stdout)
+
+        self.assertEqual(payload["shape_bucket"], "low|python")
+        self.assertEqual(payload["driver"], "gemini")
+        self.assertIn("failure-aware demotion removed recent same-shape failures", payload["reasoning"])
 
 
 if __name__ == "__main__":
