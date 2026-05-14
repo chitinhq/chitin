@@ -17,7 +17,7 @@ func fixturePath(t *testing.T) string {
 	t.Helper()
 	// go test CWD = package dir (internal/ingest). Climb 4 levels to repo root.
 	return filepath.Join("..", "..", "..", "..",
-		"docs", "observations", "fixtures",
+		"docs", "archive", "observations", "fixtures",
 		"2026-04-20-openclaw-otel-capture", "sp1",
 		"synthesized-model-usage.pb")
 }

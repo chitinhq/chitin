@@ -1,7 +1,7 @@
 // Package ingest — openclaw.go is the openclaw-dialect translator.
 //
 // Pinned to @openclaw/diagnostics-otel@2026.4.15-beta.1 (see
-// docs/observations/2026-04-20-openclaw-otel-capture.md for the source
+// docs/archive/observations/2026-04-20-openclaw-otel-capture.md for the source
 // inventory that defines this mapping). A future openclaw version may
 // add attrs or rename fields; SP-2 will re-verify.
 package ingest

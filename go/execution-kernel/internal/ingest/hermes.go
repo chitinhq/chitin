@@ -7,7 +7,7 @@
 //
 // The source-side plugin (~/chitin-sink/ in this repo's first real capture,
 // or ~/.hermes/chitin-sink/ per the design spec — Phase A ships the former,
-// see docs/observations/2026-04-21-hermes-post-api-request-capture.md)
+// see docs/archive/observations/2026-04-21-hermes-post-api-request-capture.md)
 // dumps each hook event as one JSON line to a daily-rotated file. This
 // translator parses that JSONL; v1 maps only post_api_request to ModelTurn
 // and quarantines every other event_type with Reason="v1-scope".
@@ -125,7 +125,7 @@ func ParseHermesEvents(raw []byte) ([]ModelTurn, []Quarantine, error) {
 // response_model (→ ModelName), provider, api_duration, cache_read_tokens.
 //
 // Token-key tolerance (matches the real 2026-04-21 capture, see
-// docs/observations/2026-04-21-hermes-post-api-request-capture.md):
+// docs/archive/observations/2026-04-21-hermes-post-api-request-capture.md):
 //   - prompt_tokens preferred; input_tokens fallback.
 //   - completion_tokens preferred; output_tokens fallback. (Real hermes emits
 //     output_tokens only — so in practice the fallback always wins — but
@@ -433,7 +433,7 @@ func hermesSyntheticTraceID(sessionID string) string {
 // to 1 across turns within a session (8 distinct calls share call=1 in one
 // session). Timestamps are microsecond-resolution and unique per post_api_request
 // line, so they are the stable disambiguator. See
-// docs/observations/2026-04-21-hermes-post-api-request-capture.md.
+// docs/archive/observations/2026-04-21-hermes-post-api-request-capture.md.
 func hermesSyntheticSpanID(sessionID, ts string) string {
 	key := "hermes-span:" + sessionID + ":" + ts
 	sum := sha256.Sum256([]byte(key))
