@@ -36,7 +36,45 @@ import json
 import subprocess
 import sys
 import os
-from pathlib import Path
+
+
+def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
+    """Build a worker command line while keeping long prompts out of argv.
+
+    Returns (argv, stdin_text). The caller is responsible for feeding
+    stdin_text to the subprocess when non-None.
+    """
+    driver = config.get("driver", "unknown")
+    model = config.get("model", "")
+    prompt = config.get("prompt", "")
+    args_template = config.get("args", [])
+
+    argv: list[str] = [config.get("cmd", "")]
+    stdin_text: str | None = None
+
+    for arg in args_template:
+        if arg == "{model}":
+            argv.append(model)
+            continue
+
+        if arg == "{prompt}":
+            if driver in {"codex", "copilot"}:
+                stdin_text = prompt
+                continue
+            if driver == "gemini":
+                argv.append("")
+                stdin_text = prompt
+                continue
+            argv.append(prompt)
+            continue
+
+        argv.append(arg)
+
+    if prompt and driver == "gemini" and "{prompt}" not in args_template:
+        argv.extend(["-p", ""])
+        stdin_text = prompt
+
+    return argv, stdin_text
 
 def main():
     try:
@@ -46,7 +84,6 @@ def main():
 
         driver = config.get("driver", "unknown")
         cmd = config.get("cmd", "")
-        args = config.get("args", [])
         worktree = config.get("worktree", "")
         env_vars = config.get("env", {})
 
@@ -76,8 +113,9 @@ def main():
             }))
             return 1
 
-        # Spawn worker process
-        full_cmd = [cmd] + args
+        # Spawn worker process. Driver-specific prompt handling keeps
+        # large ticket bodies off argv where possible.
+        full_cmd, stdin_text = prepare_worker_command(config)
         try:
             result = subprocess.run(
                 full_cmd,
@@ -85,6 +123,7 @@ def main():
                 env=env,
                 capture_output=True,
                 text=True,
+                input=stdin_text,
                 timeout=3600  # 1 hour timeout, same as before
             )
 

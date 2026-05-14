@@ -73,6 +73,41 @@ class FixDispatcherTests(unittest.TestCase):
             calls,
         )
 
+    def test_dispatch_worker_pipes_prompt_over_stdin_instead_of_argv(self):
+        module = load_module()
+        popen_calls = []
+        stdin_payloads = []
+
+        class FakePopen:
+            def __init__(self, cmd, **kwargs):
+                popen_calls.append((cmd, kwargs))
+                handle = kwargs["stdin"]
+                handle.seek(0)
+                stdin_payloads.append(handle.read())
+                self.pid = 4321
+
+        pr = {"number": 77, "title": "Fix lint", "headRefName": "swarm/codex-fix", "url": "https://example/pr/77"}
+        review = "Review body with actionable changes."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp) / "pr-77"
+            worktree.mkdir()
+            with mock.patch.object(module, "WORKTREE_ROOT", Path(tmp)), \
+                 mock.patch.object(module, "ensure_worktree", return_value=worktree), \
+                 mock.patch.object(module.subprocess, "Popen", FakePopen):
+                module.dispatch_worker(pr, review, dry_run=False)
+
+        self.assertEqual(len(popen_calls), 1)
+        cmd, kwargs = popen_calls[0]
+        self.assertEqual(
+            cmd,
+            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", module.CODEX_MODEL],
+        )
+        self.assertNotIn(review, cmd)
+        stdin_text = stdin_payloads[0]
+        self.assertIn("Review comment:", stdin_text)
+        self.assertIn(review, stdin_text)
+
 
 if __name__ == "__main__":
     unittest.main()

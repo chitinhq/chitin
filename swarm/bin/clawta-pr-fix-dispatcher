@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -181,13 +182,20 @@ def dispatch_worker(pr: dict[str, Any], review_body: str, dry_run: bool) -> str:
     wt = ensure_worktree(branch, pr_number)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as out:
+        prompt_file = tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False)
+        prompt_file.write(prompt)
+        prompt_file.flush()
+        prompt_file.seek(0)
         proc = subprocess.Popen(
-            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", CODEX_MODEL, prompt],
+            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", CODEX_MODEL],
             cwd=str(wt),
+            stdin=prompt_file,
             stdout=out,
             stderr=out,
             start_new_session=True,
         )
+    os.unlink(prompt_file.name)
+    prompt_file.close()
     log(f"dispatched codex fix worker for PR #{pr_number} pid={proc.pid} log={log_path}")
     return str(log_path)
 

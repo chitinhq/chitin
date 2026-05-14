@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -49,16 +50,14 @@ func cmdDriveCopilot(args []string) int {
 		return 0
 	}
 
-	var prompt string
-	if fs.NArg() > 0 {
-		prompt = strings.Join(fs.Args(), " ")
-	} else if !*interactive {
-		fmt.Fprintln(os.Stderr, "error: prompt required unless --interactive")
+	prompt, err := resolveCopilotPrompt(fs.Args(), *interactive, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
 
 	ctx := context.Background()
-	err := copilot.Run(ctx, prompt, copilot.RunOpts{
+	err = copilot.Run(ctx, prompt, copilot.RunOpts{
 		Cwd:         *cwd,
 		Interactive: *interactive,
 		Verbose:     *verbose,
@@ -69,4 +68,22 @@ func cmdDriveCopilot(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func resolveCopilotPrompt(args []string, interactive bool, stdin io.Reader) (string, error) {
+	if len(args) > 0 {
+		return strings.Join(args, " "), nil
+	}
+	if interactive {
+		return "", nil
+	}
+
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return "", fmt.Errorf("prompt required unless --interactive")
+	}
+	return string(data), nil
 }

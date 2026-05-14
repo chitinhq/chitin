@@ -201,8 +201,9 @@ steps:
   #
   # Reads ~/.openclaw/data/agent-cards/<driver>.json and honors the
   # model selected by _pick_driver.py (complexity-aware and ELO-ready).
-  # substitutes {model} and {prompt} into card.invocation.args, execs
-  # the leaf CLI. The exec is gated by chitin under driver=clawta (the
+  # substitutes {model} into card.invocation.args and passes the full
+  # prompt via stdin inside the subprocess helper so long ticket bodies
+  # stay out of argv / ps output. The leaf CLI exec is gated by chitin under driver=clawta (the
   # spawning surface); the leaf CLI's own PreToolUse/BeforeTool hook
   # handles inner-hop chain events with driver=<cli>.
   #
@@ -311,11 +312,9 @@ steps:
         exit 1
       fi
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
-      ARGS_JSON=$(jq -c --arg model "$MODEL" --arg prompt "$PROMPT" \
-        '.invocation.args | map(if . == "{model}" then $model elif . == "{prompt}" then $prompt else . end)' \
+      ARGS_JSON=$(jq -c --arg model "$MODEL" \
+        '.invocation.args | map(if . == "{model}" then $model else . end)' \
         "$CARD_PATH")
-      # NUL-delimit so multi-line prompts survive intact; -r would split on \n.
-      mapfile -d '' -t ARGV < <(echo "$ARGS_JSON" | jq -j '.[] | . + "\u0000"')
       # Per-dispatch envelope: each worker gets its own spent_calls
       # counter. Without this, the worker inherits the parent's
       # CHITIN_BUDGET_ENVELOPE (which beats the ~/.chitin/current-envelope
@@ -323,7 +322,8 @@ steps:
       # agent dispatched under the same parent — one cap hit locks
       # whichever agent calls next.
       NEW_ENV=$(chitin-kernel envelope create --calls=10000 --bytes=33554432 --usd=2.0)
-      echo "spawn_worker: spawning $CMD ${ARGV[*]} (envelope=$NEW_ENV)" >&2
+      PROMPT_BYTES=$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')
+      echo "spawn_worker: spawning driver=$DRIVER model=$MODEL cmd=$CMD prompt_bytes=$PROMPT_BYTES envelope=$NEW_ENV" >&2
 
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
@@ -334,6 +334,7 @@ steps:
         --arg worktree "$WORKTREE_DIR" \
         --arg branch "$BRANCH" \
         --arg cmd "$CMD" \
+        --arg prompt "$PROMPT" \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
         '{
           driver: $driver,
@@ -341,6 +342,7 @@ steps:
           worktree: $worktree,
           branch: $branch,
           cmd: $cmd,
+          prompt: $prompt,
           args: $args,
           env: {
             "CHITIN_DRIVER": "clawta",
