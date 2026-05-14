@@ -167,12 +167,14 @@ class StaleWatchdogTests(unittest.TestCase):
             ), mock.patch.object(
                 module.time, "time", return_value=now
             ):
-                checked, stale = module.find_stale_candidates(now=now)
+                checked, retried, escalated = module.find_stale_candidates(now=now)
 
         self.assertEqual(len(checked), 4)
-        self.assertEqual([item.id for item in stale], ["t_stale"])
-        self.assertEqual(stale[0].quiet_seconds, 1300)
-        self.assertIn("stale in_progress without PR or active worker", stale[0].reason)
+        # t_stale is a silent death with no prior failures → auto-retry
+        all_stale = retried + escalated
+        self.assertEqual([item.id for item in all_stale], ["t_stale"])
+        self.assertEqual(all_stale[0].quiet_seconds, 1300)
+        self.assertIn("stale in_progress without PR or active worker", all_stale[0].reason)
 
     def test_blocks_assigns_and_comments(self) -> None:
         module = load_module(STALE_WATCHDOG, "clawta_stale_watchdog_apply")

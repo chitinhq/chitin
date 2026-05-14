@@ -183,6 +183,9 @@ case "$cmd" in
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Unblocked at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
 
+    # Reset consecutive_failures — ticket was blocked and is now being re-dispatched
+    sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+
     # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
       sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
@@ -233,6 +236,8 @@ case "$cmd" in
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Done: $result" >/dev/null
     flip_status "$id" done 0 1
     sqlite3 "$DB" "UPDATE tasks SET result='$(echo "$result" | sed "s/'/''/g")' WHERE id='$id'"
+    # Reset consecutive_failures — task completed successfully
+    sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
     emit_transition "$id" "$from" done "$author"
     echo "$id: $from → done"
     ;;
