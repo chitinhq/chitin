@@ -31,6 +31,16 @@ class ControllerProjectionTests(unittest.TestCase):
         # 5 queued tickets at cap 2 drains in 3 waves. Expected scenario is 90m/wave.
         self.assertEqual(rows[1]["eta_seconds"], 3 * 90 * 60)
 
+    def test_projection_accounts_for_active_workers(self) -> None:
+        module = load_module(REPORT, "clawta_report_projection_active")
+        # 5 queued + 2 mid-flight workers through 2 lanes: the active pair
+        # occupies wave 1, so the queue needs 4 waves total (ceil(7/2)).
+        rows = module.projection_scenarios(queue_depth=5, active_count=2, max_active=2)
+        self.assertEqual(rows[1]["eta_seconds"], 4 * 90 * 60)
+        # active_count=0 must still reduce to the plain ceil(queue/cap).
+        rows0 = module.projection_scenarios(queue_depth=5, active_count=0, max_active=2)
+        self.assertEqual(rows0[1]["eta_seconds"], 3 * 90 * 60)
+
     def test_active_dispatch_tickets_counts_lobster_and_long_lived_roots(self) -> None:
         module = load_module(REPORT, "clawta_report_active_dispatch")
         sample = "\n".join(["t_aaaabbbb", "t_ccccdddd", "t_ccccdddd"])

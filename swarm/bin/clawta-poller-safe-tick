@@ -20,7 +20,7 @@ CLAWTA_POLLER_BIN=${CLAWTA_POLLER_BIN:-/home/red/.local/bin/clawta-poller}
 active_matches=$(
   {
     (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) \
-      | grep -oE '"ticket_id":"t_[0-9a-f]+"' \
+      | grep -oE '"ticket_id":[[:space:]]*"t_[0-9a-f]+"' \
       | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true
     (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) \
       | grep -oE 'dispatch ticket t_[0-9a-f]+' \

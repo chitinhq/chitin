@@ -145,7 +145,11 @@ def active_dispatch_tickets():
     ticket ...` roots. Child vendor CLIs are intentionally ignored so one
     worker is counted once.
     """
-    code, out = sh("""{ (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) | grep -oE '"ticket_id":"t_[0-9a-f]+"' | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true; (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) | grep -oE 'dispatch ticket t_[0-9a-f]+' | awk '{print $3}' || true; } | sed '/^$/d' | sort -u""", 20)
+    # NOTE: raw string — the sed backreference \1 must reach sed intact. A
+    # plain "" string turns \1 into the octal escape \x01, which silently
+    # breaks ticket extraction (every row gets filtered out below).
+    # The [[:space:]]* after the colon tolerates spaced --args-json JSON.
+    code, out = sh(r"""{ (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) | grep -oE '"ticket_id":[[:space:]]*"t_[0-9a-f]+"' | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true; (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) | grep -oE 'dispatch ticket t_[0-9a-f]+' | awk '{print $3}' || true; } | sed '/^$/d' | sort -u""", 20)
     if code != 0:
         return []
     tickets = [line.strip() for line in out.splitlines() if re.match(r'^t_[0-9a-f]+$', line.strip())]
@@ -169,7 +173,11 @@ def runtime_lane_cards():
 def projection_scenarios(queue_depth, active_count, max_active=1):
     remaining = max(queue_depth, 0)
     capacity = max(max_active, 1)
-    waves = (remaining + capacity - 1) // capacity
+    # Workers already mid-flight occupy a lane for the first wave before the
+    # queue can use it, so they flow through the same `capacity` lanes as
+    # queued work. With active_count=0 this reduces to ceil(remaining/cap).
+    in_flight = max(active_count, 0)
+    waves = (remaining + in_flight + capacity - 1) // capacity
     scenarios = []
     for label, minutes in [("fast", 45), ("expected", 90), ("slow/sticky", 180)]:
         total_minutes = waves * minutes

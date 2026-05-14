@@ -12,7 +12,6 @@ from pathlib import Path
 
 DB = Path("/home/red/.hermes/kanban/boards/chitin/kanban.db")
 STATE = Path("/home/red/.openclaw/state/clawta-worker-failure-sentinel.json")
-STATE.parent.mkdir(parents=True, exist_ok=True)
 CHANNEL = "channel:1503439202719760405"
 LOOKBACK_SECONDS = int(os.environ.get("CLAWTA_FAILURE_LOOKBACK_SECONDS", "86400"))
 QUARANTINE_THRESHOLD = int(os.environ.get("CLAWTA_FAILURE_QUARANTINE_THRESHOLD", "3"))
@@ -48,6 +47,9 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
+    # Create the state dir lazily here, not at import time — importing this
+    # module for tests must not touch /home/red/.openclaw on CI/dev machines.
+    STATE.parent.mkdir(parents=True, exist_ok=True)
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     tmp.replace(STATE)
