@@ -22,6 +22,13 @@ _SENTENCE_BREAK_RE = re.compile(r"[.!?\n]")
 _SUBJECT_TICKET_RE = re.compile(r"\bt_[a-z0-9]+\b", re.IGNORECASE)
 
 
+def _clawta_memory_paths() -> tuple[Path, Path]:
+    return (
+        Path.home() / ".openclaw" / "data" / "clawta.db",
+        Path.home() / ".openclaw" / "memory" / "clawta.sqlite",
+    )
+
+
 @dataclass(frozen=True)
 class Belief:
     agent: str
@@ -438,15 +445,16 @@ def ingest_beliefs(
         alerts.extend(result.alerts)
 
     if include_clawta:
-        result = ingest_openclaw_memory_db(
-            conn,
-            agent="clawta",
-            db_path=Path.home() / ".openclaw" / "memory" / "clawta.sqlite",
-            source_kind="clawta_memory",
-        )
-        inserted += result.inserted
-        skipped += result.skipped
-        alerts.extend(result.alerts)
+        for db_path in _clawta_memory_paths():
+            result = ingest_openclaw_memory_db(
+                conn,
+                agent="clawta",
+                db_path=db_path,
+                source_kind="clawta_memory",
+            )
+            inserted += result.inserted
+            skipped += result.skipped
+            alerts.extend(result.alerts)
 
     if include_openclaw_agent:
         glm_results = [
