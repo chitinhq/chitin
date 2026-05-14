@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { installSurface, SURFACES, type Surface } from '../installer.js';
 import { ensureKernelBinary } from '../kernel.js';
 
@@ -36,6 +37,9 @@ function resolveSurfaces(surface?: string): Surface[] {
 }
 
 function readPackageVersion(): string {
-  const raw = readFileSync(join(dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json'), 'utf8');
+  // fileURLToPath, not URL.pathname: the latter leaves %20 in paths with
+  // spaces and yields a non-portable /C:/ form on Windows.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const raw = readFileSync(join(here, '..', '..', 'package.json'), 'utf8');
   return (JSON.parse(raw) as { version: string }).version;
 }

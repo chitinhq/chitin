@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const here = dirname(new URL(import.meta.url).pathname);
+// fileURLToPath, not URL.pathname: the latter leaves %20 in install paths
+// with spaces and a non-portable /C:/ form on Windows, so the dist-vs-src
+// entrypoint check below would miss a perfectly valid build.
+const here = dirname(fileURLToPath(import.meta.url));
 const distEntry = join(here, '..', 'dist', 'main.js');
 
 if (existsSync(distEntry)) {
