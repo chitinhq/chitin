@@ -653,15 +653,17 @@ def main() -> None:
 
     llm_rejection = None
     if router_mode == "llm":
-        llm_result = llm_pick(classify, cards)
-        chosen_card, llm_rejection = validate_llm_pick(llm_result, cards, caps_needed)
+        llm_result = llm_pick(classify, ranked_candidates)
+        chosen_card, llm_rejection = validate_llm_pick(
+            llm_result, ranked_candidates, caps_needed
+        )
         if chosen_card is not None:
             emit_result(
                 driver=llm_result["driver"],
                 model=llm_result.get("model") or select_model(chosen_card, classify),
                 classify=classify,
                 caps_needed=caps_needed,
-                candidates_considered=len(cards),
+                candidates_considered=len(ranked_candidates),
                 router_mode="llm",
                 selection_mode="exploitation",
                 reasoning=llm_result.get("reasoning", ""),
@@ -680,6 +682,8 @@ def main() -> None:
         reasoning = "no candidates covered required capabilities"
     elif llm_rejection:
         reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + complexity-aware model rank"
+        if failure_filter_reason:
+            reasoning = f"{reasoning}; {failure_filter_reason}"
     elif failure_filter_reason:
         reasoning = (
             "deterministic capability-filter + complexity-aware model rank; "
