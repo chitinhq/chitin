@@ -58,6 +58,24 @@ class PRFailureReportTests(unittest.TestCase):
         self.assertLessEqual(len(report["block_reason"]), 1200)
         self.assertTrue(report["message"].endswith("..."))
 
+    def test_max_boundary_noisy_stdout_does_not_hide_stderr(self):
+        # Boundary: max. A very large stdout stream must not consume the whole
+        # detail budget before the actionable stderr failure is reported.
+        module = load_module()
+        noisy_stdout = ("stdout line\n" * 400).strip()
+
+        report = module.build_pr_failure_report(
+            "t_2111ce54",
+            "branch",
+            noisy_stdout,
+            "GraphQL: No commits between main and branch\n",
+            1,
+        )
+
+        self.assertIn("stderr=GraphQL: No commits between main and branch", report["message"])
+        self.assertIn("exit_code=1", report["message"])
+        self.assertLessEqual(len(report["block_reason"]), 1200)
+
 
 if __name__ == "__main__":
     unittest.main()

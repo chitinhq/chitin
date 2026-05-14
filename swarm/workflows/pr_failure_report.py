@@ -25,12 +25,12 @@ def _build_detail(gh_stdout: str, gh_stderr: str, exit_code: int | None) -> str:
     parts: list[str] = []
     compact_stdout = _compact_output(gh_stdout)
     compact_stderr = _compact_output(gh_stderr)
-    if compact_stdout:
-        parts.append(f"stdout={compact_stdout}")
     if compact_stderr:
         parts.append(f"stderr={compact_stderr}")
     if exit_code not in (None, 0):
         parts.append(f"exit_code={exit_code}")
+    if compact_stdout:
+        parts.append(f"stdout={compact_stdout}")
     return _truncate(" ".join(parts))
 
 
