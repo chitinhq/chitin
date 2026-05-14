@@ -374,7 +374,9 @@ When the next operator inherits this swarm, read this spec for the why and the r
 | Hermes skills | `skills/devops/{kanban-worker,kanban-orchestrator}/SKILL.md` | hermes-agent repo |
 | Clawta agent | `~/.openclaw/agents/clawta/` (renamed from glm-agent 2026-05-12) | openclaw operator state |
 | Clawta CLI wrapper | `/home/red/.local/bin/clawta` | operator-local; chitin source at `docs/governance-setup-extras/clawta.sh` |
-| Clawta poller | `swarm/bin/clawta-poller` (chitin) | symlinked to `~/.local/bin/clawta-poller`; openclaw cron job `clawta-kanban-poller` (every 2m) |
+| Clawta poller | `swarm/bin/clawta-poller` (chitin) | symlinked to `~/.local/bin/clawta-poller`; OpenClaw cron job `clawta-kanban-poller` (every 2m) |
+| Blocked escalator | `swarm/bin/clawta-blocked-escalator` (chitin) | symlinked to `~/.local/bin/clawta-blocked-escalator`; OpenClaw cron job `clawta-blocked-escalator` (every 10m) |
+| Stale worker watchdog | `swarm/bin/clawta-stale-worker-watchdog` (chitin) | symlinked to `~/.local/bin/clawta-stale-worker-watchdog`; OpenClaw cron job `clawta-stale-worker-watchdog` (every 10m); thresholds documented in `docs/runbooks/swarm-runtime-guards.md` |
 | Clawta invariants helper | `swarm/bin/clawta-invariants` (chitin, PR #541) | runs as Step 0 of every poller tick |
 | Clawta PR reviewer | `swarm/bin/clawta-pr-reviewer` (chitin) | openclaw cron job `clawta-pr-reviewer` (every 10m) |
 | Kanban lifecycle helper | `scripts/kanban-flow` (chitin) | symlinked to `~/.local/bin/kanban-flow` |

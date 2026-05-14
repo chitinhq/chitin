@@ -1,48 +1,275 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd /home/red/workspace/chitin
-DB=/home/red/.hermes/kanban/boards/chitin/kanban.db
-NOW=$(date +%s)
-STALE_AFTER=${CLAWTA_STALE_AFTER_SECONDS:-2700}   # 45m
-QUIET_AFTER=${CLAWTA_QUIET_AFTER_SECONDS:-1200}   # 20m
-changed=()
-checked=0
+#!/usr/bin/env python3
+"""Block and escalate stale `in_progress` swarm tickets.
 
-while IFS=$'\t' read -r id assignee title age; do
-  [[ -n "${id:-}" ]] || continue
-  checked=$((checked + 1))
+Thresholds:
+- ticket age >= CLAWTA_STALE_AFTER_SECONDS (default 2700 / 45m)
+- dispatch log quiet >= CLAWTA_QUIET_AFTER_SECONDS (default 1200 / 20m)
+- no `pr_opened` task event
+- no matching active worker process
+"""
 
-  # If a PR has been opened, PR lifecycle owns the ticket; don't block it here.
-  pr_count=$(sqlite3 "$DB" "SELECT count(*) FROM task_events WHERE task_id='$id' AND kind='pr_opened';")
-  [[ "$pr_count" == "0" ]] || continue
+from __future__ import annotations
 
-  # Active dispatch/process still running? Leave it alone.
-  if pgrep -af "($id|dispatch-$id|dispatch ticket $id|swarm-.*-$id)" >/dev/null 2>&1; then
-    continue
-  fi
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Sequence
 
-  log=/home/red/.openclaw/logs/dispatch-$id.log
-  quiet=$age
-  if [[ -f "$log" ]]; then
-    mtime=$(stat -c %Y "$log" 2>/dev/null || echo 0)
-    quiet=$(( NOW - mtime ))
-  fi
-  (( age >= STALE_AFTER && quiet >= QUIET_AFTER )) || continue
 
-  reason="stale in_progress without PR or active worker after ${age}s; dispatch log quiet ${quiet}s"
-  ./scripts/kanban-flow block "$id" "$reason" --author clawta >/dev/null 2>&1 || true
-  hermes kanban --board chitin assign "$id" red >/dev/null 2>&1 || true
-  hermes kanban --board chitin comment "$id" --author clawta \
-    "Stale-worker watchdog escalated to red: $reason" >/dev/null 2>&1 || true
-  changed+=("$id (${assignee:-unassigned}) — $title — $reason")
-done < <(sqlite3 -tabs "$DB" \
-  "SELECT id, coalesce(assignee,''), title, ($NOW - coalesce(started_at, created_at)) AS age FROM tasks WHERE status='in_progress' ORDER BY started_at ASC, created_at ASC;")
+BOARD = os.environ.get("SWARM_BOARD", "chitin")
+RED_ASSIGNEE = os.environ.get("CLAWTA_RED_ASSIGNEE", "red")
+AUTHOR = os.environ.get("CLAWTA_AUTHOR", "clawta")
+HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
+)
+KANBAN_DB = Path(
+    os.environ.get(
+        "KANBAN_DB",
+        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
+    )
+)
+REPO_ROOT = Path(os.environ.get("CHITIN_REPO", Path(__file__).resolve().parents[2]))
+KANBAN_FLOW_BIN = Path(
+    os.environ.get("KANBAN_FLOW_BIN", str(REPO_ROOT / "scripts" / "kanban-flow"))
+)
+OPENCLAW_LOG_DIR = Path(
+    os.environ.get("OPENCLAW_LOG_DIR", str(Path.home() / ".openclaw" / "logs"))
+)
+STALE_AFTER = int(os.environ.get("CLAWTA_STALE_AFTER_SECONDS", "2700"))
+QUIET_AFTER = int(os.environ.get("CLAWTA_QUIET_AFTER_SECONDS", "1200"))
 
-if (( ${#changed[@]} )); then
-  {
-    echo "🦞 Stale-worker watchdog blocked/escalated ${#changed[@]} ticket(s):"
-    printf -- '- `%s`\n' "${changed[@]}"
-  } | /home/red/.vite-plus/bin/openclaw message send --channel discord --account default --text-file - >/dev/null 2>&1 || true
-fi
 
-printf 'stale watchdog: %d checked, %d changed\n' "$checked" "${#changed[@]}"
+@dataclass
+class InProgressTicket:
+    id: str
+    assignee: str
+    title: str
+    age_seconds: int
+
+
+@dataclass
+class Escalation:
+    id: str
+    assignee: str
+    title: str
+    age_seconds: int
+    quiet_seconds: int
+    reason: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    return parser.parse_args()
+
+
+def run(cmd: Sequence[str], *, check: bool = True, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(cmd),
+        text=True,
+        capture_output=True,
+        check=check,
+        timeout=timeout,
+    )
+
+
+def list_in_progress(db_path: Path | None = None, now: int | None = None) -> list[InProgressTicket]:
+    db_path = KANBAN_DB if db_path is None else db_path
+    now = int(time.time()) if now is None else now
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id,
+                   coalesce(assignee, ''),
+                   title,
+                   (? - coalesce(started_at, created_at)) AS age_seconds
+              FROM tasks
+             WHERE status = 'in_progress'
+             ORDER BY started_at ASC, created_at ASC
+            """,
+            (now,),
+        ).fetchall()
+    return [
+        InProgressTicket(str(row[0]), str(row[1]), str(row[2]), int(row[3]))
+        for row in rows
+    ]
+
+
+def has_pr(db_path: Path, ticket_id: str) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT count(*)
+              FROM task_events
+             WHERE task_id = ?
+               AND kind = 'pr_opened'
+            """,
+            (ticket_id,),
+        ).fetchone()
+    return bool(row and int(row[0]) > 0)
+
+
+def has_active_worker(ticket_id: str) -> bool:
+    result = subprocess.run(
+        ["pgrep", "-af", ticket_id],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return False
+    return (
+        ticket_id in result.stdout
+        and (
+            f"dispatch-{ticket_id}" in result.stdout
+            or f"dispatch ticket {ticket_id}" in result.stdout
+            or "swarm-" in result.stdout
+        )
+    )
+
+
+def quiet_seconds(ticket_id: str, now: int) -> int:
+    log_path = OPENCLAW_LOG_DIR / f"dispatch-{ticket_id}.log"
+    if not log_path.exists():
+        return 10**9
+    try:
+        return max(0, now - int(log_path.stat().st_mtime))
+    except OSError:
+        return 10**9
+
+
+def find_stale_candidates(now: int | None = None) -> tuple[list[InProgressTicket], list[Escalation]]:
+    now = int(time.time()) if now is None else now
+    checked = list_in_progress(now=now)
+    stale: list[Escalation] = []
+    for ticket in checked:
+        if has_pr(KANBAN_DB, ticket.id):
+            continue
+        if has_active_worker(ticket.id):
+            continue
+        quiet = quiet_seconds(ticket.id, now)
+        if ticket.age_seconds < STALE_AFTER or quiet < QUIET_AFTER:
+            continue
+        reason = (
+            "stale in_progress without PR or active worker after "
+            f"{ticket.age_seconds}s; dispatch log quiet {quiet}s"
+        )
+        stale.append(
+            Escalation(
+                id=ticket.id,
+                assignee=ticket.assignee,
+                title=ticket.title,
+                age_seconds=ticket.age_seconds,
+                quiet_seconds=quiet,
+                reason=reason,
+            )
+        )
+    return checked, stale
+
+
+def block_ticket(escalation: Escalation) -> None:
+    run(
+        [str(KANBAN_FLOW_BIN), "block", escalation.id, escalation.reason, "--author", AUTHOR],
+        check=True,
+        timeout=45,
+    )
+    run(
+        [HERMES_BIN, "kanban", "--board", BOARD, "assign", escalation.id, RED_ASSIGNEE],
+        check=True,
+    )
+    run(
+        [
+            HERMES_BIN,
+            "kanban",
+            "--board",
+            BOARD,
+            "comment",
+            escalation.id,
+            "--author",
+            AUTHOR,
+            f"Stale-worker watchdog escalated to red: {escalation.reason}",
+        ],
+        check=True,
+    )
+
+
+def notify(changed: Sequence[Escalation]) -> None:
+    if not changed:
+        return
+    body = "\n".join(
+        [
+            f"Stale-worker watchdog blocked/escalated {len(changed)} ticket(s):",
+            *[
+                (
+                    f"- `{item.id} ({item.assignee or 'unassigned'}) - {item.title} - "
+                    f"{item.reason}`"
+                )
+                for item in changed
+            ],
+        ]
+    )
+    subprocess.run(
+        [
+            OPENCLAW_BIN,
+            "message",
+            "send",
+            "--channel",
+            "discord",
+            "--account",
+            "default",
+            "--text",
+            body,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def main() -> int:
+    args = parse_args()
+    checked, stale = find_stale_candidates()
+    changed: list[Escalation] = []
+    if not args.dry_run:
+        for item in stale:
+            try:
+                block_ticket(item)
+                changed.append(item)
+            except subprocess.CalledProcessError as exc:
+                print(f"{item.id}: watchdog failed: {exc.stderr[-300:]}", file=sys.stderr)
+        notify(changed)
+    else:
+        changed = stale
+
+    summary = {
+        "checked": len(checked),
+        "changed": len(changed),
+        "dry_run": args.dry_run,
+        "thresholds": {
+            "stale_after_seconds": STALE_AFTER,
+            "quiet_after_seconds": QUIET_AFTER,
+        },
+        "tickets": [asdict(item) for item in changed],
+    }
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print(
+            f"stale watchdog: {summary['checked']} checked, {summary['changed']} changed"
+            + (" (dry-run)" if args.dry_run else "")
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
