@@ -51,12 +51,6 @@ export function initClaudeCodeCommand(opts: { workspace?: string }): void {
 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 
-  mkdirSync(join(workspace, '.chitin'), { recursive: true });
-  writeFileSync(
-    join(workspace, '.chitin', 'init.json'),
-    JSON.stringify({ surface: 'claude-code', kernelBin, ts: new Date().toISOString() }, null, 2),
-  );
-
   process.stdout.write(
     `wired Claude Code PreToolUse hook → ${kernelBin}\nsettings: ${settingsPath}\nworkspace: ${workspace}\n`,
   );
