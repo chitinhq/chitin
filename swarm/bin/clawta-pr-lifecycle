@@ -77,12 +77,22 @@ def run_regression_gate(pr_number: int, head: str) -> tuple[int, str]:
         for posting as a kanban comment.
     """
     workdir = tempfile.mkdtemp(prefix=f"regression-gate-pr-{pr_number}-")
+    merge_ref = f"refs/remotes/origin/pr/{pr_number}/merge"
     try:
+        # Fetch the synthetic GitHub merge ref explicitly. It is not present in
+        # ordinary clones by default, and relying on refs/pull/<n>/merge being
+        # local strands otherwise-ready PRs behind a fail-closed tool error.
+        fetched = run(
+            ["git", "fetch", "origin", f"+refs/pull/{pr_number}/merge:{merge_ref}"],
+            timeout=60,
+        )
+        if fetched.returncode != 0:
+            return (2, f"git fetch merge ref failed:\n{fetched.stderr or fetched.stdout}")
+
         # Worktree the PR's merge ref into the temp dir. --detach because
         # we don't need a branch and want to avoid name collisions.
         wt = run(
-            ["git", "worktree", "add", "--detach", workdir,
-             f"refs/pull/{pr_number}/merge"],
+            ["git", "worktree", "add", "--detach", workdir, merge_ref],
             timeout=60,
         )
         if wt.returncode != 0:
@@ -178,7 +188,7 @@ def infer_ticket(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> str | N
     # Explicit PR body/title references are accepted only when they look like
     # the PR's own ticket linkage, not incidental mentions in a repair summary.
     explicit = re.search(
-        r"(?i)(?:closes|fixes|resolves|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
+        r"(?i)(?:closes|fixes|resolves|refs?|references?|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
         body_title,
     )
     if explicit:

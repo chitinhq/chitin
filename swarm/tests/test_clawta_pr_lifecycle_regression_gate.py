@@ -70,6 +70,59 @@ def approve_comment(head: str = "abc1234") -> dict:
 _TICKET_INFO_PASS = {"status": "in_progress", "assignee": None}
 
 
+class RegressionGateFetchTests(unittest.TestCase):
+    def test_gate_fetches_github_merge_ref_before_worktree(self) -> None:
+        m = load_module()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(m.tempfile, "mkdtemp", return_value="/tmp/regression-gate-pr-42"), \
+             mock.patch.object(m, "run", side_effect=fake_run), \
+             mock.patch.object(m.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="ok\n", stderr="")), \
+             mock.patch.object(m.shutil, "rmtree"):
+            rc, diagnostic = m.run_regression_gate(42, "abc1234")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(diagnostic, "ok")
+        self.assertEqual(
+            calls[0],
+            ["git", "fetch", "origin", "+refs/pull/42/merge:refs/remotes/origin/pr/42/merge"],
+        )
+        self.assertEqual(
+            calls[1],
+            ["git", "worktree", "add", "--detach", "/tmp/regression-gate-pr-42", "refs/remotes/origin/pr/42/merge"],
+        )
+
+
+class TicketInferenceTests(unittest.TestCase):
+    def test_infer_ticket_accepts_explicit_refs_in_pr_body(self) -> None:
+        m = load_module()
+        cases = [
+            "Refs t_f2ede4a8",
+            "Ref t_f2ede4a8",
+            "References t_f2ede4a8",
+            "Reference t_f2ede4a8",
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                pr = base_pr(
+                    headRefName="clawta/lifecycle-pr-ref-mapping",
+                    body=f"## Summary\n- lifecycle mapping fix\n\n{body}",
+                )
+
+                self.assertEqual(m.infer_ticket(pr, []), "t_f2ede4a8")
+
+    def test_infer_ticket_ignores_arbitrary_comment_refs(self) -> None:
+        m = load_module()
+        pr = base_pr(headRefName="clawta/human-readable", body="")
+        comments = [{"body": "Refs t_badbeef1"}]
+
+        self.assertIsNone(m.infer_ticket(pr, comments))
+
+
 class GateShortCircuitTests(unittest.TestCase):
     def test_gate_skipped_when_base_gates_fail(self) -> None:
         """If (a-e) fail, gate is NOT invoked (expensive subprocess avoided)."""
