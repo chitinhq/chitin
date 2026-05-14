@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from argus.detectors import Finding, run_all_detectors
+from argus.cross_detectors import CrossFinding, run_all_cross_detectors
+from argus.drift_detectors import run_all_drift_detectors
 
 
 def _get_summary_stats(db_path: str) -> dict:
@@ -254,7 +256,7 @@ def generate_daily_report(
     stats = _get_summary_stats(db_path)
     findings = run_all_detectors(db_path)
 
-    # Cross-source findings (Slice 2). Default to ~/.argus/cross_source.db
+    # Cross-source findings (Slices 2-4). Default to ~/.argus/cross_source.db
     # but degrade silently if the cross-source index doesn't exist yet.
     if cross_source_db is None:
         cross_source_db = Path.home() / ".argus" / "cross_source.db"
@@ -262,8 +264,13 @@ def generate_daily_report(
     if cross_source_db.exists():
         try:
             cross_findings = run_all_cross_detectors(cross_source_db)
+            # Belief-drift detectors (Slice 4) — capped server-side in the
+            # detectors themselves; we still cap to top-5 by severity in
+            # the daily digest to avoid spam.
+            drift_findings = run_all_drift_detectors(cross_source_db, Path(db_path))
+            cross_findings.extend(drift_findings[:5])
         except Exception:
-            cross_findings = []
+            pass
 
     # Build markdown
     lines = [

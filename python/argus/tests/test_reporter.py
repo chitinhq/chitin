@@ -224,6 +224,7 @@ def test_discord_post_skipped_on_quiet_day(monkeypatch):
             str(db_path),
             report_dir,
             discord_webhook="https://example.invalid/webhook",
+            cross_source_db=Path(tmpdir) / "no-cross-source.db",
         )
 
     assert posted["calls"] == 0
@@ -254,6 +255,7 @@ def test_discord_post_fires_on_findings(monkeypatch):
             str(db_path),
             report_dir,
             discord_webhook="https://example.invalid/webhook",
+            cross_source_db=Path(tmpdir) / "no-cross-source.db",
         )
 
     assert posted["calls"] == 1

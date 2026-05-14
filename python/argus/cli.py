@@ -10,6 +10,13 @@ from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
 from argus.kanban_ingest import ingest_all_kanban
 from argus.git_ingest import ingest_repo, discover_repos
+from argus.beliefs import (
+    init_beliefs_table,
+    ingest_agent_cards,
+    ingest_clawta_swarm_elo,
+    ingest_wiki,
+)
+from argus.cross_source_db import init_cross_source_db
 
 
 def cmd_index(args) -> int:
@@ -205,6 +212,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        default=str(Path.home() / ".argus" / "cross_source.db"),
                        help="Cross-source SQLite index path")
 
+    # ingest-beliefs subcommand (Slice 4)
+    inb_p = subparsers.add_parser(
+        "ingest-beliefs",
+        help="One-shot snapshot of agent cards + clawta ELO + wiki into the cross-source index",
+    )
+    inb_p.add_argument("--agent-cards",
+                       default=str(Path.home() / ".openclaw" / "data" / "agent-cards"),
+                       help="Directory containing per-agent JSON cards")
+    inb_p.add_argument("--clawta-db",
+                       default=str(Path.home() / ".openclaw" / "data" / "clawta.db"),
+                       help="Path to clawta.db with the swarm_elo table")
+    inb_p.add_argument("--wiki-root", default=None,
+                       help="Wiki markdown root (default: skipped)")
+    inb_p.add_argument("--xs-db",
+                       default=str(Path.home() / ".argus" / "cross_source.db"),
+                       help="Cross-source SQLite index path")
+
     return p.parse_args(argv)
 
 
@@ -224,8 +248,30 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ingest_kanban(args)
     elif args.cmd == "ingest-git":
         return cmd_ingest_git(args)
+    elif args.cmd == "ingest-beliefs":
+        return cmd_ingest_beliefs(args)
 
     return 1
+
+
+def cmd_ingest_beliefs(args) -> int:
+    """Pull operator agent cards + clawta ELO + (optional) wiki into beliefs."""
+    xs_db = Path(args.xs_db)
+    xs_conn = init_cross_source_db(xs_db)
+    try:
+        init_beliefs_table(xs_conn)
+        ac = ingest_agent_cards(Path(args.agent_cards), xs_conn)
+        print(f"agent cards: agents={ac['agents']} inserted={ac['inserted']} skipped={ac['skipped']}",
+              file=sys.stderr)
+        ce = ingest_clawta_swarm_elo(Path(args.clawta_db), xs_conn)
+        print(f"clawta ELO: inserted={ce['inserted']} skipped={ce['skipped']}", file=sys.stderr)
+        if args.wiki_root:
+            wk = ingest_wiki(Path(args.wiki_root), xs_conn)
+            print(f"wiki: files={wk['files']} inserted={wk['inserted']} skipped={wk['skipped']}",
+                  file=sys.stderr)
+    finally:
+        xs_conn.close()
+    return 0
 
 
 def cmd_ingest_kanban(args) -> int:
