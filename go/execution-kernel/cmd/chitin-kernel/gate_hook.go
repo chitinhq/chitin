@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/gemini"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/driver/hermes"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/sidecar"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/tier"
 )
 
@@ -83,6 +85,7 @@ type chitinAdminCommandSpec struct {
 var chitinAdminCommandTable = map[string]chitinAdminCommandSpec{
 	"chain": {
 		subcommands: map[string]chitinAdminClass{
+			"blobs":          chitinAdminRead,
 			"replay":         chitinAdminRead,
 			"summarize":      chitinAdminRead,
 			"related":        chitinAdminRead,
@@ -402,10 +405,18 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		writeJSONLine(errOut, map[string]string{"error": "hook_read_stdin", "message": err.Error()})
 		return claudecode.ExitNonBlockError
 	}
+	var rawPayload map[string]any
+	if err := json.Unmarshal(in, &rawPayload); err != nil {
+		writeJSONLine(errOut, map[string]string{"error": "hook_parse_stdin", "message": err.Error()})
+		return claudecode.ExitNonBlockError
+	}
 	var payload claudecode.HookInput
 	if err := json.Unmarshal(in, &payload); err != nil {
 		writeJSONLine(errOut, map[string]string{"error": "hook_parse_stdin", "message": err.Error()})
 		return claudecode.ExitNonBlockError
+	}
+	if stringMapField(rawPayload, "hook_event_name") == "PostToolUse" {
+		return handlePostToolUse(rawPayload, payload, out, errOut, noRecord)
 	}
 
 	cwd := payload.Cwd
@@ -596,6 +607,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 	// noRecord=true also skips this wiring: OnDecision writes a v2 chain
 	// event via the decision emitter, which is a second persistence
 	// path that NoRecord must mute. Mirrors cmdGateEvaluate's behavior.
+	var decisionEvents *decisionEmitter
 	if !noRecord {
 		hookChainID := payload.SessionID
 		if hookChainID == "" {
@@ -613,6 +625,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 			de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
 			if deErr == nil {
 				defer deClose()
+				decisionEvents = de
 				gate.OnDecision = de.emitDecision
 			}
 		}
@@ -643,12 +656,208 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		}
 	}
 	d := gate.Evaluate(action, agent, spendEnvelope)
+	if !noRecord {
+		capturePreToolSidecar(cdir, rawPayload, payload, decisionEvents, errOut)
+	}
 
 	// Per-driver hook response formatter. claude-code uses
 	// stdout-JSON only (its documented ABI); codex/gemini also
 	// require stderr text or they surface "no blocking reason"
 	// and proceed with the call. See internal/driver/formatselect.go.
 	return driver.FormatFor(agent)(d, out, errOut)
+}
+
+func handlePostToolUse(rawPayload map[string]any, payload claudecode.HookInput, out, errOut io.Writer, noRecord bool) int {
+	if noRecord {
+		return claudecode.ExitAllow
+	}
+	cdir := chitinDir()
+	_ = os.MkdirAll(cdir, 0o755)
+	store, err := sidecar.Open(filepath.Join(cdir, "sidecar.db"))
+	if err != nil {
+		writeJSONLine(errOut, map[string]string{"warning": "sidecar_open_failed", "message": err.Error()})
+		return claudecode.ExitAllow
+	}
+	defer store.Close()
+
+	eventID := chooseHookEventID(rawPayload)
+	if alias := stringMapField(rawPayload, "tool_use_id"); alias != "" {
+		if resolved, err := store.ResolveEventID(alias); err == nil {
+			eventID = resolved
+		}
+	}
+	if eventID == "" {
+		return claudecode.ExitAllow
+	}
+
+	// A successful tool call carries its result in tool_response; a failed
+	// one carries the failure in `error` instead. Capture whichever is
+	// present as tool_output so the sidecar is never blank for failures.
+	if body, ok := marshalField(rawPayload["tool_response"]); ok {
+		if err := store.Put(eventID, "tool_output", body); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
+		}
+	} else if body, ok := marshalField(rawPayload["error"]); ok {
+		if err := store.Put(eventID, "tool_output", body); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
+		}
+	}
+	if body, ok := captureClaudeTranscriptArtifacts(payload.TranscriptPath, stringMapField(rawPayload, "tool_use_id")); ok {
+		if thinking, ok := body["thinking"]; ok {
+			if raw, ok := marshalField(thinking); ok {
+				_ = store.Put(eventID, "thinking", raw)
+			}
+		}
+		if raw, ok := marshalField(body); ok {
+			_ = store.Put(eventID, "model_response", raw)
+		}
+	}
+	return claudecode.ExitAllow
+}
+
+func capturePreToolSidecar(cdir string, rawPayload map[string]any, payload claudecode.HookInput, decisionEvents *decisionEmitter, errOut io.Writer) {
+	if decisionEvents == nil || decisionEvents.lastEventID == "" {
+		return
+	}
+	store, err := sidecar.Open(filepath.Join(cdir, "sidecar.db"))
+	if err != nil {
+		writeJSONLine(errOut, map[string]string{"warning": "sidecar_open_failed", "message": err.Error()})
+		return
+	}
+	defer store.Close()
+
+	eventID := decisionEvents.lastEventID
+	if alias := stringMapField(rawPayload, "tool_use_id"); alias != "" {
+		if err := store.PutAlias(alias, eventID); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_alias_failed", "message": err.Error()})
+		}
+	}
+	// Slice 1: the "prompt" blob intentionally stores the full PreToolUse
+	// hook payload (tool_name, tool_input, prompt, transcript_path, ...),
+	// not just an isolated prompt string. `chitin chain blobs` consumers
+	// should treat blob_type=prompt as the raw hook payload for now.
+	if raw, ok := marshalField(rawPayload); ok {
+		if err := store.Put(eventID, "prompt", raw); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
+		}
+	}
+	if raw, ok := marshalField(payload.ToolInput); ok {
+		if err := store.Put(eventID, "tool_input", raw); err != nil {
+			writeJSONLine(errOut, map[string]string{"warning": "sidecar_put_failed", "message": err.Error()})
+		}
+	}
+}
+
+func chooseHookEventID(rawPayload map[string]any) string {
+	for _, key := range []string{"event_id", "ulid", "tool_use_id"} {
+		if v := stringMapField(rawPayload, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func stringMapField(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+func marshalField(v any) ([]byte, bool) {
+	if v == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+func captureClaudeTranscriptArtifacts(path, toolUseID string) (map[string]any, bool) {
+	if path == "" || toolUseID == "" {
+		return nil, false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	lines := bytes.Split(body, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil {
+			continue
+		}
+		if stringMapField(row, "type") != "assistant" {
+			continue
+		}
+		message, ok := row["message"].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		if !assistantMessageContainsToolUse(content, toolUseID) {
+			continue
+		}
+		out := map[string]any{
+			"message_id": stringMapField(message, "id"),
+			"model":      stringMapField(message, "model"),
+		}
+		if usage, ok := message["usage"].(map[string]any); ok {
+			out["usage"] = usage
+			if outputTokens, ok := usage["output_tokens"]; ok {
+				out["output_tokens"] = outputTokens
+			}
+		}
+		if thinking := collectAssistantContent(content, "thinking", "thinking"); len(thinking) > 0 {
+			out["thinking"] = strings.Join(thinking, "")
+		}
+		if text := collectAssistantContent(content, "text", "text"); len(text) > 0 {
+			out["text"] = strings.Join(text, "")
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+func assistantMessageContainsToolUse(content []any, toolUseID string) bool {
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringMapField(block, "type") == "tool_use" && stringMapField(block, "id") == toolUseID {
+			return true
+		}
+	}
+	return false
+}
+
+func collectAssistantContent(content []any, kind, field string) []string {
+	var out []string
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok || stringMapField(block, "type") != kind {
+			continue
+		}
+		if text := stringMapField(block, field); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 // chitinDir returns the chitin state dir. The CHITIN_HOME env var

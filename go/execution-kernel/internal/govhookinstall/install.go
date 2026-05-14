@@ -80,10 +80,12 @@ func Install(scope Scope, cwd, command string) (path, backup string, err error) 
 	}
 
 	hooks := ensureHooksMap(settings)
-	preToolUse := toAnySlice(hooks["PreToolUse"])
-	preToolUse = filterOutChitinGovernance(preToolUse)
-	preToolUse = append(preToolUse, govWrapper(command))
-	hooks["PreToolUse"] = preToolUse
+	for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+		list := toAnySlice(hooks[eventName])
+		list = filterOutChitinGovernance(list)
+		list = append(list, govWrapper(command))
+		hooks[eventName] = list
+	}
 	settings["hooks"] = hooks
 
 	if err := writeSettingsAtomic(path, settings); err != nil {
@@ -93,7 +95,7 @@ func Install(scope Scope, cwd, command string) (path, backup string, err error) 
 }
 
 // Uninstall removes chitin's governance hook entries (identified by
-// _tag == chitin-governance) from PreToolUse. Other entries are
+// _tag == chitin-governance) from PreToolUse and PostToolUse. Other entries are
 // preserved. If PreToolUse becomes empty it is removed; if hooks
 // becomes empty it is removed. Missing settings file is a no-op.
 func Uninstall(scope Scope, cwd string) (path string, err error) {
@@ -112,12 +114,14 @@ func Uninstall(scope Scope, cwd string) (path string, err error) {
 	if !ok {
 		return path, nil
 	}
-	preToolUse := toAnySlice(hooks["PreToolUse"])
-	filtered := filterOutChitinGovernance(preToolUse)
-	if len(filtered) == 0 {
-		delete(hooks, "PreToolUse")
-	} else {
-		hooks["PreToolUse"] = filtered
+	for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+		list := toAnySlice(hooks[eventName])
+		filtered := filterOutChitinGovernance(list)
+		if len(filtered) == 0 {
+			delete(hooks, eventName)
+		} else {
+			hooks[eventName] = filtered
+		}
 	}
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
@@ -165,9 +169,12 @@ func DryRun(scope Scope, cwd, command string) (Plan, error) {
 		plan.Backup = backupNameFor(path)
 	}
 	if hooks, ok := settings["hooks"].(map[string]any); ok {
-		preToolUse := toAnySlice(hooks["PreToolUse"])
-		preserved := filterOutChitinGovernance(preToolUse)
-		plan.PreservedCount = len(preserved)
+		total := 0
+		for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+			list := toAnySlice(hooks[eventName])
+			total += len(filterOutChitinGovernance(list))
+		}
+		plan.PreservedCount = total
 	}
 	return plan, nil
 }

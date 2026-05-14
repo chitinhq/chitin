@@ -10,6 +10,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/gov"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/replay"
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/sidecar"
 )
 
 // hookTestEnv stages a CHITIN_HOME + chitin.yaml in cwd so evalHookStdin
@@ -310,6 +311,137 @@ func TestEvalHookStdin_DenyRmRfIsExit2BlockJSON(t *testing.T) {
 	}
 }
 
+func TestEvalHookStdin_CapturesSidecarBlobsAcrossPreAndPostToolUse(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+	transcriptPath := filepath.Join(env.cwd, "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(strings.TrimSpace(`
+{"type":"assistant","message":{"id":"msg_1","model":"claude-opus-4-7","usage":{"input_tokens":11,"output_tokens":7},"content":[{"type":"thinking","thinking":"step by step"},{"type":"tool_use","id":"toolu_sidecar_1","name":"Bash","input":{"command":"echo hi"}}]}}
+`)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runHookCall(t, env, map[string]any{
+		"session_id":      "sess-sidecar",
+		"tool_use_id":     "toolu_sidecar_1",
+		"transcript_path": transcriptPath,
+		"tool_name":       "Bash",
+		"tool_input": map[string]any{
+			"command": "echo hi",
+			"token":   "super-secret-token-value",
+			"path":    "/home/red/.ssh/id_ed25519",
+		},
+		"prompt": "please run the command",
+	}, "")
+	if code != 0 {
+		t.Fatalf("pretool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	stdout, stderr, code = runHookCall(t, env, map[string]any{
+		"session_id":      "sess-sidecar",
+		"hook_event_name": "PostToolUse",
+		"tool_use_id":     "toolu_sidecar_1",
+		"transcript_path": transcriptPath,
+		"tool_name":       "Bash",
+		"tool_response": map[string]any{
+			"stdout": "hi",
+		},
+	}, "")
+	if code != 0 {
+		t.Fatalf("posttool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	store, err := sidecar.Open(filepath.Join(env.chitin, "sidecar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	eventID, err := store.ResolveEventID("toolu_sidecar_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventID == "toolu_sidecar_1" {
+		t.Fatalf("expected canonical event id alias, got %q", eventID)
+	}
+	toolInput, err := store.Get(eventID, "tool_input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(toolInput), "super-secret-token-value") || strings.Contains(string(toolInput), "/home/red/.ssh/id_ed25519") {
+		t.Fatalf("tool_input not redacted: %s", toolInput)
+	}
+	toolOutput, err := store.Get(eventID, "tool_output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(toolOutput), "hi") {
+		t.Fatalf("tool_output missing stdout: %s", toolOutput)
+	}
+	thinking, err := store.Get(eventID, "thinking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(thinking), "step by step") {
+		t.Fatalf("thinking missing: %s", thinking)
+	}
+	modelResponse, err := store.Get(eventID, "model_response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(modelResponse), `"output_tokens":7`) {
+		t.Fatalf("model_response missing output_tokens: %s", modelResponse)
+	}
+}
+
+// TestEvalHookStdin_PostToolUseCapturesErrorAsToolOutput covers the Copilot
+// finding: a failed tool call carries its failure in `error`, not
+// `tool_response`, so capturing only tool_response left failures with a
+// blank tool_output sidecar.
+func TestEvalHookStdin_PostToolUseCapturesErrorAsToolOutput(t *testing.T) {
+	env := setupHookEnv(t, baselinePolicy)
+
+	stdout, stderr, code := runHookCall(t, env, map[string]any{
+		"session_id":  "sess-err",
+		"tool_use_id": "toolu_err_1",
+		"tool_name":   "Bash",
+		"tool_input":  map[string]any{"command": "echo fail"},
+		"prompt":      "run a command that fails",
+	}, "")
+	if code != 0 {
+		t.Fatalf("pretool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	stdout, stderr, code = runHookCall(t, env, map[string]any{
+		"session_id":      "sess-err",
+		"hook_event_name": "PostToolUse",
+		"tool_use_id":     "toolu_err_1",
+		"tool_name":       "Bash",
+		"error":           "command failed: exit status 1",
+	}, "")
+	if code != 0 {
+		t.Fatalf("posttool exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	store, err := sidecar.Open(filepath.Join(env.chitin, "sidecar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	eventID, err := store.ResolveEventID("toolu_err_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolOutput, err := store.Get(eventID, "tool_output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolOutput == nil {
+		t.Fatal("tool_output blob missing for failed tool call (error field not captured)")
+	}
+	if !strings.Contains(string(toolOutput), "command failed: exit status 1") {
+		t.Fatalf("tool_output missing error payload: %s", toolOutput)
+	}
+}
+
 func TestEvalHookStdin_HermesExecuteCodeSubprocessRmRfDenied(t *testing.T) {
 	env := setupHookEnv(t, baselinePolicy)
 	stdout, _, code := runHookCallAsAgent(t, env, "hermes", map[string]any{
@@ -476,6 +608,7 @@ func TestEvalHookStdin_TamperedSignedPolicyFailsClosedAndLogs(t *testing.T) {
 
 	t.Setenv("CHITIN_HOME", chitin)
 	t.Setenv("CHITIN_POLICY_TRUST_DIR", trustDir)
+	t.Setenv("CHITIN_BUDGET_ENVELOPE", "")
 	body, _ := json.Marshal(map[string]any{
 		"tool_name":  "Read",
 		"tool_input": map[string]any{"file_path": "/x"},
@@ -536,6 +669,7 @@ func TestEvalHookStdin_BypassSigAllowsTamperedPolicyAndLogsWarning(t *testing.T)
 
 	t.Setenv("CHITIN_HOME", chitin)
 	t.Setenv("CHITIN_POLICY_TRUST_DIR", trustDir)
+	t.Setenv("CHITIN_BUDGET_ENVELOPE", "")
 	body, _ := json.Marshal(map[string]any{
 		"tool_name":  "Read",
 		"tool_input": map[string]any{"file_path": "/x"},

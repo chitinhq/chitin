@@ -67,7 +67,7 @@ func TestBuildTimeline_AggregatesAndJoins(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE event_blobs (event_id TEXT PRIMARY KEY, blob_type TEXT, blob BLOB, redacted BOOL, ts INTEGER)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE event_blobs (event_id TEXT NOT NULL, blob_type TEXT NOT NULL, blob BLOB, redacted BOOL, ts INTEGER, PRIMARY KEY (event_id, blob_type))`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO event_blobs (event_id, blob_type, blob, redacted, ts) VALUES (?, ?, ?, 0, 0)`,
