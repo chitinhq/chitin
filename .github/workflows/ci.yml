@@ -70,17 +70,30 @@ jobs:
           else
             base="HEAD~1"
           fi
-          if ! git diff --name-only "$base"...HEAD | grep -qx 'chitin.yaml'; then
-            echo "chitin.yaml unchanged; skipping signed-policy verification"
+          # LoadWithInheritance verifies every chitin.yaml on the
+          # inheritance chain, so the gate must fire if any nested
+          # chitin.yaml changed too — not just the repo-root one.
+          changed=$(git diff --name-only "$base"...HEAD | grep -E '(^|/)chitin\.yaml$' || true)
+          if [ -z "$changed" ]; then
+            echo "no chitin.yaml files changed; skipping signed-policy verification"
             exit 0
           fi
           if [ -z "${CHITIN_POLICY_PUBLIC_KEY:-}" ]; then
-            echo "::error file=chitin.yaml::chitin.yaml changed but CHITIN_POLICY_PUBLIC_KEY is not configured as a repository variable/secret; see docs/runbooks/governance-signed-policy.md"
+            echo "::error::chitin.yaml changed but CHITIN_POLICY_PUBLIC_KEY is not configured as a repository variable/secret; see docs/runbooks/governance-signed-policy.md"
             exit 1
           fi
-          go run ./cmd/chitin-kernel policy verify \
-            --policy-file ../../chitin.yaml \
-            --public-key "$CHITIN_POLICY_PUBLIC_KEY"
+          status=0
+          while IFS= read -r policy; do
+            [ -n "$policy" ] || continue
+            echo "verifying $policy"
+            if ! go run ./cmd/chitin-kernel policy verify \
+                --policy-file "../../$policy" \
+                --public-key "$CHITIN_POLICY_PUBLIC_KEY"; then
+              echo "::error file=$policy::signature verification failed"
+              status=1
+            fi
+          done <<< "$changed"
+          exit $status
         working-directory: go/execution-kernel
 
       - name: Go test

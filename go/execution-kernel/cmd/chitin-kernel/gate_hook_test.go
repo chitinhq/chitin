@@ -145,7 +145,7 @@ func TestEvalHookStdin_NoRecordStillLogsUnknownTool(t *testing.T) {
 		"cwd":        env.cwd,
 	})
 	var out, errOut bytes.Buffer
-	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "codex", "", "", false, true)
+	_ = evalHookStdin(bytes.NewReader(body), &out, &errOut, "codex", "", "", false, true, false)
 
 	got, err := os.ReadFile(filepath.Join(env.chitin, "unknown-tools.jsonl"))
 	if err != nil {

@@ -1,3 +1,13 @@
+// Package gov includes the kernel's Ed25519 signature support for
+// chitin.yaml. Signing is operator-driven via the
+// `chitin-kernel policy {keygen,sign,verify}` subcommands and the
+// pre-commit hook installed by
+// `scripts/install-governance-policy-signing-hook.sh`.
+//
+// At policy load time the kernel calls VerifyPolicySignatureFile (or
+// VerifyPolicySignatureBytes) before parsing the YAML, refusing to
+// continue if a pinned operator public key fails verification.
+
 package gov
 
 import (
@@ -18,6 +28,12 @@ const (
 	DefaultPolicySigSuffix   = ".sig"
 )
 
+// PolicyLoadOptions selects the trust roots and required-signature
+// stance applied when the kernel verifies a chitin.yaml signature.
+// Zero value defaults to "advisory" (verify when both a trust key
+// and a sidecar signature are present) and honors the
+// CHITIN_POLICY_REQUIRE_SIGNATURE and CHITIN_POLICY_TRUST_DIR env
+// vars when their corresponding struct fields are empty.
 type PolicyLoadOptions struct {
 	BypassSignature  bool
 	PublicKey        string
@@ -25,6 +41,11 @@ type PolicyLoadOptions struct {
 	RequireSignature bool
 }
 
+// PolicySignatureError is returned by VerifyPolicySignatureFile /
+// VerifyPolicySignatureBytes when verification cannot succeed.
+// Code is a stable identifier (e.g. policy_signature_missing) suitable
+// for routing and audit logging; Path is the file involved when
+// known; Message is a free-form detail string.
 type PolicySignatureError struct {
 	Code    string
 	Path    string
@@ -38,6 +59,9 @@ func (e *PolicySignatureError) Error() string {
 	return e.Code + ": " + e.Path + ": " + e.Message
 }
 
+// IsPolicySignatureError reports whether err (or anything it wraps) is
+// a *PolicySignatureError. Used by callers that want to surface a
+// signature-specific exit code without inspecting the wrapped chain.
 func IsPolicySignatureError(err error) bool {
 	var sigErr *PolicySignatureError
 	return errors.As(err, &sigErr)
@@ -65,6 +89,11 @@ func (o PolicyLoadOptions) trustDir() string {
 	return filepath.Join(home, ".chitin", "trust")
 }
 
+// VerifyPolicySignatureFile reads the policy file at path and
+// verifies the sidecar `<path>.sig` against the resolved trust key.
+// It returns nil when verification succeeds, when no signature is
+// required, or when opts.BypassSignature is true; otherwise it
+// returns a *PolicySignatureError describing the failure.
 func VerifyPolicySignatureFile(path string, opts PolicyLoadOptions) error {
 	if opts.BypassSignature {
 		return nil
@@ -77,6 +106,10 @@ func VerifyPolicySignatureFile(path string, opts PolicyLoadOptions) error {
 	return VerifyPolicySignatureBytes(path, data, opts)
 }
 
+// VerifyPolicySignatureBytes is the bytes-already-in-memory variant of
+// VerifyPolicySignatureFile. The sidecar `<path>.sig` is still read
+// from disk so callers can verify a policy that came from a non-file
+// source (e.g. inheritance) without re-reading it.
 func VerifyPolicySignatureBytes(path string, data []byte, opts PolicyLoadOptions) error {
 	if opts.BypassSignature {
 		return nil

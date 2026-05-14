@@ -713,10 +713,11 @@ func writeBlockReason(out io.Writer, reason string) {
 }
 
 func writeBlockDecision(out io.Writer, ruleID, reason string) {
-	body, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
+	payload := map[string]string{"decision": "block", "reason": reason}
 	if ruleID != "" {
-		body, _ = json.Marshal(map[string]string{"decision": "block", "rule_id": ruleID, "reason": reason})
+		payload["rule_id"] = ruleID
 	}
+	body, _ := json.Marshal(payload)
 	_, _ = out.Write(body)
 	_, _ = out.Write([]byte{'\n'})
 }
