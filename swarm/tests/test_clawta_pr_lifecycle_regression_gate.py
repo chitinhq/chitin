@@ -70,6 +70,33 @@ def approve_comment(head: str = "abc1234") -> dict:
 _TICKET_INFO_PASS = {"status": "in_progress", "assignee": None}
 
 
+class RegressionGateFetchTests(unittest.TestCase):
+    def test_gate_fetches_github_merge_ref_before_worktree(self) -> None:
+        m = load_module()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(m.tempfile, "mkdtemp", return_value="/tmp/regression-gate-pr-42"), \
+             mock.patch.object(m, "run", side_effect=fake_run), \
+             mock.patch.object(m.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="ok\n", stderr="")), \
+             mock.patch.object(m.shutil, "rmtree"):
+            rc, diagnostic = m.run_regression_gate(42, "abc1234")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(diagnostic, "ok")
+        self.assertEqual(
+            calls[0],
+            ["git", "fetch", "origin", "+refs/pull/42/merge:refs/remotes/origin/pr/42/merge"],
+        )
+        self.assertEqual(
+            calls[1],
+            ["git", "worktree", "add", "--detach", "/tmp/regression-gate-pr-42", "refs/remotes/origin/pr/42/merge"],
+        )
+
+
 class TicketInferenceTests(unittest.TestCase):
     def test_infer_ticket_accepts_explicit_refs_in_pr_body(self) -> None:
         m = load_module()
