@@ -54,6 +54,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,13 @@ INVARIANT_BIN = Path(os.environ.get(
     str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
 ))
 AUTHOR = "clawta-poller"
+BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO", "chitinhq/chitin")
+DEPENDENCY_BLOCK_PREFIX = "dependency gate:"
+PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
+PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
+PR_URL_RE = re.compile(r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)/pull/(?P<number>\d+)")
+TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 
 
 def log(msg: str) -> None:
@@ -107,6 +115,16 @@ def log(msg: str) -> None:
             f.write(line + "\n")
     except OSError:
         pass
+
+
+@dataclass(frozen=True)
+class DependencyRef:
+    kind: str
+    key: str
+    label: str
+    repo: str | None = None
+    number: int | None = None
+    ticket_id: str | None = None
 
 
 
@@ -224,6 +242,284 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
             (*DISPATCHABLE_STATUSES, *TERMINAL_LANES, ROUTING_LANE),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at, status
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+             ORDER BY priority DESC, created_at ASC
+            """,
+            DISPATCHABLE_STATUSES,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_blocked_dependency_gate_tickets() -> list[dict[str, Any]]:
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT t.id, t.title, t.body, t.assignee, t.priority, t.created_at, t.status
+              FROM tasks t
+             WHERE t.status = 'blocked'
+               AND (
+                    SELECT c.body
+                      FROM task_comments c
+                     WHERE c.task_id = t.id
+                       AND c.body LIKE 'Blocked:%'
+                     ORDER BY c.created_at DESC, c.id DESC
+                     LIMIT 1
+                  ) LIKE ?
+             ORDER BY t.priority DESC, t.created_at ASC
+            """,
+            (f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%",),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def extract_dependency_refs(body: str | None, *, self_ticket_id: str | None = None) -> list[DependencyRef]:
+    if not body:
+        return []
+
+    refs: list[DependencyRef] = []
+    seen: set[str] = set()
+
+    def add(ref: DependencyRef) -> None:
+        if ref.key in seen:
+            return
+        seen.add(ref.key)
+        refs.append(ref)
+
+    for match in PR_URL_RE.finditer(body):
+        repo = f"{match.group('owner')}/{match.group('name')}"
+        number = int(match.group("number"))
+        add(
+            DependencyRef(
+                kind="pr",
+                key=f"pr:{repo}#{number}",
+                label=f"{repo}#{number}",
+                repo=repo,
+                number=number,
+            )
+        )
+
+    for match in PR_REPO_RE.finditer(body):
+        repo = match.group("repo")
+        number = int(match.group("number"))
+        add(
+            DependencyRef(
+                kind="pr",
+                key=f"pr:{repo}#{number}",
+                label=f"{repo}#{number}",
+                repo=repo,
+                number=number,
+            )
+        )
+
+    for match in PR_SHORT_RE.finditer(body):
+        number = int(match.group("number"))
+        add(
+            DependencyRef(
+                kind="pr",
+                key=f"pr:{DEFAULT_GH_REPO}#{number}",
+                label=f"PR #{number}",
+                repo=DEFAULT_GH_REPO,
+                number=number,
+            )
+        )
+
+    for match in TICKET_REF_RE.finditer(body):
+        ticket_id = match.group(0)
+        if self_ticket_id and ticket_id == self_ticket_id:
+            continue
+        add(
+            DependencyRef(
+                kind="ticket",
+                key=f"ticket:{ticket_id}",
+                label=ticket_id,
+                ticket_id=ticket_id,
+            )
+        )
+
+    return refs
+
+
+def check_pr_dependency(ref: DependencyRef, pr_cache: dict[str, tuple[bool, str]]) -> tuple[bool, str]:
+    assert ref.repo is not None
+    assert ref.number is not None
+    cached = pr_cache.get(ref.key)
+    if cached is not None:
+        return cached
+
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(ref.number),
+            "--repo",
+            ref.repo,
+            "--json",
+            "state,mergedAt,url,number",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        outcome = (False, f"{ref.label} (gh pr view failed)")
+        pr_cache[ref.key] = outcome
+        log(f"dependency probe: gh pr view failed for {ref.repo}#{ref.number}: {result.stderr[-200:]}")
+        return outcome
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        outcome = (False, f"{ref.label} (invalid gh pr view JSON)")
+        pr_cache[ref.key] = outcome
+        log(f"dependency probe: invalid gh JSON for {ref.repo}#{ref.number}")
+        return outcome
+
+    merged = bool(payload.get("mergedAt")) or str(payload.get("state", "")).upper() == "MERGED"
+    if merged:
+        outcome = (True, ref.label)
+    else:
+        state = str(payload.get("state", "open")).lower()
+        outcome = (False, f"{ref.label} (state={state})")
+    pr_cache[ref.key] = outcome
+    return outcome
+
+
+def check_ticket_dependency(ref: DependencyRef, ticket_cache: dict[str, tuple[bool, str]]) -> tuple[bool, str]:
+    assert ref.ticket_id is not None
+    cached = ticket_cache.get(ref.key)
+    if cached is not None:
+        return cached
+
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (ref.ticket_id,)).fetchone()
+
+    if row is None:
+        outcome = (False, f"{ref.label} (missing from kanban)")
+    else:
+        status = str(row[0]).lower()
+        outcome = (status in ("done", "archived"), ref.label if status in ("done", "archived") else f"{ref.label} (status={status})")
+    ticket_cache[ref.key] = outcome
+    return outcome
+
+
+def unresolved_dependencies(
+    ticket: dict[str, Any],
+    *,
+    pr_cache: dict[str, tuple[bool, str]],
+    ticket_cache: dict[str, tuple[bool, str]],
+) -> list[str]:
+    unresolved: list[str] = []
+    for ref in extract_dependency_refs(ticket.get("body"), self_ticket_id=ticket.get("id")):
+        resolved, detail = (
+            check_pr_dependency(ref, pr_cache)
+            if ref.kind == "pr"
+            else check_ticket_dependency(ref, ticket_cache)
+        )
+        if not resolved:
+            unresolved.append(detail)
+    return unresolved
+
+
+def block_for_unresolved_dependencies(ticket_id: str, unresolved: list[str], dry_run: bool) -> bool:
+    reason = f"{DEPENDENCY_BLOCK_PREFIX} waiting on {', '.join(unresolved)}"
+    if dry_run:
+        log(f"[dry-run] would block {ticket_id}: {reason}")
+        return True
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "block", ticket_id, reason, "--author", AUTHOR],
+            check=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"dependency probe: block failed for {ticket_id}: {e}")
+        return False
+    log(f"dependency probe: blocked {ticket_id}: {reason}")
+    return True
+
+
+def unblock_dependency_ticket(ticket_id: str, resolved: list[str], dry_run: bool) -> bool:
+    if dry_run:
+        log(f"[dry-run] would unblock {ticket_id}: {', '.join(resolved)}")
+        return True
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "unblock", ticket_id, "--author", AUTHOR],
+            check=True,
+            timeout=15,
+        )
+        subprocess.run(
+            [
+                "hermes",
+                "kanban",
+                "--board",
+                BOARD,
+                "comment",
+                ticket_id,
+                "--author",
+                AUTHOR,
+                f"Dependency gate cleared: {', '.join(resolved)}",
+            ],
+            check=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"dependency probe: unblock failed for {ticket_id}: {e}")
+        return False
+    log(f"dependency probe: unblocked {ticket_id}")
+    return True
+
+
+def auto_unblock_dependency_tickets(
+    dry_run: bool,
+    *,
+    pr_cache: dict[str, tuple[bool, str]] | None = None,
+    ticket_cache: dict[str, tuple[bool, str]] | None = None,
+) -> list[str]:
+    pr_cache = {} if pr_cache is None else pr_cache
+    ticket_cache = {} if ticket_cache is None else ticket_cache
+    unblocked: list[str] = []
+    for ticket in fetch_blocked_dependency_gate_tickets():
+        refs = extract_dependency_refs(ticket.get("body"), self_ticket_id=ticket.get("id"))
+        if not refs:
+            continue
+        unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
+        if unresolved:
+            continue
+        resolved_labels = [ref.label for ref in refs]
+        if unblock_dependency_ticket(ticket["id"], resolved_labels, dry_run):
+            unblocked.append(ticket["id"])
+    return unblocked
+
+
+def apply_dependency_gate(
+    dry_run: bool,
+    *,
+    pr_cache: dict[str, tuple[bool, str]] | None = None,
+    ticket_cache: dict[str, tuple[bool, str]] | None = None,
+) -> list[str]:
+    pr_cache = {} if pr_cache is None else pr_cache
+    ticket_cache = {} if ticket_cache is None else ticket_cache
+    blocked: list[str] = []
+    for ticket in fetch_ready_or_todo_with_bodies():
+        unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
+        if not unresolved:
+            continue
+        if block_for_unresolved_dependencies(ticket["id"], unresolved, dry_run):
+            blocked.append(ticket["id"])
+    return blocked
 
 
 # ---------------------------------------------------------------------------
@@ -603,15 +899,29 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     # Step 0: Self-heal safe board/finalize invariants before starting new work.
     invariants = run_invariant_repairs(dry_run)
 
-    # Step 1: Dispatch already-routed terminal-lane work first so visible
+    pr_cache: dict[str, tuple[bool, str]] = {}
+    ticket_cache: dict[str, tuple[bool, str]] = {}
+
+    # Step 1: Unblock dependency-gated tickets whose prerequisites resolved.
+    dependency_unblocked = auto_unblock_dependency_tickets(
+        dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
+    )
+
+    # Step 2: Block ready/todo tickets with unresolved cross-ticket / cross-PR
+    # dependencies so they don't get dispatched before their prerequisites land.
+    dependency_blocked = apply_dependency_gate(
+        dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
+    )
+
+    # Step 3: Dispatch already-routed terminal-lane work first so visible
     # ready→in_progress movement is not starved by a large clawta routing queue.
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
 
-    # Step 2: Demote ungroomed tickets (no assignee or non-dispatchable).
+    # Step 4: Demote ungroomed tickets (no assignee or non-dispatchable).
     ungroomed_demoted = demote_ungroomed(dry_run)
     demoted.extend(ungroomed_demoted)
 
-    # Step 3: If dispatch capacity remains, route only enough clawta-assigned
+    # Step 5: If dispatch capacity remains, route only enough clawta-assigned
     # tickets to fill that capacity, then immediately dispatch them.
     remaining = max_dispatch - len(dispatched)
     routed: list[str] = []
@@ -622,10 +932,18 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         demoted.extend(more_demoted)
         queue_size = max(queue_size, queue_size_after_route)
 
-    if not dispatched and not demoted and not routed:
+    if not dispatched and not demoted and not routed and not dependency_blocked and not dependency_unblocked:
         log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
 
-    return {"dispatched": dispatched, "demoted": demoted, "routed": routed, "invariants": invariants, "queue_size": queue_size}
+    return {
+        "dispatched": dispatched,
+        "demoted": demoted,
+        "routed": routed,
+        "dependency_blocked": dependency_blocked,
+        "dependency_unblocked": dependency_unblocked,
+        "invariants": invariants,
+        "queue_size": queue_size,
+    }
 
 
 def main() -> int:

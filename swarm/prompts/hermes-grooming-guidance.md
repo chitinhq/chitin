@@ -58,6 +58,12 @@ questions), promote it:
 
 Clawta-poller's next tick will sequence and dispatch it.
 
+If the ticket depends on another ticket or PR, say so explicitly in
+the body with a `Depends on:` line (for example: `Depends on: PR #532`
+or `Depends on: t_deadbeef`). Do not mark it ready until that
+dependency is resolved unless you intentionally want clawta-poller to
+block it pending the named prerequisite.
+
 If the user asks you to dispatch something already in `triage`, your
 job is to GROOM IT FIRST — make sure the body has acceptance criteria
 and a clear scope. Comment the grooming, then `kanban-flow ready`. Do
