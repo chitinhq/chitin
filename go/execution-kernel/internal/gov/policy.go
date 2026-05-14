@@ -83,6 +83,14 @@ type Bounds struct {
 	MaxFilesChanged int                     `yaml:"max_files_changed"`
 	MaxLinesChanged int                     `yaml:"max_lines_changed"`
 	PerAction       map[string]ActionBounds `yaml:"per_action,omitempty"`
+	// ExcludePaths are glob patterns; a changed file whose path matches
+	// any pattern is excluded from the files/lines totals measured
+	// against the ceilings. Intended for generated artifacts (lockfiles,
+	// vendored trees, snapshots) whose churn is not reviewed line by
+	// line. `**` matches across path segments, e.g. `**/pnpm-lock.yaml`
+	// or `vendor/**`. Exclusion applies to every push-shaped action;
+	// there is no per-action exclude list.
+	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
 }
 
 // ActionBounds is the per-action override for blast-radius ceilings.

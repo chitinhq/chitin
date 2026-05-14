@@ -19,31 +19,88 @@ func TestBounds_NonPushShapedSkips(t *testing.T) {
 	}
 }
 
-func TestBounds_ParseStatLine(t *testing.T) {
-	cases := []struct {
-		line    string
-		wantF   int
-		wantIns int
-		wantDel int
-	}{
-		{" 3 files changed, 10 insertions(+), 5 deletions(-)", 3, 10, 5},
-		{" 1 file changed, 1 insertion(+)", 1, 1, 0},
-		{" 60 files changed, 42 insertions(+), 8874 deletions(-)", 60, 42, 8874},
-		{" 2 files changed, 0 insertions(+), 7 deletions(-)", 2, 0, 7},
+func TestBounds_ParseNumstat(t *testing.T) {
+	out := "10\t5\tsrc/a.go\n" +
+		"3045\t42\tpnpm-lock.yaml\n" +
+		"-\t-\tassets/logo.png\n" +
+		"1\t0\tapps/x/pnpm-lock.yaml\n"
+
+	// No exclusions: every file counts; binary contributes 0 lines.
+	f, ins, del, err := parseNumstat(out, nil)
+	if err != nil {
+		t.Fatalf("parseNumstat: %v", err)
 	}
-	for _, c := range cases {
-		f, ins, del := parseDiffStatLine(c.line)
-		if f != c.wantF || ins != c.wantIns || del != c.wantDel {
-			t.Errorf("parseDiffStatLine(%q) = (%d,%d,%d) want (%d,%d,%d)",
-				c.line, f, ins, del, c.wantF, c.wantIns, c.wantDel)
-		}
+	if f != 4 || ins != 3056 || del != 47 {
+		t.Errorf("no-exclude: got (%d,%d,%d) want (4,3056,47)", f, ins, del)
+	}
+
+	// Excluding lockfiles drops both pnpm-lock.yaml files.
+	f, ins, del, err = parseNumstat(out, []string{"**/pnpm-lock.yaml"})
+	if err != nil {
+		t.Fatalf("parseNumstat exclude: %v", err)
+	}
+	if f != 2 || ins != 10 || del != 5 {
+		t.Errorf("exclude lockfiles: got (%d,%d,%d) want (2,10,5)", f, ins, del)
 	}
 }
 
-func TestBounds_ParseStatLine_Empty(t *testing.T) {
-	f, ins, del := parseDiffStatLine("")
+func TestBounds_ParseNumstat_Empty(t *testing.T) {
+	f, ins, del, err := parseNumstat("", nil)
+	if err != nil || f != 0 || ins != 0 || del != 0 {
+		t.Errorf("empty should parse to zeros with no error, got (%d,%d,%d) err=%v", f, ins, del, err)
+	}
+	f, ins, del, err = parseNumstat("   \n  ", nil)
+	if err != nil || f != 0 || ins != 0 || del != 0 {
+		t.Errorf("whitespace-only should parse to zeros, got (%d,%d,%d) err=%v", f, ins, del, err)
+	}
+}
+
+func TestBounds_ParseNumstat_AllExcludedPasses(t *testing.T) {
+	// Boundary: every changed file is excluded — measures as 0/0/0.
+	out := "9000\t9000\tpnpm-lock.yaml\n5000\t0\tvendor/big.js\n"
+	f, ins, del, err := parseNumstat(out, []string{"**/pnpm-lock.yaml", "vendor/**"})
+	if err != nil {
+		t.Fatalf("parseNumstat: %v", err)
+	}
 	if f != 0 || ins != 0 || del != 0 {
-		t.Errorf("empty should parse to zeros, got (%d,%d,%d)", f, ins, del)
+		t.Errorf("fully-excluded diff should be zeros, got (%d,%d,%d)", f, ins, del)
+	}
+}
+
+func TestBounds_ParseNumstat_Unparseable(t *testing.T) {
+	// Fail-closed: a line without three tab fields is an error, not a skip.
+	if _, _, _, err := parseNumstat("garbage line no tabs\n", nil); err == nil {
+		t.Errorf("unparseable line should error (fail-closed)")
+	}
+	// Fail-closed: a non-numeric count is an error.
+	if _, _, _, err := parseNumstat("abc\t5\tsrc/a.go\n", nil); err == nil {
+		t.Errorf("non-numeric added count should error")
+	}
+}
+
+func TestBounds_MatchGlob(t *testing.T) {
+	cases := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"**/pnpm-lock.yaml", "pnpm-lock.yaml", true},
+		{"**/pnpm-lock.yaml", "apps/x/pnpm-lock.yaml", true},
+		{"**/pnpm-lock.yaml", "apps/x/pnpm-lock.yaml.bak", false},
+		{"vendor/**", "vendor/a/b.js", true},
+		{"vendor/**", "vendor", false},
+		{"vendor/**", "src/vendor/a.js", false},
+		{"pnpm-lock.yaml", "pnpm-lock.yaml", true},
+		{"pnpm-lock.yaml", "apps/x/pnpm-lock.yaml", false},
+		{"*.lock", "Cargo.lock", true},
+		{"*.lock", "a/Cargo.lock", false},
+		{"**/*.snap", "test/__snapshots__/a.snap", true},
+		{"", "anything", false},
+	}
+	for _, c := range cases {
+		if got := matchGlob(c.pattern, c.path); got != c.want {
+			t.Errorf("matchGlob(%q, %q) = %v want %v", c.pattern, c.path, got, c.want)
+		}
 	}
 }
 
@@ -194,12 +251,44 @@ func TestCollectDiffStats_GithubPRCreateUsesHeadBranchNotCwdHead(t *testing.T) {
 	files, ins, del, err := collectDiffStats(Action{
 		Type:   ActGithubPRCreate,
 		Target: "gh pr create --base main --head feature/small",
-	}, repo)
+	}, repo, nil)
 	if err != nil {
 		t.Fatalf("collectDiffStats: %v", err)
 	}
 	if files != 1 || ins != 20 || del != 0 {
 		t.Fatalf("github.pr.create should diff main...feature/small, got files=%d ins=%d del=%d", files, ins, del)
+	}
+}
+
+// Integration: ExcludePaths drops a generated lockfile from the totals
+// measured by collectDiffStats against a real git diff.
+func TestCollectDiffStats_ExcludePathsDropsLockfile(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	writeAndCommitBoundsFile(t, repo, "pnpm-lock.yaml", strings.Repeat("dep\n", 3000), "regen lockfile")
+	writeAndCommitBoundsFile(t, repo, "app_change.go", strings.Repeat("x\n", 40), "real code change")
+
+	// Without exclusion: lockfile churn dominates the total.
+	files, ins, del, err := collectDiffStats(Action{
+		Type:   ActGitPush,
+		Target: "git push origin main",
+	}, repo, nil)
+	if err != nil {
+		t.Fatalf("collectDiffStats no-exclude: %v", err)
+	}
+	if files != 2 || ins != 3040 || del != 0 {
+		t.Fatalf("no-exclude: got files=%d ins=%d del=%d want (2,3040,0)", files, ins, del)
+	}
+
+	// With exclusion: only the real code change counts.
+	files, ins, del, err = collectDiffStats(Action{
+		Type:   ActGitPush,
+		Target: "git push origin main",
+	}, repo, []string{"**/pnpm-lock.yaml"})
+	if err != nil {
+		t.Fatalf("collectDiffStats exclude: %v", err)
+	}
+	if files != 1 || ins != 40 || del != 0 {
+		t.Fatalf("exclude lockfile: got files=%d ins=%d del=%d want (1,40,0)", files, ins, del)
 	}
 }
 
@@ -210,7 +299,7 @@ func TestCollectDiffStats_GitPushStillUsesCwdHead(t *testing.T) {
 	files, ins, del, err := collectDiffStats(Action{
 		Type:   ActGitPush,
 		Target: "git push origin main",
-	}, repo)
+	}, repo, nil)
 	if err != nil {
 		t.Fatalf("collectDiffStats: %v", err)
 	}
@@ -227,7 +316,7 @@ func TestCollectDiffStats_GithubPRCreateMissingHeadFallsBackToCwdHeadAndWarns(t 
 		files, ins, del, err := collectDiffStats(Action{
 			Type:   ActGithubPRCreate,
 			Target: "gh pr create --base main",
-		}, repo)
+		}, repo, nil)
 		if err != nil {
 			t.Fatalf("collectDiffStats: %v", err)
 		}
@@ -250,7 +339,7 @@ func TestCollectDiffStats_GithubPRCreateOmittedBaseUsesOriginHead(t *testing.T) 
 	files, ins, del, err := collectDiffStats(Action{
 		Type:   ActGithubPRCreate,
 		Target: "gh pr create --head feature/small",
-	}, repo)
+	}, repo, nil)
 	if err != nil {
 		t.Fatalf("collectDiffStats: %v", err)
 	}
