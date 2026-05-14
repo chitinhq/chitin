@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Behavior tests for swarm/workflows/_pick_driver.py."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "_pick_driver.py"
+
+
+CARDS = {
+    "claude-code-headless": {
+        "id": "claude-code-headless",
+        "capabilities": [{"skill": "review", "depth": "strong"}],
+        "models": [{"id": "sonnet-4-6", "premium_cost": 0.03}],
+    },
+    "copilot": {
+        "id": "copilot",
+        "capabilities": [
+            {"skill": "python", "depth": "moderate"},
+            {"skill": "review", "depth": "moderate"},
+        ],
+        "models": [{"id": "gpt-4.1", "premium_cost": 0.01}],
+    },
+    "gemini": {
+        "id": "gemini",
+        "capabilities": [
+            {"skill": "python", "depth": "strong"},
+            {"skill": "review", "depth": "strong"},
+        ],
+        "models": [
+            {"id": "gemini-2.5-flash-lite", "premium_cost": 0.05},
+            {"id": "gemini-2.5-flash", "premium_cost": 0.10},
+            {"id": "gemini-2.5-pro", "premium_cost": 0.50},
+        ],
+    },
+    "codex": {
+        "id": "codex",
+        "capabilities": [
+            {"skill": "python", "depth": "strong"},
+            {"skill": "review", "depth": "strong"},
+        ],
+        "models": [{"id": "gpt-5.5", "premium_cost": 0.40}],
+    },
+}
+
+
+class PickDriverTests(unittest.TestCase):
+    def run_pick_driver(self, classify: dict, **env_overrides: str) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp)
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "deterministic",
+                **env_overrides,
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=json.dumps(classify),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            return json.loads(result.stdout)
+
+    def test_exploration_can_be_disabled(self):
+        result = self.run_pick_driver(
+            {"complexity": "low", "capabilities": ["python"]},
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        self.assertEqual(result["driver"], "copilot")
+        self.assertEqual(result["selection_mode"], "exploitation")
+        self.assertEqual(result["exploration_candidates_considered"], 0)
+
+    def test_exploration_pool_is_bounded_and_can_promote_gemini(self):
+        result = self.run_pick_driver(
+            {"complexity": "low", "capabilities": ["python"]},
+            CLAWTA_EXPLORATION_PERCENT="100",
+            CLAWTA_EXPLORATION_MAX_CANDIDATES="1",
+        )
+
+        self.assertEqual(result["driver"], "gemini")
+        self.assertEqual(result["model"], "gemini-2.5-flash")
+        self.assertEqual(result["selection_mode"], "exploration")
+        self.assertEqual(result["exploration_candidates_considered"], 1)
+
+    def test_exploration_never_violates_required_capabilities(self):
+        result = self.run_pick_driver(
+            {"complexity": "low", "capabilities": ["python", "review"]},
+            CLAWTA_EXPLORATION_PERCENT="100",
+            CLAWTA_EXPLORATION_MAX_CANDIDATES="2",
+        )
+
+        self.assertNotEqual(result["driver"], "claude-code-headless")
+        self.assertIn(result["driver"], {"copilot", "gemini", "codex"})
+        self.assertEqual(result["selection_mode"], "exploration")
+
+    def test_high_risk_tasks_stay_on_exploitation_without_override(self):
+        result = self.run_pick_driver(
+            {
+                "complexity": "low",
+                "capabilities": ["python"],
+                "risk_level": "high",
+            },
+            CLAWTA_EXPLORATION_PERCENT="100",
+            CLAWTA_EXPLORATION_MAX_CANDIDATES="1",
+        )
+
+        self.assertEqual(result["driver"], "copilot")
+        self.assertEqual(result["selection_mode"], "exploitation")
+        self.assertIn("risk_level=high excluded from exploration", result["reasoning"])
+
+    def test_governance_critical_tasks_require_explicit_opt_in(self):
+        result = self.run_pick_driver(
+            {
+                "complexity": "low",
+                "capabilities": ["python"],
+                "governance_critical": True,
+            },
+            CLAWTA_EXPLORATION_PERCENT="100",
+            CLAWTA_EXPLORATION_MAX_CANDIDATES="1",
+        )
+        self.assertEqual(result["selection_mode"], "exploitation")
+
+        allowed = self.run_pick_driver(
+            {
+                "complexity": "low",
+                "capabilities": ["python"],
+                "governance_critical": True,
+            },
+            CLAWTA_EXPLORATION_PERCENT="100",
+            CLAWTA_EXPLORATION_MAX_CANDIDATES="1",
+            CLAWTA_EXPLORATION_ALLOW_GOVERNANCE_CRITICAL="1",
+        )
+        self.assertEqual(allowed["driver"], "gemini")
+        self.assertEqual(allowed["selection_mode"], "exploration")
+
+
+if __name__ == "__main__":
+    unittest.main()
