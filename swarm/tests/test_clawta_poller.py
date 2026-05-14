@@ -64,6 +64,57 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_extract_dependency_refs_ignores_parent_hierarchy_refs(self) -> None:
+        module = load_module()
+
+        refs = module.extract_dependency_refs(
+            "\n".join(
+                [
+                    "Parent: t_abcd1234",
+                    "**Parent:** t_feedface",
+                    "**parent**: t_decafbad",
+                    "Depends on: t_deadbeef",
+                    "Blocks: t_cafebabe",
+                    "Plain mention t_8badf00d still counts.",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            [ref.ticket_id for ref in refs if ref.kind == "ticket"],
+            ["t_deadbeef", "t_cafebabe", "t_8badf00d"],
+        )
+
+    def test_extract_dependency_refs_empty_boundary_returns_empty_refs(self) -> None:
+        module = load_module()
+
+        self.assertEqual(module.extract_dependency_refs(None), [])
+        self.assertEqual(module.extract_dependency_refs(""), [])
+
+    def test_extract_dependency_refs_max_boundary_deduplicates_many_refs(self) -> None:
+        module = load_module()
+
+        body = "\n".join(
+            [
+                *(f"Depends on: t_{i:08x}" for i in range(20)),
+                *(f"Blocks: t_{i:08x}" for i in range(20)),
+            ]
+        )
+
+        refs = module.extract_dependency_refs(body)
+
+        self.assertEqual(len([ref for ref in refs if ref.kind == "ticket"]), 20)
+
+    def test_extract_dependency_refs_error_boundary_treats_malformed_parent_as_plain_ref(self) -> None:
+        module = load_module()
+
+        refs = module.extract_dependency_refs("Parent t_abcd1234")
+
+        self.assertEqual(
+            [ref.ticket_id for ref in refs if ref.kind == "ticket"],
+            ["t_abcd1234"],
+        )
+
     def test_tick_demotes_ticket_missing_invariants_and_boundaries(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
