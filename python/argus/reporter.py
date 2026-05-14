@@ -12,7 +12,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from argus import migrations, prompts
 from argus.detectors import Finding, run_all_detectors
+
+
+# Path to an importable llm module; soft-imported so that tests can
+# pre-set ARGUS_SKIP_QWEN=1 and the subprocess path is bypassed without
+# pulling in the urllib-based llm client.
+try:
+    from argus import llm as _llm_module
+except ImportError:
+    _llm_module = None  # type: ignore[assignment]
 
 
 def _get_summary_stats(db_path: str) -> dict:
@@ -66,20 +76,54 @@ def _get_summary_stats(db_path: str) -> dict:
 def _call_qwen(prompt: str) -> Optional[str]:
     """Call qwen3.6:27b via ollama for narration. Returns None if unavailable.
 
-    Setting ARGUS_SKIP_QWEN=1 bypasses the subprocess (used in tests and on
+    Setting ARGUS_SKIP_QWEN=1 bypasses the LLM (used in tests and on
     quiet-day runs where narration adds no value).
+
+    Prefers the HTTP-based `llm.call` path (ollama daemon, model stays warm,
+    `think=false` suppresses qwen chain-of-thought). Falls back to the
+    subprocess invocation if `argus.llm` is unavailable, and in both cases
+    applies the chain-of-thought strip so the rendered HTML never shows
+    `Thinking...` prose.
     """
     if os.environ.get("ARGUS_SKIP_QWEN"):
         return None
+
+    # Prefer the HTTP daemon path (warm model, think=false, retention log).
+    if _llm_module is not None:
+        try:
+            db_path = Path(os.environ.get("ARGUS_DB_PATH",
+                                          str(Path.home() / ".argus" / "index.db")))
+            if db_path.exists():
+                conn = migrations.open_writable(db_path)
+                # Don't apply migrations here — the report flow may run in
+                # contexts where the schema is intentionally older.
+                try:
+                    result = _llm_module.call(
+                        conn,
+                        purpose="reporter_narrate",
+                        system=prompts.NARRATE_DAILY_SYSTEM,
+                        user=prompt,
+                    )
+                finally:
+                    conn.close()
+                if result.ok and result.text:
+                    return result.text.strip() or None
+        except Exception:
+            # fall through to subprocess path
+            pass
+
     try:
         result = subprocess.run(
             ["ollama", "run", "qwen3.6:27b", prompt],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            raw = result.stdout
+            if _llm_module is not None:
+                raw = _llm_module.strip_thinking(raw)
+            return raw.strip() or None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return None
