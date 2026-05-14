@@ -14,10 +14,15 @@ def _from_unix(ts_unix):
 
 import pytest
 
+from argus import migrations
 from argus.detectors import (
+    detect_belief_without_evidence,
+    detect_cross_agent_disagreement,
     detect_deny_cluster,
+    detect_reality_without_belief,
     detect_unknown_rate_spike,
     detect_agent_failure_run,
+    detect_stale_belief,
     detect_stuck_flow,
 )
 from argus.indexer import init_db
@@ -46,6 +51,30 @@ def _insert_event(conn, ts: str, allowed: bool, rule_id: str, agent: str = "test
         agent,
         "shell.exec",
     ))
+    conn.commit()
+
+
+def _insert_belief(conn, *, agent: str, subject: str, claim: str, ts_unix: int, source_path: str = "memory/test.md"):
+    import hashlib
+
+    payload = f"{agent}|{subject}|{claim}|{ts_unix}|{source_path}"
+    conn.execute(
+        """
+        INSERT INTO beliefs (
+            belief_hash, agent, subject, claim, ts_recorded, source_path,
+            source_kind, schema_version, private, created_ts
+        ) VALUES (?, ?, ?, ?, ?, ?, 'test', 'v1', 0, ?)
+        """,
+        (
+            hashlib.sha256(payload.encode()).hexdigest(),
+            agent,
+            subject,
+            claim,
+            ts_unix,
+            source_path,
+            ts_unix,
+        ),
+    )
     conn.commit()
 
 
@@ -331,3 +360,100 @@ class TestStuckFlow:
             findings = detect_stuck_flow(str(db_path), min_idle_seconds=3600)
             assert len(findings) == 1
             conn.close()
+
+
+class TestBeliefDrift:
+    def test_stale_belief_triggers_for_active_subject(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            migrations.apply_pending(conn)
+            now_ts = int(_utc_now().timestamp())
+            stale_ts = now_ts - 100 * 86400
+            _insert_belief(conn, agent="hermes", subject="t_123", claim="t_123 is P50", ts_unix=stale_ts)
+            conn.execute(
+                """
+                INSERT INTO events (line_hash, ts, ts_unix, allowed, action_target, action_type)
+                VALUES ('evt1', ?, ?, 1, 't_123', 'kanban.update')
+                """,
+                (_from_unix(now_ts - 60).isoformat(), now_ts - 60),
+            )
+            conn.commit()
+
+            findings = detect_stale_belief(str(db_path))
+            conn.close()
+
+            assert len(findings) == 1
+            assert findings[0].detector == "belief_stale"
+
+    def test_cross_agent_disagreement_dedups_until_seven_day_reminder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            migrations.apply_pending(conn)
+            now_ts = int(_utc_now().timestamp())
+            _insert_belief(conn, agent="hermes", subject="t_456", claim="t_456 is P50", ts_unix=now_ts - 10)
+            _insert_belief(conn, agent="clawta", subject="t_456", claim="t_456 is P30", ts_unix=now_ts - 5)
+            conn.execute(
+                """
+                INSERT INTO findings (
+                    finding_hash, ts_unix, detector, severity, title, body, citations
+                ) VALUES ('oldhash', ?, 'belief_cross_agent_disagreement', 'critical',
+                          'Cross-agent disagreement: t_456', ?, '[]')
+                """,
+                (now_ts - 2 * 86400, '{"subject": "t_456", "claims": ["priority:P30", "priority:P50"]}'),
+            )
+            conn.commit()
+
+            suppressed = detect_cross_agent_disagreement(str(db_path))
+            conn.execute("DELETE FROM findings")
+            conn.execute(
+                """
+                INSERT INTO findings (
+                    finding_hash, ts_unix, detector, severity, title, body, citations
+                ) VALUES ('olderhash', ?, 'belief_cross_agent_disagreement', 'critical',
+                          'Cross-agent disagreement: t_456', ?, '[]')
+                """,
+                (now_ts - 8 * 86400, '{"subject": "t_456", "claims": ["priority:P30", "priority:P50"]}'),
+            )
+            conn.commit()
+            resurfaced = detect_cross_agent_disagreement(str(db_path))
+            conn.close()
+
+            assert suppressed == []
+            assert len(resurfaced) == 1
+
+    def test_belief_without_evidence_marks_deleted_ticket_as_orphan(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            migrations.apply_pending(conn)
+            now_ts = int(_utc_now().timestamp())
+            _insert_belief(conn, agent="hermes", subject="t_deleted", claim="t_deleted is P50", ts_unix=now_ts)
+
+            findings = detect_belief_without_evidence(str(db_path))
+            conn.close()
+
+            assert len(findings) == 1
+            assert findings[0].details["orphan"] is True
+
+    def test_reality_without_belief_triggers_on_ticket_activity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            migrations.apply_pending(conn)
+            now_ts = int(_utc_now().timestamp())
+            conn.execute(
+                """
+                INSERT INTO events (line_hash, ts, ts_unix, allowed, action_target, action_type)
+                VALUES ('evt2', ?, ?, 1, 't_789', 'kanban.update')
+                """,
+                (_from_unix(now_ts - 30).isoformat(), now_ts - 30),
+            )
+            conn.commit()
+
+            findings = detect_reality_without_belief(str(db_path))
+            conn.close()
+
+            assert len(findings) == 1
+            assert findings[0].details["subject"] == "t_789"

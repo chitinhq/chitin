@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from argus import migrations
+from argus.beliefs import ingest_wiki_graph
 from argus.reporter import generate_daily_report, _get_summary_stats
 from argus.indexer import init_db
 
@@ -201,6 +203,25 @@ def test_latest_symlink_retargets_atomically_on_rerun():
         assert first == second
         assert latest.is_symlink()
         assert latest.resolve() == second.resolve()
+
+
+def test_generate_report_includes_belief_drift_section():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        report_dir = Path(tmpdir) / "reports"
+        wiki_root = Path(tmpdir) / "wiki"
+        wiki_root.mkdir()
+
+        conn = init_db(db_path)
+        migrations.apply_pending(conn)
+        (wiki_root / "belief.md").write_text("# Ticket t_rep_1\n\nBelief: ticket t_rep_1 is P50.\n")
+        ingest_wiki_graph(conn, roots=[wiki_root])
+        conn.close()
+
+        report_path = generate_daily_report(str(db_path), report_dir)
+        content = report_path.read_text()
+
+        assert "Belief Drift" in content
 
 
 def test_discord_post_skipped_on_quiet_day(monkeypatch):

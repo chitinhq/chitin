@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from argus import findings_cli, migrations
+from argus import beliefs, findings_cli, migrations
 from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
 
@@ -69,6 +69,33 @@ def cmd_report(args) -> int:
     except Exception as e:  # noqa: BLE001
         print(f"Error generating report: {e}", file=sys.stderr)
         return 2
+
+
+def cmd_ingest_beliefs(args) -> int:
+    db_path = Path(args.db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = migrations.open_writable(db_path)
+    try:
+        migrations.apply_pending(conn)
+        result = beliefs.ingest_beliefs(
+            conn,
+            include_hermes=args.hermes,
+            include_clawta=args.clawta,
+            include_openclaw_agent=args.openclaw_agent,
+            include_wiki=args.wiki,
+        )
+    except Exception as e:  # noqa: BLE001
+        conn.close()
+        print(f"Error ingesting beliefs: {e}", file=sys.stderr)
+        return 2
+    conn.close()
+    for alert in result.alerts:
+        print(f"argus: {alert.adapter}: {alert.message}", file=sys.stderr)
+    print(
+        f"Beliefs ingested: inserted={result.inserted} skipped={result.skipped}",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def cmd_query(args) -> int:
@@ -199,6 +226,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     report_p.add_argument("--discord-always", action="store_true",
                           help="Post Discord even on quiet days")
 
+    beliefs_p = subparsers.add_parser("ingest-beliefs", help="Ingest persisted agent beliefs")
+    beliefs_p.add_argument("--hermes", action="store_true", help="Read Hermes memory sources")
+    beliefs_p.add_argument("--clawta", action="store_true", help="Read Clawta memory sources")
+    beliefs_p.add_argument("--openclaw-agent", action="store_true", help="Read glm-agent memory/profile sources")
+    beliefs_p.add_argument("--wiki", action="store_true", help="Read wiki and graph markdown sources")
+    beliefs_p.set_defaults(func=cmd_ingest_beliefs)
+
     # query
     query_p = subparsers.add_parser("query", help="Query index with NL question")
     query_p.add_argument("query", nargs="+", help="Natural language question")
@@ -251,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_index(args)
     if args.cmd == "report":
         return cmd_report(args)
+    if args.cmd == "ingest-beliefs":
+        return cmd_ingest_beliefs(args)
     if args.cmd == "query":
         args.query = " ".join(args.query)
         return cmd_query(args)

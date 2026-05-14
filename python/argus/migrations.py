@@ -158,6 +158,31 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             """,
         ],
     ),
+    (
+        7,
+        "beliefs_table",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS beliefs (
+                id INTEGER PRIMARY KEY,
+                belief_hash TEXT UNIQUE NOT NULL,
+                agent TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                ts_recorded INTEGER NOT NULL,
+                source_path TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                schema_version TEXT NOT NULL DEFAULT 'v1',
+                private INTEGER NOT NULL DEFAULT 0,
+                created_ts INTEGER NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_agent_subject ON beliefs(agent, subject)",
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_ts ON beliefs(ts_recorded DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_subject ON beliefs(subject)",
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_source_kind ON beliefs(source_kind)",
+        ],
+    ),
 ]
 
 
