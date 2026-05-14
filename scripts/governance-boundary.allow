@@ -1,0 +1,23 @@
+# One file path per line, followed by "# reason".
+apps/openclaw-plugin-governance/src/chitin-bridge.mjs # adapter: ships OpenClaw events into chitin-kernel gate
+apps/cli/src/commands/inspect.ts # read-only operator view of past decisions
+apps/cli/src/commands/ledger.ts # read-only ledger viewer
+python/analysis/models.py # read-only analytics model for gov-decisions JSONL rows; does not compute verdicts
+python/analysis/templates/__init__.py # audit: rule-drafting registry only; analysis helper, not runtime gate evaluator
+python/analysis/templates/all.py # audit: imports rule-drafting templates only; analysis helper, not runtime gate evaluator
+python/analysis/templates/bounds_max_files_changed.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/bounds_max_lines_changed.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/default_deny_unknown.py # audit: diagnostic/research prompt template; no runtime allow/deny decision
+python/analysis/templates/envelope_closed.py # audit: diagnostic template; no runtime allow/deny decision
+python/analysis/templates/lockdown.py # audit: diagnostic template; no runtime allow/deny decision
+python/analysis/templates/no_curl_pipe_bash.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/no_destructive_rm.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/no_force_push.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/no_git_merge_main.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/no_shell_chmod_777.py # audit: Python rule-drafting helper that proposes YAML for operator review; not a runtime authority
+python/analysis/templates/no_shell_sudo.py # audit: diagnostic/research template; no runtime allow/deny decision
+python/analysis/templates/router_heuristic_deny.py # audit: diagnostic template; no runtime allow/deny decision
+swarm/bin/clawta-pr-fix-dispatcher # PR review verdict parser; unrelated to governance gate decisions
+swarm/bin/clawta-pr-lifecycle # PR lifecycle verdict parser; unrelated to governance gate decisions
+swarm/bin/clawta-pr-reviewer # PR review prompt template; unrelated to governance gate decisions
+swarm/bin/clawta-swarm-daily-audit # PR review verdict aggregator; counts APPROVE/REQUEST_CHANGES/COMMENT for the swarm daily report, not a runtime gate

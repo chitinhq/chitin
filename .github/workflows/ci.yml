@@ -72,6 +72,12 @@ jobs:
       - name: Build Go kernel
         run: pnpm exec nx run execution-kernel:build
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Governance boundary
+        run: bash scripts/check-governance-boundary.sh
+
       # Nx affected: only run the test target on TS projects whose
       # source (or whose dependencies' source) changed since main.
       # Falls back to running EVERY project on push events to main

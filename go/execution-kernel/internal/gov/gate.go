@@ -1,5 +1,7 @@
 package gov
 
+// Contract: chitin-kernel's Go gate is the only authority that computes Allow/Deny policy decisions.
+
 import (
 	"errors"
 	"fmt"
