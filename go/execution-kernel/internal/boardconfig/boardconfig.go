@@ -79,7 +79,65 @@ func (e MissingConfigError) Error() string {
 	return fmt.Sprintf("missing config: %s", e.Path)
 }
 
+type InvalidSlugError struct {
+	Slug string
+}
+
+func (e InvalidSlugError) Error() string {
+	return fmt.Sprintf("invalid board slug: %q", e.Slug)
+}
+
+// validateSlug rejects slugs that would let a caller escape the boards
+// root. We forbid empty values, path separators, and `.`/`..` because
+// they would resolve to a sibling or parent directory once joined with
+// the boards root.
+func validateSlug(slug string) error {
+	if slug == "" {
+		return InvalidSlugError{Slug: slug}
+	}
+	if slug == "." || slug == ".." {
+		return InvalidSlugError{Slug: slug}
+	}
+	if strings.ContainsAny(slug, `/\`) {
+		return InvalidSlugError{Slug: slug}
+	}
+	if strings.ContainsRune(slug, 0) {
+		return InvalidSlugError{Slug: slug}
+	}
+	return nil
+}
+
+// expandHome replaces a leading `~/` (or bare `~`) with the operator's
+// home directory. Other tilde forms (e.g. `~user/...`) are left alone
+// since they aren't part of the board-config contract.
+func expandHome(value string) (string, error) {
+	if value == "" || (value[0] != '~') {
+		return value, nil
+	}
+	if value != "~" && !strings.HasPrefix(value, "~/") {
+		return value, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home: %w", err)
+	}
+	if value == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, value[2:]), nil
+}
+
+// tildeExpandableFields lists fields whose value is a filesystem path
+// the operator may write with a leading `~/`. We expand those at read
+// time so downstream tools see an absolute path.
+var tildeExpandableFields = map[string]struct{}{
+	"workspace_root": {},
+}
+
 func ResolveField(slug, field string) (string, error) {
+	if err := validateSlug(slug); err != nil {
+		return "", err
+	}
 	spec, ok := fieldSpecs[field]
 	if !ok {
 		return "", UnknownFieldError{Field: field}
@@ -91,19 +149,23 @@ func ResolveField(slug, field string) (string, error) {
 	if err := validateRequiredFields(config); err != nil {
 		return "", err
 	}
-	if value := strings.TrimSpace(os.Getenv(spec.EnvVar)); value != "" {
-		return value, nil
+	value := strings.TrimSpace(os.Getenv(spec.EnvVar))
+	if value == "" {
+		value = strings.TrimSpace(config[field])
 	}
-	if value := strings.TrimSpace(config[field]); value != "" {
-		return value, nil
+	if value == "" && spec.DefaultValue != "" {
+		value = spec.DefaultValue
 	}
-	if spec.DefaultValue != "" {
-		return spec.DefaultValue, nil
+	if value == "" {
+		if spec.Required {
+			return "", MissingFieldError{Field: field}
+		}
+		return "", nil
 	}
-	if spec.Required {
-		return "", MissingFieldError{Field: field}
+	if _, expand := tildeExpandableFields[field]; expand {
+		return expandHome(value)
 	}
-	return "", nil
+	return value, nil
 }
 
 func loadConfig(slug string) (map[string]string, error) {

@@ -178,6 +178,65 @@ func TestResolveFieldEnvCanCompleteRequiredConfig(t *testing.T) {
 	}
 }
 
+func TestResolveFieldRejectsPathTraversalSlug(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"/abs/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	for _, slug := range []string{"", ".", "..", "../etc", "chitin/../etc", `chitin\evil`, "with/slash"} {
+		_, err := ResolveField(slug, "repo")
+		var invalid InvalidSlugError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("slug %q: want InvalidSlugError, got %v", slug, err)
+		}
+	}
+}
+
+func TestResolveFieldExpandsTildeInWorkspaceRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "workspace_root")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := filepath.Join(home, "workspace", "chitin")
+	if got != want {
+		t.Fatalf("workspace_root = %q, want %q", got, want)
+	}
+}
+
+func TestResolveFieldExpandsTildeFromEnvOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KANBAN_BOARD_WORKSPACE_ROOT", "~/other-root")
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"/abs/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "workspace_root")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := filepath.Join(home, "other-root")
+	if got != want {
+		t.Fatalf("workspace_root = %q, want %q", got, want)
+	}
+}
+
+func TestResolveFieldDoesNotExpandTildeForNonPathFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"~/literal","default_branch":"main","workspace_root":"/abs","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "repo")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	if got != "~/literal" {
+		t.Fatalf("repo = %q, want ~/literal", got)
+	}
+}
+
 func writeBoardConfig(t *testing.T, home, slug, raw string) {
 	t.Helper()
 	dir := filepath.Join(home, ".hermes", "kanban", "boards", slug)

@@ -11,7 +11,8 @@ import (
 )
 
 func cmdBoardConfig(args []string) {
-	fs := flag.NewFlagSet("board-config", flag.ExitOnError)
+	fs := flag.NewFlagSet("board-config", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: chitin-kernel board-config <slug> <field>")
 	}
@@ -28,6 +29,10 @@ func cmdBoardConfig(args []string) {
 		case errors.Is(err, boardconfig.ErrNoBoardsInitialized):
 			boardConfigExit(3, "no_boards_initialized", err.Error())
 		default:
+			var slugErr boardconfig.InvalidSlugError
+			if errors.As(err, &slugErr) {
+				boardConfigExit(2, "invalid_slug", err.Error())
+			}
 			var boardErr boardconfig.UnknownBoardError
 			if errors.As(err, &boardErr) {
 				boardConfigExit(3, "unknown_board", err.Error())

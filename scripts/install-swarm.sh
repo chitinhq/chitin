@@ -102,11 +102,11 @@ echo "  Backups (if any) at: ${WORKFLOWS_DST}/*.bak-${TS}, ${CARDS_DST}/*.bak-${
 
 mkdir -p "$BOARD_ROOT"
 if [ ! -f "$BOARD_CONFIG" ]; then
-    cat > "$BOARD_CONFIG" <<'EOF'
+    cat > "$BOARD_CONFIG" <<EOF
 {
   "repo": "chitinhq/chitin",
   "default_branch": "main",
-  "workspace_root": "~/workspace/chitin",
+  "workspace_root": "$HOME/workspace/chitin",
   "kernel_bin": "chitin-kernel",
   "chitin_yaml": "chitin.yaml"
 }
