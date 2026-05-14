@@ -143,6 +143,12 @@ func (b Bounds) effectiveBounds(actionType string) ActionBounds {
 	return out
 }
 
+// EffectiveBounds exposes the merged default + per-action bounds that apply to
+// one action type.
+func (b Bounds) EffectiveBounds(actionType string) ActionBounds {
+	return b.effectiveBounds(actionType)
+}
+
 // EscalationConfig overrides the default escalation thresholds.
 type EscalationConfig struct {
 	ElevatedThreshold        int `yaml:"elevated_threshold"`          // default 3
