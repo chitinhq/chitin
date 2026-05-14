@@ -68,7 +68,7 @@ func runCLI(t *testing.T, wd string, args ...string) (string, string, int) {
 func fixturePathForCLI(t *testing.T) string {
 	t.Helper()
 	p, err := filepath.Abs(filepath.Join("..", "..", "..", "..",
-		"docs", "observations", "fixtures",
+		"docs", "archive", "observations", "fixtures",
 		"2026-04-20-openclaw-otel-capture", "sp1",
 		"synthesized-model-usage.pb"))
 	if err != nil {
