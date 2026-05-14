@@ -34,6 +34,12 @@ LOG_FILE = LOG_DIR / "clawta-pr-reviewer.log"
 DEFAULT_PREFIXES = ("swarm/", "clawta/")
 MAX_DIFF_CHARS = int(os.environ.get("CLAWTA_REVIEW_MAX_DIFF_CHARS", "45000"))
 MAX_META_CHARS = 12000
+BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
+INVARIANTS_FIELD_RE = re.compile(
+    r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
+)
+VERDICT_RE = re.compile(r"(\*\*Verdict:\*\*\s*)(APPROVE|REQUEST_CHANGES|COMMENT)", re.IGNORECASE)
 
 
 def log(msg: str) -> None:
@@ -56,6 +62,136 @@ def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
     if out.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd)}\n{out.stderr[-800:]}")
     return json.loads(out.stdout or "null")
+
+
+def parse_invariants_and_boundaries_field(body: str | None) -> str | None:
+    if not body:
+        return None
+    match = INVARIANTS_FIELD_RE.search(body)
+    if not match:
+        return None
+    value = match.group("value").strip()
+    return value or None
+
+
+def extract_named_boundaries(field_value: str | None) -> list[str]:
+    if not field_value:
+        return []
+    match = re.search(r"(?is)\bboundaries?\s*:\s*(.+)", field_value)
+    if not match:
+        return []
+    raw = match.group(1).strip().splitlines()[0].strip()
+    if not raw or raw.lower() in {"none", "n/a", "na"}:
+        return []
+    boundaries: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*,\s*", raw):
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", part.strip()).strip(" .;")
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        boundaries.append(cleaned)
+    return boundaries
+
+
+def linked_ticket_id(meta: dict[str, Any]) -> str | None:
+    for value in (meta.get("body"), meta.get("title")):
+        text = str(value or "")
+        match = TICKET_REF_RE.search(text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def fetch_ticket(ticket_id: str) -> dict[str, Any] | None:
+    out = run(
+        ["hermes", "kanban", "--board", BOARD, "show", ticket_id, "--json"],
+        timeout=60,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"hermes kanban show failed for {ticket_id}: {out.stderr[-400:]}")
+    payload = json.loads(out.stdout or "{}")
+    if isinstance(payload, dict) and "task" in payload and isinstance(payload["task"], dict):
+        return payload["task"]
+    return payload if isinstance(payload, dict) else None
+
+
+def normalize_boundary_keyword(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def test_diff_added_lines(diff: str) -> list[str]:
+    lines: list[str] = []
+    current_file = ""
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("+++ b/"):
+            current_file = raw_line[6:]
+            continue
+        if raw_line.startswith("diff --git "):
+            current_file = ""
+            continue
+        if not current_file:
+            continue
+        lower_file = current_file.lower()
+        is_test_file = (
+            "/test" in lower_file
+            or "/tests/" in lower_file
+            or lower_file.endswith("_test.py")
+            or ".test." in lower_file
+            or ".spec." in lower_file
+            or lower_file.endswith(".bats")
+        )
+        if is_test_file and raw_line.startswith("+") and not raw_line.startswith("+++"):
+            lines.append(raw_line[1:])
+    return lines
+
+
+def uncovered_boundaries(ticket_body: str | None, diff: str) -> list[str]:
+    field_value = parse_invariants_and_boundaries_field(ticket_body)
+    boundaries = extract_named_boundaries(field_value)
+    if not boundaries:
+        return []
+    normalized_lines = [normalize_boundary_keyword(line) for line in test_diff_added_lines(diff)]
+    missing: list[str] = []
+    for boundary in boundaries:
+        keyword = normalize_boundary_keyword(boundary)
+        if not keyword:
+            continue
+        if not any(keyword in line for line in normalized_lines):
+            missing.append(boundary)
+    return missing
+
+
+def enforce_boundary_coverage_review(review: str, missing: list[str], ticket_id: str) -> str:
+    if not missing:
+        return review
+    finding = (
+        f"- Severity: high — ticket {ticket_id} boundary coverage — added test diff does not "
+        f"cover named boundaries: {', '.join(missing)}"
+    )
+    note = (
+        "\n\n**Boundary coverage gate**\n"
+        f"{finding}\n"
+        "Reviewer rule: each named boundary in `invariants_and_boundaries:` needs at least one matching test case in the PR test diff.\n"
+    )
+    if VERDICT_RE.search(review):
+        review = VERDICT_RE.sub(r"\1REQUEST_CHANGES", review, count=1)
+    else:
+        review = (
+            "**Clawta automated review**\n\n"
+            "**Verdict:** REQUEST_CHANGES\n\n"
+            "**Summary**\n"
+            "- Boundary coverage gate failed.\n\n"
+            "**Findings**\n"
+            "- No blocking issues found.\n\n"
+            "**Validation notes**\n"
+            "- Review generated from boundary coverage enforcement.\n"
+        )
+    return review.rstrip() + note
 
 
 def list_candidate_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -191,6 +327,14 @@ def review_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool, include_
             meta, diff = fetch_pr_context(n)
             head_sha = str(meta.get("headRefOid") or head_sha)
             review = generate_review(meta, diff)
+            ticket_id = linked_ticket_id(meta)
+            if ticket_id:
+                try:
+                    ticket = fetch_ticket(ticket_id)
+                    missing = uncovered_boundaries((ticket or {}).get("body"), diff)
+                    review = enforce_boundary_coverage_review(review, missing, ticket_id)
+                except Exception as e:
+                    log(f"PR #{n}: boundary coverage check skipped for {ticket_id}: {e}")
             post_comment(n, head_sha, review, dry_run)
             reviewed.append({"pr": str(n), "url": pr.get("url", ""), "head": head_sha[:12]})
             log(f"reviewed PR #{n} {pr.get('headRefName')} head={head_sha[:12]}")
