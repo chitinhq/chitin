@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = ROOT / "swarm" / "workflows" / "kanban-dispatch.lobster"
 MIRROR = ROOT / "docs" / "governance-setup-extras" / "kanban-dispatch.lobster"
+INSTALLER = ROOT / "swarm" / "bin" / "install-swarm-workflow.sh"
 
 
 class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
@@ -24,6 +25,12 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         zero_commit_branch = workflow.split("completed_no_commit)", 1)[1].split("failed)", 1)[0]
         self.assertNotIn("gh pr create failed", zero_commit_branch)
         self.assertNotIn("git push -u origin", zero_commit_branch)
+
+    def test_legacy_workflow_installer_links_failure_report_helper(self):
+        installer = INSTALLER.read_text()
+
+        self.assertIn("worker_failure_report.py", installer)
+        self.assertIn("spawn_worker_subprocess.py", installer)
 
 
 if __name__ == "__main__":
