@@ -4,8 +4,7 @@
 Implements the contract from
 `docs/superpowers/specs/2026-05-13-spec-lifecycle-metadata.md`.
 
-Every `.md` file under `docs/superpowers/specs/` and
-`docs/superpowers/superseded/` (recursively) must:
+Every `.md` file under `docs/superpowers/specs/` (recursively) must:
 
 1. Start with a `---\\n` front-matter block.
 2. Contain all six required fields: status, owner, kanban,
@@ -48,10 +47,7 @@ VALID_STATUSES = ("draft", "open", "implemented", "amended", "superseded")
 
 EXEMPT_NAMES = {"INDEX.md", "README.md"}
 
-ROOTS = (
-    Path("docs/superpowers/specs"),
-    Path("docs/superpowers/superseded"),
-)
+ROOTS = (Path("docs/superpowers/specs"),)
 
 
 def parse_frontmatter(path: Path) -> tuple[dict | None, str | None]:

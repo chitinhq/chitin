@@ -8,9 +8,8 @@ Schema defined in
 
 ## Front-matter schema
 
-Every file under `docs/superpowers/specs/**/*.md` and
-`docs/superpowers/superseded/**/*.md` (except `INDEX.md` and
-`README.md`) starts with a YAML front-matter block:
+Every file under `docs/superpowers/specs/**/*.md` (except `INDEX.md`)
+starts with a YAML front-matter block:
 
 ```yaml
 ---
@@ -107,8 +106,9 @@ status: amended
 
 ### any → superseded
 
-When a later spec replaces this one. Move the file into
-`docs/superpowers/superseded/` (preserving the date prefix). Update:
+When a later spec replaces this one. The file stays in
+`docs/superpowers/specs/` (the legacy `/superseded/` subdir was retired
+in the 2026-05-13 doc purge). Update:
 
 ```yaml
 status: superseded
@@ -117,7 +117,8 @@ effective_to: <date of supersession>
 ```
 
 The original `effective_from` stays unchanged — it records when the
-spec was first written.
+spec was first written. Operators may delete fully-retired specs after
+review; INDEX.md is regenerated either way.
 
 ## INDEX.md regeneration
 

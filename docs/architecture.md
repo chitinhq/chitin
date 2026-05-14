@@ -44,11 +44,12 @@ Chitin is a small Go kernel with thin TypeScript adapters per surface. The kerne
 | `claude-code-headless` | PreToolUse hook (settings.json) | claudecode.HookInput | yes |
 | `codex` | PreToolUse hook (~/.codex/config.toml) | codex.HookInput (byte-compatible w/ Claude Code; hooks/list RPC) | yes |
 | `gemini` | BeforeTool hook (~/.gemini/settings.json) | gemini.HookInput (byte-compatible w/ Claude Code) | yes |
+| `hermes` | `pre_tool_call` hook (~/.hermes/config.yaml) | hermes.HookInput (byte-compatible w/ Claude Code) | yes |
 | `copilot` | wrapping orchestrator (`chitin-kernel drive copilot`) | Copilot SDK PermissionRequest | yes |
-| `local-qwen`/`-glm`/`-deepseek` | openclaw `before_tool_call` plugin | openclaw plugin context | yes |
+| `openclaw` (local-qwen/-glm/-deepseek + clawta orchestrator) | openclaw `before_tool_call` plugin (`apps/openclaw-plugin-governance/`) | openclaw plugin context | yes |
 | MCP tools | flow through whichever agent dispatched | parent driver's hook | yes (via parent) |
 
-Codex + gemini both speak the Claude Code PreToolUse wire format byte-for-byte; only the per-tool name set differs (`Bash`/`apply_patch` for codex, `run_shell_command`/`edit`/`replace` for gemini). The `chitin-router-hook` shim is shared across all three; `internal/driver/<vendor>/normalize.go` does the per-vendor translation.
+Codex, gemini, and hermes all speak the Claude Code PreToolUse wire format byte-for-byte; only the per-tool name set differs (`Bash`/`apply_patch` for codex, `run_shell_command`/`edit`/`replace` for gemini, hermes-specific names for hermes). The `chitin-router-hook` shim — a compiled Go binary at `bin/chitin-router-hook` (source: `go/execution-kernel/cmd/chitin-router-hook/router_hook.go`) — is shared across all four PreToolUse-class drivers; `internal/driver/<vendor>/normalize.go` does the per-vendor translation. The shim stamps `CHITIN_DRIVER` from its `--agent=<cli>` flag (deferring to a caller-set value if one is exported) so every chain event carries an unambiguous driver identity.
 
 ## Layers
 
@@ -92,7 +93,7 @@ Operator-side scripts (under `scripts/`):
 ```
 chitin-status                 # dashboard: timers + chain + router + spend + tier-recs
 chitin-budget                 # per-driver $-spend + universal usage feeds (codex 5h/weekly, etc)
-chitin-router-hook            # bash shim that all PreToolUse hooks point at
+chitin-router-hook            # compiled Go binary (bin/chitin-router-hook); all PreToolUse-class hooks point at it; stamps CHITIN_DRIVER
 install-kernel.sh             # idempotent rebuild/install + per-vendor hook refresh
 install-gemini-hook.sh        # writes hooks block into ~/.gemini/settings.json
 install-codex-hook.sh         # writes [features] codex_hooks=true + [[hooks.PreToolUse]] into ~/.codex/config.toml
@@ -117,14 +118,14 @@ These are non-negotiable. New code, specs, and plans must respect them. See [`ar
 
 Per-vendor integration shape varies by vendor posture; the `gov.Gate` API is shared.
 
-- **Open vendors with native hook surface → in-process extension.** Vendor ships a PreToolUse-style hook config; chitin's router-hook shim is wired in via the vendor's config, kernel does normalization. Examples: Claude Code (`~/.claude/settings.json` PreToolUse), Codex (`~/.codex/config.toml` [features] codex_hooks=true + [[hooks.PreToolUse]]), Gemini (`~/.gemini/settings.json` BeforeTool — same wire shape, different event name).
-- **Open vendors with plugin runtime → openclaw plugin.** openclaw's `before_tool_call` plugin path. Examples: local-qwen / local-glm / local-glm-flash / local-deepseek.
+- **Open vendors with native hook surface → in-process extension.** Vendor ships a PreToolUse-style hook config; chitin's router-hook binary is wired in via the vendor's config, kernel does normalization. Examples: Claude Code (`~/.claude/settings.json` PreToolUse), Codex (`~/.codex/config.toml` [features] codex_hooks=true + [[hooks.PreToolUse]]), Gemini (`~/.gemini/settings.json` BeforeTool — same wire shape, different event name), Hermes (`~/.hermes/config.yaml` `pre_tool_call`).
+- **Open vendors with plugin runtime → openclaw plugin.** openclaw's `before_tool_call` plugin path via `apps/openclaw-plugin-governance/`. Examples: local-qwen / local-glm / local-glm-flash / local-deepseek, plus the clawta orchestrator agent itself.
 - **Closed vendors → wrapping orchestrator.** Vendor ships a closed binary; chitin spawns the agent as a child of a chitin-driven harness. Example: Copilot CLI (`chitin-kernel drive copilot`).
 
-Codex + gemini both ship native PreToolUse hook systems that are byte-compatible with Claude Code's wire shape — gemini's `gemini hooks migrate --from-claude` is explicit about the equivalence. That's why all three slot into the same `chitin-router-hook` pipeline; the only per-vendor work is the tool-name normalizer in `internal/driver/<vendor>/normalize.go`.
+Codex, gemini, and hermes all ship native PreToolUse-class hook systems that are byte-compatible with Claude Code's wire shape — gemini's `gemini hooks migrate --from-claude` is explicit about the equivalence. That's why all four slot into the same `chitin-router-hook` pipeline; the only per-vendor work is the tool-name normalizer in `internal/driver/<vendor>/normalize.go`.
 
 Classify the vendor first; let the classification pick the integration shape, not the other way around.
 
 ## On-disk layout
 
-The kernel writes to a `.chitin/` state dir. Resolution order: `--chitin-dir` → repo-local `.chitin/` (walk up from cwd) → fallback `$HOME/.chitin/`. See [README — Where chitin writes data](../README.md#where-chitin-writes-data) for the file conventions and the [health runbook](./observations/runbooks/health.md) for diagnostics.
+The kernel writes to a `.chitin/` state dir. Resolution order: `--chitin-dir` → repo-local `.chitin/` (walk up from cwd) → fallback `$HOME/.chitin/`. See [README — Where chitin writes data](../README.md#where-chitin-writes-data) for the file conventions and the [health runbook](./runbooks/health.md) for diagnostics.
