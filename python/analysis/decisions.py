@@ -1,4 +1,23 @@
-"""CLI entry: python -m analysis.decisions ..."""
+"""CLI entry: python -m analysis.decisions ...
+
+End-to-end driver for the decisions stream. Reads gov-decisions JSONL,
+detects deny patterns, drafts candidate rules, writes JSON + markdown.
+
+Invariants (see SPEC.md):
+    I1  Deterministic ranking via detect_patterns + sorted writers.
+    I2  JSON + markdown both written; markdown rendered from JSON.
+    I3  Default path is no-network. `--llm-draft` opts into ollama.
+    I4  Output is byte-identical given identical input + identical `--now`.
+    I5  Bad JSONL lines counted in parse_errors; never abort the run.
+    I6  Writes go only to `--out-dir` (default python/analysis/out, gitignored).
+
+Boundaries:
+    - Missing `--decisions-dir` → exit 2 with stderr note.
+    - Output-write failure → exit 3. JSON is written before markdown so
+      partial state is "JSON exists, markdown missing", never the reverse.
+    - Empty window → patterns=[], no_template_patterns=[], exit 0.
+    - `--llm-draft` on but no findings → LLM call skipped (nothing to enrich).
+"""
 from __future__ import annotations
 
 import argparse
@@ -131,10 +150,13 @@ def main(argv: list[str] | None = None) -> int:
         top1 = findings[0]
         print(f"\nTop finding: {top1.pattern.rule_id} × {top1.pattern.action_type} "
               f"× {top1.pattern.agent_id} — {top1.pattern.count} denies", file=sys.stderr)
-        if top1.draft:
+        if top1.draft and top1.draft.predicted_impact is not None:
             imp = top1.draft.predicted_impact
             print(f"  → predicted: {imp.would_allow} allows, "
                   f"{imp.would_still_deny} still deny", file=sys.stderr)
+        elif top1.draft:
+            print(f"  → diagnostic/{top1.draft.kind} draft (no predicted impact)",
+                  file=sys.stderr)
     return 0
 
 

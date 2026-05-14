@@ -137,9 +137,12 @@ class PredictedImpact:
 
 @dataclass(frozen=True)
 class RuleDraft:
-    kind: str  # "heuristic" | "heuristic-fallback" | "llm"
+    kind: str  # "heuristic" | "heuristic-fallback" | "llm" | "diagnostic" | "research-prompt"
     template: str
     confidence: str  # "low" | "medium" | "high"
     rule_yaml: str
-    predicted_impact: PredictedImpact
+    # Optional because diagnostic and research-prompt drafts don't propose a
+    # rule change — they surface a finding for human review. Heuristic and
+    # llm drafts MUST populate this; writers / consumers handle None.
+    predicted_impact: Optional[PredictedImpact]
     notes: str = ""

@@ -1,4 +1,24 @@
-"""Souls stream stub. Foundation-generalization proof."""
+"""Souls stream stub. Foundation-generalization proof.
+
+This module exists to prove the writers + JSON schema generalize past
+the decisions stream. It produces a valid empty findings document for the
+souls stream so consumers can branch on `stream` without crashing on
+schema-mismatch when souls hasn't shipped real detection yet.
+
+Invariants (see SPEC.md):
+    I2  Emits both JSON canonical + markdown projection.
+    I3  No network.
+    I6  Output goes to `out/` only.
+    Schema-version stamping uses `stream="souls"` so downstream readers can
+    branch correctly.
+
+Boundaries:
+    - Always produces a 2-file artifact (JSON + markdown), even with zero
+      findings. The empty-write IS the proof.
+    - `--now` accepted for deterministic tests; otherwise wall-clock.
+
+Replace this stub with real detection when the souls stream ships in v2.
+"""
 from __future__ import annotations
 
 import argparse

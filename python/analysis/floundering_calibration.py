@@ -23,6 +23,21 @@ TIER_DRIVER_DEFAULTS:
     T3    → openclaw-glm-cloud
     T4    → claude-code-headless
 
+Invariants (see SPEC.md):
+    I3  No network. Pure function of `events-*.jsonl` contents.
+    I5  Malformed JSONL lines skipped; session with no usable decisions
+        returns None and is excluded from the rollup.
+    I6  Output goes to `out/` only — never to chain or kernel state.
+
+Boundaries:
+    - Session with zero writes → `max_stall_s` = full session duration.
+      The agent never wrote anything; the "stall" is the entire run.
+    - Session with one write → `max_stall_s` measured first-decision → that-write.
+    - Driver not in DRIVER_TIER → tier = "unknown" (still ranked, separately).
+    - Suggested `max_loop_count` floor is 2 even if p90 is 1, so the
+      heuristic stays meaningfully sensitive on small samples.
+    - Percentile on empty list → 0.0 (no division-by-zero, no exception).
+
 Usage:
     cd python/analysis && uv run python -m analysis.floundering_calibration
 
