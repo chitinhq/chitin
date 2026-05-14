@@ -101,7 +101,12 @@ def _create_test_db(db_path: Path) -> None:
             outcome TEXT,
             summary TEXT,
             metadata TEXT,
-            error TEXT
+            error TEXT,
+            driver_id TEXT,
+            repo_sha TEXT,
+            lease_id TEXT,
+            event_chain_hash TEXT,
+            idempotency_key TEXT
         );
         CREATE TABLE IF NOT EXISTS task_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,9 +144,9 @@ def _insert_run(db_path: Path, task_id: str, *, outcome: str | None = None,
     conn = sqlite3.connect(db_path)
     conn.execute(
         """INSERT INTO task_runs
-           (task_id, status, started_at, outcome, error)
-           VALUES (?, ?, ?, ?, ?)""",
-        (task_id, status, now - 3600, outcome, error),
+           (task_id, status, started_at, outcome, error, lease_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (task_id, status, now - 3600, outcome, error, "lease-test"),
     )
     conn.commit()
     conn.close()
@@ -368,7 +373,9 @@ class TestDryRun:
             CREATE TABLE task_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                 status TEXT NOT NULL, started_at INTEGER NOT NULL,
-                ended_at INTEGER, outcome TEXT, error TEXT
+                ended_at INTEGER, outcome TEXT, error TEXT,
+                driver_id TEXT, repo_sha TEXT, lease_id TEXT,
+                event_chain_hash TEXT, idempotency_key TEXT
             );
             CREATE TABLE task_comments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,

@@ -20,7 +20,7 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         self.assertIn('&& "$WORKER_STATUS" != "completed_no_commit"', workflow)
         self.assertIn("completed_no_commit)", workflow)
         self.assertIn('worker_failure_report.py" --ticket-id ${ticket_id}', workflow)
-        self.assertIn('kanban-flow block ${ticket_id} "$BLOCK_REASON"', workflow)
+        self.assertIn('kanban-flow crash ${ticket_id} "$BLOCK_REASON"', workflow)
 
         zero_commit_branch = workflow.split("completed_no_commit)", 1)[1].split("failed)", 1)[0]
         self.assertNotIn("gh pr create failed", zero_commit_branch)

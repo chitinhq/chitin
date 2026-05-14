@@ -56,6 +56,12 @@ def make_db(root: Path) -> Path:
           payload TEXT,
           created_at INTEGER
         );
+        CREATE TABLE task_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at INTEGER NOT NULL
+        );
         """
     )
     conn.commit()
@@ -64,6 +70,38 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO task_runs(task_id, status, started_at)
+                VALUES (?, ?, ?)
+                """,
+                ("t_running01", "running", 1),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "fetch_ready_for_terminal_lanes",
+                return_value=[{
+                    "id": "t_running01",
+                    "title": "already running",
+                    "assignee": "codex",
+                    "priority": 50,
+                    "created_at": 1,
+                }],
+            ), mock.patch.object(module, "dispatch_ticket") as dispatch_ticket:
+                dispatched, demoted, queue_size = module.dispatch_ready_batch(1, dry_run=False)
+
+        self.assertEqual(dispatched, [])
+        self.assertEqual(demoted, [])
+        self.assertEqual(queue_size, 0)
+        dispatch_ticket.assert_not_called()
+
     def test_tick_demotes_ticket_missing_invariants_and_boundaries(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
