@@ -29,4 +29,5 @@ link_file "$REPO_ROOT/swarm/workflows/_pick_driver.py" "$TARGET_DIR/_pick_driver
 link_file "$REPO_ROOT/swarm/workflows/clawta_decisions.py" "$TARGET_DIR/clawta_decisions.py"
 link_file "$REPO_ROOT/swarm/workflows/spawn_worker_subprocess.py" "$TARGET_DIR/spawn_worker_subprocess.py"
 link_file "$REPO_ROOT/swarm/workflows/worker_failure_report.py" "$TARGET_DIR/worker_failure_report.py"
+link_file "$REPO_ROOT/swarm/workflows/pr_failure_report.py" "$TARGET_DIR/pr_failure_report.py"
 link_file "$REPO_ROOT/swarm/workflows/judge.py" "$TARGET_DIR/judge.py"
