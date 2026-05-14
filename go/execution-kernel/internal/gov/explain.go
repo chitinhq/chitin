@@ -2,6 +2,7 @@ package gov
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -56,7 +57,16 @@ func (r Rule) ExplainMatch(a Action, ctx FingerprintContext) MatchExplanation {
 	appendIdentity("authority", r.Authority, ctx.Authority)
 	appendIdentity("workflow_id", r.WorkflowID, ctx.WorkflowID)
 
-	for key, want := range r.Params {
+	// Iterate params in sorted key order: r.Params is a Go map, and ranging
+	// it directly would make the checks slice — and therefore the rendered
+	// explain output and near-miss list — nondeterministic across runs.
+	paramKeys := make([]string, 0, len(r.Params))
+	for key := range r.Params {
+		paramKeys = append(paramKeys, key)
+	}
+	sort.Strings(paramKeys)
+	for _, key := range paramKeys {
+		want := r.Params[key]
 		got, ok := a.Params[key]
 		matched := ok && fmt.Sprint(got) == want
 		detail := fmt.Sprintf("wanted %s=%q; key was absent", key, want)

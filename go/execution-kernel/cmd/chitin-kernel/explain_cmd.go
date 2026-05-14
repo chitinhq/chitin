@@ -13,9 +13,11 @@ import (
 func cmdExplain(args []string) {
 	eventID := ""
 	parseArgs := args
+	consumedFromArgs0 := false
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		eventID = args[0]
 		parseArgs = args[1:]
+		consumedFromArgs0 = true
 	}
 	fs := flag.NewFlagSet("explain", flag.ExitOnError)
 	cwd := fs.String("cwd", ".", "cwd used to resolve chitin.yaml and bounds")
@@ -30,10 +32,17 @@ func cmdExplain(args []string) {
 	}
 	fs.Parse(parseArgs)
 
-	if eventID == "" && fs.NArg() == 1 {
+	// Determine the event id and count leftover positionals. If the id was
+	// consumed from args[0] before Parse, every remaining positional is
+	// unexpected; otherwise the first remaining positional *is* the id and
+	// only the rest are extra. Either way, extra positionals are an error —
+	// silently ignoring them hides operator typos.
+	extra := fs.NArg()
+	if !consumedFromArgs0 && fs.NArg() >= 1 {
 		eventID = fs.Arg(0)
+		extra = fs.NArg() - 1
 	}
-	if eventID == "" || fs.NArg() > 1 {
+	if eventID == "" || extra > 0 {
 		exitErr("explain_missing_event_id", "usage: chitin-kernel explain <event-id> [--cwd <path>] [--policy-file <path>] [--dir <path>]")
 	}
 

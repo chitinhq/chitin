@@ -182,6 +182,66 @@ rules:
 	}
 }
 
+// TestCLI_Explain_RejectsExtraPositionalArg covers the Copilot finding: when
+// the event id was consumed from args[0], a trailing positional arg was
+// silently ignored instead of rejected, hiding operator typos.
+func TestCLI_Explain_RejectsExtraPositionalArg(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := runCLIWithHome(t, home, "explain", "event-1", "stray-extra-arg", "--cwd", repo)
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for an extra positional arg")
+	}
+	if !strings.Contains(stderr, "explain_missing_event_id") {
+		t.Fatalf("stderr should reject the extra arg, got %s", stderr)
+	}
+}
+
+// TestCLI_Explain_ResolvesDecisionFromPayloadIdentity covers the Copilot
+// finding: readDecision built its gov-row lookup key from event *labels*
+// only, so events that carry identity (driver/agent/agent_instance_id) in
+// the payload — and not labels — failed to resolve their decision row.
+func TestCLI_Explain_ResolvesDecisionFromPayloadIdentity(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := `id: explain-payload-identity
+mode: guide
+rules:
+  - id: allow-status
+    action: shell.exec
+    effect: allow
+    target: "git status"
+    reason: "status is safe"
+`
+	if err := os.WriteFile(filepath.Join(repo, "chitin.yaml"), []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// labels carry NO driver/agent/agent_instance_id — identity lives only
+	// in the payload, the way the kernel also mirrors it.
+	events := `{"schema_version":"2","run_id":"run-pi","session_id":"sess-pi","surface":"codex","agent_instance_id":"agent-pi","agent_fingerprint":"fp","event_type":"decision","chain_id":"sess-pi","chain_type":"session","seq":0,"this_hash":"event-pi","ts":"2026-05-14T14:00:00Z","labels":{},"payload":{"tool_name":"shell.exec","action_type":"shell.exec","action_target":"git status","decision":"allow","rule_id":"allow-status","driver":"codex","agent":"agent-pi","agent_instance_id":"agent-pi"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "events-run-pi.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	govRows := `{"allowed":true,"mode":"guide","rule_id":"allow-status","reason":"status is safe","action_type":"shell.exec","action_target":"git status","ts":"2026-05-14T14:00:00Z","driver":"codex","agent_instance_id":"agent-pi","agent":"agent-pi"}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "gov-decisions-2026-05-14.jsonl"), []byte(govRows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "explain", "event-pi", "--cwd", repo)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s — decision row should resolve from payload identity", code, stderr)
+	}
+	if !strings.Contains(stdout, "ALLOWED by allow-status") {
+		t.Fatalf("stdout missing resolved decision: %s", stdout)
+	}
+}
+
 func TestCLI_Explain_AllowedDecision(t *testing.T) {
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")

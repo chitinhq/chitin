@@ -235,13 +235,17 @@ func findDecisionEventInFile(path, eventID string) (*decisionEvent, error) {
 }
 
 func readDecision(stateDir string, ev *decisionEvent) (gov.Decision, error) {
+	// Identity fields are mirrored into both event labels and the decision
+	// payload (see the kernel's addIdentityPayload / identityLabels). Fall
+	// back to the payload copies so the lookup still works for events — or
+	// older fixtures — that carry identity in only one of the two places.
 	key := decisionKey(
 		ev.Ts,
 		stringField(ev.Payload, "action_type"),
 		stringField(ev.Payload, "action_target"),
-		firstNonEmpty(ev.AgentInstanceID, ev.Labels["agent_instance_id"]),
-		ev.Labels["driver"],
-		firstNonEmpty(ev.Labels["agent"], ev.AgentInstanceID),
+		firstNonEmpty(ev.AgentInstanceID, ev.Labels["agent_instance_id"], stringField(ev.Payload, "agent_instance_id")),
+		firstNonEmpty(ev.Labels["driver"], stringField(ev.Payload, "driver")),
+		firstNonEmpty(ev.Labels["agent"], stringField(ev.Payload, "agent"), ev.AgentInstanceID),
 	)
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
