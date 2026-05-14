@@ -1,11 +1,15 @@
 """Integration test: end-to-end workflow."""
 import json
+import os
 import tempfile
 from pathlib import Path
 
 from argus.indexer import init_db, index_jsonl_file
 from argus.detectors import run_all_detectors
 from argus.reporter import generate_daily_report
+
+# Skip the qwen subprocess for fast deterministic test runs.
+os.environ.setdefault("ARGUS_SKIP_QWEN", "1")
 
 
 def test_end_to_end_workflow():

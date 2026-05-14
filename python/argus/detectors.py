@@ -3,8 +3,18 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+
+def _utc_now() -> datetime:
+    """Timezone-aware UTC now. Replaces the deprecated datetime.utcnow()."""
+    return datetime.now(timezone.utc)
+
+
+def _from_unix(ts_unix: int) -> datetime:
+    """Timezone-aware UTC datetime from unix epoch."""
+    return datetime.fromtimestamp(ts_unix, timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -61,7 +71,7 @@ def detect_deny_cluster(
                 j += 1
 
             if len(cluster) >= threshold_count:
-                ts = datetime.fromtimestamp(cluster[0]["ts_unix"])
+                ts = _from_unix(cluster[0]["ts_unix"])
                 rule_ids = [r["rule_id"] for r in cluster]
                 agents = [r["agent"] for r in cluster]
 
@@ -102,7 +112,7 @@ def detect_unknown_rate_spike(
     findings = []
 
     try:
-        now_ts = int(datetime.utcnow().timestamp())
+        now_ts = int(_utc_now().timestamp())
         window_start = now_ts - (window_hours * 3600)
 
         row = conn.execute("""
@@ -121,7 +131,7 @@ def detect_unknown_rate_spike(
             if pct > threshold_percent:
                 findings.append(Finding(
                     detector="unknown_rate_spike",
-                    ts=datetime.utcnow(),
+                    ts=_utc_now(),
                     severity="info",
                     title=f"Unknown rate spike: {pct:.2f}% > {threshold_percent}%",
                     details={
@@ -184,7 +194,7 @@ def detect_agent_failure_run(
         for agent, events in agents_seen.items():
             if len(events) >= min_failures:
                 # All are denies for this agent, sorted by ts_unix
-                ts = datetime.fromtimestamp(events[0]["ts_unix"])
+                ts = _from_unix(events[0]["ts_unix"])
                 rules = [e["rule_id"] for e in events]
 
                 findings.append(Finding(
@@ -220,7 +230,7 @@ def detect_stuck_flow(
     findings = []
 
     try:
-        now_ts = int(datetime.utcnow().timestamp())
+        now_ts = int(_utc_now().timestamp())
         idle_threshold = now_ts - min_idle_seconds
 
         if agent_name:
@@ -245,7 +255,7 @@ def detect_stuck_flow(
 
             if last_ts and last_ts < idle_threshold:
                 idle_duration = now_ts - last_ts
-                ts = datetime.fromtimestamp(last_ts)
+                ts = _from_unix(last_ts)
 
                 findings.append(Finding(
                     detector="stuck_flow",

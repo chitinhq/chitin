@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
-from datetime import datetime
+import tempfile
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -60,7 +64,13 @@ def _get_summary_stats(db_path: str) -> dict:
 
 
 def _call_qwen(prompt: str) -> Optional[str]:
-    """Call qwen3.6:27b via ollama for narration. Returns None if unavailable."""
+    """Call qwen3.6:27b via ollama for narration. Returns None if unavailable.
+
+    Setting ARGUS_SKIP_QWEN=1 bypasses the subprocess (used in tests and on
+    quiet-day runs where narration adds no value).
+    """
+    if os.environ.get("ARGUS_SKIP_QWEN"):
+        return None
     try:
         result = subprocess.run(
             ["ollama", "run", "qwen3.6:27b", prompt],
@@ -73,6 +83,55 @@ def _call_qwen(prompt: str) -> Optional[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return None
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """Write `content` to `target` atomically via temp-file + os.replace."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as tmp:
+            tmp.write(content)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_symlink(target: Path, points_to: Path) -> None:
+    """Atomically point `target` symlink at `points_to` (file in same dir)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rel = points_to.name if points_to.parent == target.parent else str(points_to)
+    tmp_link = target.with_name(target.name + f".tmp.{os.getpid()}")
+    try:
+        if tmp_link.is_symlink() or tmp_link.exists():
+            os.unlink(tmp_link)
+    except OSError:
+        pass
+    os.symlink(rel, tmp_link)
+    os.replace(tmp_link, target)
+
+
+def _post_discord_summary(webhook_url: str, headline: str, link: Optional[str]) -> bool:
+    """Best-effort POST to a Discord webhook. Returns True on 2xx, False otherwise."""
+    body = headline if not link else f"{headline}\n{link}"
+    payload = json.dumps({"content": body}).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
 
 
 def _format_finding_table(findings: list[Finding]) -> str:
@@ -146,16 +205,25 @@ code {{ color:var(--accent); }}
 """
 
 
-def generate_daily_report(db_path: str, report_dir: Optional[Path] = None) -> Path:
+def generate_daily_report(
+    db_path: str,
+    report_dir: Optional[Path] = None,
+    *,
+    discord_webhook: Optional[str] = None,
+    quiet_day_skip_discord: bool = True,
+) -> Path:
     """Generate daily markdown digest with detector findings and qwen narration.
 
-    Returns path to written report.
+    Writes a dated HTML report and atomically retargets the
+    `argus-research-latest.html` symlink at it. If `discord_webhook` is set,
+    posts a one-line summary unless `quiet_day_skip_discord` and no detectors
+    fired. Returns path to the dated HTML report.
     """
     if report_dir is None:
         report_dir = Path.home() / ".chitin" / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     date_str = now.date().isoformat()
     md_path = report_dir / f"{date_str}-digest.md"
     report_path = report_dir / f"{date_str}-argus-research.html"
@@ -217,7 +285,20 @@ def generate_daily_report(db_path: str, report_dir: Optional[Path] = None) -> Pa
     lines.append(_format_finding_table(findings))
 
     # Write markdown compatibility output plus Hermes-style dark HTML/latest contract.
-    md_path.write_text("".join(lines))
-    report_path.write_text(_render_html(date_str, now.isoformat(), stats, findings, summary))
-    latest_path.write_text(report_path.read_text())
+    _atomic_write_text(md_path, "".join(lines))
+    html = _render_html(date_str, now.isoformat(), stats, findings, summary)
+    _atomic_write_text(report_path, html)
+    _atomic_symlink(latest_path, report_path)
+
+    # Discord summary: best-effort. Suppressed on quiet days unless the
+    # operator opts in to always-post via quiet_day_skip_discord=False.
+    if discord_webhook and (findings or not quiet_day_skip_discord):
+        headline = (
+            f"Argus daily digest {date_str}: {len(findings)} finding(s); "
+            f"deny rate {stats['deny_percent']:.1f}% across {stats['total_events']} events."
+            if findings
+            else f"Argus daily digest {date_str}: all quiet ({stats['total_events']} events)."
+        )
+        _post_discord_summary(discord_webhook, headline, link=None)
+
     return report_path

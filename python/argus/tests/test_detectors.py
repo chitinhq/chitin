@@ -1,8 +1,16 @@
 """Tests for argus.detectors with boundary conditions."""
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _from_unix(ts_unix):
+    return datetime.fromtimestamp(ts_unix, timezone.utc)
 
 import pytest
 
@@ -204,7 +212,7 @@ class TestUnknownRateSpike:
             conn = init_db(db_path)
 
             # Insert 100 events with recent timestamps, 2% unknown
-            now_ts = int(datetime.utcnow().timestamp())
+            now_ts = int(_utc_now().timestamp())
             for i in range(98):
                 conn.execute("""
                     INSERT INTO events (
@@ -212,7 +220,7 @@ class TestUnknownRateSpike:
                     ) VALUES (?, ?, ?, ?, ?)
                 """, (
                     f"hash_{i}",
-                    datetime.fromtimestamp(now_ts - 1000 + i).isoformat(),
+                    _from_unix(now_ts - 1000 + i).isoformat(),
                     now_ts - 1000 + i,
                     1,
                     "shell.exec",
@@ -226,7 +234,7 @@ class TestUnknownRateSpike:
                     ) VALUES (?, ?, ?, ?, ?)
                 """, (
                     f"hash_unknown_{i}",
-                    datetime.fromtimestamp(now_ts - 100 + i).isoformat(),
+                    _from_unix(now_ts - 100 + i).isoformat(),
                     now_ts - 100 + i,
                     1,
                     None,
@@ -299,9 +307,9 @@ class TestStuckFlow:
             conn = init_db(db_path)
 
             # Insert recent event (1 minute ago, well within 3600s threshold)
-            now_ts = int(datetime.utcnow().timestamp())
+            now_ts = int(_utc_now().timestamp())
             recent_ts = now_ts - 60  # 1 minute ago
-            recent = datetime.utcfromtimestamp(recent_ts).isoformat() + "Z"
+            recent = _from_unix(recent_ts).isoformat().replace("+00:00", "Z")
             _insert_event(conn, recent, False, "rule1", "agent1")
 
             findings = detect_stuck_flow(str(db_path), min_idle_seconds=3600)
@@ -315,9 +323,9 @@ class TestStuckFlow:
             conn = init_db(db_path)
 
             # Insert old event (2 hours ago)
-            now_ts = int(datetime.utcnow().timestamp())
+            now_ts = int(_utc_now().timestamp())
             old_ts_val = now_ts - (2 * 3600)  # 2 hours ago
-            old_ts = datetime.utcfromtimestamp(old_ts_val).isoformat() + "Z"
+            old_ts = _from_unix(old_ts_val).isoformat().replace("+00:00", "Z")
             _insert_event(conn, old_ts, False, "rule1", "agent1")
 
             findings = detect_stuck_flow(str(db_path), min_idle_seconds=3600)

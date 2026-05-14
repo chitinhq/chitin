@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=%u
 WorkingDirectory=%h
-ExecStart=/usr/bin/env python -m argus report
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/argus/env
+ExecStart=%h/.local/bin/argus report --report-dir %h/.chitin/reports
 StandardOutput=journal
 StandardError=journal

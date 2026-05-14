@@ -69,5 +69,8 @@ python/analysis/out/
 # Python build / venv artifacts
 python/analysis/*.egg-info/
 python/analysis/.pytest_cache/
+python/argus/*.egg-info/
+python/argus/.pytest_cache/
+python/argus/build/
 __pycache__/
 *.pyc

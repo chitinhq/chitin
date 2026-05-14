@@ -15,30 +15,48 @@ Tail governance decision events, index them, run deterministic detectors, and ge
 
 ## Installation
 
+Argus is shipped as a Python package in `python/argus/` inside the chitin
+repo. The recommended install uses `uv` to expose `argus` as a console
+script in `~/.local/bin/`:
+
 ```bash
-# Install ollama and qwen model (optional, for narration and query)
+# From repo root
+uv tool install ./python/argus
+
+# Install ollama and qwen model (optional — narration and `argus query` use it)
 ollama pull qwen3.6:27b
 
-# Create ~/.argus directory
+# Create the index dir (the indexer auto-creates it on first write, but
+# pre-creating it lets you point another tool at the path immediately)
 mkdir -p ~/.argus
 ```
+
+To point the daily report at a Discord webhook for the `#ares` summary,
+write the URL into a systemd-style env file (no quoting):
+
+```bash
+mkdir -p ~/.config/argus
+printf 'ARGUS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...\n' \
+    > ~/.config/argus/env
+```
+
+Quiet days (no detector findings) skip the Discord post by default — pass
+`--discord-always` to override.
 
 ## Usage
 
 ### Systemd Setup
 
-Copy systemd files to user unit directory:
-
 ```bash
 cp python/argus/systemd/*.service ~/.config/systemd/user/
-cp python/argus/systemd/*.timer ~/.config/systemd/user/
+cp python/argus/systemd/*.timer  ~/.config/systemd/user/
 systemctl --user daemon-reload
 
-# Start always-on indexer
+# Always-on indexer (true tail/follow, handles date rollover)
 systemctl --user enable --now argus-indexer.service
 
-# Start daily report timer (runs at 07:00 local time)
-systemctl --user enable argus-report.timer
+# Daily report at 07:00 local
+systemctl --user enable --now argus-report.timer
 ```
 
 ### Manual Commands

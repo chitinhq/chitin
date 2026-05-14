@@ -40,8 +40,17 @@ def cmd_report(args) -> int:
         print("Run 'argus index' first.", file=sys.stderr)
         return 1
 
+    # Webhook precedence: --discord-webhook flag, then ARGUS_DISCORD_WEBHOOK env.
+    import os
+    webhook = args.discord_webhook or os.environ.get("ARGUS_DISCORD_WEBHOOK") or None
+
     try:
-        report_path = generate_daily_report(str(db_path), Path(args.report_dir))
+        report_path = generate_daily_report(
+            str(db_path),
+            Path(args.report_dir),
+            discord_webhook=webhook,
+            quiet_day_skip_discord=not args.discord_always,
+        )
         print(f"Wrote {report_path}", file=sys.stderr)
         print(report_path)
         return 0
@@ -158,6 +167,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     report_p.add_argument("--report-dir",
                           default=str(Path.home() / ".chitin" / "reports"),
                           help="Output directory for reports")
+    report_p.add_argument("--discord-webhook",
+                          default=None,
+                          help="Discord webhook URL for #ares summary (overrides ARGUS_DISCORD_WEBHOOK)")
+    report_p.add_argument("--discord-always",
+                          action="store_true",
+                          help="Post Discord summary even on quiet days (default: skip if no findings)")
 
     # query subcommand
     query_p = subparsers.add_parser("query", help="Query index with NL question")

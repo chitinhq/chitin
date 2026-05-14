@@ -1,4 +1,6 @@
 """Tests for argus.reporter."""
+import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +9,10 @@ import pytest
 
 from argus.reporter import generate_daily_report, _get_summary_stats
 from argus.indexer import init_db
+
+
+# Tests should not hit ollama; bypass narration for fast deterministic runs.
+os.environ.setdefault("ARGUS_SKIP_QWEN", "1")
 
 
 def _insert_event(conn, ts: str, allowed: bool, rule_id: str, agent: str = "test-agent"):
@@ -138,7 +144,7 @@ class TestGenerateDailyReport:
             assert "test-rule" in content
 
     def test_generate_report_creates_file_with_timestamp(self):
-        """Report is written with date-based filename."""
+        """Report is written with today's ISO date in the filename."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             report_dir = Path(tmpdir) / "reports"
@@ -149,13 +155,15 @@ class TestGenerateDailyReport:
 
             report_path = generate_daily_report(str(db_path), report_dir)
 
-            # Should have ISO date in filename
-            assert "2026-05-13" in report_path.name or "digest.md" in report_path.name
+            # Filename pattern is <YYYY-MM-DD>-argus-research.html where
+            # the date is today's UTC date — don't pin to a fixed string
+            # because the test must pass on any calendar day.
+            assert re.match(r"\d{4}-\d{2}-\d{2}-argus-research\.html$", report_path.name)
             assert report_path.suffix == ".html"
 
 
 def test_generate_report_writes_dark_html_latest_contract():
-    """Daily report writes date-stamped HTML and latest HTML copy."""
+    """Daily report writes date-stamped HTML and an atomic latest symlink."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
         report_dir = Path(tmpdir) / "reports"
@@ -167,8 +175,86 @@ def test_generate_report_writes_dark_html_latest_contract():
         latest = report_dir / "argus-research-latest.html"
 
         assert report_path.name.endswith("-argus-research.html")
-        assert latest.exists()
+        assert latest.is_symlink(), "latest must be a symlink, not a file copy"
+        assert latest.resolve() == report_path.resolve()
         html = report_path.read_text()
         assert "Argus Research" in html
         assert "color-scheme: dark" in html
+        # Reading through the symlink returns the dated file's content.
         assert latest.read_text() == html
+
+
+def test_latest_symlink_retargets_atomically_on_rerun():
+    """Re-running on the same day overwrites the dated file and the symlink continues to resolve."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        report_dir = Path(tmpdir) / "reports"
+        conn = init_db(db_path)
+        _insert_event(conn, "2026-05-13T08:00:00Z", False, "rule1")
+        conn.close()
+
+        first = generate_daily_report(str(db_path), report_dir)
+        second = generate_daily_report(str(db_path), report_dir)
+        latest = report_dir / "argus-research-latest.html"
+
+        # Same date → same dated file. Symlink still resolves cleanly.
+        assert first == second
+        assert latest.is_symlink()
+        assert latest.resolve() == second.resolve()
+
+
+def test_discord_post_skipped_on_quiet_day(monkeypatch):
+    """Quiet-day default: no detector findings → Discord webhook is NOT called."""
+    posted = {"calls": 0}
+
+    def fake_post(url, headline, link=None):  # pragma: no cover - injected
+        posted["calls"] += 1
+        return True
+
+    import argus.reporter as reporter_mod
+    monkeypatch.setattr(reporter_mod, "_post_discord_summary", fake_post)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        report_dir = Path(tmpdir) / "reports"
+        conn = init_db(db_path)
+        conn.close()  # empty index → no findings
+
+        generate_daily_report(
+            str(db_path),
+            report_dir,
+            discord_webhook="https://example.invalid/webhook",
+        )
+
+    assert posted["calls"] == 0
+
+
+def test_discord_post_fires_on_findings(monkeypatch):
+    """Findings present → Discord webhook is called exactly once."""
+    posted = {"calls": 0, "last_headline": None}
+
+    def fake_post(url, headline, link=None):  # pragma: no cover - injected
+        posted["calls"] += 1
+        posted["last_headline"] = headline
+        return True
+
+    import argus.reporter as reporter_mod
+    monkeypatch.setattr(reporter_mod, "_post_discord_summary", fake_post)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        report_dir = Path(tmpdir) / "reports"
+        conn = init_db(db_path)
+        # 4 denies within 300s → deny_cluster detector fires.
+        for i in range(4):
+            _insert_event(conn, f"2026-05-13T08:00:{i:02d}Z", False, "rule_x")
+        conn.close()
+
+        generate_daily_report(
+            str(db_path),
+            report_dir,
+            discord_webhook="https://example.invalid/webhook",
+        )
+
+    assert posted["calls"] == 1
+    assert "finding" in posted["last_headline"].lower()
