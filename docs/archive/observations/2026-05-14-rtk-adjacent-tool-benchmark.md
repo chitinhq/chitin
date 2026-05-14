@@ -17,6 +17,15 @@ tools:
   `uv tool install --python python3 /tmp/code-review-graph-t351fde8b`
   with `UV_TOOL_BIN_DIR=/tmp/t351fde8b-tools/bin`.
 
+## Artifacts
+
+- Benchmark fixture bundle:
+  `docs/archive/observations/fixtures/2026-05-14-rtk-adjacent-tool-benchmark/`
+- Workload list:
+  `docs/archive/observations/fixtures/2026-05-14-rtk-adjacent-tool-benchmark/workloads.md`
+- Posted ticket comment:
+  `docs/archive/observations/fixtures/2026-05-14-rtk-adjacent-tool-benchmark/kanban-comment.md`
+
 ## Method
 
 - Token counts were measured with `gpt-tokenizer`'s `cl100k_base`
@@ -132,3 +141,8 @@ did not beat RTK on the shell-heavy commands that matter most in this repo.
 Run `code-review-graph` alongside RTK, not instead of it. It is complementary:
 RTK trims noisy command output, while code-review-graph reduces the amount of
 repo context a reviewer needs to read in the first place.
+
+## Ticket Comment
+
+Posted to Hermes ticket `t_351fde8b` using the exact body in
+`docs/archive/observations/fixtures/2026-05-14-rtk-adjacent-tool-benchmark/kanban-comment.md`.
