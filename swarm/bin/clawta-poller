@@ -342,18 +342,30 @@ def filter_tickets_with_incomplete_runs(
     placeholders = ",".join("?" * len(ticket_ids))
     try:
         with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT task_id
-                  FROM task_runs
-                 WHERE status IN ('running', 'blocked')
-                   AND task_id IN ({placeholders})
+                SELECT DISTINCT existing.id AS ticket_id
+                  FROM tasks AS existing
+                  JOIN tasks AS candidate
+                    ON existing.id IN ({placeholders})
+                   AND (
+                        existing.id = candidate.id
+                        OR (
+                             existing.idempotency_key IS NOT NULL
+                         AND existing.idempotency_key != ''
+                         AND existing.idempotency_key = candidate.idempotency_key
+                        )
+                   )
+                  JOIN task_runs AS runs
+                    ON runs.task_id = candidate.id
+                 WHERE runs.status IN ('running', 'blocked')
                 """,
                 ticket_ids,
             ).fetchall()
     except sqlite3.OperationalError:
         return tickets, []
-    blocked_ids = {str(row[0]) for row in rows}
+    blocked_ids = {str(row["ticket_id"]) for row in rows}
     if not blocked_ids:
         return tickets, []
     filtered = [ticket for ticket in tickets if str(ticket["id"]) not in blocked_ids]

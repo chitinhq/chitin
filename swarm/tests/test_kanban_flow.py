@@ -274,6 +274,72 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
         self.assertEqual(crash_run["event_chain_hash"], "timeout-hash")
         self.assertIsNotNone(crash_run["ended_at"])
 
+    def test_done_reads_final_event_chain_hash_from_chain_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_decafbad")
+            chain_file = tmp / "session-chain.jsonl"
+            chain_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"this_hash": "hash-1", "event": "first"}),
+                        json.dumps({"this_hash": "hash-2", "event": "second"}),
+                    ]
+                )
+                + "\n"
+            )
+
+            self.run_flow(tmp, "start", "t_decafbad", "--author", "tester")
+            self.run_flow(
+                tmp,
+                "done",
+                "t_decafbad",
+                "--result",
+                "Merged PR #2",
+                "--author",
+                "tester",
+                "--chain-file",
+                str(chain_file),
+            )
+
+            conn = sqlite3.connect(db_path)
+            event_chain_hash = conn.execute(
+                "SELECT event_chain_hash FROM task_runs WHERE task_id='t_decafbad'"
+            ).fetchone()[0]
+            conn.close()
+
+        self.assertEqual(event_chain_hash, "hash-2")
+
+    def test_done_leaves_event_chain_hash_null_for_empty_chain_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_facefeed")
+            chain_file = tmp / "empty-chain.jsonl"
+            chain_file.write_text("")
+
+            self.run_flow(tmp, "start", "t_facefeed", "--author", "tester")
+            self.run_flow(
+                tmp,
+                "done",
+                "t_facefeed",
+                "--result",
+                "Merged PR #3",
+                "--author",
+                "tester",
+                "--chain-file",
+                str(chain_file),
+            )
+
+            conn = sqlite3.connect(db_path)
+            event_chain_hash = conn.execute(
+                "SELECT event_chain_hash FROM task_runs WHERE task_id='t_facefeed'"
+            ).fetchone()[0]
+            conn.close()
+
+        self.assertIsNone(event_chain_hash)
+
 
 if __name__ == "__main__":
     unittest.main()
