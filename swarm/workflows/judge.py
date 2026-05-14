@@ -9,13 +9,16 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 
-sys.path.insert(0, os.path.expanduser("~/.openclaw/workflows"))
+sys.path.insert(0, os.path.dirname(__file__))
+# Runtime deployments may still keep the shared library in ~/.openclaw/workflows.
+sys.path.append(os.path.expanduser("~/.openclaw/workflows"))
 import _swarm_elo as elo  # noqa: E402
 
 
-DEFAULT_JUDGE = "clawta-glm-5.1"
+DEFAULT_JUDGE = "clawta-gpt-5.5"
 TASK_CLASS_HEURISTICS = [
     (r"refactor|cleanup|reorganize|consolidat", "refactor"),
     (r"\b(bug|fix|broken|fails?|crash|error)\b", "bugfix"),
@@ -279,9 +282,17 @@ Reply with ONLY a JSON object (no prose, no markdown):
 
 def call_judge(prompt: str, judge_model: str, timeout_seconds: int = 240) -> dict | None:
     """Call the judge LLM. Returns parsed dict or None on failure."""
+    prompt_path = None
     try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="clawta-judge-", suffix=".txt", delete=False) as fh:
+            fh.write(prompt)
+            prompt_path = fh.name
+        message = (
+            "Read the complete post-PR judge prompt from "
+            f"{prompt_path}. Reply with ONLY the JSON object requested in that file."
+        )
         result = subprocess.run(
-            ["clawta", "--text", prompt],
+            ["clawta", "--text", message],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -289,6 +300,12 @@ def call_judge(prompt: str, judge_model: str, timeout_seconds: int = 240) -> dic
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print(f"judge: clawta call failed: {e}", file=sys.stderr)
         return None
+    finally:
+        if prompt_path:
+            try:
+                os.unlink(prompt_path)
+            except OSError:
+                pass
 
     if result.returncode != 0:
         print(f"judge: clawta returned {result.returncode}", file=sys.stderr)
@@ -325,6 +342,7 @@ def main() -> int:
     ap.add_argument("--role", default="programmer", help="Worker role that produced the PR")
     ap.add_argument("--task-class", default=None, help="Override task class (auto-inferred if absent)")
     ap.add_argument("--judge-model", default=DEFAULT_JUDGE, help=f"Judge LLM (default: {DEFAULT_JUDGE})")
+    ap.add_argument("--inferred", action="store_true", help="Mark dispatch metadata as inferred/backfilled")
     ap.add_argument("--dry-run", action="store_true", help="Print prompt + scores; do not write to DB")
     args = ap.parse_args()
 
@@ -375,6 +393,7 @@ def main() -> int:
         pr_created_at=metadata["pr_created_at"],
         pr_updated_at=metadata["pr_updated_at"],
         pr_merged_at=metadata["pr_merged_at"],
+        inferred=args.inferred,
     )
     new_elo = elo.update_elo(
         conn, args.driver, args.model, task_class, total,
@@ -403,6 +422,7 @@ def main() -> int:
         "total": total,
         "new_elo": round(new_elo, 1),
         "reasoning": reasoning,
+        "inferred": bool(args.inferred),
     }, indent=2))
     return 0
 
