@@ -95,9 +95,11 @@ install paths, the policy schema, kill switches, and the escalation ladder.
 │       └── canon/               #   canonical-JSON SHA-256
 ├── libs/
 │   ├── contracts/               # canonical wire schemas (TS)
+│   ├── run-sdk/                 # standalone TS run-event SDK for third-party tools
 │   ├── telemetry/               # read/query side over the event chain
 │   ├── router-plugin-api/       # typed API for external router plugins
 │   └── adapters/                # operator-installed driver-side adapters
+├── go/run-sdk/                  # standalone Go run-event SDK (no kernel dependency)
 ├── apps/
 │   ├── cli/                     # operator CLI (`chitin` — events, replay, health, ledger)
 │   └── openclaw-plugin-governance/ # openclaw before_tool_call plugin
@@ -143,6 +145,7 @@ $HOME/.chitin/
 - [`docs/architecture/layer-contracts.md`](./docs/architecture/layer-contracts.md) — the four locked invariants
 - [`docs/event-model.md`](./docs/event-model.md) — canonical envelope + chain shape
 - [`docs/operating-model.md`](./docs/operating-model.md) — topology, subsystem ownership, what's live
+- [`libs/run-sdk/README.md`](./libs/run-sdk/README.md) and [`go/run-sdk/README.md`](./go/run-sdk/README.md) — third-party SDK quickstarts for emitting chitin-compatible run events
 
 **Operate**
 

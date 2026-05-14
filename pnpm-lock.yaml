@@ -165,6 +165,12 @@ importers:
 
   libs/router-plugin-api/typescript: {}
 
+  libs/run-sdk:
+    dependencies:
+      '@chitin/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   libs/telemetry:
     dependencies:
       '@chitin/contracts':
