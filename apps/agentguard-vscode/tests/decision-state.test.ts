@@ -27,6 +27,44 @@ describe('parseDecisionEventLine', () => {
     expect(decision?.driver).toBe('codex');
   });
 
+  it('parses max bounds decision envelopes without payload event_id', () => {
+    const decision = parseDecisionEventLine(JSON.stringify({
+      schema_version: '2',
+      run_id: '550e8400-e29b-41d4-a716-446655441000',
+      session_id: '550e8400-e29b-41d4-a716-446655441001',
+      surface: 'codex',
+      driver_identity: {
+        user: 'red',
+        machine_id: 'chimera-ant',
+        machine_fingerprint: 'a'.repeat(64),
+      },
+      agent_instance_id: '550e8400-e29b-41d4-a716-446655441002',
+      parent_agent_id: null,
+      agent_fingerprint: 'd'.repeat(64),
+      event_type: 'decision',
+      chain_id: '550e8400-e29b-41d4-a716-446655441001',
+      chain_type: 'session',
+      parent_chain_id: null,
+      seq: 7,
+      prev_hash: 'b'.repeat(64),
+      this_hash: 'c'.repeat(64),
+      ts: '2026-05-14T12:00:00Z',
+      labels: { agent: 'codex-worker', driver: 'codex' },
+      payload: {
+        decision: 'deny',
+        rule_id: 'bounds:max_lines_changed',
+        action_type: 'git.push',
+        action_target: 'origin swarm/codex-ecfb2c7e',
+        reason: 'max lines changed exceeded',
+      },
+    }));
+
+    expect(decision).not.toBeNull();
+    expect(decision?.eventId).toBe('c'.repeat(64));
+    expect(decision?.ruleId).toBe('bounds:max_lines_changed');
+    expect(decision?.actionType).toBe('git.push');
+  });
+
   it('ignores non-decision events', () => {
     const decision = parseDecisionEventLine(JSON.stringify({ event_type: 'user_prompt' }));
     expect(decision).toBeNull();

@@ -27,6 +27,9 @@ interface ChainEventShape {
   readonly labels?: unknown;
   readonly payload?: unknown;
   readonly agent_instance_id?: unknown;
+  readonly run_id?: unknown;
+  readonly seq?: unknown;
+  readonly this_hash?: unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -38,6 +41,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function eventIdFor(parsed: ChainEventShape, payload: Record<string, unknown>): string {
+  const payloadEventId = asString(payload.event_id);
+  if (payloadEventId) {
+    return payloadEventId;
+  }
+
+  const thisHash = asString(parsed.this_hash);
+  if (thisHash) {
+    return thisHash;
+  }
+
+  const runId = asString(parsed.run_id);
+  if (runId && typeof parsed.seq === 'number' && Number.isInteger(parsed.seq)) {
+    return `${runId}:${parsed.seq}`;
+  }
+
+  if (typeof parsed.seq === 'number' && Number.isInteger(parsed.seq)) {
+    return `seq:${parsed.seq}`;
+  }
+
+  return '';
 }
 
 function payloadRecord(value: unknown): Record<string, unknown> | null {
@@ -67,7 +93,7 @@ export function parseDecisionEventLine(line: string): DecisionRecord | null {
     return null;
   }
 
-  const eventId = asString(payload.event_id);
+  const eventId = eventIdFor(parsed, payload);
   const ts = asString(parsed.ts);
   if (!eventId || !ts) {
     return null;
