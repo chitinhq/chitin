@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { resolveChitinDir } from '@chitin/contracts';
 import type { Command } from 'commander';
+import { resolveChitinDir } from '../chitindir.js';
 
 export interface HealthReport {
   events_total: number;

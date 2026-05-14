@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { ensureIndexed, getEventsBySession } from '@chitin/telemetry';
+import { ensureIndexed, getEventsBySession } from '../telemetry.js';
 
 export interface EventRow {
   chain_id: string;

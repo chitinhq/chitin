@@ -98,18 +98,18 @@ importers:
 
   apps/cli:
     dependencies:
-      '@chitin/contracts':
-        specifier: workspace:*
-        version: link:../../libs/contracts
-      '@chitin/telemetry':
-        specifier: workspace:*
-        version: link:../../libs/telemetry
+      better-sqlite3:
+        specifier: ^12.9.0
+        version: 12.9.0
       chokidar:
         specifier: '*'
         version: 5.0.0
       commander:
         specifier: '*'
         version: 14.0.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
 
   apps/openclaw-plugin-governance:
     dependencies:

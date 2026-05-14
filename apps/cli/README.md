@@ -1,14 +1,14 @@
 # `apps/cli` — `chitin` CLI
 
-Operator-facing CLI for chitin: wire surfaces, inspect events,
-replay runs, install the kernel, run health checks, audit the debt
-ledger, run review passes.
+Operator-facing CLI for chitin: acquire the kernel, wire governed
+surfaces, inspect events, replay runs, run health checks, audit the
+debt ledger, run review passes.
 
 ```bash
 pnpm install
-pnpm exec tsx apps/cli/src/main.ts <command>
-# Or via the bin once installed:
-chitin <command>
+npx @chitin/cli guard
+chitin status
+chitin replay <session-id>
 ```
 
 ## Subcommands
@@ -21,7 +21,9 @@ chitin <command>
 | `events tree [--run <id>]` | Render the event chain as a parent-child tree. |
 | `replay <run-id>` | Re-run a captured run from the chain. |
 | `run …` | Submit a one-off agent turn (programmer-shape). See `--help`. |
-| `install` | Build + symlink the chitin-kernel binary into `~/.local/bin`. |
+| `guard` | Resolve a platform-matched kernel binary and install governed adapters for Claude Code, Codex, Gemini, and a Copilot wrapper. |
+| `status` | Report kernel availability plus per-surface hook/wrapper status. |
+| `install` | Low-level surface installer wrapper around kernel `install` for legacy flows. |
 | `health` | Run the kernel's health check (chain integrity, marker counts, etc). |
 | `ledger` | Audit `docs/debt-ledger.md` — counts open/claimed/shipped + filters. |
 | `review <pr-number>` | Manually run the review-graph workflow against a PR (operator-facing equivalent of the auto-enqueued path in `dispatcher.ts`). |
@@ -36,8 +38,10 @@ subcommand by:
 
 ## Layer
 
-`@chitin/cli` is the operator surface. It composes against the same
-kernel + libs as the runtime drivers (hermes/openclaw/copilot/etc.).
+`@chitin/cli` is the operator distribution surface. `guard` mirrors the
+old `@red-codes/agentguard` one-command pattern: npm installs the JS
+wrapper, the CLI resolves a per-platform kernel binary, then the target
+surface gets wired without a manual binary step.
 
 ## Test suite
 

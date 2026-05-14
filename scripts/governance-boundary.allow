@@ -1,6 +1,5 @@
 # One file path per line, followed by "# reason".
 apps/openclaw-plugin-governance/src/chitin-bridge.mjs # adapter: ships OpenClaw events into chitin-kernel gate
-apps/cli/src/commands/inspect.ts # read-only operator view of past decisions
 apps/cli/src/commands/ledger.ts # read-only ledger viewer
 python/analysis/models.py # read-only analytics model for gov-decisions JSONL rows; does not compute verdicts
 python/analysis/templates/__init__.py # audit: rule-drafting registry only; analysis helper, not runtime gate evaluator
