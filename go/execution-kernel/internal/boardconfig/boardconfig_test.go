@@ -1,0 +1,117 @@
+package boardconfig
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestResolveFieldFromConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "repo")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	if got != "chitinhq/chitin" {
+		t.Fatalf("repo = %q, want chitinhq/chitin", got)
+	}
+}
+
+func TestResolveFieldEnvOverridesConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KANBAN_BOARD_REPO", "override/repo")
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "repo")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	if got != "override/repo" {
+		t.Fatalf("repo = %q, want override/repo", got)
+	}
+}
+
+func TestResolveFieldMissingRequiredField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	_, err := ResolveField("chitin", "repo")
+	var missingErr MissingFieldError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("want MissingFieldError, got %v", err)
+	}
+	if missingErr.Field != "repo" {
+		t.Fatalf("missing field = %q, want repo", missingErr.Field)
+	}
+}
+
+func TestResolveFieldUnknownBoard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	_, err := ResolveField("readybench", "repo")
+	var boardErr UnknownBoardError
+	if !errors.As(err, &boardErr) {
+		t.Fatalf("want UnknownBoardError, got %v", err)
+	}
+	if boardErr.Slug != "readybench" {
+		t.Fatalf("slug = %q, want readybench", boardErr.Slug)
+	}
+}
+
+func TestResolveFieldNoBoardsInitialized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, err := ResolveField("chitin", "repo")
+	if !errors.Is(err, ErrNoBoardsInitialized) {
+		t.Fatalf("want ErrNoBoardsInitialized, got %v", err)
+	}
+}
+
+func TestResolveFieldMissingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	boardDir := filepath.Join(home, ".hermes", "kanban", "boards", "chitin")
+	if err := os.MkdirAll(boardDir, 0o755); err != nil {
+		t.Fatalf("mkdir board dir: %v", err)
+	}
+
+	_, err := ResolveField("chitin", "repo")
+	var configErr MissingConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("want MissingConfigError, got %v", err)
+	}
+}
+
+func TestResolveFieldOptionalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "chitin_yaml")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	if got != "chitin.yaml" {
+		t.Fatalf("chitin_yaml = %q, want chitin.yaml", got)
+	}
+}
+
+func writeBoardConfig(t *testing.T, home, slug, raw string) {
+	t.Helper()
+	dir := filepath.Join(home, ".hermes", "kanban", "boards", slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir board dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}

@@ -31,6 +31,8 @@ CARDS_SRC="$REPO_ROOT/swarm/data/agent-cards"
 CARDS_DST="$DEPLOYED_ROOT/data/agent-cards"
 BIN_SRC="$REPO_ROOT/swarm/bin"
 BIN_DST="$DEPLOYED_ROOT/bin"
+BOARD_ROOT="$HOME/.hermes/kanban/boards/chitin"
+BOARD_CONFIG="$BOARD_ROOT/config.json"
 
 mkdir -p "$WORKFLOWS_DST" "$CARDS_DST" "$BIN_DST"
 
@@ -97,5 +99,20 @@ src_count=$(find "$WORKFLOWS_SRC" "$CARDS_SRC" "$BIN_SRC" -maxdepth 1 -type f \
 echo
 echo "install-swarm: ${src_count} canonical file(s) under swarm/ are now installed at $DEPLOYED_ROOT"
 echo "  Backups (if any) at: ${WORKFLOWS_DST}/*.bak-${TS}, ${CARDS_DST}/*.bak-${TS}"
+
+mkdir -p "$BOARD_ROOT"
+if [ ! -f "$BOARD_CONFIG" ]; then
+    cat > "$BOARD_CONFIG" <<'EOF'
+{
+  "repo": "chitinhq/chitin",
+  "default_branch": "main",
+  "workspace_root": "~/workspace/chitin",
+  "kernel_bin": "chitin-kernel",
+  "chitin_yaml": "chitin.yaml"
+}
+EOF
+    echo "  seeded board config at $BOARD_CONFIG"
+fi
+
 echo
 echo "To verify no drift: bash scripts/check-swarm-deployed-sync.sh"
