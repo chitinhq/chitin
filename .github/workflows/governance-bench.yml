@@ -1,0 +1,29 @@
+name: Governance Bench
+
+on:
+  pull_request:
+    paths:
+      - 'go/execution-kernel/internal/gov/**'
+      - 'python/analysis/**'
+      - 'bench/**'
+      - '.github/workflows/governance-bench.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  governance-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install analysis deps
+        run: python3 -m pip install -e './python/analysis[dev]'
+
+      - name: Run governance bench
+        run: python3 bench/run.py

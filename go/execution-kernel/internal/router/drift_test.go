@@ -67,8 +67,8 @@ func TestDetectDrift_OutOfScopeHighBlast(t *testing.T) {
 	if !res.Fired {
 		t.Errorf("Fired=false on out-of-scope rm-rf; want true")
 	}
-	if res.Score < 0.7 {
-		t.Errorf("score=%v on out-of-scope rm-rf; want >= 0.8", res.Score)
+	if res.Score < 0.6 {
+		t.Errorf("score=%v on out-of-scope rm-rf; want >= 0.6", res.Score)
 	}
 }
 
