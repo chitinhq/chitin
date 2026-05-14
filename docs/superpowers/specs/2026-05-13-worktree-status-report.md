@@ -84,10 +84,12 @@ the table above. The data sources are:
 4. `git log -1 --format=%ct <branch>` — last activity timestamp.
 5. Operator-side cache file
    `~/.cache/chitin/worktree-status.json` — for fast iteration;
-   refreshed on each invocation.
+   refreshed best-effort by the default text report.
 
 Output is text by default (one row per worktree), JSON with
-`--json`, and `--stale` filters to flag rows.
+`--json`, and `--stale` filters to flag rows. Read-only machine
+outputs such as `--json` and `--prune-eligible` do not refresh the
+operator cache.
 
 The Go subcommand replaces ad-hoc bash that has been informally
 attempted in `scripts/` over the past month. Go because the data
@@ -142,7 +144,7 @@ output matters.
 | `branch`        | same → `branch` field                                              |
 | `kanban_ticket` | regex `t_[0-9a-f]{8}` matched against branch then path; else null  |
 | `pr_number`     | `gh pr list --search "head:<branch>" --json number` first match    |
-| `pr_state`      | same call → `state` (OPEN/MERGED/CLOSED) or `NONE`                 |
+| `pr_state`      | same call → `state` (OPEN/MERGED/CLOSED), `NONE`, or `UNKNOWN` when GitHub enrichment is unavailable |
 | `owner_lane`    | branch prefix: `swarm/<lane>-<short>` → `<lane>`; else heuristic   |
 | `last_commit_ts`| `git log -1 --format=%ct <branch>`                                 |
 | `age_days`      | now - last_commit_ts                                               |
@@ -153,6 +155,9 @@ Tags applied to the row:
   `pr_state == NONE` and `age_days > 14`.
 - `[orphan]` — `kanban_ticket == null`.
 - `[in-progress]` — `pr_state == OPEN`.
+- `[github-unavailable]` — `gh pr list` failed or timed out; PR state
+  is reported as `UNKNOWN` and rows are not marked stale from missing
+  PR data alone.
 - `[ready]` — `kanban_ticket != null` and `pr_state == NONE` and
   `age_days < 1` (just-created worktree).
 

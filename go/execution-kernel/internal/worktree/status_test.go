@@ -61,10 +61,11 @@ func TestStatusBuildsRowsSortedAndTagged(t *testing.T) {
 	}}
 
 	rows, err := Status(context.Background(), Options{
-		RepoDir:  repo,
-		Now:      now,
-		CacheDir: cacheDir,
-		Runner:   runner,
+		RepoDir:    repo,
+		Now:        now,
+		WriteCache: true,
+		CacheDir:   cacheDir,
+		Runner:     runner,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,10 +111,9 @@ func TestStatusBuildsRowsSortedAndTagged(t *testing.T) {
 func TestStatusStaleFilterAndPruneOutput(t *testing.T) {
 	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	rows, err := Status(context.Background(), Options{
-		RepoDir:  "/repo",
-		Now:      now,
-		Stale:    true,
-		CacheDir: t.TempDir(),
+		RepoDir: "/repo",
+		Now:     now,
+		Stale:   true,
 		Runner: fakeRunner{outputs: map[string][]byte{
 			"/repo|git worktree list --porcelain": []byte(strings.Join([]string{
 				"worktree /cache/open",
@@ -142,6 +142,69 @@ func TestStatusStaleFilterAndPruneOutput(t *testing.T) {
 	}
 	if got, want := FormatPruneEligible(rows), "/cache/merged\n/cache/none-old\n"; got != want {
 		t.Fatalf("prune output = %q, want %q", got, want)
+	}
+}
+
+func TestStatusCacheWriteIsOptInAndBestEffort(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	cacheDir := t.TempDir()
+	cachePath := filepath.Join(cacheDir, "not-a-dir")
+	if err := os.WriteFile(cachePath, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := fakeRunner{outputs: map[string][]byte{
+		"/repo|git worktree list --porcelain": []byte(strings.Join([]string{
+			"worktree /repo",
+			"branch refs/heads/main",
+		}, "\n")),
+		"/repo|gh pr list --state all --limit 200 --json number,state,headRefName,mergedAt": []byte(`[]`),
+		"/repo|git log -1 --format=%ct": []byte(fmt.Sprintf("%d\n", now.Unix())),
+	}}
+
+	if _, err := Status(context.Background(), Options{
+		RepoDir:    "/repo",
+		Now:        now,
+		WriteCache: true,
+		CacheDir:   cachePath,
+		Runner:     runner,
+	}); err != nil {
+		t.Fatalf("best-effort cache write returned error: %v", err)
+	}
+
+	if _, err := Status(context.Background(), Options{
+		RepoDir:  "/repo",
+		Now:      now,
+		CacheDir: cacheDir,
+		Runner:   runner,
+	}); err != nil {
+		t.Fatalf("status without cache write returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "worktree-status.json")); !os.IsNotExist(err) {
+		t.Fatalf("cache write without opt-in stat err = %v, want not exist", err)
+	}
+}
+
+func TestStatusTagsRowsWhenGitHubEnrichmentUnavailable(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	rows, err := Status(context.Background(), Options{
+		RepoDir: "/repo",
+		Now:     now,
+		Runner: fakeRunner{outputs: map[string][]byte{
+			"/repo|git worktree list --porcelain": []byte(strings.Join([]string{
+				"worktree /repo",
+				"branch refs/heads/swarm/codex-c083fd6d",
+			}, "\n")),
+			"/repo|git log -1 --format=%ct": []byte(fmt.Sprintf("%d\n", now.Unix())),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rows[0].PRState, PRStateUnknown; got != want {
+		t.Fatalf("pr_state = %q, want %q", got, want)
+	}
+	if !hasTag(rows[0].Tags, "github-unavailable") {
+		t.Fatalf("missing github-unavailable tag: %+v", rows[0])
 	}
 }
 

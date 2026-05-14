@@ -46,6 +46,10 @@ Machine-readable output is newline-delimited JSON:
 chitin-kernel worktree status --json
 ```
 
+The default text report refreshes
+`~/.cache/chitin/worktree-status.json` on a best-effort basis. JSON
+and prune-eligible output modes do not write the cache.
+
 To inspect stale candidates only:
 
 ```bash
