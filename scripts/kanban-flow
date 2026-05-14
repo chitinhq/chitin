@@ -26,9 +26,11 @@
 #       any → blocked. Comments with reason.
 
 #   kanban-flow crash <id> <reason...> [--author NAME] [--run-status STATUS]
+#       [--outcome OUTCOME] [--event-chain-hash HASH] [--chain-file PATH]
 #       in_progress → blocked. Finalizes the active task_run and comments
 #       with the crash reason. STATUS defaults to crashed; accepts
-#       crashed|failed|timed_out|blocked.
+#       crashed|failed|timed_out|blocked. --outcome defaults to STATUS.
+#       --event-chain-hash / --chain-file record the worker's chain link.
 #
 #   kanban-flow unblock <id> [--author NAME] [--assignee NAME]
 #       blocked → ready. Defaults assignee to clawta if no terminal lane
@@ -194,7 +196,10 @@ PY
 
 task_field() {
   local id="$1" field="$2"
-  sqlite3 "$DB" "SELECT $field FROM tasks WHERE id='$id'" 2>/dev/null | head -n1
+  # `|| true`: with `set -o pipefail`, a SELECT for a column an older `tasks`
+  # schema doesn't have makes this pipeline non-zero and aborts the whole
+  # script. Treat a missing/new column as simply "no value".
+  sqlite3 "$DB" "SELECT $field FROM tasks WHERE id='$id'" 2>/dev/null | head -n1 || true
 }
 
 active_run_id() {
@@ -419,8 +424,11 @@ case "$cmd" in
     body="Picking up at $(date -Iseconds)"
     [[ -n "$worktree" ]] && body="$body — worktree: $worktree"
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null
-    flip_status "$id" in_progress 1 0
+    # create_task_run before flip_status: it die()s if an incomplete run
+    # already exists, and we must not leave the ticket flipped to
+    # in_progress with no run when that happens.
     create_task_run "$id"
+    flip_status "$id" in_progress 1 0
     emit_transition "$id" "$from" in_progress "$author"
     echo "$id: $from → in_progress"
     ;;

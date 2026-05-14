@@ -297,6 +297,12 @@ def main():
             return 0
 
         except subprocess.TimeoutExpired:
+            # A timed-out worker may still have written Chitin events before
+            # it was killed — detect the chain so the run ledger keeps the
+            # link instead of recording a null hash.
+            timeout_chain_file, timeout_chain_hash = detect_event_chain(
+                chitin_home, event_files_before
+            )
             print(json.dumps({
                 "status": "timeout",
                 "returncode": -1,
@@ -308,8 +314,8 @@ def main():
                 "commit_count_ahead": 0,
                 "driver": driver,
                 "model": config.get("model", ""),
-                "event_chain_file": None,
-                "event_chain_hash": None,
+                "event_chain_file": timeout_chain_file,
+                "event_chain_hash": timeout_chain_hash,
             }))
             return 1
 
