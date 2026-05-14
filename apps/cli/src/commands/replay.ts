@@ -1,5 +1,5 @@
-import { ensureIndexed, replaySessionAsTree } from '@chitin/telemetry';
 import { join } from 'node:path';
+import { ensureIndexed, replaySessionAsTree } from '../telemetry.js';
 
 export function replayCommand(sessionId: string, opts: { workspace?: string }): void {
   const workspace = opts.workspace ?? process.cwd();
