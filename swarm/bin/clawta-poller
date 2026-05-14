@@ -29,10 +29,10 @@ Invocation:
   clawta-poller --once          one tick, print plan, exit
   clawta-poller --dry-run       one tick, print plan, no side effects
   clawta-poller --loop           run continuously every POLL_SEC seconds
-  clawta-poller --max-dispatch N max tickets to dispatch per tick (default 2)
+  clawta-poller --max-dispatch N max tickets to dispatch per tick (default 5)
 
 Configured via env:
-  KANBAN_DB                 default: ~/.hermes/kanban/boards/chitin/kanban.db
+  KANBAN_DB                 default: resolved from KANBAN_BOARD
   POLL_SEC                  default: 120
   TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
   ROUTING_LANE              assignee for routing-level tickets, default: clawta
@@ -763,7 +763,7 @@ def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -
         return False
 
     subprocess.run(
-        ["hermes", "kanban", "--board", "chitin", "comment",
+        ["hermes", "kanban", "--board", resolve_board(), "comment",
          ticket_id, "--author", AUTHOR, comment],
         timeout=15,
     )
@@ -954,7 +954,7 @@ def main() -> int:
     g.add_argument("--once", action="store_true", help="run one tick, exit")
     g.add_argument("--dry-run", action="store_true", help="run one tick, no side effects")
     g.add_argument("--loop", action="store_true", help=f"loop every POLL_SEC ({POLL_SEC}s)")
-    ap.add_argument("--max-dispatch", type=int, default=2, help="max tickets to dispatch per tick (default 2)")
+    ap.add_argument("--max-dispatch", type=int, default=5, help="max tickets to dispatch per tick (default 5)")
     args = ap.parse_args()
 
     if not DB_PATH.exists():
