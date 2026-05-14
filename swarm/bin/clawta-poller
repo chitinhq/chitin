@@ -60,13 +60,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
 
-DB_PATH = Path(
-    os.environ.get(
-        "KANBAN_DB",
-        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
-    )
-)
+
+DB_PATH = resolve_db()
 POLL_SEC = int(os.environ.get("POLL_SEC", "120"))
 TERMINAL_LANES = tuple(
     s.strip() for s in os.environ.get(

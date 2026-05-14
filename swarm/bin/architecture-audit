@@ -52,7 +52,13 @@ die() {
 log "=== architecture-audit start (date=$DATE) ==="
 
 # ── Preconditions ─────────────────────────────────────────────────────
-KANBAN_DB="$HOME/.hermes/kanban/boards/chitin/kanban.db"
+BOARD="${KANBAN_BOARD:-chitin}"
+_boards_dir="${HOME}/.hermes/kanban/boards"
+if [[ -n "${KANBAN_DB:-}" ]]; then
+  KANBAN_DB="$KANBAN_DB"
+else
+  KANBAN_DB="${_boards_dir}/${BOARD}/kanban.db"
+fi
 if [[ ! -f "$KANBAN_DB" ]]; then
   log "WARN: kanban DB not found at $KANBAN_DB; will skip ticket creation"
   export ARCH_AUDIT_SKIP_TICKETS=1

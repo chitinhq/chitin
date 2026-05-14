@@ -16,7 +16,8 @@ import sys
 from datetime import datetime
 
 TERMINAL_LANES = {"codex", "copilot", "claude-code", "gemini", "clawta"}
-DB = os.environ.get("KANBAN_DB", os.path.expanduser("~/.hermes/kanban/boards/chitin/kanban.db"))
+from board_resolver import resolve_db
+DB = str(resolve_db())
 
 
 def is_terminal_lane(assignee):

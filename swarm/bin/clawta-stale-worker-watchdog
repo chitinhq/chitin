@@ -32,6 +32,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
 
 BOARD = os.environ.get("SWARM_BOARD", "chitin")
 RED_ASSIGNEE = os.environ.get("CLAWTA_RED_ASSIGNEE", "red")
@@ -40,12 +43,7 @@ HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 OPENCLAW_BIN = os.environ.get(
     "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
 )
-KANBAN_DB = Path(
-    os.environ.get(
-        "KANBAN_DB",
-        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
-    )
-)
+KANBAN_DB = resolve_db()
 REPO_ROOT = Path(os.environ.get("CHITIN_REPO", Path(__file__).resolve().parents[2]))
 KANBAN_FLOW_BIN = Path(
     os.environ.get("KANBAN_FLOW_BIN", str(REPO_ROOT / "scripts" / "kanban-flow"))

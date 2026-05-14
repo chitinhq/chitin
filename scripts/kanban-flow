@@ -48,8 +48,13 @@
 
 set -euo pipefail
 
-DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/chitin/kanban.db}"
 BOARD="${KANBAN_BOARD:-chitin}"
+_boards_dir="${HOME}/.hermes/kanban/boards"
+if [[ -n "${KANBAN_DB:-}" ]]; then
+  DB="$KANBAN_DB"
+else
+  DB="${_boards_dir}/${BOARD}/kanban.db"
+fi
 AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
 
 is_terminal_lane() {
