@@ -85,6 +85,27 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(result["selection_mode"], "exploitation")
         self.assertEqual(result["exploration_candidates_considered"], 0)
 
+    def test_deterministic_router_mode_emits_valid_pick_without_llm(self):
+        result = self.run_pick_driver(
+            {"complexity": "low", "capabilities": ["python"]},
+            ROUTER_MODE="deterministic",
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        self.assertEqual(result["driver"], "copilot")
+        self.assertEqual(result["router_mode"], "deterministic")
+        self.assertEqual(result["selection_mode"], "exploitation")
+
+    def test_force_driver_bypasses_routing_and_emits_requested_lane(self):
+        result = self.run_pick_driver(
+            {"complexity": "high", "capabilities": ["python", "review"]},
+            FORCE_DRIVER="codex",
+        )
+
+        self.assertEqual(result["driver"], "codex")
+        self.assertEqual(result["router_mode"], "forced")
+        self.assertIn("FORCE_DRIVER env var bypassed routing logic", result["reasoning"])
+
     def test_exploration_pool_is_bounded_and_can_promote_gemini(self):
         result = self.run_pick_driver(
             {"complexity": "low", "capabilities": ["python"]},

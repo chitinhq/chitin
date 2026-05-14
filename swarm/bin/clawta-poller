@@ -38,6 +38,8 @@ Configured via env:
   ROUTING_LANE              assignee for routing-level tickets, default: clawta
   CLAWTA_BIN                default: clawta (must be on PATH)
   KANBAN_FLOW_BIN           default: kanban-flow
+  CLAWTA_ROUTER_MODE        passed to _pick_driver as ROUTER_MODE when set
+  CLAWTA_FORCE_DRIVER       passed to _pick_driver as FORCE_DRIVER when set
 
 Author rule. Every comment + event row written by this script is
 authored as 'clawta-poller'. Operators reading the board should be
@@ -92,6 +94,8 @@ LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-poller.log"
 DISPATCH_TIMEOUT = int(os.environ.get("DISPATCH_TIMEOUT", "300"))
 PICK_DRIVER = Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"
+CLAWTA_ROUTER_MODE = os.environ.get("CLAWTA_ROUTER_MODE", "").strip().lower()
+CLAWTA_FORCE_DRIVER = os.environ.get("CLAWTA_FORCE_DRIVER", "").strip()
 INVARIANT_BIN = Path(os.environ.get(
     "CLAWTA_INVARIANT_BIN",
     str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
@@ -588,13 +592,18 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
     """
     try:
         classify_json = classify_ticket_for_routing(ticket)
+        pick_driver_env = dict(os.environ)
+        if CLAWTA_ROUTER_MODE:
+            pick_driver_env["ROUTER_MODE"] = CLAWTA_ROUTER_MODE
+        if CLAWTA_FORCE_DRIVER:
+            pick_driver_env["FORCE_DRIVER"] = CLAWTA_FORCE_DRIVER
         result = subprocess.run(
             [sys.executable, str(PICK_DRIVER)],
             input=classify_json,
             capture_output=True,
             text=True,
             timeout=60,
-            env={**os.environ, "ROUTER_MODE": "deterministic"},
+            env=pick_driver_env,
         )
         if result.returncode != 0:
             log(f"route_ticket({ticket['id']}): _pick_driver rc={result.returncode}; skipping")
