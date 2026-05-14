@@ -254,7 +254,7 @@ create_task_run() {
   ensure_task_runs_schema
 
   local existing
-  existing="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND status IN ('running','blocked') ORDER BY started_at DESC, id DESC LIMIT 1")"
+  existing="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND status IN ('running','blocked') AND ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1")"
   [[ -z "$existing" ]] || die "$id already has an incomplete task_run ($existing)"
 
   local now lease_id driver_id profile step_key task_idempotency max_runtime claim_expires worktree_path repo_sha

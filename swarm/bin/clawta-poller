@@ -360,6 +360,7 @@ def filter_tickets_with_incomplete_runs(
                   JOIN task_runs AS runs
                     ON runs.task_id = candidate.id
                  WHERE runs.status IN ('running', 'blocked')
+                   AND runs.ended_at IS NULL
                 """,
                 ticket_ids,
             ).fetchall()

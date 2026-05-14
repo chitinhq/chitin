@@ -190,6 +190,49 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
             '{"machine_fingerprint":"' + ("a" * 64) + '","machine_id":"env-box","user":"env-user"}',
         )
 
+    def test_start_allows_redispatch_after_ended_blocked_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_b10c0de0")
+
+            self.run_flow(tmp, "start", "t_b10c0de0", "--author", "tester")
+            self.run_flow(
+                tmp,
+                "crash",
+                "t_b10c0de0",
+                "operator intervention required",
+                "--author",
+                "tester",
+                "--run-status",
+                "blocked",
+                "--outcome",
+                "blocked",
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.execute("UPDATE tasks SET status='ready' WHERE id='t_b10c0de0'")
+            conn.commit()
+            conn.close()
+
+            self.run_flow(tmp, "start", "t_b10c0de0", "--author", "tester")
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            runs = conn.execute(
+                """
+                SELECT status, ended_at
+                  FROM task_runs
+                 WHERE task_id='t_b10c0de0'
+                 ORDER BY id
+                """
+            ).fetchall()
+            conn.close()
+
+        self.assertEqual([run["status"] for run in runs], ["blocked", "running"])
+        self.assertIsNotNone(runs[0]["ended_at"])
+        self.assertIsNone(runs[1]["ended_at"])
+
     def test_pr_hash_is_preserved_until_done_and_crash_finalizes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
