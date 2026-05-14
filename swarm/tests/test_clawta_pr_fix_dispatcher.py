@@ -38,6 +38,32 @@ class FixDispatcherTests(unittest.TestCase):
         self.assertIsNone(module.latest_review_comment([untrusted]))
         self.assertEqual(module.latest_review_comment([untrusted, trusted]), trusted["body"])
 
+    def test_already_dispatched_is_head_aware(self):
+        module = load_module()
+        comments = [
+            {"body": "<!-- clawta-fix-dispatcher:v1 -->\nlegacy marker"},
+            {"body": "<!-- clawta-fix-dispatcher:v1 head=abc123 -->\nold head"},
+            {"body": "<!-- clawta-fix-dispatcher:v1 head=def456 -->\ncurrent head"},
+        ]
+
+        self.assertTrue(module.already_dispatched(comments, "def456"))
+        self.assertFalse(module.already_dispatched(comments, "ffff00"))
+        self.assertFalse(module.already_dispatched(comments, ""))
+
+    def test_mark_dispatched_includes_head_marker(self):
+        module = load_module()
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        pr = {"number": 77, "headRefOid": "abc123", "headRefName": "swarm/codex-abc", "title": "x"}
+        with mock.patch.object(module, "run", side_effect=fake_run):
+            module.mark_dispatched(pr, "/tmp/log", dry_run=False)
+
+        self.assertIn("<!-- clawta-fix-dispatcher:v1 head=abc123 -->", seen[0][-1])
+
     def test_ensure_worktree_creates_local_branch_from_remote_branch(self):
         module = load_module()
         calls: list[list[str]] = []
