@@ -163,52 +163,73 @@ def detect_agent_failure_run(
     findings = []
 
     try:
+        # Walk the full per-agent timeline (allows + denies) so the
+        # "consecutive" semantics are actually consecutive. The prior
+        # version queried only denies and counted them across all of
+        # time, which would flag an agent that had N denies interleaved
+        # with M allows — not a failure run.
         if agent_name:
             query = """
-                SELECT ts_unix, agent, rule_id, action_type
+                SELECT ts_unix, agent, rule_id, action_type, allowed
                 FROM events
-                WHERE agent = ? AND allowed = 0
-                ORDER BY ts_unix ASC
+                WHERE agent = ?
+                ORDER BY agent ASC, ts_unix ASC, id ASC
             """
             rows = conn.execute(query, (agent_name,)).fetchall()
         else:
             query = """
-                SELECT ts_unix, agent, rule_id, action_type
+                SELECT ts_unix, agent, rule_id, action_type, allowed
                 FROM events
-                WHERE allowed = 0
-                ORDER BY ts_unix ASC
+                ORDER BY agent ASC, ts_unix ASC, id ASC
             """
             rows = conn.execute(query).fetchall()
 
         if not rows:
             return findings
 
-        # Group consecutive denies by agent
-        agents_seen = {}
+        current_agent = None
+        streak: list = []
+        reported_run_keys: set = set()
+
+        def emit(agent: str, events: list) -> None:
+            if len(events) < min_failures:
+                return
+            run_key = (agent, events[0]["ts_unix"], events[-1]["ts_unix"])
+            if run_key in reported_run_keys:
+                return
+            reported_run_keys.add(run_key)
+            ts = _from_unix(events[0]["ts_unix"])
+            rules = [e["rule_id"] for e in events]
+            findings.append(Finding(
+                detector="agent_failure_run",
+                ts=ts,
+                severity="warning",
+                title=f"Agent {agent} failure run: {len(events)} consecutive denies",
+                details={
+                    "agent": agent,
+                    "failure_count": len(events),
+                    "rules": list(dict.fromkeys(rules)),
+                    "min_threshold": min_failures,
+                    "first_ts_unix": events[0]["ts_unix"],
+                    "last_ts_unix": events[-1]["ts_unix"],
+                },
+            ))
+
         for row in rows:
             agent = row["agent"]
-            if agent not in agents_seen:
-                agents_seen[agent] = []
-            agents_seen[agent].append(row)
+            if agent != current_agent:
+                if current_agent is not None:
+                    emit(current_agent, streak)
+                current_agent = agent
+                streak = []
+            if row["allowed"] == 0:
+                streak.append(row)
+            else:
+                emit(agent, streak)
+                streak = []
 
-        for agent, events in agents_seen.items():
-            if len(events) >= min_failures:
-                # All are denies for this agent, sorted by ts_unix
-                ts = _from_unix(events[0]["ts_unix"])
-                rules = [e["rule_id"] for e in events]
-
-                findings.append(Finding(
-                    detector="agent_failure_run",
-                    ts=ts,
-                    severity="warning",
-                    title=f"Agent {agent} failure run: {len(events)} consecutive denies",
-                    details={
-                        "agent": agent,
-                        "failure_count": len(events),
-                        "rules": list(set(rules)),
-                        "min_threshold": min_failures,
-                    }
-                ))
+        if current_agent is not None:
+            emit(current_agent, streak)
 
     finally:
         conn.close()

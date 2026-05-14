@@ -165,14 +165,35 @@ def tail_all_decisions(decisions_dir: Path) -> Path:
 
 
 def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path:
-    """Continuously index existing and appended gov decision lines, including date rollover."""
+    """Continuously index existing and appended gov decision lines.
+
+    Handles three rotation/lifecycle edge cases:
+      * date rollover — new files appear via _decision_files() each tick.
+      * truncation — if file size drops below the stored offset, reset
+        to 0 so newly-appended content from the start is not skipped.
+      * deletion — drop offsets for files no longer listed so the dict
+        does not grow unbounded across long-lived runs.
+    """
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
     offsets: dict[Path, int] = {}
     try:
         while True:
-            for f in _decision_files(decisions_dir):
-                inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, f, offsets.get(f, 0))
+            current = list(_decision_files(decisions_dir))
+            current_set = set(current)
+            stale = [p for p in offsets if p not in current_set]
+            for p in stale:
+                offsets.pop(p, None)
+            for f in current:
+                offset = offsets.get(f, 0)
+                try:
+                    size = f.stat().st_size
+                except FileNotFoundError:
+                    offsets.pop(f, None)
+                    continue
+                if size < offset:
+                    offset = 0
+                inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, f, offset)
                 offsets[f] = next_offset
             time.sleep(poll_seconds)
     finally:
