@@ -2,16 +2,22 @@ package gov
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/canon"
 )
 
 // CheckBounds fires only for push-shaped actions (git.push, github.pr.create).
-// Shells out to `git diff --stat origin/main...HEAD` in cwd; rejects if the
-// per-action ceiling in policy.Bounds is exceeded. Fail-closed: if git diff
-// fails or returns unparseable output, treat as over-bounds.
+// For git.push it shells out to `git diff --stat origin/main...HEAD` in cwd.
+// For github.pr.create it resolves the repo root and measures
+// `git diff --stat <base>...<head>` from the gh command line so the bounds
+// check matches the PR page's merge-base diff regardless of the caller's cwd.
+// Rejects if the per-action ceiling in policy.Bounds is exceeded. Fail-closed:
+// if git diff fails or returns unparseable output, treat as over-bounds.
 //
 // Per-action overrides (Bounds.PerAction[<action_type>]) close #70: doc-batch
 // pushes via git.push can be allowed a higher ceiling than code commits via
@@ -32,7 +38,7 @@ func CheckBounds(a Action, p Policy, cwd string) Decision {
 		return Decision{Allowed: true, RuleID: "bounds:no-ceiling", Action: a}
 	}
 
-	files, ins, del, err := collectDiffStats(cwd)
+	files, ins, del, err := collectDiffStats(a, cwd)
 	if err != nil {
 		return Decision{
 			Allowed: false,
@@ -87,17 +93,32 @@ func boundsModeFor(p Policy, ruleID string) string {
 	return "enforce"
 }
 
-func collectDiffStats(cwd string) (files, ins, del int, err error) {
+func collectDiffStats(a Action, cwd string) (files, ins, del int, err error) {
+	diffRange := "origin/main...HEAD"
+	repoPath := cwd
+
+	if a.Type == ActGithubPRCreate {
+		repoRoot, rootErr := boundsGitOutput(cwd, "rev-parse", "--show-toplevel")
+		if rootErr != nil {
+			return 0, 0, 0, fmt.Errorf("git rev-parse --show-toplevel: %w", rootErr)
+		}
+		repoPath = repoRoot
+		diffRange, err = prDiffRange(a, repoRoot)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
 	// origin/main...HEAD (three dots = merge-base diff, matches what the PR
 	// diff would be). If origin/main isn't available (detached HEAD, no
 	// remote), fail-closed upstream treats bounds:undetermined as a deny.
 	// No silent HEAD~1 fallback: a single-commit diff doesn't tell us the
 	// PR-level blast radius, and getting bounds wrong in the permissive
 	// direction defeats the point.
-	cmd := exec.Command("git", "-C", cwd, "diff", "--stat", "origin/main...HEAD")
+	cmd := exec.Command("git", "-C", repoPath, "diff", "--stat", diffRange)
 	out, runErr := cmd.Output()
 	if runErr != nil {
-		return 0, 0, 0, fmt.Errorf("git diff --stat origin/main...HEAD: %w", runErr)
+		return 0, 0, 0, fmt.Errorf("git diff --stat %s: %w", diffRange, runErr)
 	}
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" {
@@ -116,9 +137,44 @@ func collectDiffStats(cwd string) (files, ins, del int, err error) {
 	return f, ip, dp, nil
 }
 
+func prDiffRange(a Action, repoRoot string) (string, error) {
+	base, head := parsePRCreateBaseHead(a.Target)
+	if head == "" {
+		fmt.Fprintln(os.Stderr, "bounds: using cwd HEAD; pass --head/--base for accurate PR-size measurement")
+		return "origin/main...HEAD", nil
+	}
+	if base == "" {
+		defaultBase, err := boundsGitOutput(repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+		if err != nil {
+			return "", fmt.Errorf("git symbolic-ref --short refs/remotes/origin/HEAD: %w", err)
+		}
+		base = strings.TrimPrefix(defaultBase, "origin/")
+	}
+	return base + "..." + head, nil
+}
+
+func parsePRCreateBaseHead(raw string) (base, head string) {
+	cmd := canon.ParseOne(raw)
+	if cmd.Tool != "gh" || cmd.Action != "pr" || len(cmd.Args) == 0 || cmd.Args[0] != "create" {
+		return "", ""
+	}
+	return cmd.Flags["base"], cmd.Flags["head"]
+}
+
+func boundsGitOutput(repoPath string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repoPath}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // parseDiffStatLine parses the summary line printed at the bottom of
 // `git diff --stat`, e.g.:
-//   " 3 files changed, 10 insertions(+), 5 deletions(-)"
+//
+//	" 3 files changed, 10 insertions(+), 5 deletions(-)"
+//
 // Returns (files, insertions, deletions). Any field missing returns 0
 // for that field (e.g. a diff with only insertions lacks deletions).
 func parseDiffStatLine(s string) (files, ins, del int) {
