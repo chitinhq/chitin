@@ -52,34 +52,12 @@ type HeuristicOutcome struct {
 	AnyFired    bool            `json:"any_fired"`
 }
 
-// AdvisorRequest / AdvisorResponse were removed in the audit Tier 6
-// cull (2026-05-08). The in-gate `claude -p` advisor that produced
-// these envelopes is gone; LLM consultation lives downstream now
-// (hermes' `approvals.mode: smart` for hermes-driven tools, operator-
-// wired chain consumers for other drivers). See
-// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md.
-
 // HeuristicConfig — per-heuristic policy from chitin.yaml.
 type HeuristicConfig struct {
 	Enabled           bool    `yaml:"enabled" json:"enabled"`
 	Threshold         float64 `yaml:"threshold,omitempty" json:"threshold,omitempty"`
 	MaxLoopCount      int     `yaml:"max_loop_count,omitempty" json:"max_loop_count,omitempty"`
 	MaxStallSeconds   int     `yaml:"max_stall_seconds,omitempty" json:"max_stall_seconds,omitempty"`
-}
-
-// AdvisorConfig — parse-and-ignore stub kept so chitin.yaml files
-// authored before the audit Tier 6 cull (2026-05-08) continue to
-// load cleanly. The kernel never reads these fields anymore. See
-// docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md
-// for where LLM consultation lives now.
-type AdvisorConfig struct {
-	Enabled bool     `yaml:"enabled" json:"enabled"`
-	When    []string `yaml:"when" json:"when"`
-	Chain   struct {
-		MaxDepth  int      `yaml:"max_depth" json:"max_depth"`
-		TierSteps []string `yaml:"tier_steps" json:"tier_steps"`
-	} `yaml:"chain" json:"chain"`
-	Model string `yaml:"model" json:"model"`
 }
 
 // PluginConfig — declared plugin from chitin.yaml `router.plugins[]`.
@@ -122,7 +100,6 @@ type PluginsTrustConfig struct {
 type Policy struct {
 	Enabled      bool                       `yaml:"enabled" json:"enabled"`
 	Heuristics   map[string]HeuristicConfig `yaml:"heuristics" json:"heuristics"`
-	Advisor      AdvisorConfig              `yaml:"advisor" json:"advisor"`
 	Plugins      []PluginConfig             `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 	PluginsTrust PluginsTrustConfig         `yaml:"plugins_trust,omitempty" json:"plugins_trust,omitempty"`
 }
@@ -139,15 +116,6 @@ func DefaultPolicy() Policy {
 				MaxLoopCount:    3,
 				MaxStallSeconds: 600,
 			},
-		},
-		Advisor: AdvisorConfig{
-			Enabled: false,
-			When:    nil,
-			Chain: struct {
-				MaxDepth  int      `yaml:"max_depth" json:"max_depth"`
-				TierSteps []string `yaml:"tier_steps" json:"tier_steps"`
-			}{},
-			Model: "",
 		},
 	}
 }
