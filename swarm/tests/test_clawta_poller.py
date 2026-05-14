@@ -39,6 +39,7 @@ def make_db(root: Path) -> Path:
           body TEXT,
           status TEXT NOT NULL,
           assignee TEXT,
+          idempotency_key TEXT,
           priority INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL
         );
@@ -56,6 +57,13 @@ def make_db(root: Path) -> Path:
           payload TEXT,
           created_at INTEGER
         );
+        CREATE TABLE task_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER
+        );
         """
     )
     conn.commit()
@@ -64,6 +72,118 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("t_running01", "already running", "", "ready", "codex", "idem-1", 50, 1),
+            )
+            conn.execute(
+                """
+                INSERT INTO task_runs(task_id, status, started_at)
+                VALUES (?, ?, ?)
+                """,
+                ("t_running01", "running", 1),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "fetch_ready_for_terminal_lanes",
+                return_value=[{
+                    "id": "t_running01",
+                    "title": "already running",
+                    "assignee": "codex",
+                    "priority": 50,
+                    "created_at": 1,
+                }],
+            ), mock.patch.object(module, "dispatch_ticket") as dispatch_ticket:
+                dispatched, demoted, queue_size = module.dispatch_ready_batch(1, dry_run=False)
+
+        self.assertEqual(dispatched, [])
+        self.assertEqual(demoted, [])
+        self.assertEqual(queue_size, 0)
+        dispatch_ticket.assert_not_called()
+
+    def test_dispatch_ready_batch_allows_ticket_with_ended_blocked_task_run(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES ('t_blocked01', 'previously blocked', '', 'ready', 'codex', 'idem-1', 50, 1);
+                INSERT INTO task_runs(task_id, status, started_at, ended_at)
+                VALUES ('t_blocked01', 'blocked', 1, 2);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            ticket = {
+                "id": "t_blocked01",
+                "title": "previously blocked",
+                "assignee": "codex",
+                "priority": 50,
+                "created_at": 1,
+            }
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "fetch_ready_for_terminal_lanes",
+                return_value=[ticket],
+            ), mock.patch.object(module, "dispatch_ticket", return_value=True) as dispatch_ticket:
+                dispatched, demoted, queue_size = module.dispatch_ready_batch(1, dry_run=False)
+
+        self.assertEqual(dispatched, ["t_blocked01"])
+        self.assertEqual(demoted, [])
+        self.assertEqual(queue_size, 1)
+        dispatch_ticket.assert_called_once_with(
+            "t_blocked01",
+            "codex",
+            "ready terminal-lane ticket; dispatching by priority/FIFO without re-demoting from truncated body",
+            False,
+        )
+
+    def test_dispatch_ready_batch_skips_ticket_when_matching_idempotency_key_is_running(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_running01', 'already running', '', 'in_progress', 'codex', 'idem-shared', 50, 1),
+                  ('t_duplicate2', 'duplicate ready ticket', '', 'ready', 'codex', 'idem-shared', 40, 2);
+                INSERT INTO task_runs(task_id, status, started_at)
+                VALUES ('t_running01', 'running', 1);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "fetch_ready_for_terminal_lanes",
+                return_value=[{
+                    "id": "t_duplicate2",
+                    "title": "duplicate ready ticket",
+                    "assignee": "codex",
+                    "priority": 40,
+                    "created_at": 2,
+                }],
+            ), mock.patch.object(module, "dispatch_ticket") as dispatch_ticket:
+                dispatched, demoted, queue_size = module.dispatch_ready_batch(1, dry_run=False)
+
+        self.assertEqual(dispatched, [])
+        self.assertEqual(demoted, [])
+        self.assertEqual(queue_size, 0)
+        dispatch_ticket.assert_not_called()
     def test_extract_dependency_refs_ignores_parent_hierarchy_refs(self) -> None:
         module = load_module()
 

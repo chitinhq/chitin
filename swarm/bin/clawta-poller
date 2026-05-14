@@ -338,6 +338,46 @@ def fetch_dispatchable_with_bodies() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def filter_tickets_with_incomplete_runs(
+    tickets: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not tickets:
+        return [], []
+    ticket_ids = [str(ticket["id"]) for ticket in tickets]
+    placeholders = ",".join("?" * len(ticket_ids))
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT existing.id AS ticket_id
+                  FROM tasks AS existing
+                  JOIN tasks AS candidate
+                    ON existing.id IN ({placeholders})
+                   AND (
+                        existing.id = candidate.id
+                        OR (
+                             existing.idempotency_key IS NOT NULL
+                         AND existing.idempotency_key != ''
+                         AND existing.idempotency_key = candidate.idempotency_key
+                        )
+                   )
+                  JOIN task_runs AS runs
+                    ON runs.task_id = candidate.id
+                 WHERE runs.status IN ('running', 'blocked')
+                   AND runs.ended_at IS NULL
+                """,
+                ticket_ids,
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return tickets, []
+    blocked_ids = {str(row["ticket_id"]) for row in rows}
+    if not blocked_ids:
+        return tickets, []
+    filtered = [ticket for ticket in tickets if str(ticket["id"]) not in blocked_ids]
+    return filtered, sorted(blocked_ids)
+
+
 def fetch_blocked_dependency_gate_tickets() -> list[dict[str, Any]]:
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
@@ -877,6 +917,9 @@ def dispatch_ready_batch(max_dispatch: int, dry_run: bool) -> tuple[list[str], l
     a slow sequencer should not block visible ready→in_progress movement.
     """
     queue = fetch_ready_for_terminal_lanes()
+    queue, skipped_incomplete = filter_tickets_with_incomplete_runs(queue)
+    for ticket_id in skipped_incomplete:
+        log(f"tick: skipping {ticket_id} — incomplete task_run already exists")
     if not queue or max_dispatch <= 0:
         return [], [], len(queue)
 
