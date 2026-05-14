@@ -30,6 +30,11 @@
   ],
   "models": [
     {
+      "id": "gpt-5.4",
+      "tier": "T3",
+      "premium_cost": 0.65
+    },
+    {
       "id": "gpt-5.5",
       "tier": "T4",
       "premium_cost": 1.0
@@ -45,5 +50,5 @@
       "{prompt}"
     ]
   },
-  "notes": "Spawn from a worktree under ~/.cache/chitin/swarm-worktrees/. Honors chitin gate hooks. Only gpt-5.5 is supported with ChatGPT Pro account auth \u2014 gpt-5/gpt-5.3/gpt-5.4/gpt-5-codex return 'not supported when using Codex with a ChatGPT account' (verified 2026-05-11). Non-interactive mode requires `codex exec` subcommand; the old --message flag does not exist. --dangerously-bypass-approvals-and-sandbox replaces the now-removed --yolo flag. Absolute invocation path set 2026-05-12 by Clawta after isolated lobster env could not resolve PATH binaries."
+  "notes": "Spawn from a worktree under ~/.cache/chitin/swarm-worktrees/. Honors chitin gate hooks. Non-interactive mode requires `codex exec` subcommand; the old --message flag does not exist. --dangerously-bypass-approvals-and-sandbox replaces the now-removed --yolo flag. Absolute invocation path set 2026-05-12 by Clawta after isolated lobster env could not resolve PATH binaries. Model policy updated 2026-05-13: gpt-5.4 and gpt-5.5 both work with the ChatGPT/Codex account; gpt-5.3, gpt-5, and gpt-5-codex still return not-supported. Use gpt-5.4 for low-complexity Codex tasks and gpt-5.5 for medium/high or needs_frontier work; _pick_driver enforces this as the complexity floor."
 }
