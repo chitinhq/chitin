@@ -75,6 +75,27 @@ class PickDriverTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             return json.loads(result.stdout)
 
+    def run_pick_driver_raw(self, raw_input: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp)
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "deterministic",
+                **env_overrides,
+            }
+            return subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=raw_input,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+
     def test_exploration_can_be_disabled(self):
         result = self.run_pick_driver(
             {"complexity": "low", "capabilities": ["python"]},
@@ -168,6 +189,15 @@ class PickDriverTests(unittest.TestCase):
         )
         self.assertEqual(allowed["driver"], "gemini")
         self.assertEqual(allowed["selection_mode"], "exploration")
+
+    def test_rejects_prefixed_stdout_noise_before_json(self):
+        result = self.run_pick_driver_raw(
+            '_pick_driver compatibility noise\n{"complexity":"low","capabilities":["python"]}',
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expecting value", result.stderr)
 
 
 if __name__ == "__main__":
