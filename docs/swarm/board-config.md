@@ -37,6 +37,7 @@ chitin-kernel board-config <slug> <field>
 Behavior:
 
 - Precedence is `env > config.json > error`.
+- The helper validates the full required-field set before returning any value.
 - Environment overrides use:
   - `KANBAN_BOARD_REPO`
   - `KANBAN_BOARD_DEFAULT_BRANCH`
@@ -47,6 +48,7 @@ Behavior:
 - Unknown board exits `3` with `unknown board: <slug>`.
 - No boards initialized exits `3` with `no boards initialized`.
 - Missing required field exits `2` with `missing field: <name>`.
+- A board directory without `config.json` exits `2` with `missing config: <path>`.
 - A board directory without `config.json` is an error; the helper does not synthesize defaults for that board.
 
 Examples:

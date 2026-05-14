@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +62,22 @@ func TestCLI_BoardConfigUnknownBoardExit3(t *testing.T) {
 	}
 }
 
+func TestCLI_BoardConfigEnvSetUnknownBoardExit3(t *testing.T) {
+	home := t.TempDir()
+	writeCLIConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	_, stderr, code := runCLIWithEnv(t, t.TempDir(), []string{
+		"HOME=" + home,
+		"KANBAN_BOARD_REPO=override/repo",
+	}, "board-config", "readybench", "repo")
+	if code != 3 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "unknown board: readybench") {
+		t.Fatalf("stderr=%q", stderr)
+	}
+}
+
 func TestCLI_BoardConfigNoBoardsInitializedExit3(t *testing.T) {
 	home := t.TempDir()
 
@@ -69,6 +86,53 @@ func TestCLI_BoardConfigNoBoardsInitializedExit3(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	if !strings.Contains(stderr, "no boards initialized") {
+		t.Fatalf("stderr=%q", stderr)
+	}
+}
+
+func TestCLI_BoardConfigEnvSetNoBoardsInitializedExit3(t *testing.T) {
+	home := t.TempDir()
+
+	_, stderr, code := runCLIWithEnv(t, t.TempDir(), []string{
+		"HOME=" + home,
+		"KANBAN_BOARD_REPO=override/repo",
+	}, "board-config", "chitin", "repo")
+	if code != 3 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "no boards initialized") {
+		t.Fatalf("stderr=%q", stderr)
+	}
+}
+
+func TestCLI_BoardConfigEnvSetMissingConfigExit2(t *testing.T) {
+	home := t.TempDir()
+	boardDir := filepath.Join(home, ".hermes", "kanban", "boards", "chitin")
+	if err := os.MkdirAll(boardDir, 0o755); err != nil {
+		t.Fatalf("mkdir board dir: %v", err)
+	}
+
+	_, stderr, code := runCLIWithEnv(t, t.TempDir(), []string{
+		"HOME=" + home,
+		"KANBAN_BOARD_REPO=override/repo",
+	}, "board-config", "chitin", "repo")
+	if code != 2 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "missing config:") {
+		t.Fatalf("stderr=%q", stderr)
+	}
+}
+
+func TestCLI_BoardConfigOptionalLookupStillFailsForMissingRequiredField(t *testing.T) {
+	home := t.TempDir()
+	writeCLIConfig(t, home, "chitin", `{"default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	_, stderr, code := runCLIWithEnv(t, t.TempDir(), []string{"HOME=" + home}, "board-config", "chitin", "chitin_yaml")
+	if code != 2 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "missing field: repo") {
 		t.Fatalf("stderr=%q", stderr)
 	}
 }

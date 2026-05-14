@@ -38,6 +38,13 @@ var fieldSpecs = map[string]FieldSpec{
 	},
 }
 
+var requiredFields = []string{
+	"repo",
+	"default_branch",
+	"workspace_root",
+	"kernel_bin",
+}
+
 var ErrNoBoardsInitialized = errors.New("no boards initialized")
 
 type UnknownBoardError struct {
@@ -77,13 +84,15 @@ func ResolveField(slug, field string) (string, error) {
 	if !ok {
 		return "", UnknownFieldError{Field: field}
 	}
-	if value := strings.TrimSpace(os.Getenv(spec.EnvVar)); value != "" {
-		return value, nil
-	}
-
 	config, err := loadConfig(slug)
 	if err != nil {
 		return "", err
+	}
+	if err := validateRequiredFields(config); err != nil {
+		return "", err
+	}
+	if value := strings.TrimSpace(os.Getenv(spec.EnvVar)); value != "" {
+		return value, nil
 	}
 	if value := strings.TrimSpace(config[field]); value != "" {
 		return value, nil
@@ -155,4 +164,14 @@ func boardsRoot() (string, error) {
 		return "", fmt.Errorf("user home: %w", err)
 	}
 	return filepath.Join(home, ".hermes", "kanban", "boards"), nil
+}
+
+func validateRequiredFields(config map[string]string) error {
+	for _, field := range requiredFields {
+		spec := fieldSpecs[field]
+		if strings.TrimSpace(config[field]) == "" && strings.TrimSpace(os.Getenv(spec.EnvVar)) == "" {
+			return MissingFieldError{Field: field}
+		}
+	}
+	return nil
 }
