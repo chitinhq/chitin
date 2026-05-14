@@ -178,7 +178,7 @@ def infer_ticket(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> str | N
     # Explicit PR body/title references are accepted only when they look like
     # the PR's own ticket linkage, not incidental mentions in a repair summary.
     explicit = re.search(
-        r"(?i)(?:closes|fixes|resolves|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
+        r"(?i)(?:closes|fixes|resolves|refs?|references|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
         body_title,
     )
     if explicit:

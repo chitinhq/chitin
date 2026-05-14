@@ -70,6 +70,24 @@ def approve_comment(head: str = "abc1234") -> dict:
 _TICKET_INFO_PASS = {"status": "in_progress", "assignee": None}
 
 
+class TicketInferenceTests(unittest.TestCase):
+    def test_infer_ticket_accepts_explicit_refs_in_pr_body(self) -> None:
+        m = load_module()
+        pr = base_pr(
+            headRefName="clawta/lifecycle-pr-ref-mapping",
+            body="## Summary\n- lifecycle mapping fix\n\nRefs t_f2ede4a8",
+        )
+
+        self.assertEqual(m.infer_ticket(pr, []), "t_f2ede4a8")
+
+    def test_infer_ticket_ignores_arbitrary_comment_refs(self) -> None:
+        m = load_module()
+        pr = base_pr(headRefName="clawta/human-readable", body="")
+        comments = [{"body": "Refs t_badbeef1"}]
+
+        self.assertIsNone(m.infer_ticket(pr, comments))
+
+
 class GateShortCircuitTests(unittest.TestCase):
     def test_gate_skipped_when_base_gates_fail(self) -> None:
         """If (a-e) fail, gate is NOT invoked (expensive subprocess avoided)."""
