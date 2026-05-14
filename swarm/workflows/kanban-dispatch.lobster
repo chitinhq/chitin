@@ -247,6 +247,11 @@ steps:
       if [[ -z "$TICKET_BODY" ]]; then
         TICKET_BODY="$TICKET_JSON"
       fi
+      ROLE_DEFAULT="${ROLE:-programmer}"
+      ROLE=$(printf '%s' "$TICKET_JSON" | python3 "$HOME/.openclaw/workflows/ticket_metadata.py" "$ROLE_DEFAULT" 2>/dev/null || true)
+      if [[ -z "$ROLE" ]]; then
+        ROLE="$ROLE_DEFAULT"
+      fi
       # Extract ticket id from the JSON rather than depending on
       # lobster's ${ticket_id} substitution. Lobster substitutes
       # unbraced step refs inside this single-quoted heredoc (the
@@ -286,7 +291,6 @@ steps:
       # set via ROLE env var (default 'programmer'). Falls back to
       # no-prefix if the role file is missing. printf %s avoids the
       # YAML-scanner-breaking multi-line bash string.
-      ROLE="${ROLE:-programmer}"
       ROLE_SKILL="$HOME/.openclaw/roles/$ROLE/SKILL.md"
       if [[ -f "$ROLE_SKILL" ]]; then
         ROLE_HEADER=$(printf '# Worker role: %s\n\n%s\n\n' "$ROLE" "$(cat "$ROLE_SKILL")")
@@ -526,6 +530,12 @@ steps:
       # timeout — judge results are observable later via swarm-elo CLI;
       # we don't block the dispatch return on its completion.
       DRIVER='$pick_driver.json.driver'
+      ROLE_DEFAULT="${ROLE:-programmer}"
+      TICKET_JSON=$(hermes kanban --board chitin show ${ticket_id} --json 2>/dev/null || true)
+      ROLE=$(printf '%s' "$TICKET_JSON" | python3 "$HOME/.openclaw/workflows/ticket_metadata.py" "$ROLE_DEFAULT" 2>/dev/null || true)
+      if [[ -z "$ROLE" ]]; then
+        ROLE="$ROLE_DEFAULT"
+      fi
       MODEL='$pick_driver.json.model'
       if [[ -n "$PR_URL" && -n "$DRIVER" && -n "$MODEL" && "$DRIVER" != "unassigned" ]]; then
         (timeout 180 python3 "$HOME/.openclaw/workflows/judge.py" \
@@ -533,6 +543,7 @@ steps:
           --pr-url "$PR_URL" \
           --driver "$DRIVER" \
           --model "$MODEL" \
+          --role "$ROLE" \
           >> "$HOME/.openclaw/logs/judge.log" 2>&1 || true) &
         disown
       fi

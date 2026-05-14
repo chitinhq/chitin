@@ -40,6 +40,7 @@ or whether `claude-code/sonnet-4-6/researcher` outperforms
 | `programmer` | Code change tickets (feat/fix/refactor/test) | PR | ready → in_progress (through PR open + merge) → done |
 | `researcher` | Investigation tickets               | Findings comment  | ready → in_progress → done |
 | `reviewer`   | PR review tickets                   | PR review comment | ready → in_progress → done (the PR's own ticket stays in_progress regardless of verdict) |
+| `sentinel`   | Chain-mined invariant authoring tickets | PR | ready → in_progress (through PR open + merge) → done |
 
 ## Deployment
 
