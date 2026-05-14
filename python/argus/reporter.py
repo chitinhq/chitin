@@ -33,14 +33,14 @@ def _get_summary_stats(db_path: str) -> dict:
     try:
         # Overall stats
         total = conn.execute("SELECT COUNT(*) as cnt FROM events").fetchone()["cnt"]
-        denies = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE allowed = 0").fetchone()["cnt"]
-        allows = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE allowed = 1").fetchone()["cnt"]
+        denies = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE source = 'chain' AND allowed = 0").fetchone()["cnt"]
+        allows = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE source = 'chain' AND allowed = 1").fetchone()["cnt"]
 
         # Top denies
         top_deny_rows = conn.execute("""
             SELECT rule_id, COUNT(*) as cnt
             FROM events
-            WHERE allowed = 0
+            WHERE source = 'chain' AND allowed = 0
             GROUP BY rule_id
             ORDER BY cnt DESC
             LIMIT 5
@@ -52,13 +52,20 @@ def _get_summary_stats(db_path: str) -> dict:
         top_agent_rows = conn.execute("""
             SELECT agent, COUNT(*) as cnt
             FROM events
-            WHERE allowed = 0
+            WHERE source = 'chain' AND allowed = 0
             GROUP BY agent
             ORDER BY cnt DESC
             LIMIT 5
         """).fetchall()
 
         top_agents = [{"agent": r["agent"], "deny_count": r["cnt"]} for r in top_agent_rows]
+        source_rows = conn.execute("""
+            SELECT source, COUNT(*) as cnt
+            FROM events
+            GROUP BY source
+            ORDER BY cnt DESC
+        """).fetchall()
+        source_counts = {r["source"]: r["cnt"] for r in source_rows}
 
         return {
             "total_events": total,
@@ -67,6 +74,7 @@ def _get_summary_stats(db_path: str) -> dict:
             "deny_percent": (denies / total * 100) if total > 0 else 0,
             "top_deny_rules": top_denies,
             "top_deny_agents": top_agents,
+            "source_counts": source_counts,
         }
 
     finally:
@@ -213,6 +221,12 @@ def _render_html(date_str: str, generated: str, stats: dict, findings: list[Find
     ) or "<tr><td colspan='4'>No findings detected.</td></tr>"
     top_rules = "".join(f"<li><code>{_html_escape(r['rule_id'])}</code>: {r['count']}</li>" for r in stats['top_deny_rules']) or "<li>None</li>"
     top_agents = "".join(f"<li><code>{_html_escape(a['agent'])}</code>: {a['deny_count']}</li>" for a in stats['top_deny_agents']) or "<li>None</li>"
+    source_counts = "".join(f"<li><code>{_html_escape(src)}</code>: {count}</li>" for src, count in stats.get("source_counts", {}).items()) or "<li>None</li>"
+    cross_source = [f for f in findings if f.detector in {"demote_loop", "stuck_pr_green_ci", "follow_up_clustering", "lore_drift", "time_to_merge_regression"}]
+    cross_rows = "".join(
+        f"<tr><td>{_html_escape(f.detector)}</td><td>{_html_escape(f.severity)}</td><td>{_html_escape(f.title)}</td><td><pre>{_html_escape(json.dumps(f.details, indent=2))}</pre></td></tr>"
+        for f in cross_source
+    ) or "<tr><td colspan='4'>No cross-source findings.</td></tr>"
     return f"""<!doctype html>
 <html lang='en'>
 <head>
@@ -242,8 +256,10 @@ code {{ color:var(--accent); }}
 <p class='muted'>Daily governance digest · {date_str} · generated {generated}Z</p>
 <div class='grid'>{cards}</div>
 <section><h2>Executive Summary</h2><p>{_html_escape(summary)}</p></section>
+<section><h2>Indexed Sources</h2><ul>{source_counts}</ul></section>
 <section><h2>Top Deny Rules</h2><ul>{top_rules}</ul></section>
 <section><h2>Top Deny Agents</h2><ul>{top_agents}</ul></section>
+<section><h2>Cross-Source Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{cross_rows}</tbody></table></section>
 <section><h2>Detector Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{finding_rows}</tbody></table></section>
 </main></body></html>
 """
@@ -323,6 +339,14 @@ def generate_daily_report(
         lines.append("\n### Top Deny Agents\n")
         for agent in stats["top_deny_agents"]:
             lines.append(f"- `{agent['agent']}`: {agent['deny_count']} denies\n")
+
+    lines.append("\n## Indexed Sources\n")
+    for source, count in stats.get("source_counts", {}).items():
+        lines.append(f"- `{source}`: {count} events\n")
+
+    cross_source = [f for f in findings if f.detector in {"demote_loop", "stuck_pr_green_ci", "follow_up_clustering", "lore_drift", "time_to_merge_regression"}]
+    lines.append("\n## Cross-Source Findings\n")
+    lines.append(_format_finding_table(cross_source))
 
     # Findings
     lines.append("\n## Detector Findings\n")

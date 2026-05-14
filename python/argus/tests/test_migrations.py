@@ -33,6 +33,9 @@ def test_migrations_create_expected_tables():
             "schema_migrations",
         }:
             assert expected in names, f"missing table: {expected}"
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()}
+        for expected in {"kind", "ticket_id", "pr_number", "commit_sha", "review_id", "status", "last_seen_ts"}:
+            assert expected in cols, f"missing events column: {expected}"
         conn.close()
 
 
@@ -40,7 +43,6 @@ def test_events_source_column_added_with_default():
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "i.db"
         conn = init_db(db)
-        # Insert a row pre-migration to verify backfill default.
         conn.execute(
             """
             INSERT INTO events (line_hash, ts, ts_unix, allowed)
@@ -49,8 +51,9 @@ def test_events_source_column_added_with_default():
         )
         conn.commit()
         migrations.apply_pending(conn)
-        row = conn.execute("SELECT source FROM events WHERE line_hash = 'h1'").fetchone()
+        row = conn.execute("SELECT source, kind FROM events WHERE line_hash = 'h1'").fetchone()
         assert row["source"] == "chain"
+        assert row["kind"] == "chain_decision"
         conn.close()
 
 

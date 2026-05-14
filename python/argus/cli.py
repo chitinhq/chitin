@@ -9,12 +9,13 @@ from pathlib import Path
 from argus import findings_cli, migrations
 from argus.indexer import follow_all_decisions, tail_all_decisions
 from argus.reporter import generate_daily_report
+from argus.sources import ingest_git_sources, ingest_kanban_sources
 
 
 def cmd_index(args) -> int:
     """Index gov-decisions JSONL files from decisions_dir."""
     decisions_dir = Path(args.decisions_dir)
-    if not decisions_dir.exists():
+    if not decisions_dir.exists() and not args.skip_chain:
         print(f"Error: decisions_dir not found: {decisions_dir}", file=sys.stderr)
         return 1
 
@@ -30,12 +31,32 @@ def cmd_index(args) -> int:
         pass
 
     try:
+        db_path = Path.home() / ".argus" / "index.db"
+        conn = migrations.open_writable(db_path)
+        migrations.apply_pending(conn)
+        if args.include_kanban:
+            ingest_kanban_sources(conn, Path(args.kanban_boards_root))
+        if args.include_git:
+            repo_roots = [Path(p).expanduser() for p in args.repo_root] if args.repo_root else None
+            ingest_git_sources(conn, repo_roots)
+        conn.close()
         if args.follow:
+            def _aux_poll(follow_conn):
+                if args.include_kanban:
+                    ingest_kanban_sources(follow_conn, Path(args.kanban_boards_root))
+                if args.include_git:
+                    repo_roots_local = [Path(p).expanduser() for p in args.repo_root] if args.repo_root else None
+                    ingest_git_sources(follow_conn, repo_roots_local)
             print(f"Following {decisions_dir} into {Path.home() / '.argus' / 'index.db'}",
                   file=sys.stderr)
-            follow_all_decisions(decisions_dir, poll_seconds=args.poll_seconds)
+            follow_all_decisions(
+                decisions_dir,
+                poll_seconds=args.poll_seconds,
+                aux_poll=_aux_poll if (args.include_kanban or args.include_git) else None,
+                aux_poll_seconds=300.0,
+            )
             return 0
-        out = tail_all_decisions(decisions_dir)
+        out = tail_all_decisions(decisions_dir) if not args.skip_chain else db_path
         print(f"Indexed to {out}", file=sys.stderr)
         return 0
     except KeyboardInterrupt:
@@ -86,8 +107,10 @@ def cmd_query(args) -> int:
         "SQL SELECT against the table `events` with columns: ts, allowed, "
         "mode, rule_id, reason, escalation, agent, action_type, action_target, "
         "envelope_id, tier, cost_usd, input_bytes, tool_calls, model, role, "
-        "workflow_id, fingerprint, source. Return ONLY the SELECT statement, "
-        "no prose, no semicolon, no code fence."
+        "workflow_id, fingerprint, source, kind, subject, payload_json, repo, "
+        "board, ticket_id, pr_number, commit_sha, review_id, file_path, status, "
+        "last_seen_ts, source_ref. You may join events to itself across kinds. "
+        "Return ONLY the SELECT statement, no prose, no semicolon, no code fence."
     )
 
     conn = migrations.open_writable(db_path)
@@ -188,6 +211,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="Stay running and index appended lines/date-rollover files")
     index_p.add_argument("--poll-seconds", type=float, default=1.0,
                          help="Polling interval for --follow")
+    index_p.add_argument("--skip-chain", action="store_true",
+                         help="Skip gov-decisions indexing and only run auxiliary ingesters")
+    index_p.add_argument("--include-kanban", action="store_true",
+                         help="Also poll Hermes kanban DB snapshots into the index")
+    index_p.add_argument("--kanban-boards-root",
+                         default=str(Path.home() / ".hermes" / "kanban" / "boards"),
+                         help="Root directory containing board subdirs with kanban.db")
+    index_p.add_argument("--include-git", action="store_true",
+                         help="Also poll git and GitHub PR history into the index")
+    index_p.add_argument("--repo-root", action="append", default=[],
+                         help="Repo root to scan for git repos; repeatable")
 
     # report
     report_p = subparsers.add_parser("report", help="Generate daily digest report")
