@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""clawta-copilot-review-webhook - GitHub Copilot review webhook bridge.
+
+Receives GitHub `pull_request_review` and `pull_request_review_comment`
+webhooks, authenticates them with the GitHub HMAC signature, ignores
+non-Copilot authors, and mirrors Copilot findings onto the mapped Hermes
+kanban ticket. Medium, high, and critical findings also create triage
+follow-up tickets with idempotency keys.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+AUTHOR = os.environ.get("COPILOT_REVIEW_WEBHOOK_AUTHOR", "copilot-review-webhook")
+HOST = os.environ.get("COPILOT_REVIEW_WEBHOOK_HOST", "127.0.0.1")
+PORT = int(os.environ.get("COPILOT_REVIEW_WEBHOOK_PORT", "8787"))
+WEBHOOK_PATH = os.environ.get("COPILOT_REVIEW_WEBHOOK_PATH", "/webhooks/github/copilot-reviews")
+WEBHOOK_ENV_NAME = "GITHUB_WEBHOOK_SECRET"
+HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "clawta-copilot-review-webhook.log"
+
+SUPPORTED_EVENTS = {"pull_request_review", "pull_request_review_comment"}
+TICKET_RE = re.compile(r"t_[a-f0-9]{8}")
+BRANCH_TICKET_RE = re.compile(r"(?:^|[-_/])([a-f0-9]{8})(?:$|[^a-f0-9])")
+SEVERITY_RE = re.compile(r"\bSeverity\s*:\s*(critical|high|medium|low)\b\s*(?:[-:]\s*)?(.*)", re.I)
+MEDIUM_PLUS = {"medium", "high", "critical"}
+NO_FINDINGS_RE = re.compile(r"\b(no blocking issues found|no issues found|no findings)\b", re.I)
+
+
+def log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def hermes(args: list[str], *, timeout: int = 60, check: bool = False) -> subprocess.CompletedProcess[str]:
+    """Invoke hermes with the configured binary path; args are forwarded verbatim.
+
+    Using a list-form subprocess.run with the executable as a separately
+    bound constant prevents shell interpretation and keeps the executable
+    out of taint-tracked positions (CodeQL py/command-line-injection).
+    """
+    return subprocess.run([HERMES_BIN, *args], text=True, capture_output=True, timeout=timeout, check=check)
+
+
+def verify_signature(body: bytes, signature: str | None, secret: str) -> bool:
+    if not signature or not signature.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def author_login(obj: dict[str, Any] | None) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    user = obj.get("user")
+    if isinstance(user, dict):
+        return str(user.get("login") or "")
+    return ""
+
+
+def is_copilot_author(obj: dict[str, Any] | None) -> bool:
+    login = author_login(obj).lower()
+    if not login:
+        return False
+    return "copilot" in login and (login.endswith("[bot]") or login in {"github-copilot", "copilot"})
+
+
+def infer_ticket(pr: dict[str, Any] | None) -> str | None:
+    if not isinstance(pr, dict):
+        return None
+    trusted_text = "\n".join([str(pr.get("title") or ""), str(pr.get("body") or "")])
+    explicit = TICKET_RE.search(trusted_text)
+    if explicit:
+        return explicit.group(0)
+    head = pr.get("head")
+    branch = str(head.get("ref") if isinstance(head, dict) else pr.get("head_ref") or "")
+    match = BRANCH_TICKET_RE.search(branch)
+    if match:
+        return "t_" + match.group(1)
+    return None
+
+
+def normalize_finding_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip(" -\t\r\n"))[:500]
+
+
+def parse_findings_from_text(text: str, *, default_location: str = "") -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-* ").strip()
+        if not line:
+            continue
+        match = SEVERITY_RE.search(line)
+        if not match:
+            continue
+        severity = match.group(1).lower()
+        detail = normalize_finding_text(match.group(2) or line)
+        findings.append({
+            "severity": severity,
+            "detail": detail or "Copilot review finding",
+            "location": default_location,
+        })
+    if findings:
+        return findings
+    if NO_FINDINGS_RE.search(text):
+        return []
+    body = normalize_finding_text(text)
+    return [{"severity": "low", "detail": body or "Copilot review comment", "location": default_location}]
+
+
+def comment_location(comment: dict[str, Any]) -> str:
+    path = str(comment.get("path") or "")
+    line = comment.get("line") or comment.get("original_line")
+    if path and line:
+        return f"{path}:{line}"
+    return path
+
+
+def findings_for_event(event: str, payload: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    if event == "pull_request_review":
+        review = payload.get("review")
+        if not isinstance(review, dict):
+            return None, []
+        body = str(review.get("body") or "")
+        return review, parse_findings_from_text(body)
+    if event == "pull_request_review_comment":
+        comment = payload.get("comment")
+        if not isinstance(comment, dict):
+            return None, []
+        body = str(comment.get("body") or "")
+        location = comment_location(comment)
+        findings = parse_findings_from_text(body, default_location=location)
+        for finding in findings:
+            if not finding["location"]:
+                finding["location"] = location
+        return comment, findings
+    return None, []
+
+
+def pr_url(payload: dict[str, Any]) -> str:
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict):
+        return str(pr.get("html_url") or "")
+    return ""
+
+
+def finding_url(event: str, payload: dict[str, Any]) -> str:
+    if event == "pull_request_review_comment":
+        comment = payload.get("comment")
+        if isinstance(comment, dict):
+            return str(comment.get("html_url") or "") or pr_url(payload)
+    return pr_url(payload)
+
+
+def kanban_comment_body(event: str, payload: dict[str, Any], findings: list[dict[str, str]]) -> str:
+    pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+    number = pr.get("number") or payload.get("number") or "unknown"
+    lines = [
+        f"Copilot review received for PR #{number}: {pr_url(payload) or '(no url)'}",
+        f"Event: {event}",
+        "Findings:",
+    ]
+    for finding in findings:
+        location = f" [{finding['location']}]" if finding.get("location") else ""
+        lines.append(f"- {finding['severity']}{location}: {finding['detail']}")
+    return "\n".join(lines)
+
+
+def stable_finding_key(delivery_id: str, event: str, pr_number: str, finding: dict[str, str]) -> str:
+    raw = json.dumps(
+        {
+            "delivery": delivery_id,
+            "event": event,
+            "pr": pr_number,
+            "severity": finding.get("severity"),
+            "location": finding.get("location"),
+            "detail": finding.get("detail"),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def post_kanban_comment(ticket: str, body: str, dry_run: bool) -> None:
+    if dry_run:
+        return
+    hermes(["kanban", "--board", BOARD, "comment", ticket, "--author", AUTHOR, body], timeout=30, check=True)
+
+
+def create_followup(ticket: str, event: str, payload: dict[str, Any], finding: dict[str, str], delivery_id: str, dry_run: bool) -> None:
+    pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+    pr_number = str(pr.get("number") or "unknown")
+    key = stable_finding_key(delivery_id, event, pr_number, finding)
+    location = f" at {finding['location']}" if finding.get("location") else ""
+    title = f"Address Copilot {finding['severity']} finding on PR #{pr_number}{location}"[:180]
+    body = "\n".join([
+        f"Parent ticket: {ticket}",
+        f"PR: {pr_url(payload) or pr_number}",
+        f"Source event: {event}",
+        f"Severity: {finding['severity']}",
+        f"Location: {finding.get('location') or 'n/a'}",
+        "",
+        finding["detail"],
+    ])
+    priority = "1" if finding["severity"] in {"critical", "high"} else "2"
+    args = [
+        "kanban", "--board", BOARD, "create", title,
+        "--body", body,
+        "--priority", priority,
+        "--parent", ticket,
+        "--assignee", "clawta",
+        "--triage",
+        "--idempotency-key", f"copilot-review:{key}",
+        "--json",
+    ]
+    if dry_run:
+        return
+    hermes(args, timeout=30, check=True)
+
+
+def process_event(event: str, payload: dict[str, Any], *, dry_run: bool, delivery_id: str = "") -> dict[str, Any]:
+    if event not in SUPPORTED_EVENTS:
+        return {"status": "ignored", "reason": "unsupported-event"}
+    author_obj, findings = findings_for_event(event, payload)
+    if not is_copilot_author(author_obj):
+        return {"status": "ignored", "reason": "non-copilot-author"}
+    ticket = infer_ticket(payload.get("pull_request"))
+    if not ticket:
+        return {"status": "ignored", "reason": "unmapped-ticket"}
+    if not findings:
+        return {"status": "ignored", "reason": "no-findings", "ticket": ticket}
+
+    post_kanban_comment(ticket, kanban_comment_body(event, payload, findings), dry_run)
+    followups = 0
+    for finding in findings:
+        if finding["severity"] in MEDIUM_PLUS:
+            create_followup(ticket, event, payload, finding, delivery_id or "no-delivery", dry_run)
+            followups += 1
+    return {
+        "status": "processed",
+        "ticket": ticket,
+        "findings": len(findings),
+        "followups": followups,
+        "url": finding_url(event, payload),
+    }
+
+
+class WebhookHandler(BaseHTTPRequestHandler):
+    server_version = "clawta-copilot-review-webhook/1.0"
+
+    def _json_response(self, status: int, body: dict[str, Any]) -> None:
+        data = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self) -> None:
+        expected_path = self.server.webhook_path  # type: ignore[attr-defined]
+        if urlparse(self.path).path != expected_path:
+            self._json_response(404, {"error": "not-found"})
+            return
+        length = int(self.headers.get("Content-Length") or "0")
+        body = self.rfile.read(length)
+        secret = self.server.webhook_secret  # type: ignore[attr-defined]
+        signature = self.headers.get("X-Hub-Signature-256")
+        if not verify_signature(body, signature, secret):
+            self._json_response(401, {"error": "bad-signature"})
+            return
+        event = self.headers.get("X-GitHub-Event") or ""
+        delivery = self.headers.get("X-GitHub-Delivery") or ""
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be an object")
+            result = process_event(event, payload, dry_run=self.server.dry_run, delivery_id=delivery)  # type: ignore[attr-defined]
+            status = 200 if result.get("status") == "processed" else 204
+            if status == 204:
+                self.send_response(204)
+                self.end_headers()
+                return
+            self._json_response(status, result)
+        except Exception as e:
+            log(f"webhook failed: {e}")
+            self._json_response(500, {"error": "processing-failed"})
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        log(fmt % args)
+
+
+def serve(host: str, port: int, path: str, secret: str, dry_run: bool) -> None:
+    httpd = ThreadingHTTPServer((host, port), WebhookHandler)
+    httpd.webhook_path = path  # type: ignore[attr-defined]
+    httpd.webhook_secret = secret  # type: ignore[attr-defined]
+    httpd.dry_run = dry_run  # type: ignore[attr-defined]
+    log(f"listening on http://{host}:{port}{path} dry_run={dry_run}")
+    httpd.serve_forever()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--host", default=HOST)
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--path", default=WEBHOOK_PATH)
+    ap.add_argument("--dry-run", action="store_true", help="authenticate and parse, but do not call Hermes")
+    args = ap.parse_args()
+    webhook_token = os.environ.get(WEBHOOK_ENV_NAME)
+    if not webhook_token:
+        sys.stderr.write(
+            f"environment variable {WEBHOOK_ENV_NAME} is required to authenticate GitHub webhooks\n"
+        )
+        return 2
+    serve(args.host, args.port, args.path, webhook_token, args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
