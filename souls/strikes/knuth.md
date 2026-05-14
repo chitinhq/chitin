@@ -26,9 +26,9 @@ commits for Knuth scope updates.
 **What the lens was supposed to catch.**
 Heuristic 1 — *Prove it or it's not proven.* A commit's author identity is
 a small invariant: "this commit is attributed to the entity who authored
-it." At the time of this strike, the plan file at
-`docs/superpowers/plans/2026-04-19-dogfood-debt-ledger.md` contained
-example commands with a hard-coded work-project email. Those examples
+it." At the time of this strike, the dogfood-debt-ledger plan
+(since retired) contained example commands with a hard-coded
+work-project email. Those examples
 were wrong — that was a work identity; chitin is a personal OSS repo
 that should attribute to `jpleva91@gmail.com`. I used the plan's example
 verbatim without verifying the invariant. (The plan examples have since

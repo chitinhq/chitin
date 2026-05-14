@@ -104,7 +104,7 @@ install-codex-hook.sh         # writes [features] codex_hooks=true + [[hooks.Pre
 These are non-negotiable. New code, specs, and plans must respect them. See [`architecture/layer-contracts.md`](./architecture/layer-contracts.md) for the locked statement.
 
 1. **Kernel Authority.** All execution passes through `gov.Gate.Evaluate`. The kernel is the only enforcement point.
-2. **Driver Constraint.** `allowed_drivers` is a typed, schema-validated field on `ExecutionRequest` (non-empty, closed enum). The orchestrator picks within it; cannot expand. Active kernel-side narrowing (`chitin-kernel task validate`) is deferred per the 2026-04-30 addendum; downstream enforcement at every leaf hook by `gov.Gate.Evaluate` is the load-bearing guarantee. See `architecture/layer-contracts.md` for the full statement.
+2. **Driver Constraint.** The kernel exposes `AllowedDrivers(req)` as the feasible-driver set. Orchestrators consume it; they cannot derive their own or override it.
 3. **Routing Scope.** Routing optimizes for capacity (latency, availability, hardware) within the allowed set. It cannot expand it.
 4. **Aggregation Role.** The event chain is canonical; OTEL is a non-authoritative projection. Aggregation never affects live execution.
 
@@ -128,4 +128,4 @@ Classify the vendor first; let the classification pick the integration shape, no
 
 ## On-disk layout
 
-The kernel writes to a `.chitin/` state dir. Resolution order: `--chitin-dir` → repo-local `.chitin/` (walk up from cwd) → fallback `$HOME/.chitin/`. See [README — Where chitin writes data](../README.md#where-chitin-writes-data) for the file conventions and the [health runbook](./observations/runbooks/health.md) for diagnostics.
+The kernel writes to a `.chitin/` state dir. Resolution order: `--chitin-dir` → repo-local `.chitin/` (walk up from cwd) → fallback `$HOME/.chitin/`. See [README — Where chitin writes data](../README.md#where-chitin-writes-data) for the file conventions and the [health runbook](./runbooks/health.md) for diagnostics.

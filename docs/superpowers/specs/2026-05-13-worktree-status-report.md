@@ -13,7 +13,7 @@ effective_to: null
 Date: 2026-05-13
 Status: spec — open
 Kanban: `t_c083fd6d` (priority 25)
-Source: `docs/audits/2026-05-13-architecture-audit.md` — Top finding 5
+Source: `docs/archive/audits/2026-05-13-architecture-audit.md` — Top finding 5
 Author: claude-code (operator-controlled, spec writer)
 
 ## Problem

@@ -71,5 +71,7 @@ scripts/hermes/tests/validate-plans.sh      # schema vs fixtures
 
 ## Specs and plan
 
-- Spec: `docs/superpowers/specs/2026-04-22-hermes-staged-tick-design.md`
-- Plan: `docs/superpowers/plans/2026-04-22-hermes-staged-tick.md`
+The Hermes staged-tick design and plan shipped and have been retired in
+the 2026-05-13 doc purge. The runtime contract is the
+`scripts/install-hermes-hook.sh` installer plus
+`go/execution-kernel/internal/driver/hermes/normalize.go`.

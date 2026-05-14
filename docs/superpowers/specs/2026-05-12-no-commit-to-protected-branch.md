@@ -218,7 +218,7 @@ After this spec is implemented + merged:
 
 - Replay the 2026-05-12 commits (Clawta's `6a0f13d`, `7785082`,
   `ec70eab`) under the new rule via the test harness; archive the
-  results in `docs/observations/2026-05-12-no-commit-to-main-replay.md`
+  results in `docs/archive/observations/2026-05-12-no-commit-to-main-replay.md`
   as proof the gap is closed.
 - File a followup ticket to retire the `clawta-spawn-marker` row
   pattern (now redundant with proper exec attribution).
