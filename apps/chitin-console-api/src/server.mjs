@@ -18,6 +18,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
@@ -469,18 +470,122 @@ const handlers = [
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
 ];
 
-const server = http.createServer((req, res) => {
+// Write handlers. Body is the parsed JSON request body. Each handler
+// returns { status, body } or throws.
+//
+// Writes route through the legacy kanban-flow CLI which still mutates
+// the hermes-side DB (the swarm's source of truth during the cutover
+// window). After every successful write we refresh the chitin-owned
+// mirror by running `chitin-kernel kanban migrate <board>` so the next
+// read returns the post-write state. Yes, that's a small latency
+// blip; acceptable until Plan 4 retires the hermes DB.
+const writeHandlers = [
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/, (req, body, m) => postTaskStatus(m[1], body)],
+];
+
+function postTaskStatus(taskId, body) {
+  const status = (body?.status || '').trim();
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const reason = (body?.reason || '').trim();
+  const allowed = new Set(['start', 'ready', 'unblock', 'block', 'demote', 'done']);
+  if (!allowed.has(status)) {
+    return { status: 400, body: { error: 'invalid_status', detail: `status must be one of ${[...allowed].join(', ')}` } };
+  }
+  if ((status === 'block' || status === 'demote') && !reason) {
+    return { status: 400, body: { error: 'reason_required', detail: `${status} requires a reason` } };
+  }
+  if (status === 'done' && !reason) {
+    return { status: 400, body: { error: 'result_required', detail: 'done requires a result summary in `reason`' } };
+  }
+
+  const flowArgs = [status, taskId, '--author', author];
+  if (status === 'block' || status === 'demote') flowArgs.push(reason);
+  if (status === 'done') flowArgs.push('--result', reason);
+
+  const flow = spawnSync('kanban-flow', flowArgs, {
+    encoding: 'utf8',
+    env: { ...process.env, KANBAN_BOARD: CURRENT_BOARD },
+    timeout: 15_000,
+  });
+  if (flow.status !== 0) {
+    return { status: 502, body: {
+      error: 'kanban_flow_failed',
+      exit: flow.status,
+      stderr: (flow.stderr || '').slice(-1000),
+      stdout: (flow.stdout || '').slice(-1000),
+    }};
+  }
+
+  // Refresh the chitin-owned mirror so the next GET reflects the write.
+  // If migration fails we still return success — the write landed in
+  // hermes, and the next migrate cycle (whether manual or via a cron)
+  // will catch up.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: taskId,
+    status,
+    flow_stdout: (flow.stdout || '').trim(),
+    refreshed,
+    refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
+    task: getTask(taskId),
+  }};
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (c) => {
+      total += c.length;
+      if (total > 64 * 1024) { reject(new Error('body_too_large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); }
+      catch (e) { reject(new Error('invalid_json: ' + e.message)); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'content-type',
     });
     res.end();
     return;
   }
-  if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+
+  if (req.method === 'POST') {
+    for (const [re, fn] of writeHandlers) {
+      const m = url.pathname.match(re);
+      if (m) {
+        let body;
+        try { body = await readBody(req); }
+        catch (e) { return json(res, 400, { error: 'bad_body', detail: String(e.message || e) }); }
+        try {
+          const out = fn(req, body, m);
+          return json(res, out.status, out.body);
+        } catch (e) { return serverErr(res, e); }
+      }
+    }
+    return json(res, 404, { error: 'not_found' });
+  }
+
+  if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
   for (const [re, fn] of handlers) {
     const m = url.pathname.match(re);
     if (m) {
