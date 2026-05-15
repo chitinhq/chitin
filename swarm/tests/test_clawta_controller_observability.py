@@ -48,6 +48,19 @@ class ControllerProjectionTests(unittest.TestCase):
             self.assertEqual(module.active_dispatch_tickets(), ["t_aaaabbbb", "t_ccccdddd"])
 
 
+class StuckClassificationTests(unittest.TestCase):
+    def test_classify_stuck_ticket_buckets_actionable_states(self) -> None:
+        module = load_module(REPORT, "clawta_report_stuck_classification")
+        task = {"id": "t_deadbeef", "assignee": "codex", "consecutive_failures": 0}
+
+        self.assertEqual(module.classify_stuck_ticket(task, pr={"number": 1})["bucket"], "has-pr")
+        self.assertEqual(module.classify_stuck_ticket({**task, "assignee": "red"})["bucket"], "operator-owned")
+        self.assertEqual(module.classify_stuck_ticket(task, active=True)["bucket"], "active-worker")
+        self.assertEqual(module.classify_stuck_ticket({**task, "consecutive_failures": 2})["bucket"], "retry-exhausting")
+        self.assertEqual(module.classify_stuck_ticket(task, stale_note="watchdog flagged")["bucket"], "watchdog-flagged")
+        self.assertEqual(module.classify_stuck_ticket(task)["bucket"], "retryable-silent")
+
+
 class CopilotSentinelTests(unittest.TestCase):
     def test_quarantine_since_honors_healthy_checkpoint(self) -> None:
         module = load_module(SENTINEL, "clawta_worker_failure_sentinel_checkpoint")
