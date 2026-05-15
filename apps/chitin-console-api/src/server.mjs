@@ -6,7 +6,8 @@
 // bound by default.
 //
 // Sources:
-//   ~/.hermes/kanban/boards/<board>/kanban.db   — tickets, runs, events
+//   ~/.chitin/kanban/<board>/kanban.db          — tickets, runs, events (preferred)
+//   ~/.hermes/kanban/boards/<board>/kanban.db   — legacy fallback during cutover
 //   ~/.openclaw/data/clawta.db                  — swarm ELO + dispatch scores
 //   ~/.openclaw/data/clawta_decisions.db        — per-ticket dispatch decisions
 //   ~/.argus/index.db                           — argus observatory index
@@ -29,12 +30,26 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = process.env.CHITIN_REPO_ROOT
   || path.resolve(__dirname, '..', '..', '..');
 
-const KANBAN_ROOT = process.env.HERMES_KANBAN_ROOT || path.join(HOME, '.hermes', 'kanban');
+// Prefer the chitin-owned kanban DB (Phase 1: chitin-kernel kanban
+// migrate <board> populates ~/.chitin/kanban/<board>/kanban.db).
+// Fall back to the legacy hermes layout when the chitin copy is
+// absent so the console still works on operator boxes that haven't
+// run the migration yet.
+const CHITIN_KANBAN_ROOT = process.env.CHITIN_KANBAN_ROOT || path.join(HOME, '.chitin', 'kanban');
+const HERMES_KANBAN_ROOT = process.env.HERMES_KANBAN_ROOT || path.join(HOME, '.hermes', 'kanban');
+// KANBAN_ROOT kept as an alias for the legacy hermes root so the
+// existing `current` board sentinel resolves the same way.
+const KANBAN_ROOT = HERMES_KANBAN_ROOT;
 const CURRENT_BOARD = (() => {
   try { return fs.readFileSync(path.join(KANBAN_ROOT, 'current'), 'utf8').trim(); }
   catch { return 'chitin'; }
 })();
-const BOARD_DB = path.join(KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+// Chitin layout: <root>/<board>/kanban.db (no `boards/` segment).
+// Hermes layout: <root>/boards/<board>/kanban.db.
+const CHITIN_BOARD_DB = path.join(CHITIN_KANBAN_ROOT, CURRENT_BOARD, 'kanban.db');
+const HERMES_BOARD_DB = path.join(HERMES_KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+const BOARD_DB = fs.existsSync(CHITIN_BOARD_DB) ? CHITIN_BOARD_DB : HERMES_BOARD_DB;
+const BOARD_DB_SOURCE = BOARD_DB === CHITIN_BOARD_DB ? 'chitin' : 'hermes';
 const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
 const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
@@ -482,7 +497,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
   console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
-  console.log(`[chitin-console-api] kanban=${BOARD_DB} (${kanbanDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] kanban=${BOARD_DB} source=${BOARD_DB_SOURCE} (${kanbanDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
