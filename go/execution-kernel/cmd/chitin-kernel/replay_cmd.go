@@ -181,12 +181,15 @@ func cmdChainRelated(args []string) {
 func cmdChainSessions(args []string) {
 	recent := 10
 	format := "text"
+	ticketID := ""
 	for _, a := range args {
 		switch {
 		case strings.HasPrefix(a, "--recent="):
 			if n, err := strconv.Atoi(a[len("--recent="):]); err == nil {
 				recent = n
 			}
+		case strings.HasPrefix(a, "--ticket="):
+			ticketID = a[len("--ticket="):]
 		case strings.HasPrefix(a, "--format="):
 			format = a[len("--format="):]
 		case a == "--help" || a == "-h":
@@ -196,9 +199,18 @@ List recent session chains.
 
 Flags:
   --recent=<n>       number of sessions to list (default: 10)
+  --ticket=<id>      resolve the most recent session for one ticket id
   --format=<f>       text | json (default: text)`)
 			os.Exit(0)
 		}
+	}
+	if ticketID != "" {
+		sessionID, err := replay.FindSessionForTicket(ticketID)
+		if err != nil {
+			exitErr("chain_sessions_ticket", err.Error())
+		}
+		fmt.Fprintln(os.Stdout, sessionID)
+		return
 	}
 	sessions, err := replay.ListRecentSessions(recent)
 	if err != nil {

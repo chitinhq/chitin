@@ -7,13 +7,14 @@ import sys
 from pathlib import Path
 
 from argus import beliefs, findings_cli, migrations
-from argus.indexer import follow_all_decisions, init_db, tail_all_decisions
+from argus.indexer import init_db
+from argus.logs import follow_all_sources, index_all_sources
 from argus.reporter import generate_daily_report
 from argus.sources import ingest_git_sources, ingest_kanban_sources
 
 
 def cmd_index(args) -> int:
-    """Index gov-decisions JSONL files from decisions_dir."""
+    """Index chain decisions plus configured Slice 3 sources."""
     decisions_dir = Path(args.decisions_dir)
     if not decisions_dir.exists() and not args.skip_chain:
         print(f"Error: decisions_dir not found: {decisions_dir}", file=sys.stderr)
@@ -31,38 +32,52 @@ def cmd_index(args) -> int:
         pass
 
     try:
-        db_path = Path.home() / ".argus" / "index.db"
+        db_path = Path(args.db_path)
+
         # Ensure the base `events` table exists before applying migrations.
         # On a first run the DB file does not exist yet; open_writable would
         # create an empty file with no schema, and migration 1
         # (ALTER TABLE events ...) would raise "no such table: events".
         # init_db is idempotent, so this is safe on existing DBs too.
         init_db(db_path).close()
-        conn = migrations.open_writable(db_path)
-        migrations.apply_pending(conn)
-        if args.include_kanban:
-            ingest_kanban_sources(conn, Path(args.kanban_boards_root))
-        if args.include_git:
-            repo_roots = [Path(p).expanduser() for p in args.repo_root] if args.repo_root else None
-            ingest_git_sources(conn, repo_roots)
-        conn.close()
-        if args.follow:
-            def _aux_poll(follow_conn):
+
+        def _ingest_aux_sources() -> None:
+            """Poll Hermes kanban + git/GitHub sources into the index."""
+            if not (args.include_kanban or args.include_git):
+                return
+            conn = migrations.open_writable(db_path)
+            try:
+                migrations.apply_pending(conn)
                 if args.include_kanban:
-                    ingest_kanban_sources(follow_conn, Path(args.kanban_boards_root))
+                    ingest_kanban_sources(conn, Path(args.kanban_boards_root))
                 if args.include_git:
-                    repo_roots_local = [Path(p).expanduser() for p in args.repo_root] if args.repo_root else None
-                    ingest_git_sources(follow_conn, repo_roots_local)
-            print(f"Following {decisions_dir} into {Path.home() / '.argus' / 'index.db'}",
-                  file=sys.stderr)
-            follow_all_decisions(
-                decisions_dir,
+                    repo_roots = (
+                        [Path(p).expanduser() for p in args.repo_root]
+                        if args.repo_root
+                        else None
+                    )
+                    ingest_git_sources(conn, repo_roots)
+            finally:
+                conn.close()
+
+        if args.follow:
+            print(f"Following {decisions_dir} into {db_path}", file=sys.stderr)
+            # One-shot aux ingest before entering the follow loop, then
+            # follow chain + logs + Discord sources continuously.
+            _ingest_aux_sources()
+            follow_all_sources(
+                db_path=db_path,
+                decisions_dir=decisions_dir,
                 poll_seconds=args.poll_seconds,
-                aux_poll=_aux_poll if (args.include_kanban or args.include_git) else None,
-                aux_poll_seconds=300.0,
             )
             return 0
-        out = tail_all_decisions(decisions_dir) if not args.skip_chain else db_path
+
+        # Batch path: chain decisions + logs + Discord, then kanban/git.
+        out = index_all_sources(
+            db_path=db_path,
+            decisions_dir=decisions_dir,
+        )
+        _ingest_aux_sources()
         print(f"Indexed to {out}", file=sys.stderr)
         return 0
     except KeyboardInterrupt:
@@ -242,7 +257,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = p.add_subparsers(dest="cmd", required=True)
 
     # index
-    index_p = subparsers.add_parser("index", help="Index gov-decisions JSONL files")
+    index_p = subparsers.add_parser("index", help="Index chain, logs, and Discord sources")
     index_p.add_argument("--decisions-dir", default=str(Path.home() / ".chitin"),
                          help="Directory containing gov-decisions-*.jsonl")
     index_p.add_argument("--follow", action="store_true",

@@ -36,6 +36,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 
 CARDS_DIR = os.path.expanduser(
@@ -48,6 +49,19 @@ LLM_TIMEOUT_SECONDS = 60
 DEFAULT_EXPLORATION_PERCENT = 0
 DEFAULT_EXPLORATION_MAX_CANDIDATES = 2
 HIGH_RISK_LEVELS = {"high", "irreversible"}
+DEFAULT_SOUL_MAP = {
+    "correctness": "knuth",
+    "architecture": "davinci",
+    "dispatch": "sun-tzu",
+    "research": "socrates",
+    "default": "sun-tzu",
+}
+SOUL_CATEGORY_PATTERNS = {
+    "correctness": re.compile(r"(?i)\b(invariant|gate|run ledger|ledger schema|audit|forensic|contract|schema|regression)\b"),
+    "architecture": re.compile(r"(?i)\b(architecture|refactor|reshape|redesign|decompose|interface|boundary)\b"),
+    "dispatch": re.compile(r"(?i)\b(dispatch|router|routing|poller|scheduler|sequencer|worker pool)\b"),
+    "research": re.compile(r"(?i)\b(research|explore|exploration|investigate|spike|analysis|survey)\b"),
+}
 FAILURE_KINDS = {
     "empty_branch",
     "gh_pr_create_fail",
@@ -178,6 +192,134 @@ def deterministic_pick(classify: dict, cards: list[dict]) -> tuple[dict, list[di
     ranked = deterministic_ranked_candidates(classify, cards)
     pick = ranked[0] if ranked else {"id": "unassigned"}
     return pick, ranked
+
+
+def repo_root() -> Path:
+    override = os.environ.get("CHITIN_REPO", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[2]
+
+
+def load_board_soul_map() -> dict[str, str]:
+    raw_override = os.environ.get("KANBAN_BOARD_SOUL_MAP", "").strip()
+    raw = raw_override
+    if not raw:
+        board = os.environ.get("KANBAN_BOARD", "chitin").strip() or "chitin"
+        kernel_bin = os.environ.get("CHITIN_KERNEL_BIN", "chitin-kernel").strip() or "chitin-kernel"
+        try:
+            result = subprocess.run(
+                [kernel_bin, "board-config", board, "soul_map"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result = None
+        if result and result.returncode == 0:
+            raw = result.stdout.strip()
+
+    mapping = dict(DEFAULT_SOUL_MAP)
+    if not raw:
+        return mapping
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return mapping
+    if not isinstance(parsed, dict):
+        return mapping
+    for key, default in DEFAULT_SOUL_MAP.items():
+        value = str(parsed.get(key, default)).strip()
+        mapping[key] = value or default
+    return mapping
+
+
+def classify_soul_category(classify: dict) -> str:
+    explicit = str(classify.get("soul_category", "")).strip().lower()
+    if explicit in DEFAULT_SOUL_MAP:
+        return explicit
+    haystack = "\n".join(
+        str(classify.get(key, ""))
+        for key in ("ticket_title", "ticket_body", "notes", "task_class")
+    )
+    for category, pattern in SOUL_CATEGORY_PATTERNS.items():
+        if pattern.search(haystack):
+            return category
+    caps = {str(cap).strip().lower() for cap in classify.get("capabilities", [])}
+    if "refactor" in caps:
+        return "architecture"
+    if "review" in caps and classify.get("governance_critical"):
+        return "correctness"
+    return "default"
+
+
+def souls_dir_candidates() -> list[Path]:
+    """Ordered list of directories that may hold ``<soul_id>.md`` files.
+
+    ``CHITIN_SOULS_DIR`` wins when set; both the bare directory and its
+    ``canonical``/``experimental`` children are probed so callers can point
+    at either layout. Otherwise we fall back to the souls tree under the
+    resolved repo root (which honors ``CHITIN_REPO``).
+    """
+    candidates: list[Path] = []
+    override = os.environ.get("CHITIN_SOULS_DIR", "").strip()
+    if override:
+        base = Path(override).expanduser()
+        candidates += [base, base / "canonical", base / "experimental"]
+    root = repo_root()
+    candidates += [root / "souls" / "canonical", root / "souls" / "experimental"]
+    # De-duplicate while preserving order.
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def find_soul_file(soul_id: str) -> Path | None:
+    """Return the path to ``<soul_id>.md`` if it can be located, else None.
+
+    Returns ``None`` rather than raising — the installed workflow runs from
+    ``~/.openclaw/workflows/`` without ``CHITIN_REPO``/``CHITIN_SOULS_DIR``,
+    so the souls tree is legitimately absent there and dispatch must still
+    proceed.
+    """
+    for base in souls_dir_candidates():
+        candidate = base / f"{soul_id}.md"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_soul(classify: dict) -> tuple[str, str, str]:
+    """Resolve (soul_id, soul_hash, category) without crashing.
+
+    If the soul markdown file genuinely cannot be located on disk — the
+    common case for the installed workflow, which runs without
+    ``CHITIN_REPO``/``CHITIN_SOULS_DIR`` — fall back to the resolved
+    soul_id with an empty hash instead of raising ``FileNotFoundError``.
+    Dispatch can still proceed; the soul fingerprint is simply unstamped.
+    """
+    soul_map = load_board_soul_map()
+    category = classify_soul_category(classify)
+    soul_id = soul_map.get(category) or soul_map["default"]
+    soul_path = find_soul_file(soul_id)
+    if soul_path is None:
+        return soul_id, "", category
+    try:
+        content = soul_path.read_text(encoding="utf-8")
+    except OSError:
+        return soul_id, "", category
+    soul_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return soul_id, soul_hash, category
+
+
+def composite_fingerprint(driver: str | None, model: str | None, soul_id: str, soul_hash: str) -> str:
+    payload = f"{driver or ''}{model or ''}{soul_id}{soul_hash}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def sorted_models(card: dict) -> list[dict]:
@@ -567,13 +709,21 @@ def emit_result(
     reasoning: str,
     card_load_errors: int,
     exploration_candidates_considered: int,
+    soul_id: str,
+    soul_hash: str,
+    soul_category: str,
     shape: str,
 ) -> None:
+    agent_fingerprint = composite_fingerprint(driver, model, soul_id, soul_hash)
     print(
         json.dumps(
             {
                 "driver": driver,
                 "model": model,
+                "soul_id": soul_id,
+                "soul_hash": soul_hash,
+                "soul_category": soul_category,
+                "agent_fingerprint": agent_fingerprint,
                 "complexity": classify.get("complexity"),
                 "caps_needed": sorted(caps_needed),
                 "candidates_considered": candidates_considered,
@@ -596,6 +746,7 @@ def main() -> None:
     classify = json.loads(raw)
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
+    soul_id, soul_hash, soul_category = resolve_soul(classify)
     shape = shape_bucket(classify)
 
     # Smoke / test override.
@@ -613,6 +764,9 @@ def main() -> None:
             reasoning="FORCE_DRIVER env var bypassed routing logic",
             card_load_errors=len(load_errors),
             exploration_candidates_considered=0,
+            soul_id=soul_id,
+            soul_hash=soul_hash,
+            soul_category=soul_category,
             shape=shape,
         )
         return
@@ -647,6 +801,9 @@ def main() -> None:
             reasoning=reasoning,
             card_load_errors=len(load_errors),
             exploration_candidates_considered=len(exploration_pool),
+            soul_id=soul_id,
+            soul_hash=soul_hash,
+            soul_category=soul_category,
             shape=shape,
         )
         return
@@ -669,6 +826,9 @@ def main() -> None:
                 reasoning=llm_result.get("reasoning", ""),
                 card_load_errors=len(load_errors),
                 exploration_candidates_considered=len(exploration_pool),
+                soul_id=soul_id,
+                soul_hash=soul_hash,
+                soul_category=soul_category,
                 shape=shape,
             )
             return
@@ -710,6 +870,9 @@ def main() -> None:
         reasoning=reasoning,
         card_load_errors=len(load_errors),
         exploration_candidates_considered=len(exploration_pool),
+        soul_id=soul_id,
+        soul_hash=soul_hash,
+        soul_category=soul_category,
         shape=shape,
     )
 

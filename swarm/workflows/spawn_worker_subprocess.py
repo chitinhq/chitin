@@ -39,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 from pathlib import Path
 
 
@@ -54,7 +55,10 @@ def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
     driver = config.get("driver", "unknown")
     model = config.get("model", "")
     prompt = config.get("prompt", "")
+    system_prompt = config.get("system_prompt", "")
     args_template = config.get("args", [])
+    if system_prompt and driver == "codex":
+        prompt = f"{system_prompt}\n\n{prompt}" if prompt else system_prompt
 
     argv: list[str] = [config.get("cmd", "")]
     stdin_text: str | None = None
@@ -81,6 +85,9 @@ def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
 
         argv.append(arg)
 
+    if system_prompt and driver == "copilot":
+        argv.extend(["--append-system-prompt", system_prompt])
+
     if prompt and driver == "gemini" and "{prompt}" not in args_template:
         # Card has no {prompt} placeholder: append `-p ""` ourselves so the
         # gemini CLI still runs non-interactively and consumes stdin_text.
@@ -88,6 +95,38 @@ def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
         stdin_text = prompt
 
     return argv, stdin_text
+
+
+def materialize_driver_prompt_artifacts(config: dict, cwd: str) -> None:
+    system_prompt = str(config.get("system_prompt", "") or "")
+    if not system_prompt:
+        return
+    if config.get("driver") == "claude-code":
+        Path(cwd, "CLAUDE.md").write_text(system_prompt + "\n", encoding="utf-8")
+
+
+def resolve_soul_file(config: dict) -> Path | None:
+    soul_id = str(config.get("soul_id", "") or "").strip()
+    if not soul_id:
+        return None
+    override = str(config.get("souls_dir") or os.environ.get("CHITIN_SOULS_DIR", "")).strip()
+    if override:
+        candidate = Path(override).expanduser() / f"{soul_id}.md"
+        if candidate.is_file():
+            return candidate
+    repo = str(config.get("repo_root") or os.environ.get("CHITIN_REPO", "")).strip()
+    if repo:
+        for rel in ("souls/canonical", "souls/experimental"):
+            candidate = Path(repo).expanduser() / rel / f"{soul_id}.md"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def compute_file_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def build_transcript_tail(stdout: str, stderr: str, max_lines: int = TRANSCRIPT_TAIL_LINES) -> str:
@@ -180,6 +219,8 @@ def summarize_completed_run(
     cwd: str,
     event_chain_file: str | None = None,
     event_chain_hash: str | None = None,
+    soul_hash_mismatch: bool = False,
+    observed_soul_hash: str | None = None,
 ) -> dict:
     transcript_tail = build_transcript_tail(stdout, stderr)
     commit_count_ahead = commits_ahead_of_base(cwd)
@@ -199,6 +240,9 @@ def summarize_completed_run(
             "model": model,
             "event_chain_file": event_chain_file,
             "event_chain_hash": event_chain_hash,
+            "soul_hash_mismatch": soul_hash_mismatch,
+            "observed_soul_hash": observed_soul_hash,
+            "audit_flags": ["soul_hash_mismatch"] if soul_hash_mismatch else [],
         }
 
     status = "completed" if returncode == 0 else "failed"
@@ -215,6 +259,9 @@ def summarize_completed_run(
         "model": model,
         "event_chain_file": event_chain_file,
         "event_chain_hash": event_chain_hash,
+        "soul_hash_mismatch": soul_hash_mismatch,
+        "observed_soul_hash": observed_soul_hash,
+        "audit_flags": ["soul_hash_mismatch"] if soul_hash_mismatch else [],
     }
 
 def main():
@@ -258,6 +305,9 @@ def main():
         # Spawn worker process. Driver-specific prompt handling keeps
         # large ticket bodies off argv where possible.
         full_cmd, stdin_text = prepare_worker_command(config)
+        materialize_driver_prompt_artifacts(config, cwd)
+        soul_file = resolve_soul_file(config)
+        initial_soul_hash = compute_file_sha256(soul_file)
         event_files_before = snapshot_event_files(chitin_home)
         try:
             result = subprocess.run(
@@ -270,6 +320,9 @@ def main():
                 timeout=3600  # 1 hour timeout, same as before
             )
             event_chain_file, event_chain_hash = detect_event_chain(chitin_home, event_files_before)
+            observed_soul_hash = compute_file_sha256(soul_file) or initial_soul_hash
+            expected_soul_hash = str(config.get("soul_hash", "") or "").strip() or initial_soul_hash
+            soul_hash_mismatch = bool(expected_soul_hash and observed_soul_hash and expected_soul_hash != observed_soul_hash)
 
             output = summarize_completed_run(
                 config,
@@ -279,6 +332,8 @@ def main():
                 cwd,
                 event_chain_file=event_chain_file,
                 event_chain_hash=event_chain_hash,
+                soul_hash_mismatch=soul_hash_mismatch,
+                observed_soul_hash=observed_soul_hash,
             )
             if output["status"] == "completed_no_commit":
                 print(

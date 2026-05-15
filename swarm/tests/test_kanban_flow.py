@@ -190,6 +190,37 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
             '{"machine_fingerprint":"' + ("a" * 64) + '","machine_id":"env-box","user":"env-user"}',
         )
 
+    def test_stamp_run_identity_updates_model_and_soul_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_a11ce111")
+
+            self.run_flow(tmp, "start", "t_a11ce111", "--author", "tester")
+            self.run_flow(
+                tmp,
+                "stamp-run-identity",
+                "t_a11ce111",
+                extra_env={
+                    "CHITIN_DISPATCH_MODEL": "gpt-5.5",
+                    "CHITIN_DISPATCH_SOUL_ID": "knuth",
+                    "CHITIN_DISPATCH_SOUL_HASH": "b" * 64,
+                    "CHITIN_DISPATCH_AGENT_FINGERPRINT": "c" * 64,
+                },
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            run = conn.execute(
+                "SELECT model, soul_id, soul_hash, agent_fingerprint FROM task_runs WHERE task_id='t_a11ce111'"
+            ).fetchone()
+            conn.close()
+
+        self.assertEqual(run["model"], "gpt-5.5")
+        self.assertEqual(run["soul_id"], "knuth")
+        self.assertEqual(run["soul_hash"], "b" * 64)
+        self.assertEqual(run["agent_fingerprint"], "c" * 64)
+
     def test_start_allows_redispatch_after_ended_blocked_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

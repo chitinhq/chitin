@@ -36,6 +36,10 @@ var fieldSpecs = map[string]FieldSpec{
 		EnvVar:       "KANBAN_BOARD_CHITIN_YAML",
 		DefaultValue: "chitin.yaml",
 	},
+	"soul_map": {
+		EnvVar:       "KANBAN_BOARD_SOUL_MAP",
+		DefaultValue: `{"correctness":"knuth","architecture":"davinci","dispatch":"sun-tzu","research":"socrates","default":"sun-tzu"}`,
+	},
 }
 
 var requiredFields = []string{

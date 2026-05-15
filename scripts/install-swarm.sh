@@ -129,7 +129,8 @@ if [ ! -f "$BOARD_CONFIG" ]; then
   "default_branch": "main",
   "workspace_root": "$HOME/workspace/chitin",
   "kernel_bin": "chitin-kernel",
-  "chitin_yaml": "chitin.yaml"
+  "chitin_yaml": "chitin.yaml",
+  "soul_map": {"correctness":"knuth","architecture":"davinci","dispatch":"sun-tzu","research":"socrates","default":"sun-tzu"}
 }
 EOF
     echo "  seeded board config at $BOARD_CONFIG"

@@ -1,15 +1,21 @@
 # Argus Observatory
 
-Tail governance decision events, index them, run deterministic detectors, and generate daily markdown digests with LLM narration.
+Tail governance decision events, index them, ingest Hermes/OpenClaw/Discord observability sources, and generate daily markdown digests with LLM narration.
 
 ## Architecture
 
 - **Indexer**: Tails `~/.chitin/gov-decisions-*.jsonl` files and indexes into SQLite at `~/.argus/index.db` with replay-safety via line-hash idempotency.
+- **Log ingesters**: Follow `~/.hermes/logs/*.log` and `~/.openclaw/logs/*.log` with checkpoint-resume, truncated-line protection, and rotation reopen.
+- **Discord transcript ingester**: Pulls `#ares` + `#clawta` history incrementally using the operator's openclaw Discord token/config.
 - **Detectors**: Four deterministic anomaly detectors run over the index:
   - **Deny Cluster**: N deny events within M-second window (default: N=4, M=300s)
   - **Unknown Rate Spike**: Unknown action_type rate >threshold% over 24h (default: >1%)
   - **Agent Failure Run**: Agent with ≥N consecutive deny events (default: N=3)
   - **Stuck Flow**: Agent idle for >M seconds (default: M=3600s)
+- **Log-derived detectors**:
+  - **Hermes Standup Gap**: >8h between consecutive Hermes standups.
+  - **OpenClaw Workflow Failure Correlation**: workflow failure with or without matching `kanban-flow block`.
+  - **Discord Narration Gap**: dispatch with no `#clawta` announce.
 - **Reporter**: Daily digest generator with qwen3.6:27b LLM narration paragraph + structured detector tables.
 - **CLI**: `argus query "<q>"` for NL→SQL queries via qwen.
 
@@ -70,6 +76,18 @@ python -m argus report --report-dir ~/.chitin/reports
 
 # Query the index with natural language
 python -m argus query "How many denies by rule_id in the last 24h?"
+```
+
+Optional source overrides:
+
+```bash
+export ARGUS_HERMES_LOGS_DIR=~/.hermes/logs
+export ARGUS_OPENCLAW_LOGS_DIR=~/.openclaw/logs
+export ARGUS_OPENCLAW_CONFIG=~/.openclaw/openclaw.json
+export ARGUS_DISCORD_ARES_CHANNEL_ID=<channel_id>
+export ARGUS_DISCORD_CLAWTA_CHANNEL_ID=<channel_id>
+export ARGUS_PATTERN_TIMEOUT_SECONDS=5
+export ARGUS_PATTERN_HOURLY_TOKEN_BUDGET=12000
 ```
 
 ## Design Invariants
