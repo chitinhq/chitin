@@ -461,7 +461,7 @@ def post_deploy_drift_comment(item: dict[str, Any], apply: bool) -> None:
     if not apply:
         return
     body = (
-        f"<!-- clawta-pr-lifecycle:deploy-drift head={item['head']} -->\n"
+        f"{LIFECYCLE_MARKER} kind=deploy-drift head={item['head']} -->\n"
         "**Regression gate: deployed swarm drift** (`gate_status=deploy-drift`).\n\n"
         "The PR content gates passed, but repo-owned swarm files deployed under "
         "`~/.openclaw` differ from this repo. Auto-merge remains fail-closed "
@@ -528,7 +528,8 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
                 assign_ticket_to_operator(item, "red", apply)
                 item["applied"] = "gate-fail" if apply else "would-gate-fail"
             elif item["action"] == "deploy-drift":
-                post_deploy_drift_comment(item, apply)
+                if not has_lifecycle_marker(cs, "deploy-drift", item["head"]):
+                    post_deploy_drift_comment(item, apply)
                 if repair_deploy_drift_flag:
                     repair_deploy_drift(apply)
                     item["applied"] = "deploy-drift-repaired" if apply else "would-deploy-drift-repair"

@@ -220,6 +220,28 @@ class DeployDriftTests(unittest.TestCase):
         self.assertEqual(result["action"], "deploy-drift")
         self.assertFalse(result["auto_merge_ready"])
 
+
+    def test_deploy_drift_existing_marker_suppresses_duplicate_comment(self) -> None:
+        m = load_module()
+        pr = base_pr()
+        comments = [
+            approve_comment(),
+            {"body": "<!-- clawta-lifecycle:v1 kind=deploy-drift head=abc1234deadbeefdeadbeefdeadbeef12345678 -->"},
+        ]
+
+        with mock.patch.object(m, "list_prs", return_value=[pr]), \
+             mock.patch.object(m, "comments", return_value=comments), \
+             mock.patch.object(m, "run_regression_gate", return_value=(1, self.DRIFT_DIAGNOSTIC)), \
+             mock.patch.object(m, "checks_state", return_value="pass"), \
+             mock.patch.object(m, "ticket_info", return_value=_TICKET_INFO_PASS), \
+             mock.patch.object(m, "post_deploy_drift_comment") as post_comment:
+            result = m.run_once(("swarm/",), apply=True, auto_merge=True, escalate_to="red")
+
+        post_comment.assert_not_called()
+        item = result["items"][0]
+        self.assertEqual(item["action"], "deploy-drift")
+        self.assertEqual(item["applied"], "deploy-drift")
+
     def test_repair_deploy_drift_runs_install_then_verify(self) -> None:
         m = load_module()
         calls = []
