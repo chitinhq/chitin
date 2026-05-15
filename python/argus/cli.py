@@ -12,6 +12,9 @@ from argus.reporter import generate_daily_report
 from argus.sources import ingest_git_sources, ingest_kanban_sources
 
 
+DEFAULT_DB_PATH = str(Path.home() / ".argus" / "index.db")
+
+
 def cmd_index(args) -> int:
     """Index gov-decisions JSONL files from decisions_dir."""
     decisions_dir = Path(args.decisions_dir)
@@ -236,7 +239,7 @@ def _sanitize_readonly_select(raw_sql: str) -> str | None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="argus", description="Observatory: tail, index, detect, report.")
-    p.add_argument("--db-path", default=str(Path.home() / ".argus" / "index.db"),
+    p.add_argument("--db-path", default=DEFAULT_DB_PATH,
                    help="Path to index.db")
 
     subparsers = p.add_subparsers(dest="cmd", required=True)
@@ -276,6 +279,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     beliefs_p.add_argument("--clawta", action="store_true", help="Read Clawta memory sources")
     beliefs_p.add_argument("--openclaw-agent", action="store_true", help="Read glm-agent memory/profile sources")
     beliefs_p.add_argument("--wiki", action="store_true", help="Read wiki and graph markdown sources")
+    beliefs_p.add_argument("--db-path", default=argparse.SUPPRESS,
+                           help="Path to index.db")
     beliefs_p.set_defaults(func=cmd_ingest_beliefs)
 
     # query
