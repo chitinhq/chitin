@@ -4,7 +4,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "install-kernel": "pnpm nx build execution-kernel && bash scripts/install-kernel-symlink.sh",
-    "worktree": "bash scripts/create-worktree.sh"
+    "worktree": "bash scripts/create-worktree.sh",
+    "console": "pnpm nx run-many -t serve -p chitin-console chitin-console-api --parallel=2"
   },
   "private": true,
   "pnpm": {
