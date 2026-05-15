@@ -213,6 +213,11 @@ def _html_escape(value: object) -> str:
 
 
 def _render_html(date_str: str, generated: str, stats: dict, findings: list[Finding], summary: str) -> str:
+    belief_findings = [f for f in findings if f.detector.startswith("belief_") or f.detector == "reality_without_belief"]
+    belief_rows = "".join(
+        f"<tr><td>{_html_escape(f.detector)}</td><td>{_html_escape(f.severity)}</td><td>{_html_escape(f.title)}</td><td><pre>{_html_escape(json.dumps(f.details, indent=2))}</pre></td></tr>"
+        for f in belief_findings[:5]
+    ) or "<tr><td colspan='4'>No belief drift detected.</td></tr>"
     cards = "".join([
         f"<div class='card'><span>Total</span><strong>{stats['total_events']}</strong></div>",
         f"<div class='card'><span>Denies</span><strong>{stats['deny_count']}</strong></div>",
@@ -263,6 +268,7 @@ code {{ color:var(--accent); }}
 <section><h2>Indexed Sources</h2><ul>{source_counts}</ul></section>
 <section><h2>Top Deny Rules</h2><ul>{top_rules}</ul></section>
 <section><h2>Top Deny Agents</h2><ul>{top_agents}</ul></section>
+<section><h2>Belief Drift</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{belief_rows}</tbody></table></section>
 <section><h2>Cross-Source Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{cross_rows}</tbody></table></section>
 <section><h2>Detector Findings</h2><table><thead><tr><th>Detector</th><th>Severity</th><th>Title</th><th>Details</th></tr></thead><tbody>{finding_rows}</tbody></table></section>
 </main></body></html>
@@ -353,6 +359,13 @@ def generate_daily_report(
     lines.append(_format_finding_table(cross_source))
 
     # Findings
+    belief_findings = [f for f in findings if f.detector.startswith("belief_") or f.detector == "reality_without_belief"]
+    lines.append("\n## Belief Drift\n")
+    if not belief_findings:
+        lines.append("No belief drift detected.\n")
+    else:
+        lines.append(_format_finding_table(belief_findings[:5]))
+
     lines.append("\n## Detector Findings\n")
     lines.append(_format_finding_table(findings))
 

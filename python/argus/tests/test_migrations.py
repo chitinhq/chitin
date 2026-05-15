@@ -117,7 +117,7 @@ def test_migrations_create_expected_tables():
         ).fetchall()}
         for expected in {
             "events", "findings", "llm_calls", "hypotheses",
-            "evidence_links", "memory", "kernel_state",
+            "evidence_links", "memory", "kernel_state", "beliefs",
             "schema_migrations",
         }:
             assert expected in names, f"missing table: {expected}"

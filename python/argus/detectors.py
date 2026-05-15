@@ -7,6 +7,7 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from argus import migrations
@@ -38,6 +39,168 @@ def _get_conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+_TICKET_RE = re.compile(r"\bt_[a-z0-9]+\b", re.IGNORECASE)
+_PRIORITY_RE = re.compile(r"\bp\s*([0-9]{1,3})\b", re.IGNORECASE)
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _extract_subjects(text: str | None) -> list[str]:
+    if not text:
+        return []
+    return sorted({m.group(0) for m in _TICKET_RE.finditer(text)})
+
+
+def _normalize_claim(claim: str) -> str:
+    priority = _priority_from_claim(claim)
+    if priority is not None:
+        return f"priority:P{priority}"
+    status = re.search(r"\b(status|lane)\s*:\s*([a-z_]+)\b", claim, re.IGNORECASE)
+    if status:
+        return f"status:{status.group(2).lower()}"
+    return re.sub(r"\s+", " ", claim.strip().lower())[:120]
+
+
+def _priority_from_claim(claim: str) -> Optional[int]:
+    match = _PRIORITY_RE.search(claim)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    explicit = re.search(r"\bpriority\s*:\s*([0-9]{1,3})\b", claim, re.IGNORECASE)
+    if explicit:
+        try:
+            return int(explicit.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _recent_ticket_activity(conn: sqlite3.Connection, subject: str, *, active_window_days: int = 30) -> bool:
+    now_ts = int(_utc_now().timestamp())
+    window_start = now_ts - active_window_days * 86400
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM events
+        WHERE ts_unix >= ?
+          AND (
+                action_target LIKE ?
+             OR reason LIKE ?
+             OR payload_json LIKE ?
+          )
+        LIMIT 1
+        """,
+        (window_start, f"%{subject}%", f"%{subject}%", f"%{subject}%"),
+    ).fetchone()
+    if row:
+        return True
+    return _ticket_snapshot(subject) is not None
+
+
+def _ticket_snapshot(subject: str) -> Optional[dict]:
+    roots = [
+        Path.home() / ".hermes" / "kanban" / "boards",
+        Path.home() / ".hermes" / "kanban",
+    ]
+    candidates: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(sorted(root.rglob("kanban.db")))
+            candidates.extend(sorted(root.rglob("*.sqlite")))
+        elif root.is_file() and root.name.endswith((".db", ".sqlite")):
+            candidates.append(root)
+
+    for db_path in candidates:
+        try:
+            ext = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            ext.row_factory = sqlite3.Row
+        except sqlite3.DatabaseError:
+            continue
+        try:
+            row = ext.execute(
+                """
+                SELECT id, status, priority,
+                       COALESCE(last_heartbeat_at, completed_at, started_at, created_at) AS updated_at
+                FROM tasks
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (subject,),
+            ).fetchone()
+            if row:
+                return dict(row)
+        except sqlite3.DatabaseError:
+            pass
+        finally:
+            ext.close()
+    return None
+
+
+def _evidence_exists(conn: sqlite3.Connection, subject: str) -> bool:
+    if subject:
+        event_row = conn.execute(
+            """
+            SELECT 1
+            FROM events
+            WHERE action_target LIKE ?
+               OR reason LIKE ?
+               OR payload_json LIKE ?
+            LIMIT 1
+            """,
+            (f"%{subject}%", f"%{subject}%", f"%{subject}%"),
+        ).fetchone()
+        if event_row:
+            return True
+    snapshot = _ticket_snapshot(subject)
+    return snapshot is not None
+
+
+def _recently_reported_disagreement(conn: sqlite3.Connection, subject: str, claim_set: list[str], remind_every_days: int) -> bool:
+    """True if an equivalent disagreement finding was emitted within the window.
+
+    Compares the claim set *structurally* against the stored finding body.
+    `findings_store.persist` writes `body = json.dumps(details, indent=2)` —
+    pretty-printed, multi-line — so a compact-JSON substring match would
+    never hit. Parse each candidate body and compare subject + claim set.
+    """
+    if not _table_exists(conn, "findings"):
+        return False
+    since_ts = int(_utc_now().timestamp()) - remind_every_days * 86400
+    target_claims = sorted(claim_set)
+    rows = conn.execute(
+        """
+        SELECT body
+        FROM findings
+        WHERE detector = 'belief_cross_agent_disagreement'
+          AND ts_unix >= ?
+        """,
+        (since_ts,),
+    ).fetchall()
+    for row in rows:
+        try:
+            details = json.loads(row["body"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(details, dict):
+            continue
+        if details.get("subject") != subject:
+            continue
+        stored_claims = details.get("claims")
+        if not isinstance(stored_claims, list):
+            continue
+        if sorted(str(c) for c in stored_claims) == target_claims:
+            return True
+    return False
 
 
 def detect_deny_cluster(
@@ -304,6 +467,64 @@ def detect_stuck_flow(
     return findings
 
 
+def detect_stale_belief(
+    db_path: str,
+    *,
+    stale_days: int = 90,
+    active_window_days: int = 30,
+) -> list[Finding]:
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        if not _table_exists(conn, "beliefs"):
+            return findings
+        threshold_ts = int((_utc_now() - timedelta(days=stale_days)).timestamp())
+        rows = conn.execute(
+            """
+            SELECT agent, subject, claim, ts_recorded, source_path, schema_version
+            FROM beliefs b
+            WHERE ts_recorded = (
+                SELECT MAX(ts_recorded)
+                FROM beliefs newer
+                WHERE newer.agent = b.agent AND newer.subject = b.subject
+            )
+              AND ts_recorded < ?
+            ORDER BY ts_recorded ASC
+            """
+            ,
+            (threshold_ts,),
+        ).fetchall()
+        for row in rows:
+            subject = row["subject"]
+            if not _recent_ticket_activity(conn, subject, active_window_days=active_window_days):
+                continue
+            snapshot = _ticket_snapshot(subject)
+            details = {
+                "agent": row["agent"],
+                "subject": subject,
+                "claim": row["claim"],
+                "source_path": row["source_path"],
+                "schema_version": row["schema_version"],
+                "stale_days": stale_days,
+            }
+            title = f"Stale belief: {row['agent']} on {subject}"
+            if snapshot is None and subject.lower().startswith("t_"):
+                title = f"Orphaned belief: {row['agent']} on deleted {subject}"
+                details["orphan"] = True
+            findings.append(
+                Finding(
+                    detector="belief_stale",
+                    ts=_from_unix(int(row["ts_recorded"])),
+                    severity="warning",
+                    title=title,
+                    details=details,
+                )
+            )
+    finally:
+        conn.close()
+    return findings
+
+
 def detect_hermes_standup_gap(
     db_path: str,
     *,
@@ -518,6 +739,161 @@ def detect_demote_loop(
                     "citations": [_event_ref(event) for event in events],
                 },
             ))
+    finally:
+        conn.close()
+    return findings
+
+
+def detect_cross_agent_disagreement(
+    db_path: str,
+    *,
+    remind_every_days: int = 7,
+) -> list[Finding]:
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        if not _table_exists(conn, "beliefs"):
+            return findings
+        rows = conn.execute(
+            """
+            SELECT agent, subject, claim, ts_recorded
+            FROM beliefs b
+            WHERE ts_recorded = (
+                SELECT MAX(ts_recorded)
+                FROM beliefs newer
+                WHERE newer.agent = b.agent AND newer.subject = b.subject
+            )
+            ORDER BY subject ASC, agent ASC
+            """
+        ).fetchall()
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["subject"], []).append(row)
+        for subject, members in grouped.items():
+            claims = {}
+            for row in members:
+                claims[row["agent"]] = _normalize_claim(row["claim"])
+            unique_claims = sorted(set(claims.values()))
+            if len(unique_claims) < 2:
+                continue
+            if _recently_reported_disagreement(conn, subject, unique_claims, remind_every_days):
+                continue
+            kanban = _ticket_snapshot(subject)
+            title = f"Cross-agent disagreement: {subject}"
+            details = {
+                "subject": subject,
+                "claims": unique_claims,
+                "agents": {row["agent"]: row["claim"] for row in members},
+            }
+            if kanban is not None:
+                details["kanban"] = {
+                    "status": kanban.get("status"),
+                    "priority": f"P{kanban.get('priority')}" if kanban.get("priority") is not None else None,
+                }
+            findings.append(
+                Finding(
+                    detector="belief_cross_agent_disagreement",
+                    ts=max(_from_unix(int(row["ts_recorded"])) for row in members),
+                    severity="critical",
+                    title=title,
+                    details=details,
+                )
+            )
+    finally:
+        conn.close()
+    return findings
+
+
+def detect_belief_without_evidence(db_path: str) -> list[Finding]:
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        if not _table_exists(conn, "beliefs"):
+            return findings
+        rows = conn.execute(
+            """
+            SELECT agent, subject, claim, ts_recorded, source_path
+            FROM beliefs
+            ORDER BY ts_recorded DESC
+            """
+        ).fetchall()
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["agent"], row["subject"])
+            if key in seen:
+                continue
+            seen.add(key)
+            subject = row["subject"]
+            if _evidence_exists(conn, subject):
+                continue
+            title = f"Belief without evidence: {row['agent']} on {subject}"
+            details = {
+                "agent": row["agent"],
+                "subject": subject,
+                "claim": row["claim"],
+                "source_path": row["source_path"],
+            }
+            if subject.lower().startswith("t_") and _ticket_snapshot(subject) is None:
+                details["orphan"] = True
+            findings.append(
+                Finding(
+                    detector="belief_without_evidence",
+                    ts=_from_unix(int(row["ts_recorded"])),
+                    severity="warning",
+                    title=title,
+                    details=details,
+                )
+            )
+    finally:
+        conn.close()
+    return findings
+
+
+def detect_reality_without_belief(
+    db_path: str,
+    *,
+    window_days: int = 30,
+) -> list[Finding]:
+    conn = _get_conn(db_path)
+    findings = []
+    try:
+        if not _table_exists(conn, "beliefs"):
+            return findings
+        threshold_ts = int((_utc_now() - timedelta(days=window_days)).timestamp())
+        rows = conn.execute(
+            """
+            SELECT ts_unix, action_target, reason, payload_json
+            FROM events
+            WHERE ts_unix >= ?
+            ORDER BY ts_unix DESC
+            """
+            ,
+            (threshold_ts,),
+        ).fetchall()
+        seen_subjects: set[str] = set()
+        for row in rows:
+            subjects = []
+            for value in (row["action_target"], row["reason"], row["payload_json"]):
+                subjects.extend(_extract_subjects(value))
+            for subject in subjects:
+                if subject in seen_subjects:
+                    continue
+                seen_subjects.add(subject)
+                belief_row = conn.execute(
+                    "SELECT 1 FROM beliefs WHERE subject = ? LIMIT 1",
+                    (subject,),
+                ).fetchone()
+                if belief_row:
+                    continue
+                findings.append(
+                    Finding(
+                        detector="reality_without_belief",
+                        ts=_from_unix(int(row["ts_unix"])),
+                        severity="info",
+                        title=f"Reality without belief: {subject}",
+                        details={"subject": subject, "event_ts_unix": row["ts_unix"]},
+                    )
+                )
     finally:
         conn.close()
     return findings
@@ -812,6 +1188,10 @@ def run_all_detectors(db_path: str) -> list[Finding]:
     findings.extend(detect_unknown_rate_spike(db_path, window_hours=24, threshold_percent=1.0))
     findings.extend(detect_agent_failure_run(db_path, min_failures=3))
     findings.extend(detect_stuck_flow(db_path, min_idle_seconds=3600))
+    findings.extend(detect_stale_belief(db_path))
+    findings.extend(detect_cross_agent_disagreement(db_path))
+    findings.extend(detect_belief_without_evidence(db_path))
+    findings.extend(detect_reality_without_belief(db_path))
     findings.extend(detect_hermes_standup_gap(db_path, max_gap_hours=8))
     findings.extend(detect_openclaw_workflow_failure_correlation(db_path, block_window_seconds=3600))
     findings.extend(detect_discord_narration_gap(db_path, announce_window_seconds=900))
