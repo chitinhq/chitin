@@ -32,17 +32,28 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 
 CARDS_DIR = os.path.expanduser(
     os.environ.get("OPENCLAW_AGENT_CARDS_DIR", "~/.openclaw/data/agent-cards")
 )
+DECISIONS_DB = os.path.expanduser(
+    os.environ.get("CLAWTA_DECISIONS_DB", "~/.openclaw/data/clawta_decisions.db")
+)
 LLM_TIMEOUT_SECONDS = 60
 DEFAULT_EXPLORATION_PERCENT = 0
 DEFAULT_EXPLORATION_MAX_CANDIDATES = 2
 HIGH_RISK_LEVELS = {"high", "irreversible"}
+FAILURE_KINDS = {
+    "empty_branch",
+    "gh_pr_create_fail",
+    "ci_fail",
+    "request_changes_timeout",
+}
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -221,6 +232,150 @@ def stronger_model(card: dict, classify: dict) -> str | None:
     if len(models) >= 2:
         return models[1].get("id")
     return models[0].get("id")
+
+
+def decisions_db_path() -> str:
+    return os.path.expanduser(os.environ.get("CLAWTA_DECISIONS_DB", DECISIONS_DB))
+
+
+def shape_bucket(classify: dict) -> str:
+    bucket = complexity_bucket(classify)
+    caps = sorted(str(cap) for cap in classify.get("capabilities", []))
+    caps_part = "+".join(caps) if caps else "none"
+    return f"{bucket}|{caps_part}"
+
+
+def parse_shape_overrides(raw: str) -> dict[str, int]:
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        overrides = {}
+        for part in text.split(","):
+            key, sep, value = part.partition("=")
+            if not sep:
+                continue
+            try:
+                overrides[key.strip()] = int(value.strip())
+            except ValueError:
+                continue
+        return overrides
+    if not isinstance(parsed, dict):
+        return {}
+    overrides = {}
+    for key, value in parsed.items():
+        try:
+            overrides[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return overrides
+
+
+def failure_filter_settings() -> dict[str, object]:
+    return {
+        "enabled": env_flag("CLAWTA_FAILURE_FILTER_ENABLED", True),
+        "threshold": max(0, env_int("CLAWTA_FAILURE_FILTER_THRESHOLD", 3)),
+        "window_hours": max(1, env_int("CLAWTA_FAILURE_FILTER_WINDOW_HOURS", 6)),
+        "lookback_hours": max(1, env_int("CLAWTA_FAILURE_FILTER_LOOKBACK_HOURS", 24)),
+        "threshold_overrides": parse_shape_overrides(
+            os.environ.get("CLAWTA_FAILURE_FILTER_THRESHOLDS", "")
+        ),
+        "window_overrides": parse_shape_overrides(
+            os.environ.get("CLAWTA_FAILURE_FILTER_WINDOWS", "")
+        ),
+    }
+
+
+def failure_filter_limits(classify: dict, settings: dict[str, object]) -> tuple[int, int]:
+    bucket = complexity_bucket(classify)
+    shape = shape_bucket(classify)
+    threshold = int(settings["threshold"])
+    window_hours = int(settings["window_hours"])
+    threshold_overrides = dict(settings["threshold_overrides"])
+    window_overrides = dict(settings["window_overrides"])
+    threshold = threshold_overrides.get(shape, threshold_overrides.get(bucket, threshold))
+    window_hours = window_overrides.get(shape, window_overrides.get(bucket, window_hours))
+    return max(0, threshold), max(1, window_hours)
+
+
+def iso_utc(ts: datetime) -> str:
+    return ts.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def recent_shape_failures(classify: dict, cards: list[dict]) -> dict[str, int]:
+    settings = failure_filter_settings()
+    if not bool(settings["enabled"]):
+        return {}
+    threshold, window_hours = failure_filter_limits(classify, settings)
+    if threshold <= 0:
+        return {}
+
+    db_path = decisions_db_path()
+    if not os.path.exists(db_path):
+        return {}
+
+    now = datetime.now(timezone.utc)
+    window_floor = iso_utc(now - timedelta(hours=window_hours))
+    lookback_floor = iso_utc(now - timedelta(hours=int(settings["lookback_hours"])))
+    shape = shape_bucket(classify)
+    candidate_ids = [str(card.get("id")) for card in cards if card.get("id")]
+    if not candidate_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in FAILURE_KINDS)
+    candidate_placeholders = ",".join("?" for _ in candidate_ids)
+    query = f"""
+        SELECT driver, COUNT(*)
+        FROM clawta_decisions
+        WHERE shape_bucket = ?
+          AND driver IN ({candidate_placeholders})
+          AND failure_kind IN ({placeholders})
+          AND COALESCE(outcome_ts, ts) >= ?
+          AND COALESCE(outcome_ts, ts) >= ?
+        GROUP BY driver
+    """
+    params = [
+        shape,
+        *candidate_ids,
+        *sorted(FAILURE_KINDS),
+        lookback_floor,
+        window_floor,
+    ]
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    return {
+        str(driver): int(count)
+        for driver, count in rows
+        if driver and int(count) >= threshold
+    }
+
+
+def apply_failure_filter(
+    classify: dict, ranked_candidates: list[dict]
+) -> tuple[list[dict], dict[str, int], str | None]:
+    failures = recent_shape_failures(classify, ranked_candidates)
+    if not failures:
+        return ranked_candidates, {}, None
+
+    filtered = [card for card in ranked_candidates if str(card.get("id")) not in failures]
+    if filtered:
+        parts = [f"{driver}={count}" for driver, count in sorted(failures.items())]
+        return (
+            filtered,
+            failures,
+            "failure-aware demotion removed recent same-shape failures: " + ", ".join(parts),
+        )
+    return (
+        ranked_candidates,
+        failures,
+        "failure-aware demotion matched every candidate; using full candidate set",
+    )
 
 
 def cards_summary_for_llm(cards: list[dict]) -> list[dict]:
@@ -412,6 +567,7 @@ def emit_result(
     reasoning: str,
     card_load_errors: int,
     exploration_candidates_considered: int,
+    shape: str,
 ) -> None:
     print(
         json.dumps(
@@ -427,6 +583,7 @@ def emit_result(
                 "reasoning": reasoning,
                 "card_load_errors": card_load_errors,
                 "exploration_candidates_considered": exploration_candidates_considered,
+                "shape_bucket": shape,
             }
         )
     )
@@ -439,6 +596,7 @@ def main() -> None:
     classify = json.loads(raw)
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
+    shape = shape_bucket(classify)
 
     # Smoke / test override.
     force = os.environ.get("FORCE_DRIVER", "").strip()
@@ -455,11 +613,15 @@ def main() -> None:
             reasoning="FORCE_DRIVER env var bypassed routing logic",
             card_load_errors=len(load_errors),
             exploration_candidates_considered=0,
+            shape=shape,
         )
         return
 
     router_mode = os.environ.get("ROUTER_MODE", "llm").strip().lower()
     ranked_candidates = deterministic_ranked_candidates(classify, cards)
+    ranked_candidates, demoted_failures, failure_filter_reason = apply_failure_filter(
+        classify, ranked_candidates
+    )
     exploration_choice, exploration_pool, exploration_reason = choose_exploration_candidate(
         classify, ranked_candidates, exploration_settings()
     )
@@ -470,6 +632,8 @@ def main() -> None:
             f"controlled exploration: chose {driver_id} from "
             f"{len(exploration_pool)} bounded alternate capability-matching candidates"
         )
+        if failure_filter_reason:
+            reasoning = f"{reasoning}; {failure_filter_reason}"
         if load_errors:
             reasoning = f"{reasoning}; {len(load_errors)} card load error(s)"
         emit_result(
@@ -483,35 +647,48 @@ def main() -> None:
             reasoning=reasoning,
             card_load_errors=len(load_errors),
             exploration_candidates_considered=len(exploration_pool),
+            shape=shape,
         )
         return
 
     llm_rejection = None
     if router_mode == "llm":
-        llm_result = llm_pick(classify, cards)
-        chosen_card, llm_rejection = validate_llm_pick(llm_result, cards, caps_needed)
+        llm_result = llm_pick(classify, ranked_candidates)
+        chosen_card, llm_rejection = validate_llm_pick(
+            llm_result, ranked_candidates, caps_needed
+        )
         if chosen_card is not None:
             emit_result(
                 driver=llm_result["driver"],
                 model=llm_result.get("model") or select_model(chosen_card, classify),
                 classify=classify,
                 caps_needed=caps_needed,
-                candidates_considered=len(cards),
+                candidates_considered=len(ranked_candidates),
                 router_mode="llm",
                 selection_mode="exploitation",
                 reasoning=llm_result.get("reasoning", ""),
                 card_load_errors=len(load_errors),
                 exploration_candidates_considered=len(exploration_pool),
+                shape=shape,
             )
             return
 
     pick, candidates = deterministic_pick(classify, cards)
+    if demoted_failures:
+        pick, candidates = deterministic_pick(classify, ranked_candidates)
     picked = pick.get("id")
     model = select_model(pick, classify) if picked != "unassigned" else None
     if picked == "unassigned":
         reasoning = "no candidates covered required capabilities"
     elif llm_rejection:
         reasoning = f"LLM fallback: {llm_rejection}; deterministic capability-filter + complexity-aware model rank"
+        if failure_filter_reason:
+            reasoning = f"{reasoning}; {failure_filter_reason}"
+    elif failure_filter_reason:
+        reasoning = (
+            "deterministic capability-filter + complexity-aware model rank; "
+            f"{failure_filter_reason}"
+        )
     elif exploration_reason:
         reasoning = (
             f"deterministic capability-filter + complexity-aware model rank; "
@@ -533,6 +710,7 @@ def main() -> None:
         reasoning=reasoning,
         card_load_errors=len(load_errors),
         exploration_candidates_considered=len(exploration_pool),
+        shape=shape,
     )
 
 

@@ -20,7 +20,7 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         self.assertIn('&& "$WORKER_STATUS" != "completed_no_commit"', workflow)
         self.assertIn("completed_no_commit)", workflow)
         self.assertIn('worker_failure_report.py" --ticket-id ${ticket_id}', workflow)
-        self.assertIn('kanban-flow block ${ticket_id} "$BLOCK_REASON"', workflow)
+        self.assertIn('kanban-flow crash ${ticket_id} "$BLOCK_REASON"', workflow)
 
         zero_commit_branch = workflow.split("completed_no_commit)", 1)[1].split("failed)", 1)[0]
         self.assertNotIn("gh pr create failed", zero_commit_branch)
@@ -30,7 +30,19 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         installer = INSTALLER.read_text()
 
         self.assertIn("worker_failure_report.py", installer)
+        self.assertIn("pr_failure_report.py", installer)
         self.assertIn("spawn_worker_subprocess.py", installer)
+
+    def test_pr_create_failure_path_surfaces_gh_output(self):
+        workflow = CANONICAL.read_text()
+
+        self.assertIn('GH_PR_STDOUT_FILE=$(mktemp)', workflow)
+        self.assertIn('GH_PR_STDERR_FILE=$(mktemp)', workflow)
+        self.assertIn('--arg stdout "${GH_PR_STDOUT:-}"', workflow)
+        self.assertIn('--arg stderr "${GH_PR_STDERR:-}"', workflow)
+        self.assertIn('python3 "$HOME/.openclaw/workflows/pr_failure_report.py"', workflow)
+        self.assertIn("printf '%s\\n' \"$BLOCK_REASON\"", workflow)
+        self.assertIn('kanban-flow crash ${ticket_id} "$BLOCK_REASON"', workflow)
 
 
 if __name__ == "__main__":

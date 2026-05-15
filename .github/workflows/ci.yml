@@ -41,6 +41,15 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
+      - name: Dashboard dist matches source
+        run: |
+          pnpm exec nx run @chitin/dashboard:build
+          if [ -n "$(git status --porcelain -- apps/chitin-dashboard/dist)" ]; then
+            git status --short -- apps/chitin-dashboard/dist
+            echo "::error::apps/chitin-dashboard/dist is stale; run pnpm exec nx run @chitin/dashboard:build and commit the regenerated assets"
+            exit 1
+          fi
+
       - name: Ensure native modules built (better-sqlite3)
         run: |
           pnpm rebuild better-sqlite3 || true
@@ -53,6 +62,9 @@ jobs:
 
       - name: Strict router stdin contract
         run: python3 -m unittest swarm.tests.test_pick_driver.PickDriverTests.test_rejects_prefixed_stdout_noise_before_json
+
+      - name: Lifecycle trace smoke
+        run: python3 -m unittest swarm.tests.test_trace_lifecycle
 
       - name: Plugin registration stdout contract
         run: pnpm exec vitest run apps/openclaw-plugin-governance/test/bridge.test.ts -t "keeps plugin registration stdout-clean by using the logger only"

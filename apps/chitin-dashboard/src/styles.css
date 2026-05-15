@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #18212a;
+  --panel: rgba(255, 252, 246, 0.78);
+  --line: rgba(53, 72, 88, 0.14);
+  --muted: #6a7785;
+  --allow: #7bd389;
+  --deny: #d64933;
+  --heuristic: #f4c95d;
+  --signal: #c7ced6;
+  --accent: #1f5666;
+}
+
+html {
+  font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}

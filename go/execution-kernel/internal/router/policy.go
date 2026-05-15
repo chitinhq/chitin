@@ -115,6 +115,18 @@ func parseRouterSection(routerYaml string) Policy {
 				if n, err := strconv.Atoi(value); err == nil {
 					h.MaxStallSeconds = n
 				}
+			case "warn_threshold":
+				if f, err := strconv.ParseFloat(value, 64); err == nil {
+					h.WarnThreshold = f
+				}
+			case "halt_threshold":
+				if f, err := strconv.ParseFloat(value, 64); err == nil {
+					h.HaltThreshold = f
+				}
+			case "max_turns":
+				if n, err := strconv.Atoi(value); err == nil {
+					h.MaxTurns = n
+				}
 			}
 			policy.Heuristics[subsection] = h
 		}
