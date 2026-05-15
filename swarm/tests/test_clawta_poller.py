@@ -324,6 +324,23 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
         self.assertIn("missing explicit boundary list", demote_cmd[3])
 
+    def test_missing_invariants_reason_accepts_singular_and_plural_boundary(self) -> None:
+        # Locks in: the gate accepts both `Boundary:` (singular) and
+        # `Boundaries:` (plural) so author choice never traps a ticket
+        # in a promote-demote loop. Closes t_b8e4f138.
+        module = load_module()
+        for form in ("Boundary: empty, max", "Boundaries: empty, max"):
+            with self.subTest(form=form):
+                body = (
+                    "invariants_and_boundaries:\n"
+                    "  Invariant: parser never returns an empty action.\n"
+                    f"  {form}\n"
+                )
+                self.assertIsNone(
+                    module.missing_invariants_reason({"body": body}),
+                    f"gate should accept '{form}' form",
+                )
+
     def test_tick_blocks_unmerged_pr_before_routing(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
