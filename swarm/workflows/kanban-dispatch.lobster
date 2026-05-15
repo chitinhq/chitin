@@ -148,6 +148,7 @@ steps:
         --ticket-id ${ticket_id} \
         --driver $pick_driver.json.driver \
         --model $pick_driver.json.model \
+        --shape-bucket $pick_driver.json.shape_bucket \
         --selection-mode $pick_driver.json.selection_mode)
       hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
@@ -476,6 +477,10 @@ steps:
             BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
             [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker exited with no commits. ${WORKER_ERROR:-(no error detail)}"
             [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker exited with no commits; ${WORKER_ERROR:-see dispatch log}"
+            python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+              --ticket-id ${ticket_id} \
+              --outcome failure \
+              --failure-kind empty_branch >/dev/null 2>&1 || true
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
@@ -571,12 +576,19 @@ steps:
         BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
         [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed. stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
         [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="branch $BRANCH pushed but gh pr create failed: stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome failure \
+          --failure-kind gh_pr_create_fail >/dev/null 2>&1 || true
         # Slice D: PR failed — surface the detail (#650) and finalize the
         # task_run via `crash` so the run ledger keeps the chain link (#646).
         printf '%s\n' "$BLOCK_REASON"
         printf '%s\n' "$MSG"
         kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       else
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome success >/dev/null 2>&1 || true
         MSG="🦞 ${ticket_id}: PR opened; ticket remains in_progress for review/merge. Branch: $BRANCH. PR: $PR_URL"
         # PR opened — record the URL on the ticket. Ticket stays in
         # in_progress (Hermes UI has no code_review column; the PR's
