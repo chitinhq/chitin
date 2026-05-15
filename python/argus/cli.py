@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from argus import findings_cli, migrations
-from argus.indexer import follow_all_decisions, tail_all_decisions
+from argus.indexer import follow_all_decisions, init_db, tail_all_decisions
 from argus.reporter import generate_daily_report
 from argus.sources import ingest_git_sources, ingest_kanban_sources
 
@@ -32,6 +32,12 @@ def cmd_index(args) -> int:
 
     try:
         db_path = Path.home() / ".argus" / "index.db"
+        # Ensure the base `events` table exists before applying migrations.
+        # On a first run the DB file does not exist yet; open_writable would
+        # create an empty file with no schema, and migration 1
+        # (ALTER TABLE events ...) would raise "no such table: events".
+        # init_db is idempotent, so this is safe on existing DBs too.
+        init_db(db_path).close()
         conn = migrations.open_writable(db_path)
         migrations.apply_pending(conn)
         if args.include_kanban:

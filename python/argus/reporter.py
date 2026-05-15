@@ -33,6 +33,10 @@ def _get_summary_stats(db_path: str) -> dict:
     try:
         # Overall stats
         total = conn.execute("SELECT COUNT(*) as cnt FROM events").fetchone()["cnt"]
+        # Deny rate is a chain-governance metric, so its denominator must be
+        # chain-scoped too. Counting denies (source='chain') against all-source
+        # total understates the rate once kanban/git ingest adds rows.
+        chain_total = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE source = 'chain'").fetchone()["cnt"]
         denies = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE source = 'chain' AND allowed = 0").fetchone()["cnt"]
         allows = conn.execute("SELECT COUNT(*) as cnt FROM events WHERE source = 'chain' AND allowed = 1").fetchone()["cnt"]
 
@@ -71,7 +75,7 @@ def _get_summary_stats(db_path: str) -> dict:
             "total_events": total,
             "deny_count": denies,
             "allow_count": allows,
-            "deny_percent": (denies / total * 100) if total > 0 else 0,
+            "deny_percent": (denies / chain_total * 100) if chain_total > 0 else 0,
             "top_deny_rules": top_denies,
             "top_deny_agents": top_agents,
             "source_counts": source_counts,
