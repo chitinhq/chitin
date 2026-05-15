@@ -324,6 +324,94 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
         self.assertIn("missing explicit boundary list", demote_cmd[3])
 
+    def test_is_tracking_epic_recognizes_marker(self) -> None:
+        module = load_module()
+        positives = [
+            "Tracking-epic: true",
+            "tracking-epic: TRUE",
+            "Tracking-Epic:  yes",
+            "tracking-epic: 1",
+            "Header text\n\nTracking-epic: true\n\nMore text\n",
+        ]
+        for body in positives:
+            with self.subTest(case="positive", body=body[:40]):
+                self.assertTrue(module.is_tracking_epic(body))
+        negatives = [
+            "",
+            None,
+            "Goal: ship the thing",
+            "Tracking-epic: false",
+            "Tracking-epic: no",
+            "tracking-epic: maybe",
+            "Refers to Tracking-epic: true inside a sentence",
+        ]
+        for body in negatives:
+            with self.subTest(case="negative", body=str(body)[:40]):
+                self.assertFalse(module.is_tracking_epic(body))
+
+    def test_tick_skips_demote_ungroomed_for_tracking_epic(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_epic1", "tracking epic", "Goal: tracker.\n\nTracking-epic: true\n",
+                 "ready", None, 50, 1),
+            )
+            conn.commit(); conn.close()
+
+            seen: list[list[str]] = []
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(result["demoted"], [])
+        self.assertFalse(any(c[:2] == [module.KANBAN_FLOW_BIN, "demote"] for c in seen),
+                         f"tracking epic must not be demoted; got {seen}")
+
+    def test_tick_skips_demote_missing_invariants_for_tracking_epic(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_epic2", "tracking epic with terminal lane assignee",
+                 "Goal: tracker — no invariants here.\n\nTracking-epic: true\n",
+                 "ready", "codex", 50, 1),
+            )
+            conn.commit(); conn.close()
+
+            seen: list[list[str]] = []
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(result["demoted"], [])
+        self.assertFalse(any(c[:2] == [module.KANBAN_FLOW_BIN, "demote"] for c in seen),
+                         f"tracking epic must not be demoted; got {seen}")
+
     def test_missing_invariants_reason_accepts_singular_and_plural_boundary(self) -> None:
         # Locks in: the gate accepts both `Boundary:` (singular) and
         # `Boundaries:` (plural) so author choice never traps a ticket
