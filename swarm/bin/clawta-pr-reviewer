@@ -77,7 +77,7 @@ def parse_invariants_and_boundaries_field(body: str | None) -> str | None:
 def extract_named_boundaries(field_value: str | None) -> list[str]:
     if not field_value:
         return []
-    match = re.search(r"(?is)\bboundaries?\s*:\s*(.+)", field_value)
+    match = re.search(r"(?is)\bboundar(?:y|ies)\s*:\s*(.+)", field_value)
     if not match:
         return []
     raw = match.group(1).strip().splitlines()[0].strip()

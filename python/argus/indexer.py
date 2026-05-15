@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from argus import migrations
 from analysis.models import parse_decision_line
@@ -29,20 +29,21 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     """Create index schema. Idempotent."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY,
             line_hash TEXT UNIQUE NOT NULL,
+            external_id TEXT UNIQUE,
             source TEXT NOT NULL DEFAULT 'chain',
             kind TEXT NOT NULL DEFAULT 'chain_decision',
             subject TEXT,
-            source_ref TEXT,
-            payload_json TEXT,
             ts TEXT NOT NULL,
             ts_unix INTEGER NOT NULL,
-            allowed INTEGER NOT NULL,
+            last_seen_ts INTEGER,
+            allowed INTEGER NOT NULL DEFAULT 1,
             mode TEXT,
             rule_id TEXT,
             reason TEXT,
@@ -58,7 +59,17 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             model TEXT,
             role TEXT,
             workflow_id TEXT,
-            fingerprint TEXT
+            fingerprint TEXT,
+            payload_json TEXT,
+            repo TEXT,
+            board TEXT,
+            ticket_id TEXT,
+            pr_number INTEGER,
+            commit_sha TEXT,
+            review_id TEXT,
+            file_path TEXT,
+            status TEXT,
+            source_ref TEXT
         )
     """)
 
@@ -81,6 +92,38 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_agent
         ON events(agent)
     """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_source_ts
+        ON events(source, ts_unix)
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_external_id
+        ON events(external_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_kind_ts
+        ON events(kind, ts_unix)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ticket_ts
+        ON events(ticket_id, ts_unix)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pr_ts
+        ON events(pr_number, ts_unix)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_repo_ts
+        ON events(repo, ts_unix)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_commit_sha
+        ON events(commit_sha)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_file_path
+        ON events(file_path)
+    """)
 
     # NOTE: indexes on source/kind/subject are intentionally NOT created
     # here. Those columns only exist after migrations 1 and 7 run. On a
@@ -92,6 +135,60 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     conn.commit()
     return conn
+
+
+def insert_event(conn: sqlite3.Connection, event: dict) -> int:
+    """Insert or refresh a canonical event row.
+
+    Rows with `external_id` are upserted so pollers can refresh current status
+    without duplicating history. Rows without `external_id` remain append-only.
+    Returns the event row id.
+    """
+    payload = dict(event)
+    payload.setdefault("line_hash", _line_hash(json.dumps(payload, sort_keys=True, default=str)))
+    payload.setdefault("allowed", 1)
+    columns = [
+        "line_hash", "external_id", "source", "kind", "subject", "ts", "ts_unix",
+        "last_seen_ts", "allowed", "mode", "rule_id", "reason", "escalation",
+        "agent", "action_type", "action_target", "envelope_id", "tier", "cost_usd",
+        "input_bytes", "tool_calls", "model", "role", "workflow_id", "fingerprint",
+        "payload_json", "repo", "board", "ticket_id", "pr_number", "commit_sha",
+        "review_id", "file_path", "status", "source_ref",
+    ]
+    values = [payload.get(col) for col in columns]
+    if payload.get("external_id"):
+        conn.execute(
+            f"""
+            INSERT INTO events ({", ".join(columns)})
+            VALUES ({", ".join("?" for _ in columns)})
+            ON CONFLICT(external_id) DO UPDATE SET
+                last_seen_ts = excluded.last_seen_ts,
+                subject = COALESCE(excluded.subject, events.subject),
+                payload_json = COALESCE(excluded.payload_json, events.payload_json),
+                repo = COALESCE(excluded.repo, events.repo),
+                board = COALESCE(excluded.board, events.board),
+                ticket_id = COALESCE(excluded.ticket_id, events.ticket_id),
+                pr_number = COALESCE(excluded.pr_number, events.pr_number),
+                commit_sha = COALESCE(excluded.commit_sha, events.commit_sha),
+                review_id = COALESCE(excluded.review_id, events.review_id),
+                file_path = COALESCE(excluded.file_path, events.file_path),
+                status = COALESCE(excluded.status, events.status),
+                source_ref = COALESCE(excluded.source_ref, events.source_ref)
+            """,
+            values,
+        )
+        row = conn.execute(
+            "SELECT id FROM events WHERE external_id = ?",
+            (payload["external_id"],),
+        ).fetchone()
+    else:
+        conn.execute(
+            f"INSERT INTO events ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+    conn.commit()
+    return int(row[0])
 
 
 def _parse_ts_unix(ts_str: str) -> Optional[int]:
@@ -146,22 +243,34 @@ def index_jsonl_file_from_offset(
                 continue
 
             try:
-                conn.execute("""
-                    INSERT INTO events (
-                        line_hash, source, kind, subject, source_ref, payload_json,
-                        ts, ts_unix, allowed, mode, rule_id, reason,
-                        escalation, agent, action_type, action_target, envelope_id,
-                        tier, cost_usd, input_bytes, tool_calls, model, role,
-                        workflow_id, fingerprint
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    lh, "chain", "chain_decision", None, str(file_path), raw,
-                    d.ts.isoformat(), ts_unix, int(d.allowed),
-                    d.mode, d.rule_id, d.reason, d.escalation,
-                    d.agent, d.action_type, d.action_target, d.envelope_id,
-                    d.tier, d.cost_usd, d.input_bytes, d.tool_calls,
-                    d.model, d.role, d.workflow_id, d.fingerprint
-                ))
+                insert_event(conn, {
+                    "line_hash": lh,
+                    "source": "chain",
+                    "kind": "chain_decision",
+                    "subject": d.rule_id or d.action_type or d.reason,
+                    "source_ref": str(file_path),
+                    "ts": d.ts.isoformat(),
+                    "ts_unix": ts_unix,
+                    "last_seen_ts": ts_unix,
+                    "allowed": int(d.allowed),
+                    "mode": d.mode,
+                    "rule_id": d.rule_id,
+                    "reason": d.reason,
+                    "escalation": d.escalation,
+                    "agent": d.agent,
+                    "action_type": d.action_type,
+                    "action_target": d.action_target,
+                    "envelope_id": d.envelope_id,
+                    "tier": d.tier,
+                    "cost_usd": d.cost_usd,
+                    "input_bytes": d.input_bytes,
+                    "tool_calls": d.tool_calls,
+                    "model": d.model,
+                    "role": d.role,
+                    "workflow_id": d.workflow_id,
+                    "fingerprint": d.fingerprint,
+                    "payload_json": raw,
+                })
                 inserted += 1
             except sqlite3.IntegrityError:
                 skipped += 1
@@ -188,7 +297,13 @@ def tail_all_decisions(decisions_dir: Path) -> Path:
     return db_path
 
 
-def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path:
+def follow_all_decisions(
+    decisions_dir: Path,
+    poll_seconds: float = 1.0,
+    *,
+    aux_poll: Callable[[sqlite3.Connection], None] | None = None,
+    aux_poll_seconds: float = 300.0,
+) -> Path:
     """Continuously index existing and appended gov decision lines.
 
     Handles three rotation/lifecycle edge cases:
@@ -202,6 +317,7 @@ def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path
     conn = init_db(db_path)
     migrations.apply_pending(conn)
     offsets: dict[Path, int] = {}
+    next_aux_poll = time.time()
     try:
         while True:
             current = list(_decision_files(decisions_dir))
@@ -220,6 +336,10 @@ def follow_all_decisions(decisions_dir: Path, poll_seconds: float = 1.0) -> Path
                     offset = 0
                 inserted, skipped, next_offset = index_jsonl_file_from_offset(conn, f, offset)
                 offsets[f] = next_offset
+            now = time.time()
+            if aux_poll is not None and now >= next_aux_poll:
+                aux_poll(conn)
+                next_aux_poll = now + aux_poll_seconds
             time.sleep(poll_seconds)
     finally:
         conn.close()
@@ -246,7 +366,7 @@ def _split_complete_lines(data: bytes, offset: int) -> tuple[list[str], int]:
     return lines, next_offset
 
 
-def insert_event(
+def insert_source_event(
     conn: sqlite3.Connection,
     *,
     source: str,
@@ -262,7 +382,13 @@ def insert_event(
     reason: str | None = None,
     rule_id: str | None = None,
 ) -> bool:
-    """Insert one external event; returns True when new."""
+    """Insert one external (non-chain) event; returns True when new.
+
+    Distinct from :func:`insert_event` (the canonical dict-based upsert
+    used for chain and cross-source rows): this is the append-only,
+    keyword-argument path used by log and Discord ingestion, keyed on a
+    per-source line hash rather than `external_id`.
+    """
     ts_unix = _parse_ts_unix(ts)
     if ts_unix is None:
         return False

@@ -12,6 +12,7 @@ single point of truth.
 | `src/envelope.schema.ts` | The result envelope every workflow + activity produces (`tmp/result-*.json` shape). What the apply step + analyst recipes consume. |
 | `src/event.schema.ts` | Canonical event shape on the chain (`session_start`, `pre_tool_use`, `decision`, `post_tool_use`, etc.). Hash-linked + surface-neutral. |
 | `src/event.types.ts` | TypeScript types projected from the event schema; `EventType` enum + payload unions. |
+| `src/run-manifest.ts` | Standalone run descriptor shared by external SDKs. Holds the stable run/session/agent identity used to mint chain-valid events without importing the kernel. |
 | `src/execution-request.schema.ts` | `ExecutionRequest` — the typed dispatch contract: `{role, tier, allowed_drivers, bounds, parent_workflow_id, step_index, …}`. The dispatcher constructs these; the worker validates. |
 | `src/payloads.schema.ts` | Per-event-type payload schemas referenced from `event.schema.ts`. |
 | `src/hash.ts` | `hashEvent(map)` — the deterministic SHA-256 over canonical-keyed event JSON. Owns chain integrity. **Uses `node:crypto`** — must NOT be imported as a value from workflow code (Temporal's webpack bundler can't resolve `node:` imports). Workflow-side code uses type-only imports. |

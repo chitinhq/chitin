@@ -161,17 +161,52 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
     ),
     (
         7,
-        "log_event_columns",
+        "cross_source_events",
         [
+            "ALTER TABLE events ADD COLUMN external_id TEXT",
             "ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'chain_decision'",
             "ALTER TABLE events ADD COLUMN subject TEXT",
+            "ALTER TABLE events ADD COLUMN repo TEXT",
+            "ALTER TABLE events ADD COLUMN board TEXT",
+            "ALTER TABLE events ADD COLUMN ticket_id TEXT",
+            "ALTER TABLE events ADD COLUMN pr_number INTEGER",
+            "ALTER TABLE events ADD COLUMN commit_sha TEXT",
+            "ALTER TABLE events ADD COLUMN review_id TEXT",
+            "ALTER TABLE events ADD COLUMN file_path TEXT",
+            "ALTER TABLE events ADD COLUMN status TEXT",
+            "ALTER TABLE events ADD COLUMN last_seen_ts INTEGER",
             "ALTER TABLE events ADD COLUMN source_ref TEXT",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_external_id ON events(external_id)",
             "CREATE INDEX IF NOT EXISTS idx_kind_ts ON events(kind, ts_unix)",
-            "CREATE INDEX IF NOT EXISTS idx_subject_ts ON events(subject, ts_unix)",
+            "CREATE INDEX IF NOT EXISTS idx_ticket_ts ON events(ticket_id, ts_unix)",
+            "CREATE INDEX IF NOT EXISTS idx_pr_ts ON events(pr_number, ts_unix)",
+            "CREATE INDEX IF NOT EXISTS idx_repo_ts ON events(repo, ts_unix)",
+            "CREATE INDEX IF NOT EXISTS idx_commit_sha ON events(commit_sha)",
+            "CREATE INDEX IF NOT EXISTS idx_file_path ON events(file_path)",
         ],
     ),
     (
         8,
+        "events_payload_json_legacy_backfill",
+        [
+            # Some pre-cross-source operator DBs have migration 1 recorded
+            # from before payload_json existed. Cross-source ingest needs it.
+            "ALTER TABLE events ADD COLUMN payload_json TEXT",
+        ],
+    ),
+    (
+        9,
+        "log_subject_index",
+        [
+            # Log ingestion (Slice 3) queries events by `subject`. The
+            # `kind`, `subject`, and `source_ref` columns are already added
+            # by migration 7 (cross_source_events); only the subject index
+            # is still missing. Idempotent on DBs that somehow have it.
+            "CREATE INDEX IF NOT EXISTS idx_subject_ts ON events(subject, ts_unix)",
+        ],
+    ),
+    (
+        10,
         "source_checkpoints",
         [
             """
@@ -187,13 +222,6 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_source_checkpoints_source ON source_checkpoints(source)",
-        ],
-    ),
-    (
-        9,
-        "events_payload_json_for_upgraded_log_ingest",
-        [
-            "ALTER TABLE events ADD COLUMN payload_json TEXT",
         ],
     ),
 ]

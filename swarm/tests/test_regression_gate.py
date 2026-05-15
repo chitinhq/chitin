@@ -234,6 +234,15 @@ class DiscoveryHygieneTests(unittest.TestCase):
         self.assertNotIn("governance-boundary.allow", result.stdout)
         self.assertIn("check-real.sh", result.stdout)
 
+    def test_hermes_clawta_contract_check_is_gate_discoverable(self) -> None:
+        # Regression-gate discovers every top-level scripts/check-*.py file.
+        # Keep this explicit so the Hermes↔Clawta contract invariant cannot
+        # become a manually-run-only script by accident.
+        check = REPO_ROOT / "scripts" / "check-hermes-clawta-contract.py"
+        self.assertTrue(check.exists())
+        self.assertTrue(check.name.startswith("check-"))
+        self.assertEqual(check.suffix, ".py")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,7 +20,7 @@ from argus.indexer import (
     env_path,
     file_inode,
     init_db,
-    insert_event,
+    insert_source_event,
     _parse_ts_unix,
     _split_complete_lines,
 )
@@ -247,7 +247,7 @@ def _record_unparsed(
     raw_line: str,
     reason: str,
 ) -> None:
-    insert_event(
+    insert_source_event(
         conn,
         source=source,
         kind="unparsed",
@@ -364,7 +364,7 @@ def ingest_log_file(
         if not result.matched or not result.kind:
             committed_offset = line_end_offset
             continue
-        if insert_event(
+        if insert_source_event(
             conn,
             source=source,
             kind=result.kind,
@@ -538,7 +538,7 @@ def ingest_discord_channel(
             last_cursor = msg.id
             continue
         if result.matched and result.kind:
-            if insert_event(
+            if insert_source_event(
                 conn,
                 source="discord",
                 kind=result.kind,

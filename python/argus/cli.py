@@ -7,14 +7,16 @@ import sys
 from pathlib import Path
 
 from argus import findings_cli, migrations
+from argus.indexer import init_db
 from argus.logs import follow_all_sources, index_all_sources
 from argus.reporter import generate_daily_report
+from argus.sources import ingest_git_sources, ingest_kanban_sources
 
 
 def cmd_index(args) -> int:
     """Index chain decisions plus configured Slice 3 sources."""
     decisions_dir = Path(args.decisions_dir)
-    if not decisions_dir.exists():
+    if not decisions_dir.exists() and not args.skip_chain:
         print(f"Error: decisions_dir not found: {decisions_dir}", file=sys.stderr)
         return 1
 
@@ -31,18 +33,51 @@ def cmd_index(args) -> int:
 
     try:
         db_path = Path(args.db_path)
+
+        # Ensure the base `events` table exists before applying migrations.
+        # On a first run the DB file does not exist yet; open_writable would
+        # create an empty file with no schema, and migration 1
+        # (ALTER TABLE events ...) would raise "no such table: events".
+        # init_db is idempotent, so this is safe on existing DBs too.
+        init_db(db_path).close()
+
+        def _ingest_aux_sources() -> None:
+            """Poll Hermes kanban + git/GitHub sources into the index."""
+            if not (args.include_kanban or args.include_git):
+                return
+            conn = migrations.open_writable(db_path)
+            try:
+                migrations.apply_pending(conn)
+                if args.include_kanban:
+                    ingest_kanban_sources(conn, Path(args.kanban_boards_root))
+                if args.include_git:
+                    repo_roots = (
+                        [Path(p).expanduser() for p in args.repo_root]
+                        if args.repo_root
+                        else None
+                    )
+                    ingest_git_sources(conn, repo_roots)
+            finally:
+                conn.close()
+
         if args.follow:
             print(f"Following {decisions_dir} into {db_path}", file=sys.stderr)
+            # One-shot aux ingest before entering the follow loop, then
+            # follow chain + logs + Discord sources continuously.
+            _ingest_aux_sources()
             follow_all_sources(
                 db_path=db_path,
                 decisions_dir=decisions_dir,
                 poll_seconds=args.poll_seconds,
             )
             return 0
+
+        # Batch path: chain decisions + logs + Discord, then kanban/git.
         out = index_all_sources(
             db_path=db_path,
             decisions_dir=decisions_dir,
         )
+        _ingest_aux_sources()
         print(f"Indexed to {out}", file=sys.stderr)
         return 0
     except KeyboardInterrupt:
@@ -90,11 +125,13 @@ def cmd_query(args) -> int:
     question = args.query
     system = prompts.system_with_preamble(
         "You translate a natural-language question into a single read-only "
-        "SQL SELECT against the table `events` with columns: source, kind, subject, "
-        "source_ref, payload_json, ts, allowed, mode, rule_id, reason, escalation, "
-        "agent, action_type, action_target, envelope_id, tier, cost_usd, input_bytes, "
-        "tool_calls, model, role, workflow_id, fingerprint. Return ONLY the SELECT "
-        "statement, no prose, no semicolon, no code fence."
+        "SQL SELECT against the table `events` with columns: ts, allowed, "
+        "mode, rule_id, reason, escalation, agent, action_type, action_target, "
+        "envelope_id, tier, cost_usd, input_bytes, tool_calls, model, role, "
+        "workflow_id, fingerprint, source, kind, subject, payload_json, repo, "
+        "board, ticket_id, pr_number, commit_sha, review_id, file_path, status, "
+        "last_seen_ts, source_ref. You may join events to itself across kinds. "
+        "Return ONLY the SELECT statement, no prose, no semicolon, no code fence."
     )
 
     conn = migrations.open_writable(db_path)
@@ -195,6 +232,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="Stay running and index appended lines/date-rollover files")
     index_p.add_argument("--poll-seconds", type=float, default=1.0,
                          help="Polling interval for --follow")
+    index_p.add_argument("--skip-chain", action="store_true",
+                         help="Skip gov-decisions indexing and only run auxiliary ingesters")
+    index_p.add_argument("--include-kanban", action="store_true",
+                         help="Also poll Hermes kanban DB snapshots into the index")
+    index_p.add_argument("--kanban-boards-root",
+                         default=str(Path.home() / ".hermes" / "kanban" / "boards"),
+                         help="Root directory containing board subdirs with kanban.db")
+    index_p.add_argument("--include-git", action="store_true",
+                         help="Also poll git and GitHub PR history into the index")
+    index_p.add_argument("--repo-root", action="append", default=[],
+                         help="Repo root to scan for git repos; repeatable")
 
     # report
     report_p = subparsers.add_parser("report", help="Generate daily digest report")

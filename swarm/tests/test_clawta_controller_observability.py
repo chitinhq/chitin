@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -46,6 +48,122 @@ class ControllerProjectionTests(unittest.TestCase):
         sample = "\n".join(["t_aaaabbbb", "t_ccccdddd", "t_ccccdddd"])
         with mock.patch.object(module, "sh", return_value=(0, sample)):
             self.assertEqual(module.active_dispatch_tickets(), ["t_aaaabbbb", "t_ccccdddd"])
+
+    def test_lifecycle_orphans_flags_done_without_runs_and_runs_without_ticket(self) -> None:
+        module = load_module(REPORT, "clawta_report_lifecycle_orphans")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "kanban.db"
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE tasks (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL,
+                  assignee TEXT,
+                  status TEXT NOT NULL,
+                  priority INTEGER DEFAULT 0,
+                  created_at INTEGER NOT NULL,
+                  started_at INTEGER,
+                  completed_at INTEGER,
+                  last_heartbeat_at INTEGER,
+                  current_run_id INTEGER
+                );
+                CREATE TABLE task_comments (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  author TEXT,
+                  body TEXT NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                CREATE TABLE task_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  payload TEXT,
+                  created_at INTEGER,
+                  run_id INTEGER
+                );
+                CREATE TABLE task_runs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  started_at INTEGER NOT NULL,
+                  ended_at INTEGER,
+                  outcome TEXT,
+                  summary TEXT,
+                  last_heartbeat_at INTEGER
+                );
+                INSERT INTO tasks(id, title, assignee, status, created_at, completed_at)
+                VALUES
+                  ('t_done0001', 'done but no runs', 'codex', 'done', 1, 10),
+                  ('t_done0002', 'done with run', 'codex', 'done', 1, 11);
+                INSERT INTO task_runs(task_id, status, started_at, ended_at, outcome)
+                VALUES
+                  ('t_done0002', 'done', 2, 11, 'completed'),
+                  ('t_orphan01', 'failed', 3, 4, 'failed');
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "BOARD_DB", str(db_path)):
+                orphan_data = module.lifecycle_orphans()
+
+        self.assertEqual([row["id"] for row in orphan_data["done_without_runs"]], ["t_done0001"])
+        self.assertEqual([row["task_id"] for row in orphan_data["runs_without_ticket"]], ["t_orphan01"])
+
+
+class StuckClassificationTests(unittest.TestCase):
+    def test_classify_stuck_ticket_buckets_actionable_states(self) -> None:
+        module = load_module(REPORT, "clawta_report_stuck_classification")
+        task = {"id": "t_deadbeef", "assignee": "codex", "consecutive_failures": 0}
+
+        self.assertEqual(module.classify_stuck_ticket(task, pr={"number": 1})["bucket"], "has-pr")
+        self.assertEqual(module.classify_stuck_ticket({**task, "assignee": "red"})["bucket"], "operator-owned")
+        self.assertEqual(module.classify_stuck_ticket(task, active=True)["bucket"], "active-worker")
+        self.assertEqual(module.classify_stuck_ticket({**task, "consecutive_failures": 2})["bucket"], "retry-exhausting")
+        self.assertEqual(module.classify_stuck_ticket(task, stale_note="watchdog flagged")["bucket"], "watchdog-flagged")
+        self.assertEqual(module.classify_stuck_ticket(task)["bucket"], "retryable-silent")
+
+    def test_block_reason_takes_precedence_in_stuck_classification(self) -> None:
+        module = load_module(REPORT, "clawta_report_block_reason_stuck")
+        task = {"id": "t_deadbeef", "assignee": "codex", "consecutive_failures": 0, "block_reason": "retry-exhausted"}
+
+        result = module.classify_stuck_ticket(task)
+        self.assertEqual(result["bucket"], "block:retry-exhausted")
+        self.assertEqual(result["tone"], "bad")
+        self.assertIn("Hermes", result["action"])
+
+    def test_block_reason_metadata_declares_owner(self) -> None:
+        module = load_module(REPORT, "clawta_report_block_reason_meta")
+        self.assertEqual(module.block_reason_meta("operator-decision")["owner"], "red")
+        self.assertEqual(module.block_reason_meta("needs-rebase")["owner"], "clawta")
+        self.assertEqual(module.block_reason_meta("poller-oscillation")["owner"], "hermes")
+        self.assertEqual(module.block_reason_meta("new-reason")["owner"], "unknown")
+
+    def test_load_board_state_handles_partial_retry_schema(self) -> None:
+        module = load_module(REPORT, "clawta_report_partial_retry_schema")
+
+        class FakeConn:
+            row_factory = None
+            def execute(self, sql):
+                if sql == "PRAGMA table_info(tasks)":
+                    return [(0, "id"), (1, "consecutive_failures")]
+                if "FROM tasks" in sql:
+                    self.task_sql = sql
+                    return []
+                return []
+            def close(self):
+                pass
+
+        conn = FakeConn()
+        with mock.patch.object(module, "board_conn", return_value=conn):
+            tasks, comments, events, runs = module.load_board_state()
+
+        self.assertEqual(tasks, [])
+        self.assertIn("consecutive_failures", conn.task_sql)
+        self.assertIn("NULL AS last_failure_error", conn.task_sql)
+        self.assertIn("NULL AS block_reason", conn.task_sql)
 
 
 class CopilotSentinelTests(unittest.TestCase):

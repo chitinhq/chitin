@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import importlib.machinery
 import importlib.util
 import tempfile
@@ -154,6 +155,38 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "failed")
         self.assertEqual(summary["exit_reason"], "session-error")
+
+    def test_detect_event_chain_returns_latest_hash(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_file = home / "events-old.jsonl"
+            old_file.write_text(json.dumps({"this_hash": "old-hash"}) + "\n")
+            before = module.snapshot_event_files(str(home))
+
+            new_file = home / "events-new.jsonl"
+            new_file.write_text(
+                json.dumps({"this_hash": "first"}) + "\n" +
+                json.dumps({"this_hash": "final-hash"}) + "\n"
+            )
+
+            chain_file, chain_hash = module.detect_event_chain(str(home), before)
+
+        self.assertEqual(chain_file, str(new_file))
+        self.assertEqual(chain_hash, "final-hash")
+
+    def test_detect_event_chain_empty_file_boundary(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            before = module.snapshot_event_files(str(home))
+            empty = home / "events-empty.jsonl"
+            empty.write_text("")
+
+            chain_file, chain_hash = module.detect_event_chain(str(home), before)
+
+        self.assertEqual(chain_file, str(empty))
+        self.assertIsNone(chain_hash)
 
 
 if __name__ == "__main__":

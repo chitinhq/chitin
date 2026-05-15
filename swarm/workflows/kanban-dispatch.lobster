@@ -148,6 +148,7 @@ steps:
         --ticket-id ${ticket_id} \
         --driver $pick_driver.json.driver \
         --model $pick_driver.json.model \
+        --shape-bucket $pick_driver.json.shape_bucket \
         --selection-mode $pick_driver.json.selection_mode)
       hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
@@ -415,12 +416,13 @@ steps:
         WORKER_RESULT=$(cat "$RESULT_FILE")
         WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
         WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
+        WORKER_EVENT_CHAIN_HASH=$(echo "$WORKER_RESULT" | jq -r '.event_chain_hash // ""')
 
         case "$WORKER_STATUS" in
           timeout)
             MSG="🦞 ${ticket_id}: worker session timed out after 1 hour. No changes committed."
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "worker timeout" --author clawta 2>/dev/null || true
+            kanban-flow crash ${ticket_id} "worker timeout" --author clawta --run-status timed_out --outcome timed_out --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
@@ -433,8 +435,12 @@ steps:
             BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
             [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker exited with no commits. ${WORKER_ERROR:-(no error detail)}"
             [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker exited with no commits; ${WORKER_ERROR:-see dispatch log}"
+            python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+              --ticket-id ${ticket_id} \
+              --outcome failure \
+              --failure-kind empty_branch >/dev/null 2>&1 || true
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
+            kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
@@ -445,7 +451,7 @@ steps:
             [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker session failed. ${WORKER_ERROR:-(no error detail)}"
             [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker session failed; ${WORKER_ERROR:-see dispatch log}"
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
+            kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
             ;;
@@ -455,7 +461,7 @@ steps:
           *)
             MSG="🦞 ${ticket_id}: worker returned unknown status: $WORKER_STATUS"
             hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-            kanban-flow block ${ticket_id} "unknown worker status" --author clawta 2>/dev/null || true
+            kanban-flow crash ${ticket_id} "unknown worker status" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             exit 0
             ;;
         esac
@@ -470,14 +476,14 @@ steps:
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block the ticket so it isn't silently lost.
-        kanban-flow block ${ticket_id} "worker completed but produced no worktree" --author clawta 2>/dev/null || true
+        kanban-flow crash ${ticket_id} "worker completed but produced no worktree" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
       if ! cd "$WORKTREE"; then
         MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
-        kanban-flow block ${ticket_id} "worker worktree could not be entered" --author clawta 2>/dev/null || true
+        kanban-flow crash ${ticket_id} "worker worktree could not be entered" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
@@ -486,7 +492,7 @@ steps:
         MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
         hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block, don't leave in_progress with no PR.
-        kanban-flow block ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta 2>/dev/null || true
+        kanban-flow crash ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
@@ -528,16 +534,24 @@ steps:
         BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
         [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: branch $BRANCH pushed, but gh pr create failed. Manual PR open needed. stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
         [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="branch $BRANCH pushed but gh pr create failed: stdout=${GH_PR_STDOUT:-unknown} stderr=${GH_PR_STDERR:-unknown} exit_code=${GH_PR_EXIT:-unknown}"
-        # Slice D: PR failed — block so it gets human attention.
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome failure \
+          --failure-kind gh_pr_create_fail >/dev/null 2>&1 || true
+        # Slice D: PR failed — surface the detail (#650) and finalize the
+        # task_run via `crash` so the run ledger keeps the chain link (#646).
         printf '%s\n' "$BLOCK_REASON"
         printf '%s\n' "$MSG"
-        kanban-flow block ${ticket_id} "$BLOCK_REASON" --author clawta 2>/dev/null || true
+        kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       else
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome success >/dev/null 2>&1 || true
         MSG="🦞 ${ticket_id}: PR opened; ticket remains in_progress for review/merge. Branch: $BRANCH. PR: $PR_URL"
         # PR opened — record the URL on the ticket. Ticket stays in
         # in_progress (Hermes UI has no code_review column; the PR's
         # GitHub state is the review-phase truth).
-        kanban-flow pr ${ticket_id} "$PR_URL" --author clawta 2>/dev/null || true
+        kanban-flow pr ${ticket_id} "$PR_URL" --author clawta --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       fi
       hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
       # Broadcast to Clawta's default channel (operator-facing log).

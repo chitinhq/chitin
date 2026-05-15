@@ -39,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 
 TRANSCRIPT_TAIL_LINES = 40
@@ -128,7 +129,58 @@ def commits_ahead_of_base(cwd: str) -> int:
     return int(fallback.stdout.strip() or "0")
 
 
-def summarize_completed_run(config: dict, returncode: int, stdout: str, stderr: str, cwd: str) -> dict:
+def snapshot_event_files(chitin_home: str) -> dict[str, int]:
+    root = Path(chitin_home).expanduser()
+    if not root.is_dir():
+        return {}
+    snapshot: dict[str, int] = {}
+    for path in root.glob("*events-*.jsonl"):
+        try:
+            snapshot[str(path)] = path.stat().st_mtime_ns
+        except OSError:
+            continue
+    return snapshot
+
+
+def detect_event_chain(
+    chitin_home: str, before: dict[str, int]
+) -> tuple[str | None, str | None]:
+    after = snapshot_event_files(chitin_home)
+    changed: list[tuple[str, int]] = []
+    for path, mtime in after.items():
+        if path not in before or mtime > before[path]:
+            changed.append((path, mtime))
+    if not changed:
+        return None, None
+
+    chain_file = max(changed, key=lambda item: item[1])[0]
+    last_hash: str | None = None
+    try:
+        for raw in Path(chain_file).read_text().splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            this_hash = payload.get("this_hash")
+            if this_hash:
+                last_hash = str(this_hash)
+    except OSError:
+        return chain_file, None
+    return chain_file, last_hash
+
+
+def summarize_completed_run(
+    config: dict,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    cwd: str,
+    event_chain_file: str | None = None,
+    event_chain_hash: str | None = None,
+) -> dict:
     transcript_tail = build_transcript_tail(stdout, stderr)
     commit_count_ahead = commits_ahead_of_base(cwd)
     driver = config.get("driver", "unknown")
@@ -145,6 +197,8 @@ def summarize_completed_run(config: dict, returncode: int, stdout: str, stderr: 
             "commit_count_ahead": commit_count_ahead,
             "driver": driver,
             "model": model,
+            "event_chain_file": event_chain_file,
+            "event_chain_hash": event_chain_hash,
         }
 
     status = "completed" if returncode == 0 else "failed"
@@ -159,6 +213,8 @@ def summarize_completed_run(config: dict, returncode: int, stdout: str, stderr: 
         "commit_count_ahead": commit_count_ahead,
         "driver": driver,
         "model": model,
+        "event_chain_file": event_chain_file,
+        "event_chain_hash": event_chain_hash,
     }
 
 def main():
@@ -185,6 +241,7 @@ def main():
         # Prepare environment
         env = os.environ.copy()
         env.update(env_vars)
+        chitin_home = env.get("CHITIN_HOME", os.path.join(os.path.expanduser("~"), ".chitin"))
 
         # Prepare working directory
         cwd = worktree if worktree else os.getcwd()
@@ -201,6 +258,7 @@ def main():
         # Spawn worker process. Driver-specific prompt handling keeps
         # large ticket bodies off argv where possible.
         full_cmd, stdin_text = prepare_worker_command(config)
+        event_files_before = snapshot_event_files(chitin_home)
         try:
             result = subprocess.run(
                 full_cmd,
@@ -211,8 +269,17 @@ def main():
                 input=stdin_text,
                 timeout=3600  # 1 hour timeout, same as before
             )
+            event_chain_file, event_chain_hash = detect_event_chain(chitin_home, event_files_before)
 
-            output = summarize_completed_run(config, result.returncode, result.stdout, result.stderr, cwd)
+            output = summarize_completed_run(
+                config,
+                result.returncode,
+                result.stdout,
+                result.stderr,
+                cwd,
+                event_chain_file=event_chain_file,
+                event_chain_hash=event_chain_hash,
+            )
             if output["status"] == "completed_no_commit":
                 print(
                     json.dumps(
@@ -230,6 +297,12 @@ def main():
             return 0
 
         except subprocess.TimeoutExpired:
+            # A timed-out worker may still have written Chitin events before
+            # it was killed — detect the chain so the run ledger keeps the
+            # link instead of recording a null hash.
+            timeout_chain_file, timeout_chain_hash = detect_event_chain(
+                chitin_home, event_files_before
+            )
             print(json.dumps({
                 "status": "timeout",
                 "returncode": -1,
@@ -241,6 +314,8 @@ def main():
                 "commit_count_ahead": 0,
                 "driver": driver,
                 "model": config.get("model", ""),
+                "event_chain_file": timeout_chain_file,
+                "event_chain_hash": timeout_chain_hash,
             }))
             return 1
 
@@ -256,6 +331,8 @@ def main():
                 "commit_count_ahead": 0,
                 "driver": driver,
                 "model": config.get("model", ""),
+                "event_chain_file": None,
+                "event_chain_hash": None,
             }))
             return 1
 
@@ -271,6 +348,8 @@ def main():
             "commit_count_ahead": 0,
             "driver": "unknown",
             "model": "",
+            "event_chain_file": None,
+            "event_chain_hash": None,
         }), file=sys.stderr)
         return 1
 

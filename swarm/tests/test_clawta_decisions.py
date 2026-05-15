@@ -31,6 +31,8 @@ class ClawtaDecisionsTests(unittest.TestCase):
                     "gemini",
                     "--model",
                     "gemini-2.5-flash",
+                    "--shape-bucket",
+                    "medium|python+review",
                     "--selection-mode",
                     "exploration",
                     "--no-chain",
@@ -46,7 +48,7 @@ class ClawtaDecisionsTests(unittest.TestCase):
             with sqlite3.connect(db) as conn:
                 row = conn.execute(
                     """
-                    SELECT driver, model, selection_mode, reasoning
+                    SELECT driver, model, shape_bucket, selection_mode, reasoning, outcome
                     FROM clawta_decisions
                     ORDER BY id DESC
                     LIMIT 1
@@ -57,10 +59,32 @@ class ClawtaDecisionsTests(unittest.TestCase):
                 (
                     "gemini",
                     "gemini-2.5-flash",
+                    "medium|python+review",
                     "exploration",
                     "Controlled exploration picked Gemini Flash.",
+                    "pending",
                 ),
             )
+
+            outcome = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "mark-outcome",
+                    "--db",
+                    str(db),
+                    "--ticket-id",
+                    "t_77433314",
+                    "--outcome",
+                    "failure",
+                    "--failure-kind",
+                    "ci_fail",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(outcome.returncode, 0, msg=outcome.stderr)
 
             latest = subprocess.run(
                 [
@@ -79,7 +103,10 @@ class ClawtaDecisionsTests(unittest.TestCase):
             )
             self.assertEqual(latest.returncode, 0, msg=latest.stderr)
             payload = json.loads(latest.stdout)
+            self.assertEqual(payload["shape_bucket"], "medium|python+review")
             self.assertEqual(payload["selection_mode"], "exploration")
+            self.assertEqual(payload["outcome"], "failure")
+            self.assertEqual(payload["failure_kind"], "ci_fail")
 
 
 if __name__ == "__main__":
