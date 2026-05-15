@@ -51,6 +51,10 @@ func TestInstall_FreshSettings_AddsGovernanceHook(t *testing.T) {
 	if !ok || len(pre) != 1 {
 		t.Fatalf("PreToolUse: %+v", hooks["PreToolUse"])
 	}
+	post, ok := hooks["PostToolUse"].([]any)
+	if !ok || len(post) != 1 {
+		t.Fatalf("PostToolUse: %+v", hooks["PostToolUse"])
+	}
 	entry := pre[0].(map[string]any)
 	if entry["_tag"] != chitinTag {
 		t.Fatalf("_tag=%v want %s", entry["_tag"], chitinTag)

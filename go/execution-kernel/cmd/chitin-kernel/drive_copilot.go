@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -49,16 +50,14 @@ func cmdDriveCopilot(args []string) int {
 		return 0
 	}
 
-	var prompt string
-	if fs.NArg() > 0 {
-		prompt = strings.Join(fs.Args(), " ")
-	} else if !*interactive {
-		fmt.Fprintln(os.Stderr, "error: prompt required unless --interactive")
+	prompt, err := resolveCopilotPrompt(fs.Args(), *interactive, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
 
 	ctx := context.Background()
-	err := copilot.Run(ctx, prompt, copilot.RunOpts{
+	err = copilot.Run(ctx, prompt, copilot.RunOpts{
 		Cwd:         *cwd,
 		Interactive: *interactive,
 		Verbose:     *verbose,
@@ -69,4 +68,31 @@ func cmdDriveCopilot(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func resolveCopilotPrompt(args []string, interactive bool, stdin io.Reader) (string, error) {
+	if len(args) > 0 {
+		return strings.Join(args, " "), nil
+	}
+	if interactive {
+		return "", nil
+	}
+
+	// If stdin is an interactive terminal (not a pipe or file), no prompt is
+	// coming — return the usage error immediately instead of blocking on
+	// ReadAll waiting for an EOF the operator has no way to send.
+	if f, ok := stdin.(*os.File); ok {
+		if stat, statErr := f.Stat(); statErr == nil && stat.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("prompt required unless --interactive")
+		}
+	}
+
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return "", fmt.Errorf("prompt required unless --interactive")
+	}
+	return string(data), nil
 }

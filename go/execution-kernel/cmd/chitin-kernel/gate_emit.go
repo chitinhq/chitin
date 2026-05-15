@@ -31,8 +31,9 @@ type decisionEmitter struct {
 	// gate-evaluate CLI path (openclaw acpx, operator dry-run): a fresh
 	// per-call UUID — chain length 1, no parent. Both render as valid
 	// OTEL spans via F4's existing parent-rule branches.
-	chainIDFn func() string
-	surface   string
+	chainIDFn   func() string
+	surface     string
+	lastEventID string
 }
 
 // newDecisionEmitter constructs the emit + index pair for a gate-evaluate
@@ -77,7 +78,8 @@ func (e *decisionEmitter) emitDecision(d *gov.Decision) {
 		log.Printf("decision-emit: skipped (no chain_id available)")
 		return
 	}
-	ev := buildDecisionEvent(d, chainID, e.surface)
+	ev, eventID := buildDecisionEvent(d, chainID, e.surface)
+	e.lastEventID = eventID
 	if err := e.em.Emit(ev); err != nil {
 		log.Printf("decision-emit: %v", err)
 	}
@@ -95,10 +97,14 @@ func (e *decisionEmitter) emitDecision(d *gov.Decision) {
 // is correct-modulo-the-bug-that-caused-Ts-to-be-empty. Without this,
 // the event lands on the chain with ts="" and silently drops at OTEL
 // projection time.
-func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
+func buildDecisionEvent(d *gov.Decision, chainID, surface string) (*event.Event, string) {
 	ts := d.Ts
 	if ts == "" {
 		ts = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	eventID, err := gov.NewULID()
+	if err != nil {
+		eventID = newChainID()
 	}
 	// decisionStr is the OUTCOME (allow/deny/guide), not the policy mode.
 	// Closes #77 audit: `Allowed && Mode=guide` IS reachable (every allow
@@ -127,6 +133,7 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 		decisionStr = "deny"
 	}
 	payload := map[string]any{
+		"event_id":    eventID,
 		"decision":    decisionStr,
 		"rule_id":     d.RuleID,
 		"action_type": string(d.Action.Type),
@@ -165,7 +172,7 @@ func buildDecisionEvent(d *gov.Decision, chainID, surface string) *event.Event {
 		Ts:               ts,
 		Labels:           identityLabels(d),
 		Payload:          payloadJSON,
-	}
+	}, eventID
 }
 
 func addIdentityPayload(payload map[string]any, d *gov.Decision) {

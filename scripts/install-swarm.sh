@@ -7,6 +7,8 @@
 #   - swarm/workflows/*.py             — _pick_driver, clawta_decisions, etc.
 #   - swarm/workflows/*.md             — design notes that live next to code
 #   - swarm/data/agent-cards/*.json    — worker capability + invocation cards
+#   - swarm/roles/<role>/SKILL.md      — worker role prompts (kanban-dispatch
+#                                        reads ~/.openclaw/roles/<role>/SKILL.md)
 #
 # This script copies them to ~/.openclaw/ so the deployed runtime matches
 # the repo. Drift between repo and deployed is caught by
@@ -31,10 +33,12 @@ CARDS_SRC="$REPO_ROOT/swarm/data/agent-cards"
 CARDS_DST="$DEPLOYED_ROOT/data/agent-cards"
 BIN_SRC="$REPO_ROOT/swarm/bin"
 BIN_DST="$DEPLOYED_ROOT/bin"
+ROLES_SRC="$REPO_ROOT/swarm/roles"
+ROLES_DST="$DEPLOYED_ROOT/roles"
 BOARD_ROOT="$HOME/.hermes/kanban/boards/chitin"
 BOARD_CONFIG="$BOARD_ROOT/config.json"
 
-mkdir -p "$WORKFLOWS_DST" "$CARDS_DST" "$BIN_DST"
+mkdir -p "$WORKFLOWS_DST" "$CARDS_DST" "$BIN_DST" "$ROLES_DST"
 
 copied=0
 backed_up=0
@@ -89,12 +93,29 @@ find "$BIN_SRC" -maxdepth 1 -type f -name 'clawta-*' \
     chmod +x "$dst" 2>/dev/null || true
 done
 
+# Worker role prompts. kanban-dispatch.lobster reads
+# ~/.openclaw/roles/<role>/SKILL.md at spawn time; without this step a
+# newly-added role (e.g. sentinel) silently falls back to the default
+# role prefix. Recurses so each <role>/ subdir is preserved.
+echo "Installing swarm role prompts into $ROLES_DST"
+find "$ROLES_SRC" -type f \( -name '*.md' \) \
+    ! -name '*.bak*' \
+    ! -name '.*' \
+    -print 2>/dev/null \
+| while IFS= read -r src; do
+    rel="${src#"$ROLES_SRC"/}"
+    dst="$ROLES_DST/$rel"
+    mkdir -p "$(dirname "$dst")"
+    install_file "$src" "$dst"
+done
+
 # `find ... | while read` runs in a subshell, so $copied/$backed_up don't
 # survive. Recount the destination tree against the source as a final
 # summary.
 src_count=$(find "$WORKFLOWS_SRC" "$CARDS_SRC" "$BIN_SRC" -maxdepth 1 -type f \
     \( -name '*.lobster' -o -name '*.py' -o -name '*.md' -o -name '*.json' -o -name 'clawta-*' \) \
     ! -name '*.bak*' 2>/dev/null | wc -l)
+src_count=$((src_count + $(find "$ROLES_SRC" -type f -name '*.md' ! -name '*.bak*' 2>/dev/null | wc -l)))
 
 echo
 echo "install-swarm: ${src_count} canonical file(s) under swarm/ are now installed at $DEPLOYED_ROOT"

@@ -14,6 +14,8 @@ ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
 BASE_ELO = 1500.0
 BASE_K = 32.0
 K_DECAY_AT_N = 50  # keep in sync with swarm/workflows/_swarm_elo.py
+TERMINAL_LANES = {"codex", "copilot", "gemini", "claude-code"}
+ROUTING_LANE = "clawta"
 
 REPORT_CARDS = [
     {
@@ -139,6 +141,56 @@ def pill(text, tone=""):
     cls = f"pill {tone}".strip()
     return f"<span class='{cls}'>{html.escape(text)}</span>"
 
+def active_dispatch_tickets():
+    """Return unique ticket ids currently owned by dispatch roots/workers.
+
+    Counts both early lobster workflow roots and long-lived `clawta dispatch
+    ticket ...` roots. Child vendor CLIs are intentionally ignored so one
+    worker is counted once.
+    """
+    # NOTE: raw string — the sed backreference \1 must reach sed intact. A
+    # plain "" string turns \1 into the octal escape \x01, which silently
+    # breaks ticket extraction (every row gets filtered out below).
+    # The [[:space:]]* after the colon tolerates spaced --args-json JSON.
+    code, out = sh(r"""{ (pgrep -af 'lobster run --mode tool --file /home/red/.openclaw/workflows/kanban-dispatch.lobster' 2>/dev/null || true) | grep -oE '"ticket_id":[[:space:]]*"t_[0-9a-f]+"' | sed -E 's/.*"(t_[0-9a-f]+)".*/\1/' || true; (pgrep -af '/home/red/.local/bin/clawta dispatch ticket t_[0-9a-f]+ to ' 2>/dev/null || true) | grep -oE 'dispatch ticket t_[0-9a-f]+' | awk '{print $3}' || true; } | sed '/^$/d' | sort -u""", 20)
+    if code != 0:
+        return []
+    tickets = [line.strip() for line in out.splitlines() if re.match(r'^t_[0-9a-f]+$', line.strip())]
+    return sorted(set(tickets))
+
+def runtime_lane_cards():
+    root = os.path.expanduser("~/.openclaw/data/agent-cards")
+    lanes = {}
+    for lane in sorted(TERMINAL_LANES):
+        path = os.path.join(root, f"{lane}.json")
+        if os.path.exists(path):
+            try:
+                data = json.load(open(path))
+            except Exception:
+                data = {}
+            lanes[lane] = {"active": True, "models": [m.get("id", "?") for m in data.get("models", [])]}
+        else:
+            lanes[lane] = {"active": False, "models": []}
+    return lanes
+
+def projection_scenarios(queue_depth, active_count, max_active=1):
+    remaining = max(queue_depth, 0)
+    capacity = max(max_active, 1)
+    # Workers already mid-flight occupy a lane for the first wave before the
+    # queue can use it, so they flow through the same `capacity` lanes as
+    # queued work. With active_count=0 this reduces to ceil(remaining/cap).
+    in_flight = max(active_count, 0)
+    waves = (remaining + in_flight + capacity - 1) // capacity
+    scenarios = []
+    for label, minutes in [("fast", 45), ("expected", 90), ("slow/sticky", 180)]:
+        total_minutes = waves * minutes
+        scenarios.append({
+            "label": label,
+            "worker_minutes": minutes,
+            "eta_seconds": total_minutes * 60,
+        })
+    return scenarios
+
 def board_conn():
     conn = sqlite3.connect(BOARD_DB)
     conn.row_factory = sqlite3.Row
@@ -175,10 +227,47 @@ def pr_check_summary(pr):
         tone, label = "good", "clean"
     return {"failing": failing, "pending": pending, "success": success, "tone": tone, "label": label}
 
+def lifecycle_snapshot():
+    code, raw = sh("cd /home/red/workspace/chitin && ./swarm/bin/clawta-pr-lifecycle --auto-merge --escalate-to red", 240)
+    if code != 0:
+        return {"items": [], "error": raw[:1000]}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"items": [], "error": raw[:1000]}
+
+def merge_blockers(item):
+    blockers = []
+    if item.get("state") != "OPEN":
+        return ["not open"]
+    if item.get("ticket") is None:
+        blockers.append("unmapped ticket")
+    elif item.get("ticket_status") != "in_progress":
+        blockers.append(f"ticket {item.get('ticket_status') or 'unknown'}")
+    if item.get("mergeable") not in ("MERGEABLE", "CLEAN"):
+        blockers.append(f"merge {item.get('mergeable') or 'unknown'}")
+    if item.get("checks") != "pass":
+        blockers.append(f"checks {item.get('checks') or 'unknown'}")
+    review = item.get("review") or "none"
+    if review != "APPROVE":
+        blockers.append(f"review {review}")
+    if not item.get("review_current_head"):
+        blockers.append("review not current-head")
+    if not blockers and not item.get("auto_merge_ready"):
+        blockers.append(item.get("action") or "not lifecycle-ready")
+    return blockers or ["ready"]
+
 def load_board_state():
     conn = board_conn()
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    retry_cols = []
+    retry_cols.append("consecutive_failures" if "consecutive_failures" in cols else "0 AS consecutive_failures")
+    retry_cols.append("last_failure_error" if "last_failure_error" in cols else "NULL AS last_failure_error")
+    retry_cols.append("block_reason" if "block_reason" in cols else "NULL AS block_reason")
     tasks = [dict(row) for row in conn.execute(
-        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id FROM tasks"
+        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id, "
+        + ", ".join(retry_cols)
+        + " FROM tasks"
     )]
     comments = [dict(row) for row in conn.execute(
         "SELECT task_id, author, body, created_at FROM task_comments ORDER BY created_at"
@@ -191,6 +280,38 @@ def load_board_state():
     )]
     conn.close()
     return tasks, comments, events, runs
+
+def lifecycle_orphans():
+    conn = board_conn()
+    conn.row_factory = sqlite3.Row
+    done_without_runs = [dict(row) for row in conn.execute(
+        """
+        SELECT t.id, t.title, t.assignee, t.completed_at
+          FROM tasks t
+         WHERE t.status = 'done'
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM task_runs r
+                  WHERE r.task_id = t.id
+               )
+         ORDER BY t.completed_at DESC, t.id DESC
+        """
+    )]
+    runs_without_ticket = [dict(row) for row in conn.execute(
+        """
+        SELECT r.id, r.task_id, r.status, r.started_at, r.ended_at, r.outcome, r.summary
+          FROM task_runs r
+          LEFT JOIN tasks t
+            ON t.id = r.task_id
+         WHERE t.id IS NULL
+         ORDER BY r.started_at DESC, r.id DESC
+        """
+    )]
+    conn.close()
+    return {
+        "done_without_runs": done_without_runs,
+        "runs_without_ticket": runs_without_ticket,
+    }
 
 def complexity_map_from_comments(comments):
     result = {}
@@ -225,6 +346,84 @@ def compute_complexity_elo(scores, complexity_map):
             "last_scored_at": max(group, key=lambda r: r["scored_at"])["scored_at"],
         })
     return sorted(rows, key=lambda r: (r["elo_score"], r["dispatches_count"]), reverse=True)
+
+BLOCK_REASON_META = {
+    "needs-fix": {"owner": "clawta", "tone": "warn", "action": "Clawta re-dispatches/fixes once with review context"},
+    "needs-rebase": {"owner": "clawta", "tone": "warn", "action": "Clawta rebases and reruns lifecycle"},
+    "no-pr": {"owner": "hermes", "tone": "warn", "action": "Hermes/board engine opens or repairs PR creation"},
+    "retry-exhausted": {"owner": "hermes", "tone": "bad", "action": "Hermes diagnoses after retry budget exhaustion"},
+    "explicit-failure": {"owner": "hermes", "tone": "bad", "action": "Hermes diagnoses traceback/failing worker context"},
+    "silent-death": {"owner": "clawta", "tone": "warn", "action": "Watchdog retries up to budget, then escalates"},
+    "ci-fail": {"owner": "clawta", "tone": "bad", "action": "Clawta dispatches CI-fix worker once"},
+    "pr-rejected": {"owner": "hermes", "tone": "bad", "action": "Hermes reviews rejection and decides retry/spec change"},
+    "deploy-drift": {"owner": "clawta", "tone": "warn", "action": "Clawta restores deployed/repo sync or clean branch"},
+    "operator-decision": {"owner": "red", "tone": "bad", "action": "Red/operator decision required"},
+    "dep-gate": {"owner": "hermes", "tone": "warn", "action": "Auto-unblock when dependency clears"},
+    "poller-oscillation": {"owner": "hermes", "tone": "bad", "action": "Hermes stabilizes queue/poller state"},
+}
+
+
+def block_reason_meta(reason):
+    reason = (reason or "").strip()
+    if not reason:
+        return {"owner": "unknown", "tone": "", "action": "no structured block reason recorded"}
+    return BLOCK_REASON_META.get(reason, {"owner": "unknown", "tone": "warn", "action": "unrecognized block_reason; inspect Hermes vocabulary"})
+
+
+def classify_stuck_ticket(task, *, pr=None, active=False, stale_note=""):
+    """Turn a vague stuck row into an operator/controller action bucket."""
+    assignee = task.get("assignee") or ""
+    failures = int(task.get("consecutive_failures") or 0)
+    block_reason = (task.get("block_reason") or "").strip()
+    if block_reason:
+        meta = block_reason_meta(block_reason)
+        return {
+            "bucket": f"block:{block_reason}",
+            "tone": meta["tone"],
+            "action": meta["action"],
+        }
+    if pr:
+        return {
+            "bucket": "has-pr",
+            "tone": "good",
+            "action": "PR lifecycle owns this; review/fix/rebase/merge from the PR queue",
+        }
+    if assignee == "red":
+        return {
+            "bucket": "operator-owned",
+            "tone": "warn",
+            "action": "waiting on red/operator decision",
+        }
+    if active:
+        return {
+            "bucket": "active-worker",
+            "tone": "good",
+            "action": "worker still running; monitor heartbeat/logs",
+        }
+    if failures >= 2:
+        return {
+            "bucket": "retry-exhausting",
+            "tone": "bad",
+            "action": "near/exhausted watchdog retries; escalate or re-spec",
+        }
+    if stale_note:
+        return {
+            "bucket": "watchdog-flagged",
+            "tone": "bad",
+            "action": "watchdog already flagged it; inspect comment and repair/retry",
+        }
+    if assignee in TERMINAL_LANES or assignee == ROUTING_LANE:
+        return {
+            "bucket": "retryable-silent",
+            "tone": "warn",
+            "action": "no PR/worker seen; eligible for watchdog retry",
+        }
+    return {
+        "bucket": "idle-unknown",
+        "tone": "warn",
+        "action": "needs classification; inspect board events and logs",
+    }
+
 
 def load_swarm_health():
     tasks, comments, events, runs = load_board_state()
@@ -290,6 +489,8 @@ def load_swarm_health():
     runs_by_task = defaultdict(list)
     for run in runs:
         runs_by_task[run["task_id"]].append(run)
+    active_tickets = active_dispatch_tickets()
+    active_ticket_set = set(active_tickets)
     for task in tasks:
         if task["status"] != "in_progress":
             continue
@@ -306,6 +507,14 @@ def load_swarm_health():
         ]
         if idle_seconds < 5400 and not stale_markers:
             continue
+        stale_note = stale_markers[-1]["body"] if stale_markers else ""
+        pr = pr_by_ticket.get(task["id"])
+        classification = classify_stuck_ticket(
+            task,
+            pr=pr,
+            active=task["id"] in active_ticket_set,
+            stale_note=stale_note,
+        )
         stuck.append({
             "id": task["id"],
             "title": task["title"],
@@ -313,20 +522,31 @@ def load_swarm_health():
             "started_at": task["started_at"] or task["created_at"],
             "idle_seconds": idle_seconds,
             "last_event_at": last_evt,
-            "stale_note": stale_markers[-1]["body"] if stale_markers else "",
-            "pr": pr_by_ticket.get(task["id"]),
+            "stale_note": stale_note,
+            "pr": pr,
+            "consecutive_failures": int(task.get("consecutive_failures") or 0),
+            "block_reason": task.get("block_reason") or "",
+            "bucket": classification["bucket"],
+            "bucket_tone": classification["tone"],
+            "next_action": classification["action"],
         })
     stuck.sort(key=lambda row: (bool(row["pr"]), row["idle_seconds"]), reverse=True)
 
     blocked_red = []
     for task in tasks:
         if task["status"] == "blocked" and (task["assignee"] or "") == "red":
+            reason = task.get("block_reason") or ""
+            meta = block_reason_meta(reason)
             blocked_red.append({
                 "id": task["id"],
                 "title": task["title"],
                 "priority": task["priority"] or 0,
                 "blocked_at": latest_event.get(task["id"], task["created_at"]),
                 "age_seconds": now - latest_event.get(task["id"], task["created_at"]),
+                "block_reason": reason,
+                "block_owner": meta["owner"],
+                "block_tone": meta["tone"],
+                "block_action": meta["action"],
             })
     blocked_red.sort(key=lambda row: (row["priority"], row["age_seconds"]), reverse=True)
 
@@ -353,14 +573,54 @@ def load_swarm_health():
     elo_rows = compute_complexity_elo(score_rows, complexity_map_from_comments(comments))
     elo_conn.close()
 
+    runtime_lanes = runtime_lane_cards()
+    enabled_lanes = {lane for lane, meta in runtime_lanes.items() if meta["active"]}
+    dispatchable = [
+        task for task in tasks
+        if task["status"] in ("ready", "todo")
+        and (task["assignee"] or "") in enabled_lanes.union({ROUTING_LANE})
+    ]
+    # Current OpenClaw cron is intentionally conservative; keep the report honest
+    # even if no env is available inside the static report runner.
+    max_active = int(os.environ.get("CLAWTA_MAX_ACTIVE_WORKERS", "1"))
+    projections = projection_scenarios(len(dispatchable), len(active_tickets), max_active=max_active)
+
+    lifecycle = lifecycle_snapshot()
+    merge_blocker_rows = []
+    for item in lifecycle.get("items", []):
+        if item.get("state") != "OPEN":
+            continue
+        blockers = merge_blockers(item)
+        merge_blocker_rows.append({
+            "pr": item.get("pr"),
+            "url": item.get("url"),
+            "ticket": item.get("ticket") or "—",
+            "ticket_status": item.get("ticket_status") or "—",
+            "checks": item.get("checks") or "unknown",
+            "review": item.get("review") or "none",
+            "mergeable": item.get("mergeable") or "unknown",
+            "action": item.get("action") or "wait",
+            "blockers": blockers,
+        })
+    merge_blocker_rows.sort(key=lambda row: (row["blockers"] == ["ready"], int(row["pr"] or 0)), reverse=True)
+
     return {
         "tasks": tasks,
         "dispatched_today": dispatched_today,
         "dispatch_attempts": dispatch_attempts,
         "stuck": stuck,
+        "stuck_buckets": dict(Counter(row["bucket"] for row in stuck)),
         "blocked_red": blocked_red,
+        "blocked_red_reasons": dict(Counter((row["block_reason"] or "unclassified") for row in blocked_red)),
         "pr_lifecycle": pr_lifecycle,
         "elo_rows": elo_rows,
+        "dispatchable_queue": dispatchable,
+        "active_dispatch_tickets": active_tickets,
+        "runtime_lanes": runtime_lanes,
+        "max_active_workers": max_active,
+        "projections": projections,
+        "merge_blockers": merge_blocker_rows,
+        "lifecycle_error": lifecycle.get("error", ""),
     }
 
 def parse_stats(txt):
@@ -430,6 +690,39 @@ def board_audit():
     _,url=save('board-audit', page('Board Audit', 'Leverage, duplicates, CI and blocked-work scan', body))
     print(f"🔍 Clawta board audit: {counts.get('blocked',0)} blocked, {len(dups)} possible duplicate pairs. {url}")
 
+def board_watchdog():
+    orphan_data = lifecycle_orphans()
+    done_without_runs = orphan_data["done_without_runs"]
+    runs_without_ticket = orphan_data["runs_without_ticket"]
+    total_orphans = len(done_without_runs) + len(runs_without_ticket)
+    tone = "good" if total_orphans == 0 else "bad"
+
+    done_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{html.escape(row['assignee'] or '(unassigned)')}</td><td>{fmt_ts(row['completed_at'])}</td></tr>"
+        for row in done_without_runs[:20]
+    ) or "<tr><td colspan='4'>No done tickets are missing task_runs rows.</td></tr>"
+
+    run_rows = ''.join(
+        f"<tr><td>{row['id']}</td><td class='mono'>{html.escape(row['task_id'])}</td><td>{html.escape(row['status'])}</td><td>{fmt_ts(row['started_at'])}</td><td>{fmt_ts(row['ended_at'])}</td><td>{html.escape(row['outcome'] or '—')}</td></tr>"
+        for row in runs_without_ticket[:20]
+    ) or "<tr><td colspan='6'>No orphaned task_runs rows were found.</td></tr>"
+
+    body = (
+        "<section class='hero'>"
+        "<div class='k'>Board Watchdog</div>"
+        f"<div class='v {tone}'>{total_orphans} orphaned lifecycle link(s)</div>"
+        "<p>Flags tickets in <span class='mono'>done</span> with no <span class='mono'>task_runs</span> row, and <span class='mono'>task_runs</span> rows whose ticket no longer exists.</p>"
+        "</section>"
+        "<section class='grid'>"
+        + f"<div class='card'><div class='k'>Done Without Runs</div><div class='v {'good' if not done_without_runs else 'bad'}'>{len(done_without_runs)}</div></div>"
+        + f"<div class='card'><div class='k'>Runs Without Ticket</div><div class='v {'good' if not runs_without_ticket else 'bad'}'>{len(runs_without_ticket)}</div></div>"
+        + "</section>"
+        + f"<div class='card'><div class='section-head'><h2>Done Tickets Missing task_runs</h2><span class='small muted'>terminal state without ledger bridge</span></div><table><tr><th>Ticket</th><th>Title</th><th>Assignee</th><th>Completed</th></tr>{done_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>task_runs Rows Missing Ticket</h2><span class='small muted'>run ledger without kanban owner</span></div><table><tr><th>Run</th><th>Task</th><th>Status</th><th>Started</th><th>Ended</th><th>Outcome</th></tr>{run_rows}</table></div>"
+    )
+    _, url = save('board-watchdog', page('Board Watchdog', 'Lifecycle orphan detection across kanban and run ledger', body))
+    print(f"🚨 Clawta board watchdog: {len(done_without_runs)} done tickets without runs, {len(runs_without_ticket)} orphaned runs. {url}")
+
 def industry():
     q='all:"multi-agent" OR all:"LLM routing" OR all:"AI safety governance"'
     url='http://export.arxiv.org/api/query?search_query='+urllib.parse.quote(q)+'&start=0&max_results=8&sortBy=submittedDate&sortOrder=descending'
@@ -461,9 +754,18 @@ def swarm_health():
     dispatched = data["dispatched_today"]
     dispatch_attempts = data["dispatch_attempts"]
     stuck = data["stuck"]
+    stuck_buckets = data.get("stuck_buckets", {})
     blocked_red = data["blocked_red"]
+    blocked_red_reasons = data.get("blocked_red_reasons", {})
     prs = data["pr_lifecycle"]
     elo_rows = data["elo_rows"][:12]
+    dispatchable_queue = data["dispatchable_queue"]
+    active_dispatch = data["active_dispatch_tickets"]
+    runtime_lanes = data["runtime_lanes"]
+    projections = data["projections"]
+    max_active_workers = data["max_active_workers"]
+    merge_blockers = data["merge_blockers"]
+    lifecycle_error = data.get("lifecycle_error", "")
 
     status_counts = Counter(task["status"] for task in tasks)
     pr_status = Counter(row["checks"]["label"] for row in prs)
@@ -476,7 +778,7 @@ def swarm_health():
     hero = (
         "<section class='hero'>"
         "<div class='section-head'><div><div class='k'>Swarm Dashboard</div><div class='v'>Autopilot health across board, PRs, and judged outcomes</div></div>"
-        f"<div class='inline-stats'><span>{len(dispatched)} unique tickets dispatched today</span><span>{len(dispatch_attempts)} dispatch attempts</span><span>{len(stuck)} stuck in-progress</span><span>{len(blocked_red)} blocked on red</span><span>{len(prs)} open PRs</span></div></div>"
+        f"<div class='inline-stats'><span>{len(dispatched)} unique tickets dispatched today</span><span>{len(dispatch_attempts)} dispatch attempts</span><span>{len(dispatchable_queue)} dispatchable queued</span><span>{len(active_dispatch)}/{max_active_workers} active workers</span><span>{len(stuck)} stuck in-progress</span><span>{len(blocked_red)} blocked on red</span><span>{len(prs)} open PRs</span></div></div>"
         f"{status_pills}"
         "<p class='small muted'>ELO is replayed locally from judged dispatch scores and joined with dispatch-time complexity comments from Hermes so the breakdown stays faithful to operator-local data.</p>"
         "</section>"
@@ -493,39 +795,79 @@ def swarm_health():
         note_html = f"<div class='small bad'>{html.escape(row['stale_note'][:240])}</div>" if row["stale_note"] else ""
         stuck_parts.append(
             f"<li><span class='mono'>{html.escape(row['id'])}</span> {html.escape(row['title'])}"
-            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · {pr_text}</div>"
+            f"<div>{pill(row['bucket'], row.get('bucket_tone',''))}</div>"
+            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · failures {row.get('consecutive_failures', 0)} · block_reason {html.escape(row.get('block_reason') or '—')} · {pr_text}</div>"
+            f"<div class='small'>{html.escape(row.get('next_action') or '')}</div>"
             f"{note_html}</li>"
         )
     stuck_items = ''.join(stuck_parts) or "<li>No currently-stuck in-progress tickets under the 90m+ / watchdog heuristic.</li>"
 
+    stuck_bucket_rows = ''.join(
+        f"<tr><td>{pill(bucket, 'bad' if bucket in {'retry-exhausting','watchdog-flagged'} else 'warn' if bucket not in {'has-pr','active-worker'} else 'good')}</td><td>{count}</td></tr>"
+        for bucket, count in sorted(stuck_buckets.items(), key=lambda item: (-item[1], item[0]))
+    ) or "<tr><td colspan='2'>No stuck buckets.</td></tr>"
+
+    blocked_reason_rows = ''.join(
+        f"<tr><td>{pill(reason, block_reason_meta(None if reason == 'unclassified' else reason)['tone'])}</td><td>{count}</td></tr>"
+        for reason, count in sorted(blocked_red_reasons.items(), key=lambda item: (-item[1], item[0]))
+    ) or "<tr><td colspan='2'>No blocked-red reasons.</td></tr>"
+
     blocked_rows = ''.join(
-        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td></tr>"
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{pill(row['block_reason'] or 'unclassified', row.get('block_tone',''))}</td><td>{html.escape(row.get('block_owner') or 'unknown')}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td><td>{html.escape(row.get('block_action') or '')}</td></tr>"
         for row in blocked_red[:12]
-    ) or "<tr><td colspan='5'>No blocked tickets currently assigned to red.</td></tr>"
+    ) or "<tr><td colspan='8'>No blocked tickets currently assigned to red.</td></tr>"
 
     pr_rows = ''.join(
         f"<tr><td>{'#'+str(row['number'])}</td><td class='mono'>{html.escape(row['ticket_id'])}</td><td>{html.escape(row['head'])}</td><td>{pill('draft', 'warn') if row['is_draft'] else pill(row['checks']['label'], row['checks']['tone'])}</td><td>{html.escape(row['merge_state'])}</td><td>{row['checks']['success']}/{row['checks']['success'] + row['checks']['pending'] + row['checks']['failing']}</td><td>{html.escape(row['title'])}</td></tr>"
         for row in prs[:14]
     ) or "<tr><td colspan='7'>No open PRs returned by GitHub.</td></tr>"
 
+    blocker_rows = ''.join(
+        f"<tr><td><a href='{html.escape(row['url'] or '#')}'>#{html.escape(str(row['pr']))}</a></td><td class='mono'>{html.escape(row['ticket'])}</td><td>{html.escape(row['ticket_status'])}</td><td>{pill(row['checks'], 'good' if row['checks']=='pass' else 'bad' if row['checks']=='fail' else 'warn')}</td><td>{pill(row['review'], 'good' if row['review']=='APPROVE' else 'bad' if row['review']=='REQUEST_CHANGES' else 'warn')}</td><td>{html.escape(row['mergeable'])}</td><td>{html.escape(', '.join(row['blockers']))}</td><td>{html.escape(row['action'])}</td></tr>"
+        for row in merge_blockers[:16]
+    ) or "<tr><td colspan='8'>No open lifecycle-managed PRs returned by Clawta lifecycle.</td></tr>"
+    if lifecycle_error:
+        blocker_rows += f"<tr><td colspan='8'><span class='bad'>Lifecycle snapshot failed:</span> {html.escape(lifecycle_error[:400])}</td></tr>"
+
     elo_table = ''.join(
         f"<tr><td>{html.escape(row['driver'])}</td><td>{html.escape(row['model'])}</td><td>{pill(row['complexity'], 'good' if row['complexity']=='low' else 'warn' if row['complexity']=='med' else 'bad' if row['complexity']=='high' else '')}</td><td>{row['elo_score']:.1f}</td><td>{row['dispatches_count']}</td><td>{row['avg_score']:.1f}</td><td class='mono'>{html.escape(row['last_ticket_id'])}</td></tr>"
         for row in elo_rows
     ) or "<tr><td colspan='7'>No judged dispatches in local ELO yet.</td></tr>"
 
+    projection_rows = ''.join(
+        f"<tr><td>{html.escape(row['label'])}</td><td>{row['worker_minutes']}m</td><td>{age_human(row['eta_seconds'])}</td></tr>"
+        for row in projections
+    )
+    lane_rows = ''.join(
+        f"<tr><td>{html.escape(lane)}</td><td>{pill('active', 'good') if meta['active'] else pill('disabled', 'bad')}</td><td>{html.escape(', '.join(meta['models']) or '—')}</td></tr>"
+        for lane, meta in sorted(runtime_lanes.items())
+    )
+    queue_rows = ''.join(
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['status'])}</td><td>{html.escape(row['assignee'] or '(unassigned)')}</td><td>{html.escape(row['title'])}</td></tr>"
+        for row in dispatchable_queue[:14]
+    ) or "<tr><td colspan='4'>No dispatchable ready/todo tickets for active lanes.</td></tr>"
+
     body = (
         hero
         + "<section class='grid'>"
+        + f"<div class='card'><div class='k'>Dispatchable Queue</div><div class='v'>{len(dispatchable_queue)}</div><div class='small muted'>ready/todo tickets assigned to Clawta or active terminal lanes</div></div>"
+        + f"<div class='card'><div class='k'>Active Workers</div><div class='v'>{len(active_dispatch)}/{max_active_workers}</div><div class='small muted'>{html.escape(', '.join(active_dispatch) or 'none')} currently counted by dispatch roots</div></div>"
         + f"<div class='card'><div class='k'>Dispatched Today</div><div class='v'>{len(dispatched)}</div><div class='small muted'>{len(dispatch_attempts)} transitions to <span class='mono'>in_progress</span> since local midnight</div></div>"
         + f"<div class='card'><div class='k'>Stuck Tickets</div><div class='v bad'>{len(stuck)}</div><div class='small muted'>idle for 90m+ or explicitly watchdog-flagged</div></div>"
         + f"<div class='card'><div class='k'>Blocked Red Queue</div><div class='v warn'>{len(blocked_red)}</div><div class='small muted'>blocked tickets assigned to red</div></div>"
         + f"<div class='card'><div class='k'>Open PR Lifecycle</div><div class='v'>{len(prs)}</div><div class='small muted'>{pr_status.get('failing', 0)} failing · {pr_status.get('pending', 0)} pending · {pr_status.get('clean', 0)} clean</div></div>"
         + "</section>"
         + "<section class='grid-2'>"
+        + f"<div class='card'><div class='section-head'><h2>Queue Projection</h2><span class='small muted'>current cap: {max_active_workers} active worker(s)</span></div><table><tr><th>Scenario</th><th>Avg worker runtime</th><th>Estimated drain time</th></tr>{projection_rows}</table><p class='small muted'>Projection counts dispatch/PR creation only; clean PR lifecycle normally adds check/review time.</p></div>"
+        + f"<div class='card'><div class='section-head'><h2>Lane Health</h2><span class='small muted'>runtime agent-card presence</span></div><table><tr><th>Lane</th><th>Status</th><th>Models</th></tr>{lane_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Dispatchable Queue</h2><span class='small muted'>first 14</span></div><table><tr><th>Ticket</th><th>Status</th><th>Assignee</th><th>Title</th></tr>{queue_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Dispatched Today</h2><a href='{BASE}/clawta-swarm-health-latest.html'>latest asset</a></div><table><tr><th>Ticket</th><th>Title</th><th>Lane</th><th>Dispatched</th><th>PR</th></tr>{dispatched_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Stuck Buckets</h2><span class='small muted'>Control Tower classification</span></div><table><tr><th>Bucket</th><th>Count</th></tr>{stuck_bucket_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Stuck Tickets</h2><span class='small muted'>watchdog + idle heuristic</span></div><ul class='list'>{stuck_items}</ul></div>"
         + "</section>"
-        + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Blocked At</th><th>Age</th></tr>{blocked_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Blocked Red Reasons</h2><span class='small muted'>Hermes block_reason contract</span></div><table><tr><th>Reason</th><th>Count</th></tr>{blocked_reason_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Reason</th><th>Owner</th><th>Blocked At</th><th>Age</th><th>Handler</th></tr>{blocked_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Why PRs Are Not Auto-Merging</h2><span class='small muted'>strict lifecycle gate blockers</span></div><table><tr><th>PR</th><th>Ticket</th><th>Ticket Status</th><th>Checks</th><th>Review</th><th>Merge</th><th>Blockers</th><th>Lifecycle Action</th></tr>{blocker_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Open PR Lifecycle</h2><span class='small muted'>GitHub state + check rollups</span></div><table><tr><th>PR</th><th>Ticket</th><th>Head</th><th>Checks</th><th>Merge</th><th>Pass</th><th>Title</th></tr>{pr_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Model-Aware ELO</h2><span class='small muted'>driver + model + complexity replayed from local score history</span></div><table><tr><th>Driver</th><th>Model</th><th>Complexity</th><th>ELO</th><th>Dispatches</th><th>Avg Score</th><th>Last Ticket</th></tr>{elo_table}</table></div>"
     )
@@ -533,13 +875,14 @@ def swarm_health():
     print(f"🧭 Clawta swarm health: {len(dispatched)} dispatched today, {len(stuck)} stuck, {len(blocked_red)} blocked on red. {url}")
 
 if __name__ == '__main__':
-    if len(sys.argv)<2 or sys.argv[1] not in {'swarm-health','chain-summary','standup','board-audit','industry-scan','doc-sync'}:
-        print('usage: clawta-report {swarm-health|chain-summary|standup|board-audit|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
+    if len(sys.argv)<2 or sys.argv[1] not in {'swarm-health','chain-summary','standup','board-audit','board-watchdog','industry-scan','doc-sync'}:
+        print('usage: clawta-report {swarm-health|chain-summary|standup|board-audit|board-watchdog|industry-scan|doc-sync}', file=sys.stderr); sys.exit(2)
     dispatch = {
         'swarm-health': swarm_health,
         'chain-summary': chain,
         'standup': standup,
         'board-audit': board_audit,
+        'board-watchdog': board_watchdog,
         'industry-scan': industry,
         'doc-sync': doc_sync,
     }

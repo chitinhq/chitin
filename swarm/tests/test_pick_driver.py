@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "_pick_driver.py"
+DECISIONS_SCRIPT = Path(__file__).resolve().parents[1] / "workflows" / "clawta_decisions.py"
 
 
 CARDS = {
@@ -74,6 +75,27 @@ class PickDriverTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             return json.loads(result.stdout)
+
+    def run_pick_driver_raw(self, raw_input: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp)
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "deterministic",
+                **env_overrides,
+            }
+            return subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=raw_input,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
 
     def test_exploration_can_be_disabled(self):
         result = self.run_pick_driver(
@@ -168,6 +190,219 @@ class PickDriverTests(unittest.TestCase):
         )
         self.assertEqual(allowed["driver"], "gemini")
         self.assertEqual(allowed["selection_mode"], "exploration")
+
+    def test_rejects_prefixed_stdout_noise_before_json(self):
+        result = self.run_pick_driver_raw(
+            '_pick_driver compatibility noise\n{"complexity":"low","capabilities":["python"]}',
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expecting value", result.stderr)
+
+    def test_empty_stdin_is_rejected(self):
+        # Boundary: empty input. Strict-JSON routing must fail fast, not
+        # parse an empty string into a half-formed classify dict.
+        for raw in ("", "   \n\t  "):
+            result = self.run_pick_driver_raw(raw, CLAWTA_EXPLORATION_PERCENT="0")
+            self.assertNotEqual(result.returncode, 0, msg=f"raw={raw!r}")
+            self.assertIn("classify produced no JSON object", result.stderr)
+
+    def test_error_boundary_malformed_json_is_rejected(self):
+        # Boundary: error. Malformed classify JSON must surface the parser
+        # failure instead of silently routing with partial input.
+        result = self.run_pick_driver_raw(
+            '{"complexity":"low","capabilities":["python"',
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expecting", result.stderr)
+
+    def test_max_size_classify_payload_still_routes(self):
+        # Boundary: max. A large-but-valid classify payload (many capability
+        # tokens + a long description) must still parse and route cleanly —
+        # strict JSON parsing has no length ceiling of its own.
+        classify = {
+            "complexity": "low",
+            "capabilities": ["python"],
+            "estimated_loc": 10**9,
+            "notes": "x" * 200_000,
+            "extra_tokens": [f"tok-{i}" for i in range(5_000)],
+        }
+        result = self.run_pick_driver(classify, CLAWTA_EXPLORATION_PERCENT="0")
+        self.assertEqual(result["driver"], "copilot")
+        self.assertEqual(result["selection_mode"], "exploitation")
+
+    def test_recent_same_shape_failures_demote_lane_for_fifth_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards_dir = Path(tmp) / "cards"
+            cards_dir.mkdir()
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            db = Path(tmp) / "clawta_decisions.db"
+            for idx in range(4):
+                ticket_id = f"t_fail{idx:04d}"
+                record = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "record",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--driver",
+                        "copilot",
+                        "--model",
+                        "gpt-4.1",
+                        "--shape-bucket",
+                        "low|python",
+                        "--no-chain",
+                    ],
+                    input="copilot selected for low python work",
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(record.returncode, 0, msg=record.stderr)
+                outcome = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "mark-outcome",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--outcome",
+                        "failure",
+                        "--failure-kind",
+                        "empty_branch",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(outcome.returncode, 0, msg=outcome.stderr)
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "deterministic",
+                "CLAWTA_EXPLORATION_PERCENT": "0",
+                "CLAWTA_DECISIONS_DB": str(db),
+                "CLAWTA_FAILURE_FILTER_THRESHOLD": "3",
+                "CLAWTA_FAILURE_FILTER_WINDOW_HOURS": "6",
+                "CLAWTA_FAILURE_FILTER_LOOKBACK_HOURS": "24",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            payload = json.loads(result.stdout)
+
+        self.assertEqual(payload["shape_bucket"], "low|python")
+        self.assertEqual(payload["driver"], "gemini")
+        self.assertIn("failure-aware demotion removed recent same-shape failures", payload["reasoning"])
+
+    def test_llm_router_rejects_demoted_same_shape_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cards_dir = root / "cards"
+            cards_dir.mkdir()
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            clawta = bin_dir / "clawta"
+            clawta.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' '{\"driver\":\"copilot\",\"model\":\"gpt-4.1\",\"reasoning\":\"prefer copilot\"}'\n",
+                encoding="utf-8",
+            )
+            clawta.chmod(0o755)
+
+            db = root / "clawta_decisions.db"
+            for idx in range(4):
+                ticket_id = f"t_llm_fail{idx:04d}"
+                record = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "record",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--driver",
+                        "copilot",
+                        "--model",
+                        "gpt-4.1",
+                        "--shape-bucket",
+                        "low|python",
+                        "--no-chain",
+                    ],
+                    input="copilot selected for low python work",
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(record.returncode, 0, msg=record.stderr)
+                outcome = subprocess.run(
+                    [
+                        "python3",
+                        str(DECISIONS_SCRIPT),
+                        "mark-outcome",
+                        "--db",
+                        str(db),
+                        "--ticket-id",
+                        ticket_id,
+                        "--outcome",
+                        "failure",
+                        "--failure-kind",
+                        "empty_branch",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(outcome.returncode, 0, msg=outcome.stderr)
+
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "ROUTER_MODE": "llm",
+                "CLAWTA_EXPLORATION_PERCENT": "0",
+                "CLAWTA_DECISIONS_DB": str(db),
+                "CLAWTA_FAILURE_FILTER_THRESHOLD": "3",
+                "CLAWTA_FAILURE_FILTER_WINDOW_HOURS": "6",
+                "CLAWTA_FAILURE_FILTER_LOOKBACK_HOURS": "24",
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            payload = json.loads(result.stdout)
+
+        self.assertEqual(payload["shape_bucket"], "low|python")
+        self.assertEqual(payload["driver"], "gemini")
+        self.assertEqual(payload["router_mode"], "deterministic")
+        self.assertIn("LLM chose unknown driver 'copilot'", payload["reasoning"])
+        self.assertIn("failure-aware demotion removed recent same-shape failures", payload["reasoning"])
 
 
 if __name__ == "__main__":

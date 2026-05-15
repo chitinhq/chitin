@@ -85,3 +85,16 @@ The installer registers these jobs:
 
 Each cron job is idempotent and responds with a closing `ok` token so OpenClaw
 records the run as successful.
+
+## Diagnostics
+
+For live worker/process inspection, prefer the narrow process view:
+
+```bash
+ps -o pid,ppid,stat,rss,etime,command -C codex -C gemini -C chitin-kernel -C lobster
+```
+
+This keeps diagnostics readable and avoids dumping long ticket or diff text by
+default. Worker launchers now pass large prompts through stdin where the driver
+supports it; if deeper inspection is needed, check the relevant log file rather
+than relying on full argv snapshots.

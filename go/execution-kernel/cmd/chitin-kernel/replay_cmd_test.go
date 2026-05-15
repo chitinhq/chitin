@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chitinhq/chitin/go/execution-kernel/internal/sidecar"
 )
 
 func TestCLI_ChainReplay_JSONAndText(t *testing.T) {
@@ -65,6 +67,41 @@ func TestCLI_ChainSessions_Recent(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "sess-new") {
 		t.Fatalf("expected most recent session in output, got %s", stdout)
+	}
+}
+
+func TestCLI_ChainBlobs(t *testing.T) {
+	home := t.TempDir()
+	store, err := sidecar.Open(filepath.Join(home, "sidecar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("evt-blob-1", "prompt", []byte(`{"prompt":"run tests"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("evt-blob-1", "tool_input", []byte(`{"command":"go test ./..."}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("evt-blob-1", "thinking", []byte(`"reasoning"`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "chain", "blobs", "--event-id=evt-blob-1")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("parse chain blobs: %v\n%s", err, stdout)
+	}
+	if got["event_id"] != "evt-blob-1" {
+		t.Fatalf("event_id=%v", got["event_id"])
+	}
+	if got["prompt"] == nil || got["tool_input"] == nil || got["thinking"] == nil {
+		t.Fatalf("missing blobs: %+v", got)
 	}
 }
 

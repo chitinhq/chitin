@@ -14,9 +14,15 @@ import os
 import sqlite3
 import sys
 from datetime import datetime
+from pathlib import Path
 
 TERMINAL_LANES = {"codex", "copilot", "claude-code", "gemini", "clawta"}
+
+# board_resolver lives under swarm/bin/, which is not on sys.path when this
+# script runs from the repo root. Add it explicitly, relative to this file.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "swarm" / "bin"))
 from board_resolver import resolve_db
+
 DB = str(resolve_db())
 
 

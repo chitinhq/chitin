@@ -36,8 +36,53 @@ describe('EnvelopeSchema', () => {
     expect(() => EnvelopeSchema.parse(tc)).not.toThrow();
   });
 
+  it('accepts non-UUID runtime identifiers from drivers and tests', () => {
+    const event = {
+      ...validEnvelope,
+      run_id: 'run-1',
+      session_id: 'sess-sidecar',
+      agent_instance_id: 'agent-1',
+      parent_agent_id: 'parent-agent-1',
+    };
+    expect(() => EnvelopeSchema.parse(event)).not.toThrow();
+  });
+
   it('rejects wrong schema_version', () => {
     expect(() => EnvelopeSchema.parse({ ...validEnvelope, schema_version: '1' })).toThrow();
+  });
+
+  it('boundary empty: rejects empty identifiers', () => {
+    for (const key of ['run_id', 'session_id', 'agent_instance_id', 'parent_agent_id'] as const) {
+      expect(() => EnvelopeSchema.parse({ ...validEnvelope, [key]: '' })).toThrow();
+    }
+  });
+
+  it('boundary max: accepts long non-empty runtime identifiers', () => {
+    const longID = `driver-${'x'.repeat(512)}`;
+    expect(() =>
+      EnvelopeSchema.parse({
+        ...validEnvelope,
+        run_id: longID,
+        session_id: longID,
+        agent_instance_id: longID,
+        parent_agent_id: longID,
+      }),
+    ).not.toThrow();
+  });
+
+  it('boundary error: rejects empty driver identity fields', () => {
+    expect(() =>
+      EnvelopeSchema.parse({
+        ...validEnvelope,
+        driver_identity: { ...validEnvelope.driver_identity, user: '' },
+      }),
+    ).toThrow();
+    expect(() =>
+      EnvelopeSchema.parse({
+        ...validEnvelope,
+        driver_identity: { ...validEnvelope.driver_identity, machine_id: '' },
+      }),
+    ).toThrow();
   });
 
   it('rejects invalid chain_type', () => {

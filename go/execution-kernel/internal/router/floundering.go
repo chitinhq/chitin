@@ -31,11 +31,15 @@ func ReadChainEvents(sessionID string) []ChainEvent {
 	if sessionID == "" {
 		return nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	base := os.Getenv("CHITIN_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		base = filepath.Join(home, ".chitin")
 	}
-	path := filepath.Join(home, ".chitin", fmt.Sprintf("events-%s.jsonl", sessionID))
+	path := filepath.Join(base, fmt.Sprintf("events-%s.jsonl", sessionID))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil

@@ -1,14 +1,19 @@
 {
   "name": "@chitin/cli",
   "version": "0.0.1",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./src/main.ts",
   "bin": {
-    "chitin": "./src/main.ts"
+    "chitin": "./bin/chitin.js"
   },
+  "files": [
+    "bin",
+    "src",
+    "vendor"
+  ],
   "scripts": {
-    "test": "vitest run tests"
+    "test": "vitest run 000-boundary-coverage.test.ts tests"
   },
   "nx": {
     "sourceRoot": "apps/cli/src",
@@ -23,7 +28,7 @@
       "test": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "pnpm exec vitest run apps/cli/tests",
+          "command": "pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
           "cwd": "{workspaceRoot}"
         }
       },
@@ -37,7 +42,7 @@
       "validate": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "pnpm exec tsc -b apps/cli/tsconfig.json && pnpm exec vitest run apps/cli/tests",
+          "command": "pnpm exec tsc -b apps/cli/tsconfig.json && pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
           "cwd": "{workspaceRoot}"
         },
         "dependsOn": [
@@ -47,9 +52,12 @@
     }
   },
   "dependencies": {
-    "@chitin/contracts": "workspace:*",
-    "@chitin/telemetry": "workspace:*",
+    "better-sqlite3": "^12.9.0",
+    "tsx": "^4.21.0",
     "commander": "*",
     "chokidar": "*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

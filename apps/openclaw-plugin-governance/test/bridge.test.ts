@@ -139,6 +139,41 @@ describe('plugin.before_tool_call (calls evaluateRouter)', () => {
     return { handler, cleanup: fake.cleanup };
   }
 
+  it('keeps plugin registration stdout-clean by using the logger only', () => {
+    const stdoutWrites: string[] = [];
+    const stderrWrites: string[] = [];
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const api = {
+        pluginConfig: { kernelPath: 'chitin-kernel', timeoutMs: 2000, mode: 'enforce' },
+        logger: {
+          info: (msg: string) => process.stdout.write(`[info] ${msg}\n`),
+          warn: (msg: string) => process.stderr.write(`[warn] ${msg}\n`),
+          error: (msg: string) => process.stderr.write(`[error] ${msg}\n`),
+        },
+        on: (_event: string, _fn: Handler) => undefined,
+      };
+
+      plugin.register(api);
+
+      expect(stdoutWrites).toEqual([]);
+      expect(stderrWrites.join('')).toContain('chitin-governance registering:');
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+    }
+  });
+
   it('returns undefined when router allows (exit 0, no stdout)', async () => {
     const { handler, cleanup } = captureBeforeToolCall(`exit 0`);
     try {

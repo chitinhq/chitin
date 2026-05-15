@@ -164,6 +164,7 @@ def _migrate_dispatch_scores(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "swarm_dispatch_scores", "pr_created_at", "INTEGER")
     _ensure_column(conn, "swarm_dispatch_scores", "pr_updated_at", "INTEGER")
     _ensure_column(conn, "swarm_dispatch_scores", "pr_merged_at", "INTEGER")
+    _ensure_column(conn, "swarm_dispatch_scores", "inferred", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("UPDATE swarm_dispatch_scores SET task_class = '' WHERE task_class IS NULL")
 
 
@@ -214,6 +215,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             total_score INTEGER,
             judge_model TEXT NOT NULL,
             judge_reasoning TEXT,
+            inferred INTEGER NOT NULL DEFAULT 0,
             pr_created_at INTEGER,
             pr_updated_at INTEGER,
             pr_merged_at INTEGER,
@@ -297,6 +299,7 @@ def record_score(
     pr_updated_at: int | None = None,
     pr_merged_at: int | None = None,
     scored_at: int | None = None,
+    inferred: bool = False,
 ) -> int:
     """Insert one row in swarm_dispatch_scores. Returns the new row id."""
     total = sum(
@@ -329,9 +332,9 @@ def record_score(
             pr_outcome, ci_outcome, review_outcome,
             code_quality, test_coverage, scope_adherence,
             efficiency, review_friendliness, total_score,
-            judge_model, judge_reasoning,
+            judge_model, judge_reasoning, inferred,
             pr_created_at, pr_updated_at, pr_merged_at, scored_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ticket_id,
@@ -354,6 +357,7 @@ def record_score(
             total,
             judge_model,
             reasoning,
+            1 if inferred else 0,
             pr_created_at,
             pr_updated_at,
             pr_merged_at,
@@ -529,7 +533,7 @@ def recent_scores(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
         SELECT ticket_id, pr_url, driver, model, role, task_class,
                complexity_bucket, capabilities_json, capabilities_key,
                pr_outcome, ci_outcome, review_outcome,
-               total_score, judge_model, judge_reasoning,
+               total_score, judge_model, judge_reasoning, inferred,
                pr_created_at, pr_updated_at, pr_merged_at, scored_at
           FROM swarm_dispatch_scores
          ORDER BY id DESC

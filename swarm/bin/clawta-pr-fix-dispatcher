@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-pr-fix-dispatcher.log"
 REVIEW_MARKER_RE = re.compile(r"<!--\s*clawta-reviewer:v1(?:\s+head=[0-9a-f]+)?\s*-->")
 DISPATCH_MARKER = "<!-- clawta-fix-dispatcher:v1 -->"
+DISPATCH_MARKER_RE = re.compile(r"<!--\s*clawta-fix-dispatcher:v1(?:\s+head=([0-9a-f]+))?\s*-->")
 DEFAULT_PREFIXES = ("swarm/", "clawta/")
 CODEX_MODEL = os.environ.get("CLAWTA_FIX_CODEX_MODEL", "gpt-5.5")
 TRUSTED_REVIEW_AUTHORS = tuple(
@@ -67,7 +69,7 @@ def gh_json(cmd: list[str], *, timeout: int = 60) -> Any:
 def list_candidate_prs(prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
     prs = gh_json([
         "gh", "pr", "list", "--repo", REPO, "--state", "open",
-        "--json", "number,title,headRefName,url,isDraft,updatedAt",
+        "--json", "number,title,headRefName,headRefOid,url,isDraft,updatedAt",
         "--limit", "100",
     ])
     return [p for p in prs if any(str(p.get("headRefName", "")).startswith(prefix) for prefix in prefixes)]
@@ -97,8 +99,23 @@ def latest_review_comment(comments_: list[dict[str, Any]]) -> str | None:
     return bodies[-1] if bodies else None
 
 
-def already_dispatched(comments_: list[dict[str, Any]]) -> bool:
-    return any(DISPATCH_MARKER in str(c.get("body", "")) for c in comments_)
+def already_dispatched(comments_: list[dict[str, Any]], head_oid: str | None) -> bool:
+    """Return true only when a fix worker was dispatched for this PR head.
+
+    Legacy headless markers are intentionally not enough to suppress a new
+    dispatch. They were one-shot markers and can strand PRs forever after a
+    failed/no-op fix worker. New markers include `head=<sha>` so retries are
+    naturally allowed after either a new review head or a no-op legacy attempt.
+    """
+    if not head_oid:
+        return False
+    for c in comments_:
+        body = str(c.get("body", ""))
+        for match in DISPATCH_MARKER_RE.finditer(body):
+            marker_head = match.group(1)
+            if marker_head and marker_head == head_oid:
+                return True
+    return False
 
 
 def verdict(review_body: str) -> str:
@@ -181,19 +198,33 @@ def dispatch_worker(pr: dict[str, Any], review_body: str, dry_run: bool) -> str:
     wt = ensure_worktree(branch, pr_number)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as out:
-        proc = subprocess.Popen(
-            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", CODEX_MODEL, prompt],
-            cwd=str(wt),
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
-        )
+        prompt_file = tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False)
+        try:
+            prompt_file.write(prompt)
+            prompt_file.flush()
+            prompt_file.seek(0)
+            proc = subprocess.Popen(
+                ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", CODEX_MODEL],
+                cwd=str(wt),
+                stdin=prompt_file,
+                stdout=out,
+                stderr=out,
+                start_new_session=True,
+            )
+        finally:
+            # Always clean up the prompt file — even if Popen raises — so the
+            # ticket body never lingers on disk. The child has already dup'd
+            # the fd by the time Popen returns, so unlinking here is safe.
+            prompt_file.close()
+            os.unlink(prompt_file.name)
     log(f"dispatched codex fix worker for PR #{pr_number} pid={proc.pid} log={log_path}")
     return str(log_path)
 
 
 def mark_dispatched(pr: dict[str, Any], log_path: str, dry_run: bool) -> None:
-    body = f"{DISPATCH_MARKER}\n🦞 Dispatched codex fix worker for PR #{pr['number']} review findings. Log: `{log_path}`"
+    head = str(pr.get("headRefOid") or "")
+    marker = f"<!-- clawta-fix-dispatcher:v1 head={head} -->" if head else DISPATCH_MARKER
+    body = f"{marker}\n🦞 Dispatched codex fix worker for PR #{pr['number']} review findings. Log: `{log_path}`"
     if dry_run:
         print(f"--- DRY RUN DISPATCH MARKER PR #{pr['number']} ---\n{body}\n")
         return
@@ -211,7 +242,7 @@ def dispatch_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool) -> dic
         n = str(pr["number"])
         try:
             cs = comments(int(pr["number"]))
-            if already_dispatched(cs):
+            if already_dispatched(cs, str(pr.get("headRefOid") or "")):
                 skipped.append({"pr": n, "reason": "already-dispatched"})
                 continue
             review = latest_review_comment(cs)

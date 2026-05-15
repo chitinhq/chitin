@@ -19,11 +19,18 @@
 #   kanban-flow start <id> [--author NAME] [--worktree PATH]
 #       triage|todo|ready → in_progress. Comments "picking up at <ts>".
 #
-#   kanban-flow pr <id> <pr-url> [--author NAME]
+#   kanban-flow pr <id> <pr-url> [--author NAME] [--event-chain-hash HASH]
 #       in_progress stays. Comments with PR url + emits pr_opened event.
 #
 #   kanban-flow block <id> <reason...> [--author NAME]
 #       any → blocked. Comments with reason.
+
+#   kanban-flow crash <id> <reason...> [--author NAME] [--run-status STATUS]
+#       [--outcome OUTCOME] [--event-chain-hash HASH] [--chain-file PATH]
+#       in_progress → blocked. Finalizes the active task_run and comments
+#       with the crash reason. STATUS defaults to crashed; accepts
+#       crashed|failed|timed_out|blocked. --outcome defaults to STATUS.
+#       --event-chain-hash / --chain-file record the worker's chain link.
 #
 #   kanban-flow unblock <id> [--author NAME] [--assignee NAME]
 #       blocked → ready. Defaults assignee to clawta if no terminal lane
@@ -56,6 +63,8 @@ else
   DB="${_boards_dir}/${BOARD}/kanban.db"
 fi
 AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
+CHITIN_HOME_DIR="${CHITIN_HOME:-$HOME/.chitin}"
+DEFAULT_LEASE_SECONDS="${KANBAN_FLOW_LEASE_SECONDS:-3600}"
 
 is_terminal_lane() {
   local assignee="$1"
@@ -75,6 +84,272 @@ require_id() {
 ticket_status() {
   local id="$1"
   sqlite3 "$DB" "SELECT status FROM tasks WHERE id='$id'"
+}
+
+has_column() {
+  local table="$1" column="$2"
+  sqlite3 "$DB" "PRAGMA table_info($table)" | awk -F'|' -v col="$column" '$2 == col { found=1 } END { exit found ? 0 : 1 }'
+}
+
+ensure_task_runs_schema() {
+  sqlite3 "$DB" "
+    CREATE TABLE IF NOT EXISTS task_runs (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id             TEXT NOT NULL,
+      profile             TEXT,
+      step_key            TEXT,
+      status              TEXT NOT NULL,
+      claim_lock          TEXT,
+      claim_expires       INTEGER,
+      worker_pid          INTEGER,
+      max_runtime_seconds INTEGER,
+      last_heartbeat_at   INTEGER,
+      started_at          INTEGER NOT NULL,
+      ended_at            INTEGER,
+      outcome             TEXT,
+      summary             TEXT,
+      metadata            TEXT,
+      error               TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_runs_task   ON task_runs(task_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_runs_status ON task_runs(status);
+  "
+  has_column task_runs driver_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN driver_id TEXT"
+  has_column task_runs repo_sha || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN repo_sha TEXT"
+  has_column task_runs lease_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN lease_id TEXT"
+  has_column task_runs event_chain_hash || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN event_chain_hash TEXT"
+  has_column task_runs idempotency_key || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN idempotency_key TEXT"
+}
+
+resolve_worktree() {
+  local id="$1"
+  if [[ -n "$worktree" ]]; then
+    printf '%s\n' "$worktree"
+    return
+  fi
+  sqlite3 "$DB" "SELECT workspace_path FROM tasks WHERE id='$id'" 2>/dev/null | head -n1
+}
+
+repo_sha_for_worktree() {
+  local candidate="$1"
+  [[ -n "$candidate" && -d "$candidate" ]] || return 0
+  git -C "$candidate" rev-parse HEAD 2>/dev/null || true
+}
+
+uuid4() {
+  python3 - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
+}
+
+resolve_driver_id() {
+  python3 - "$CHITIN_HOME_DIR" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import pwd
+import socket
+import sys
+
+chitin_home = pathlib.Path(sys.argv[1]).expanduser()
+config_path = pathlib.Path(
+    os.environ.get("CHITIN_DRIVER_IDENTITY_FILE", str(chitin_home / "driver_identity.json"))
+).expanduser()
+data = None
+if config_path.is_file():
+    try:
+        payload = json.loads(config_path.read_text())
+        if isinstance(payload, dict):
+            data = payload.get("driver_identity") if isinstance(payload.get("driver_identity"), dict) else payload
+    except Exception:
+        data = None
+
+uid = os.getuid()
+hostname = socket.gethostname()
+fallback_user = (
+    os.environ.get("CHITIN_DRIVER_USER")
+    or os.environ.get("USER")
+    or pwd.getpwuid(uid).pw_name
+)
+fallback_machine_id = (
+    os.environ.get("CHITIN_DRIVER_MACHINE_ID")
+    or os.environ.get("HOSTNAME")
+    or hostname
+)
+fallback_machine_fp = (
+    os.environ.get("CHITIN_DRIVER_MACHINE_FINGERPRINT")
+    or hashlib.sha256(f"{hostname}|{uid}|chitin-machine-fingerprint-v2".encode("utf-8")).hexdigest()
+)
+
+resolved = {
+    "user": fallback_user,
+    "machine_id": fallback_machine_id,
+    "machine_fingerprint": fallback_machine_fp,
+}
+if isinstance(data, dict):
+    resolved = {
+        "user": str(data.get("user") or fallback_user),
+        "machine_id": str(data.get("machine_id") or fallback_machine_id),
+        "machine_fingerprint": str(data.get("machine_fingerprint") or fallback_machine_fp),
+    }
+
+print(json.dumps(resolved, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+task_field() {
+  local id="$1" field="$2"
+  # `|| true`: with `set -o pipefail`, a SELECT for a column an older `tasks`
+  # schema doesn't have makes this pipeline non-zero and aborts the whole
+  # script. Treat a missing/new column as simply "no value".
+  sqlite3 "$DB" "SELECT $field FROM tasks WHERE id='$id'" 2>/dev/null | head -n1 || true
+}
+
+active_run_id() {
+  local id="$1"
+  local run_id
+  run_id="$(sqlite3 "$DB" "SELECT current_run_id FROM tasks WHERE id='$id'" 2>/dev/null || true)"
+  if [[ -n "$run_id" ]]; then
+    printf '%s\n' "$run_id"
+    return
+  fi
+  sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND status='running' ORDER BY started_at DESC, id DESC LIMIT 1"
+}
+
+maybe_sql_null() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    printf 'NULL'
+  else
+    printf "'%s'" "$(printf '%s' "$value" | sed "s/'/''/g")"
+  fi
+}
+
+infer_event_chain_hash() {
+  local explicit="${1:-}"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return
+  fi
+  local chain_file="${2:-}"
+  if [[ -n "$chain_file" && -f "$chain_file" ]]; then
+    python3 - "$chain_file" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+last_hash = ""
+try:
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        last_hash = str(payload.get("this_hash") or "") or last_hash
+except OSError:
+    pass
+print(last_hash)
+PY
+  fi
+}
+
+create_task_run() {
+  local id="$1"
+  ensure_task_runs_schema
+
+  local existing
+  existing="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND status IN ('running','blocked') AND ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1")"
+  [[ -z "$existing" ]] || die "$id already has an incomplete task_run ($existing)"
+
+  local now lease_id driver_id profile step_key task_idempotency max_runtime claim_expires worktree_path repo_sha
+  now="$(date +%s)"
+  lease_id="$(uuid4)"
+  driver_id="$(resolve_driver_id)"
+  profile="$(task_field "$id" assignee)"
+  step_key="$(task_field "$id" current_step_key)"
+  task_idempotency="$(task_field "$id" idempotency_key)"
+  max_runtime="$(task_field "$id" max_runtime_seconds)"
+  [[ -n "$max_runtime" ]] || max_runtime="$DEFAULT_LEASE_SECONDS"
+  claim_expires=$((now + max_runtime))
+  worktree_path="$(resolve_worktree "$id")"
+  repo_sha="$(repo_sha_for_worktree "$worktree_path")"
+
+  sqlite3 "$DB" \
+    -cmd ".parameter set :task_id '$id'" \
+    -cmd ".parameter set :profile '$profile'" \
+    -cmd ".parameter set :step_key '$step_key'" \
+    -cmd ".parameter set :lease_id '$lease_id'" \
+    -cmd ".parameter set :driver_id '$driver_id'" \
+    -cmd ".parameter set :repo_sha '$repo_sha'" \
+    -cmd ".parameter set :idempotency '$task_idempotency'" \
+    -cmd ".parameter set :now $now" \
+    -cmd ".parameter set :claim_expires $claim_expires" \
+    -cmd ".parameter set :max_runtime $max_runtime" \
+    "INSERT INTO task_runs (
+       task_id, profile, step_key, status, claim_lock, claim_expires,
+       max_runtime_seconds, last_heartbeat_at, started_at, lease_id,
+       driver_id, repo_sha, idempotency_key
+     ) VALUES (
+       :task_id, NULLIF(:profile,''), NULLIF(:step_key,''), 'running', :lease_id, :claim_expires,
+       :max_runtime, :now, :now, :lease_id,
+       NULLIF(:driver_id,''), NULLIF(:repo_sha,''), NULLIF(:idempotency,'')
+     );"
+
+  local run_id
+  run_id="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND lease_id='$(printf '%s' "$lease_id" | sed "s/'/''/g")' ORDER BY id DESC LIMIT 1")"
+  sqlite3 "$DB" "
+    UPDATE tasks
+       SET claim_lock='$(printf '%s' "$lease_id" | sed "s/'/''/g")',
+           claim_expires=$claim_expires,
+           last_heartbeat_at=$now,
+           current_run_id=$run_id
+     WHERE id='$id'
+  " 2>/dev/null || true
+}
+
+finalize_task_run() {
+  local id="$1" run_status="$2" outcome="$3" summary="$4" error_text="$5"
+  ensure_task_runs_schema
+
+  local run_id now event_hash
+  run_id="$(active_run_id "$id")"
+  [[ -n "$run_id" ]] || return 0
+  now="$(date +%s)"
+  event_hash="$(infer_event_chain_hash "$event_chain_hash" "$chain_file")"
+
+  sqlite3 "$DB" "
+    UPDATE task_runs
+       SET status='$run_status',
+           ended_at=$now,
+           outcome=$(maybe_sql_null "$outcome"),
+           summary=$(maybe_sql_null "$summary"),
+           error=$(maybe_sql_null "$error_text"),
+           event_chain_hash=COALESCE($(maybe_sql_null "$event_hash"), event_chain_hash)
+     WHERE id=$run_id
+  "
+  sqlite3 "$DB" "
+    UPDATE tasks
+       SET current_run_id=NULL,
+           claim_lock=NULL,
+           claim_expires=NULL
+     WHERE id='$id'
+  " 2>/dev/null || true
+}
+
+update_active_run_event_chain_hash() {
+  local id="$1" hash_value
+  hash_value="$(infer_event_chain_hash "$event_chain_hash" "$chain_file")"
+  [[ -n "$hash_value" ]] || return 0
+  local run_id
+  run_id="$(active_run_id "$id")"
+  [[ -n "$run_id" ]] || return 0
+  sqlite3 "$DB" "UPDATE task_runs SET event_chain_hash='$(printf '%s' "$hash_value" | sed "s/'/''/g")' WHERE id=$run_id"
 }
 
 assert_status() {
@@ -123,6 +398,10 @@ esac
 author="$AUTHOR_DEFAULT"
 worktree=""
 assignee_override=""
+event_chain_hash=""
+chain_file=""
+run_status_override=""
+outcome_override=""
 parse_flags() {
   local rest=()
   while [[ $# -gt 0 ]]; do
@@ -131,6 +410,10 @@ parse_flags() {
       --worktree) worktree="$2"; shift 2 ;;
       --result) result="$2"; shift 2 ;;
       --assignee) assignee_override="$2"; shift 2 ;;
+      --event-chain-hash) event_chain_hash="$2"; shift 2 ;;
+      --chain-file) chain_file="$2"; shift 2 ;;
+      --run-status) run_status_override="$2"; shift 2 ;;
+      --outcome) outcome_override="$2"; shift 2 ;;
       *) rest+=("$1"); shift ;;
     esac
   done
@@ -146,6 +429,10 @@ case "$cmd" in
     body="Picking up at $(date -Iseconds)"
     [[ -n "$worktree" ]] && body="$body — worktree: $worktree"
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null
+    # create_task_run before flip_status: it die()s if an incomplete run
+    # already exists, and we must not leave the ticket flipped to
+    # in_progress with no run when that happens.
+    create_task_run "$id"
     flip_status "$id" in_progress 1 0
     emit_transition "$id" "$from" in_progress "$author"
     echo "$id: $from → in_progress"
@@ -160,6 +447,7 @@ case "$cmd" in
     # the ticket in in_progress and let the PR's GitHub state be the
     # review-phase truth. Audit still records the PR via a pr_opened
     # event for downstream tooling.
+    update_active_run_event_chain_hash "$id"
     pr_now="$(date +%s)"
     sqlite3 "$DB" \
       -cmd ".parameter set :id '$id'" \
@@ -180,6 +468,24 @@ case "$cmd" in
     flip_status "$id" blocked 0 0
     emit_transition "$id" "$from" blocked "$author"
     echo "$id: $from → blocked ($reason)"
+    ;;
+  crash)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    reason="${REST[*]:1}"
+    [[ -n "$reason" ]] || die "missing reason"
+    from="$(ticket_status "$id")"
+    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Crashed: $reason" >/dev/null
+    flip_status "$id" blocked 0 0
+    final_status="${run_status_override:-crashed}"
+    case "$final_status" in
+      crashed|failed|timed_out|blocked) ;;
+      *) die "invalid --run-status: $final_status" ;;
+    esac
+    final_outcome="${outcome_override:-$final_status}"
+    finalize_task_run "$id" "$final_status" "$final_outcome" "" "$reason"
+    emit_transition "$id" "$from" blocked "$author"
+    echo "$id: $from → blocked (crash: $reason)"
     ;;
   unblock)
     parse_flags "$@"
@@ -223,6 +529,12 @@ case "$cmd" in
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
 
+    # Reset consecutive_failures when re-dispatching a previously-blocked ticket —
+    # mirrors the `unblock` path so the watchdog doesn't escalate prematurely.
+    if [[ "$from" == blocked ]]; then
+      sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+    fi
+
     # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
       sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
@@ -243,6 +555,7 @@ case "$cmd" in
     sqlite3 "$DB" "UPDATE tasks SET result='$(echo "$result" | sed "s/'/''/g")' WHERE id='$id'"
     # Reset consecutive_failures — task completed successfully
     sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+    finalize_task_run "$id" done "${outcome_override:-completed}" "$result" ""
     emit_transition "$id" "$from" done "$author"
     echo "$id: $from → done"
     ;;

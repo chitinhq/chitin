@@ -9,7 +9,7 @@ import (
 // crockfordAlphabet is Crockford base32: 0-9, A-Z minus I, L, O, U.
 const crockfordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-// newULID returns a ULID-shaped 26-char Crockford-base32 string:
+// NewULID returns a ULID-shaped 26-char Crockford-base32 string:
 //
 //	48-bit ms timestamp (big-endian) + 80-bit cryptographic random.
 //
@@ -18,7 +18,7 @@ const crockfordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 // that want creation order without parsing JSON.
 //
 // Returns an error only on rand.Read failure.
-func newULID() (string, error) {
+func NewULID() (string, error) {
 	now := uint64(time.Now().UnixMilli())
 	var bytes [16]byte
 	bytes[0] = byte(now >> 40)

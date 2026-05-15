@@ -1,0 +1,13 @@
+{
+  "id": "sentinel-missing-dir",
+  "description": "A missing decisions directory should fail fast with the standard sentinel CLI error.",
+  "module": "analysis.sentinel",
+  "fixture_dir": "../../fixtures-does-not-exist",
+  "window": "7d",
+  "top_n": 5,
+  "now": "2026-04-30T12:00:00+00:00",
+  "expect": {
+    "returncode": 2,
+    "stderr_contains": "does not exist"
+  }
+}

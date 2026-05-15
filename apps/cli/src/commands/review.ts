@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { resolveChitinDir } from '@chitin/contracts';
-import { ensureIndexed } from '@chitin/telemetry';
 import type { Command } from 'commander';
+import { resolveChitinDir } from '../chitindir.js';
+import { ensureIndexed } from '../telemetry.js';
 import { listRecentEvents } from './events-list.js';
 import type { HealthReport } from './health.js';
 
