@@ -110,7 +110,11 @@ ensure_task_runs_schema() {
       outcome             TEXT,
       summary             TEXT,
       metadata            TEXT,
-      error               TEXT
+      error               TEXT,
+      model               TEXT NOT NULL DEFAULT '',
+      soul_id             TEXT NOT NULL DEFAULT '',
+      soul_hash           TEXT NOT NULL DEFAULT '',
+      agent_fingerprint   TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_runs_task   ON task_runs(task_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_runs_status ON task_runs(status);
@@ -120,6 +124,10 @@ ensure_task_runs_schema() {
   has_column task_runs lease_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN lease_id TEXT"
   has_column task_runs event_chain_hash || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN event_chain_hash TEXT"
   has_column task_runs idempotency_key || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN idempotency_key TEXT"
+  has_column task_runs model || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+  has_column task_runs soul_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN soul_id TEXT NOT NULL DEFAULT ''"
+  has_column task_runs soul_hash || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN soul_hash TEXT NOT NULL DEFAULT ''"
+  has_column task_runs agent_fingerprint || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN agent_fingerprint TEXT NOT NULL DEFAULT ''"
 }
 
 resolve_worktree() {
@@ -268,10 +276,14 @@ create_task_run() {
   existing="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND status IN ('running','blocked') AND ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1")"
   [[ -z "$existing" ]] || die "$id already has an incomplete task_run ($existing)"
 
-  local now lease_id driver_id profile step_key task_idempotency max_runtime claim_expires worktree_path repo_sha
+  local now lease_id driver_id profile step_key task_idempotency max_runtime claim_expires worktree_path repo_sha model soul_id soul_hash agent_fingerprint
   now="$(date +%s)"
   lease_id="$(uuid4)"
   driver_id="$(resolve_driver_id)"
+  model="${CHITIN_DISPATCH_MODEL:-${CHITIN_MODEL:-}}"
+  soul_id="${CHITIN_DISPATCH_SOUL_ID:-${CHITIN_ACTIVE_SOUL:-}}"
+  soul_hash="${CHITIN_DISPATCH_SOUL_HASH:-}"
+  agent_fingerprint="${CHITIN_DISPATCH_AGENT_FINGERPRINT:-${CHITIN_AGENT_FINGERPRINT:-${CHITIN_FINGERPRINT:-}}}"
   profile="$(task_field "$id" assignee)"
   step_key="$(task_field "$id" current_step_key)"
   task_idempotency="$(task_field "$id" idempotency_key)"
@@ -288,6 +300,10 @@ create_task_run() {
     -cmd ".parameter set :lease_id '$lease_id'" \
     -cmd ".parameter set :driver_id '$driver_id'" \
     -cmd ".parameter set :repo_sha '$repo_sha'" \
+    -cmd ".parameter set :model '$model'" \
+    -cmd ".parameter set :soul_id '$soul_id'" \
+    -cmd ".parameter set :soul_hash '$soul_hash'" \
+    -cmd ".parameter set :agent_fingerprint '$agent_fingerprint'" \
     -cmd ".parameter set :idempotency '$task_idempotency'" \
     -cmd ".parameter set :now $now" \
     -cmd ".parameter set :claim_expires $claim_expires" \
@@ -295,11 +311,11 @@ create_task_run() {
     "INSERT INTO task_runs (
        task_id, profile, step_key, status, claim_lock, claim_expires,
        max_runtime_seconds, last_heartbeat_at, started_at, lease_id,
-       driver_id, repo_sha, idempotency_key
+       driver_id, repo_sha, model, soul_id, soul_hash, agent_fingerprint, idempotency_key
      ) VALUES (
        :task_id, NULLIF(:profile,''), NULLIF(:step_key,''), 'running', :lease_id, :claim_expires,
        :max_runtime, :now, :now, :lease_id,
-       NULLIF(:driver_id,''), NULLIF(:repo_sha,''), NULLIF(:idempotency,'')
+       NULLIF(:driver_id,''), NULLIF(:repo_sha,''), :model, :soul_id, :soul_hash, :agent_fingerprint, NULLIF(:idempotency,'')
      );"
 
   local run_id
@@ -351,6 +367,34 @@ update_active_run_event_chain_hash() {
   run_id="$(active_run_id "$id")"
   [[ -n "$run_id" ]] || return 0
   sqlite3 "$DB" "UPDATE task_runs SET event_chain_hash='$(printf '%s' "$hash_value" | sed "s/'/''/g")' WHERE id=$run_id"
+}
+
+stamp_active_run_identity() {
+  local id="$1"
+  ensure_task_runs_schema
+  local run_id driver_json model soul_id soul_hash agent_fingerprint
+  run_id="$(active_run_id "$id")"
+  [[ -n "$run_id" ]] || return 0
+  driver_json="${CHITIN_DRIVER_IDENTITY_JSON:-$(resolve_driver_id)}"
+  model="${CHITIN_DISPATCH_MODEL:-${CHITIN_MODEL:-}}"
+  soul_id="${CHITIN_DISPATCH_SOUL_ID:-${CHITIN_ACTIVE_SOUL:-}}"
+  soul_hash="${CHITIN_DISPATCH_SOUL_HASH:-}"
+  agent_fingerprint="${CHITIN_DISPATCH_AGENT_FINGERPRINT:-${CHITIN_AGENT_FINGERPRINT:-${CHITIN_FINGERPRINT:-}}}"
+
+  sqlite3 "$DB" \
+    -cmd ".parameter set :run_id $run_id" \
+    -cmd ".parameter set :driver_id '$driver_json'" \
+    -cmd ".parameter set :model '$model'" \
+    -cmd ".parameter set :soul_id '$soul_id'" \
+    -cmd ".parameter set :soul_hash '$soul_hash'" \
+    -cmd ".parameter set :agent_fingerprint '$agent_fingerprint'" \
+    "UPDATE task_runs
+        SET driver_id = COALESCE(NULLIF(:driver_id,''), driver_id),
+            model = CASE WHEN :model != '' THEN :model ELSE model END,
+            soul_id = CASE WHEN :soul_id != '' THEN :soul_id ELSE soul_id END,
+            soul_hash = CASE WHEN :soul_hash != '' THEN :soul_hash ELSE soul_hash END,
+            agent_fingerprint = CASE WHEN :agent_fingerprint != '' THEN :agent_fingerprint ELSE agent_fingerprint END
+      WHERE id = :run_id"
 }
 
 assert_status() {
@@ -614,6 +658,12 @@ case "$cmd" in
     echo "$id: $cur"
     echo "Last 5 transitions:"
     sqlite3 "$DB" "SELECT datetime(created_at,'unixepoch','localtime'), kind, payload FROM task_events WHERE task_id='$id' AND kind='status_transition' ORDER BY id DESC LIMIT 5"
+    ;;
+  stamp-run-identity)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    stamp_active_run_identity "$id"
+    echo "$id: stamped run identity"
     ;;
   *)
     die "unknown command: $cmd (try kanban-flow --help)"

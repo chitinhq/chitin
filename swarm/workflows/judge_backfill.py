@@ -24,11 +24,13 @@ import _swarm_elo as elo  # noqa: E402
 LOG_PATH = Path(os.path.expanduser("~/.openclaw/logs/judge_backfill.log"))
 TICKET_RE = re.compile(r"t_[a-f0-9]{8}")
 DISPATCH_META_RE = re.compile(
-    r"\bdispatch\s+driver=(?P<driver>\S+)\s+model=(?P<model>\S+)\s+role=(?P<role>\S+)",
+    r"\bdispatch\s+driver=(?P<driver>\S+)\s+model=(?P<model>\S+)\s+soul_id=(?P<soul_id>\S+)\s+soul_hash=(?P<soul_hash>\S+)\s+role=(?P<role>\S+)",
     re.IGNORECASE,
 )
 DEFAULT_DRIVER = "clawta"
 DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_SOUL_ID = "sun-tzu"
+DEFAULT_SOUL_HASH = ""
 DEFAULT_ROLE = "programmer"
 
 
@@ -36,6 +38,8 @@ DEFAULT_ROLE = "programmer"
 class DispatchMeta:
     driver: str
     model: str
+    soul_id: str
+    soul_hash: str
     role: str
     inferred: bool = False
 
@@ -120,6 +124,8 @@ def parse_dispatch_meta_from_comments(ticket_json: dict) -> DispatchMeta | None:
             found = DispatchMeta(
                 driver=match.group("driver"),
                 model=match.group("model"),
+                soul_id=match.group("soul_id"),
+                soul_hash=match.group("soul_hash"),
                 role=match.group("role"),
                 inferred=False,
             )
@@ -146,7 +152,7 @@ def recover_dispatch_meta(ticket_id: str) -> DispatchMeta:
         log(f"{ticket_id}: dispatch metadata absent; using inferred default")
     except Exception as exc:  # noqa: BLE001 - log and fall back for backfill robustness
         log(f"{ticket_id}: metadata recovery failed: {exc}; using inferred default")
-    return DispatchMeta(DEFAULT_DRIVER, DEFAULT_MODEL, DEFAULT_ROLE, inferred=True)
+    return DispatchMeta(DEFAULT_DRIVER, DEFAULT_MODEL, DEFAULT_SOUL_ID, DEFAULT_SOUL_HASH, DEFAULT_ROLE, inferred=True)
 
 
 def run_judge(ticket_id: str, pr_url: str, meta: DispatchMeta, *, dry_run: bool = False) -> subprocess.CompletedProcess[str]:
@@ -157,6 +163,8 @@ def run_judge(ticket_id: str, pr_url: str, meta: DispatchMeta, *, dry_run: bool 
         "--pr-url", pr_url,
         "--driver", meta.driver,
         "--model", meta.model,
+        "--soul-id", meta.soul_id,
+        "--soul-hash", meta.soul_hash,
         "--role", meta.role,
     ]
     if meta.inferred:
@@ -190,7 +198,10 @@ def process_prs(prs: list[dict], *, conn: sqlite3.Connection, dry_run: bool = Fa
             continue
         if result.returncode == 0:
             stats["scored"] += 1
-            log(f"PR #{pr_num} {ticket_id}: scored driver={meta.driver} model={meta.model} role={meta.role} inferred={int(meta.inferred)}")
+            log(
+                f"PR #{pr_num} {ticket_id}: scored driver={meta.driver} model={meta.model} "
+                f"soul_id={meta.soul_id} role={meta.role} inferred={int(meta.inferred)}"
+            )
             if result.stdout.strip():
                 log(f"PR #{pr_num} judge stdout: {result.stdout.strip()[:500]}")
         else:

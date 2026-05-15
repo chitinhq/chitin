@@ -30,6 +30,8 @@ class SwarmEloTests(unittest.TestCase):
                     id INTEGER PRIMARY KEY,
                     driver TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    soul_id TEXT NOT NULL DEFAULT '',
+                    soul_hash TEXT NOT NULL DEFAULT '',
                     task_class TEXT,
                     elo_score REAL NOT NULL,
                     dispatches_count INTEGER NOT NULL DEFAULT 0,
@@ -44,6 +46,8 @@ class SwarmEloTests(unittest.TestCase):
                     pr_url TEXT,
                     driver TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    soul_id TEXT NOT NULL DEFAULT '',
+                    soul_hash TEXT NOT NULL DEFAULT '',
                     task_class TEXT,
                     code_quality INTEGER,
                     test_coverage INTEGER,
@@ -69,7 +73,7 @@ class SwarmEloTests(unittest.TestCase):
             migrated = elo.open_db()
 
             row = migrated.execute(
-                "SELECT driver, model, role, task_class, complexity_bucket, dispatches_count, first_scored_at "
+                "SELECT driver, model, soul_id, soul_hash, role, task_class, complexity_bucket, dispatches_count, first_scored_at "
                 "FROM swarm_elo"
             ).fetchone()
             self.assertEqual(
@@ -77,6 +81,8 @@ class SwarmEloTests(unittest.TestCase):
                 {
                     "driver": "codex",
                     "model": "gpt-5.5",
+                    "soul_id": "",
+                    "soul_hash": "",
                     "role": "",
                     "task_class": "feature",
                     "complexity_bucket": "",
@@ -89,7 +95,7 @@ class SwarmEloTests(unittest.TestCase):
                 col[1]
                 for col in migrated.execute("PRAGMA table_info(swarm_dispatch_scores)").fetchall()
             }
-            self.assertTrue({"role", "capabilities_json", "pr_outcome", "ci_outcome", "review_outcome"} <= cols)
+            self.assertTrue({"soul_id", "soul_hash", "role", "capabilities_json", "pr_outcome", "ci_outcome", "review_outcome"} <= cols)
 
     def test_record_score_and_update_elo_use_rich_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -103,6 +109,8 @@ class SwarmEloTests(unittest.TestCase):
                 "https://github.com/chitinhq/chitin/pull/123",
                 "codex",
                 "gpt-5.5",
+                "knuth",
+                "a" * 64,
                 "feature",
                 {
                     "code_quality": 5,
@@ -126,6 +134,8 @@ class SwarmEloTests(unittest.TestCase):
                 conn,
                 "codex",
                 "gpt-5.5",
+                "knuth",
+                "a" * 64,
                 "feature",
                 23,
                 last_dispatch_id="t_12345678",
@@ -142,13 +152,15 @@ class SwarmEloTests(unittest.TestCase):
             self.assertGreater(new_elo, elo.BASE_ELO)
 
             row = conn.execute(
-                "SELECT role, complexity_bucket, capabilities_key, pr_outcome, ci_outcome, review_outcome "
+                "SELECT soul_id, soul_hash, role, complexity_bucket, capabilities_key, pr_outcome, ci_outcome, review_outcome "
                 "FROM swarm_dispatch_scores WHERE id = ?",
                 (score_id,),
             ).fetchone()
             self.assertEqual(
                 dict(row),
                 {
+                    "soul_id": "knuth",
+                    "soul_hash": "a" * 64,
                     "role": "programmer",
                     "complexity_bucket": "medium",
                     "capabilities_key": "database,testing",
@@ -162,6 +174,8 @@ class SwarmEloTests(unittest.TestCase):
                 conn,
                 "codex",
                 "gpt-5.5",
+                "knuth",
+                "a" * 64,
                 "feature",
                 role="programmer",
                 complexity_bucket="medium",
@@ -181,19 +195,19 @@ class SwarmEloTests(unittest.TestCase):
             conn = elo.open_db()
 
             elo.update_elo(
-                conn, "codex", "gpt-5.5", "feature", 20,
+                conn, "codex", "gpt-5.5", "knuth", "a" * 64, "feature", 20,
                 role="programmer", complexity_bucket="small",
                 capabilities=["database"], pr_outcome="open",
                 ci_outcome="pending", review_outcome="pending", scored_at=100,
             )
             elo.update_elo(
-                conn, "codex", "gpt-5.5", "feature", 18,
+                conn, "codex", "gpt-5.5", "knuth", "a" * 64, "feature", 18,
                 role="programmer", complexity_bucket="medium",
                 capabilities=["database", "testing"], pr_outcome="open",
                 ci_outcome="passed", review_outcome="approved", scored_at=120,
             )
             elo.update_elo(
-                conn, "claude-code", "sonnet", "bugfix", 24,
+                conn, "claude-code", "sonnet", "sun-tzu", "b" * 64, "bugfix", 24,
                 role="programmer", complexity_bucket="small",
                 capabilities=["testing"], pr_outcome="open",
                 ci_outcome="passed", review_outcome="approved", scored_at=140,
@@ -201,8 +215,9 @@ class SwarmEloTests(unittest.TestCase):
 
             rows = elo.aggregate_scores(conn, group_by="driver_model_task_class", limit=10)
             first = rows[0]
-            self.assertTrue({"driver", "model", "task_class", "weighted_elo", "dispatches_count"} <= set(first.keys()))
+            self.assertTrue({"driver", "model", "soul_id", "task_class", "weighted_elo", "dispatches_count"} <= set(first.keys()))
             target = next(row for row in rows if row["driver"] == "codex" and row["model"] == "gpt-5.5")
+            self.assertEqual(target["soul_id"], "knuth")
             self.assertEqual(target["task_class"], "feature")
             self.assertEqual(target["dispatches_count"], 2)
 

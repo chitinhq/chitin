@@ -38,6 +38,8 @@ K_DECAY_AT_N = 50  # K halves at this dispatches_count
 KEY_FIELDS = (
     "driver",
     "model",
+    "soul_id",
+    "soul_hash",
     "role",
     "task_class",
     "complexity_bucket",
@@ -47,8 +49,8 @@ KEY_FIELDS = (
     "review_outcome",
 )
 AGGREGATE_GROUPS = {
-    "driver_model": ("driver", "model"),
-    "driver_model_task_class": ("driver", "model", "task_class"),
+    "driver_model": ("driver", "model", "soul_id"),
+    "driver_model_task_class": ("driver", "model", "soul_id", "task_class"),
     "task_class": ("task_class",),
 }
 
@@ -79,6 +81,8 @@ def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
 def _migrate_swarm_elo(conn: sqlite3.Connection) -> None:
     columns = _column_names(conn, "swarm_elo")
     if {
+        "soul_id",
+        "soul_hash",
         "role",
         "complexity_bucket",
         "capabilities_key",
@@ -95,6 +99,8 @@ def _migrate_swarm_elo(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             driver TEXT NOT NULL,
             model TEXT NOT NULL,
+            soul_id TEXT NOT NULL DEFAULT '',
+            soul_hash TEXT NOT NULL DEFAULT '',
             role TEXT NOT NULL DEFAULT '',
             task_class TEXT NOT NULL DEFAULT '',
             complexity_bucket TEXT NOT NULL DEFAULT '',
@@ -108,13 +114,13 @@ def _migrate_swarm_elo(conn: sqlite3.Connection) -> None:
             first_scored_at INTEGER NOT NULL,
             last_updated INTEGER NOT NULL,
             UNIQUE(
-                driver, model, role, task_class, complexity_bucket,
+                driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                 capabilities_key, pr_outcome, ci_outcome, review_outcome
             )
         );
 
         INSERT INTO swarm_elo_v2 (
-            id, driver, model, role, task_class, complexity_bucket,
+            id, driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
             capabilities_key, pr_outcome, ci_outcome, review_outcome,
             elo_score, dispatches_count, last_dispatch_id, first_scored_at,
             last_updated
@@ -123,6 +129,8 @@ def _migrate_swarm_elo(conn: sqlite3.Connection) -> None:
             id,
             driver,
             model,
+            '',
+            '',
             '',
             COALESCE(task_class, ''),
             '',
@@ -154,6 +162,8 @@ def _ensure_column(
 
 
 def _migrate_dispatch_scores(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "swarm_dispatch_scores", "soul_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "swarm_dispatch_scores", "soul_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "swarm_dispatch_scores", "role", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "swarm_dispatch_scores", "complexity_bucket", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "swarm_dispatch_scores", "capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -175,6 +185,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             driver TEXT NOT NULL,
             model TEXT NOT NULL,
+            soul_id TEXT NOT NULL DEFAULT '',
+            soul_hash TEXT NOT NULL DEFAULT '',
             role TEXT NOT NULL DEFAULT '',
             task_class TEXT NOT NULL DEFAULT '',
             complexity_bucket TEXT NOT NULL DEFAULT '',
@@ -188,7 +200,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             first_scored_at INTEGER NOT NULL,
             last_updated INTEGER NOT NULL,
             UNIQUE(
-                driver, model, role, task_class, complexity_bucket,
+                driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                 capabilities_key, pr_outcome, ci_outcome, review_outcome
             )
         );
@@ -199,6 +211,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             pr_url TEXT,
             driver TEXT NOT NULL,
             model TEXT NOT NULL,
+            soul_id TEXT NOT NULL DEFAULT '',
+            soul_hash TEXT NOT NULL DEFAULT '',
             role TEXT NOT NULL DEFAULT '',
             task_class TEXT NOT NULL DEFAULT '',
             complexity_bucket TEXT NOT NULL DEFAULT '',
@@ -226,6 +240,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             ON swarm_dispatch_scores(ticket_id);
         CREATE INDEX IF NOT EXISTS idx_scores_driver_model_class
             ON swarm_dispatch_scores(driver, model, task_class);
+        CREATE INDEX IF NOT EXISTS idx_scores_driver_model_soul
+            ON swarm_dispatch_scores(driver, model, soul_id, soul_hash);
         """
     )
 
@@ -235,7 +251,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_scores_dimensions
             ON swarm_dispatch_scores(
-                driver, model, role, task_class, complexity_bucket,
+                driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                 pr_outcome, ci_outcome, review_outcome
             )
         """
@@ -256,6 +272,8 @@ def _dimension_payload(
     *,
     driver: str,
     model: str,
+    soul_id: str | None = None,
+    soul_hash: str | None = None,
     role: str | None = None,
     task_class: str | None = None,
     complexity_bucket: str | None = None,
@@ -268,6 +286,8 @@ def _dimension_payload(
     return {
         "driver": _normalize_dimension(driver),
         "model": _normalize_dimension(model),
+        "soul_id": _normalize_dimension(soul_id),
+        "soul_hash": _normalize_dimension(soul_hash),
         "role": _normalize_dimension(role),
         "task_class": _normalize_dimension(task_class),
         "complexity_bucket": _normalize_dimension(complexity_bucket),
@@ -284,6 +304,8 @@ def record_score(
     pr_url: str | None,
     driver: str,
     model: str,
+    soul_id: str | None,
+    soul_hash: str | None,
     task_class: str | None,
     scores: dict,
     judge_model: str,
@@ -315,6 +337,8 @@ def record_score(
     dims = _dimension_payload(
         driver=driver,
         model=model,
+        soul_id=soul_id,
+        soul_hash=soul_hash,
         role=role,
         task_class=task_class,
         complexity_bucket=complexity_bucket,
@@ -327,20 +351,22 @@ def record_score(
     cur = conn.execute(
         """
         INSERT INTO swarm_dispatch_scores (
-            ticket_id, pr_url, driver, model, role, task_class,
+            ticket_id, pr_url, driver, model, soul_id, soul_hash, role, task_class,
             complexity_bucket, capabilities_json, capabilities_key,
             pr_outcome, ci_outcome, review_outcome,
             code_quality, test_coverage, scope_adherence,
             efficiency, review_friendliness, total_score,
             judge_model, judge_reasoning, inferred,
             pr_created_at, pr_updated_at, pr_merged_at, scored_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ticket_id,
             pr_url,
             dims["driver"],
             dims["model"],
+            dims["soul_id"],
+            dims["soul_hash"],
             dims["role"],
             dims["task_class"],
             dims["complexity_bucket"],
@@ -372,6 +398,8 @@ def update_elo(
     conn: sqlite3.Connection,
     driver: str,
     model: str,
+    soul_id: str | None,
+    soul_hash: str | None,
     task_class: str | None,
     total_score: int,
     last_dispatch_id: str | None = None,
@@ -388,6 +416,8 @@ def update_elo(
     dims = _dimension_payload(
         driver=driver,
         model=model,
+        soul_id=soul_id,
+        soul_hash=soul_hash,
         role=role,
         task_class=task_class,
         complexity_bucket=complexity_bucket,
@@ -400,8 +430,8 @@ def update_elo(
         """
         SELECT id, elo_score, dispatches_count
           FROM swarm_elo
-         WHERE driver = ? AND model = ? AND role = ? AND task_class = ?
-           AND complexity_bucket = ? AND capabilities_key = ?
+         WHERE driver = ? AND model = ? AND soul_id = ? AND soul_hash = ?
+           AND role = ? AND task_class = ? AND complexity_bucket = ? AND capabilities_key = ?
            AND pr_outcome = ? AND ci_outcome = ? AND review_outcome = ?
         """,
         tuple(dims[field] for field in KEY_FIELDS),
@@ -436,15 +466,17 @@ def update_elo(
         conn.execute(
             """
             INSERT INTO swarm_elo (
-                driver, model, role, task_class, complexity_bucket,
+                driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                 capabilities_key, pr_outcome, ci_outcome, review_outcome,
                 elo_score, dispatches_count, last_dispatch_id,
                 first_scored_at, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 dims["driver"],
                 dims["model"],
+                dims["soul_id"],
+                dims["soul_hash"],
                 dims["role"],
                 dims["task_class"],
                 dims["complexity_bucket"],
@@ -478,7 +510,7 @@ def leaderboard(
         params = (limit,)
     rows = conn.execute(
         f"""
-        SELECT driver, model, role, task_class, complexity_bucket,
+        SELECT driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                capabilities_key, pr_outcome, ci_outcome, review_outcome,
                elo_score, dispatches_count, last_dispatch_id,
                first_scored_at, last_updated
@@ -530,7 +562,7 @@ def recent_scores(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     """Return the most recent N judged dispatches."""
     rows = conn.execute(
         """
-        SELECT ticket_id, pr_url, driver, model, role, task_class,
+        SELECT ticket_id, pr_url, driver, model, soul_id, soul_hash, role, task_class,
                complexity_bucket, capabilities_json, capabilities_key,
                pr_outcome, ci_outcome, review_outcome,
                total_score, judge_model, judge_reasoning, inferred,
@@ -557,6 +589,8 @@ def lookup_elo(
     conn: sqlite3.Connection,
     driver: str,
     model: str,
+    soul_id: str | None = None,
+    soul_hash: str | None = None,
     task_class: str | None = None,
     *,
     role: str | None = None,
@@ -570,6 +604,8 @@ def lookup_elo(
     dims = _dimension_payload(
         driver=driver,
         model=model,
+        soul_id=soul_id,
+        soul_hash=soul_hash,
         role=role,
         task_class=task_class,
         complexity_bucket=complexity_bucket,
@@ -580,12 +616,12 @@ def lookup_elo(
     )
     row = conn.execute(
         """
-        SELECT driver, model, role, task_class, complexity_bucket,
+        SELECT driver, model, soul_id, soul_hash, role, task_class, complexity_bucket,
                capabilities_key, pr_outcome, ci_outcome, review_outcome,
                elo_score, dispatches_count, first_scored_at, last_updated
           FROM swarm_elo
-         WHERE driver = ? AND model = ? AND role = ? AND task_class = ?
-           AND complexity_bucket = ? AND capabilities_key = ?
+         WHERE driver = ? AND model = ? AND soul_id = ? AND soul_hash = ?
+           AND role = ? AND task_class = ? AND complexity_bucket = ? AND capabilities_key = ?
            AND pr_outcome = ? AND ci_outcome = ? AND review_outcome = ?
         """,
         tuple(dims[field] for field in KEY_FIELDS),

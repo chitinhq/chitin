@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 from unittest import mock
 
@@ -61,12 +62,35 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
                 "cmd": "chitin-kernel",
                 "model": "gpt-4.1",
                 "prompt": "ticket body here",
+                "system_prompt": "soul prompt",
                 "args": ["drive", "copilot", "--model", "{model}", "--cwd", ".", "{prompt}"],
             }
         )
 
-        self.assertEqual(argv, ["chitin-kernel", "drive", "copilot", "--model", "gpt-4.1", "--cwd", "."])
+        self.assertEqual(
+            argv,
+            [
+                "chitin-kernel", "drive", "copilot", "--model", "gpt-4.1", "--cwd", ".",
+                "--append-system-prompt", "soul prompt",
+            ],
+        )
         self.assertEqual(stdin_text, "ticket body here")
+
+    def test_prepare_worker_command_codex_prefixes_system_prompt_into_ticket_body(self):
+        module = load_module()
+        argv, stdin_text = module.prepare_worker_command(
+            {
+                "driver": "codex",
+                "cmd": "codex",
+                "model": "gpt-5.5",
+                "prompt": "ticket body here",
+                "system_prompt": "soul prompt",
+                "args": ["exec", "--model", "{model}", "{prompt}"],
+            }
+        )
+
+        self.assertEqual(argv, ["codex", "exec", "--model", "gpt-5.5"])
+        self.assertEqual(stdin_text, "soul prompt\n\nticket body here")
 
     def test_prepare_worker_command_max_size_prompt_stays_off_argv(self):
         # Boundary: max. A very large ticket body must travel via stdin_text,
@@ -187,6 +211,41 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
 
         self.assertEqual(chain_file, str(empty))
         self.assertIsNone(chain_hash)
+
+    def test_materialize_driver_prompt_artifacts_writes_claude_md(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            module.materialize_driver_prompt_artifacts(
+                {"driver": "claude-code", "system_prompt": "soul prompt"},
+                tmp,
+            )
+            self.assertEqual((Path(tmp) / "CLAUDE.md").read_text(encoding="utf-8"), "soul prompt\n")
+
+    def test_resolve_soul_file_and_hash_mismatch_audit_flag(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            souls = Path(tmp) / "souls"
+            souls.mkdir()
+            soul_file = souls / "knuth.md"
+            soul_file.write_text("before\n", encoding="utf-8")
+            resolved = module.resolve_soul_file({"soul_id": "knuth", "souls_dir": str(souls)})
+            self.assertEqual(resolved, soul_file)
+
+            observed_hash = module.compute_file_sha256(soul_file)
+            assert observed_hash is not None
+            with mock.patch.object(module, "commits_ahead_of_base", return_value=1):
+                summary = module.summarize_completed_run(
+                    {"driver": "codex", "model": "gpt-5.5"},
+                    0,
+                    "",
+                    "",
+                    tmp,
+                    soul_hash_mismatch=True,
+                    observed_soul_hash=observed_hash,
+                )
+
+        self.assertEqual(summary["audit_flags"], ["soul_hash_mismatch"])
+        self.assertEqual(summary["observed_soul_hash"], hashlib.sha256(b"before\n").hexdigest())
 
 
 if __name__ == "__main__":
