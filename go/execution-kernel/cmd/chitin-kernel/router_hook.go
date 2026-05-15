@@ -276,11 +276,19 @@ func stampHeuristicSignals(errOut io.Writer, agent string, hookInput router.Hook
 	if noRecord {
 		return
 	}
+	driver := os.Getenv("CHITIN_DRIVER")
+	if driver == "" {
+		driver = os.Getenv("CHITIN_DISPATCH_DRIVER")
+	}
+	if driver == "" {
+		driver = agent
+	}
 	d := gov.Decision{
 		Allowed: !kernelDeny,
 		Mode:    "monitor",
 		RuleID:  "router-heuristic:" + ruleID,
 		Agent:   agent,
+		Driver:  driver,
 		Ts:      time.Now().UTC().Format(time.RFC3339),
 		Action: gov.Action{
 			Type:   gov.ActionType("router.signal"),
