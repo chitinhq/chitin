@@ -2,6 +2,7 @@
 import html, json, os, re, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from board_resolver import resolve_db, resolve_board
