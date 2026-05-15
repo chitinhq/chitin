@@ -256,6 +256,15 @@ def is_review_nonblocking(review: dict[str, str] | None, head: str, *, require_c
     return False
 
 
+def is_deploy_drift_diagnostic(diagnostic: str) -> bool:
+    """Return true when regression-gate failed only because deployed swarm
+    files drifted from the repo copy. This is operational deploy drift, not a
+    PR-content regression, and can be repaired by scripts/install-swarm.sh.
+    """
+    failed = re.findall(r"^\s*FAIL\s+(scripts/[^\s]+)", diagnostic, flags=re.M)
+    return failed == ["scripts/check-swarm-deployed-sync.sh"]
+
+
 def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, Any]:
     head = str(pr.get("headRefOid") or "")
     review = latest_review(comments_)
@@ -292,7 +301,7 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
         if gate_rc == 0:
             gate_status = "pass"
         elif gate_rc == 1:
-            gate_status = "fail-invariant"
+            gate_status = "deploy-drift" if is_deploy_drift_diagnostic(gate_diagnostic) else "fail-invariant"
         else:
             gate_status = "fail-tool"
 
@@ -300,6 +309,8 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
 
     if merged:
         action = "mark-done" if ticket and status != "done" else "merged-noop"
+    elif gate_status == "deploy-drift":
+        action = "deploy-drift"
     elif gate_status == "fail-invariant":
         action = "regression-gate-fail"
     elif gate_status == "fail-tool":
@@ -379,8 +390,8 @@ def needs_operator_escalation(item: dict[str, Any]) -> bool:
         return False
     if item.get("auto_merge_ready"):
         return False
-    if item.get("action") == "regression-gate-fail":
-        # Already handled by post_regression_gate_comment + reassign.
+    if item.get("action") in {"regression-gate-fail", "deploy-drift"}:
+        # Already handled by specific gate comments/repair paths.
         return False
     if item.get("action") == "regression-gate-error":
         # Tool error — operator must investigate, but skip the generic
@@ -445,6 +456,40 @@ def post_regression_gate_comment(item: dict[str, Any], apply: bool,
     ], timeout=60, check=False)
 
 
+def post_deploy_drift_comment(item: dict[str, Any], apply: bool) -> None:
+    """Explain deployed-runtime drift and the safe repair command."""
+    if not apply:
+        return
+    body = (
+        f"{LIFECYCLE_MARKER} kind=deploy-drift head={item['head']} -->\n"
+        "**Regression gate: deployed swarm drift** (`gate_status=deploy-drift`).\n\n"
+        "The PR content gates passed, but repo-owned swarm files deployed under "
+        "`~/.openclaw` differ from this repo. Auto-merge remains fail-closed "
+        "until deployed runtime is synchronized.\n\n"
+        "Safe recovery from the Chitin checkout:\n"
+        "```bash\n"
+        "bash scripts/install-swarm.sh && bash scripts/check-swarm-deployed-sync.sh\n"
+        "```\n\n"
+        f"Diagnostic:\n```\n{item.get('gate_diagnostic', '(no diagnostic)')}\n```"
+    )
+    run([
+        "gh", "pr", "comment", item["pr"], "--repo", REPO,
+        "--body", body,
+    ], timeout=60, check=False)
+
+
+def repair_deploy_drift(apply: bool) -> bool:
+    if not apply:
+        return True
+    installed = run(["bash", "scripts/install-swarm.sh"], timeout=120)
+    if installed.returncode != 0:
+        raise RuntimeError(f"install-swarm failed: {(installed.stderr or installed.stdout)[-800:]}")
+    verified = run(["bash", "scripts/check-swarm-deployed-sync.sh"], timeout=60)
+    if verified.returncode != 0:
+        raise RuntimeError(f"deployed sync check still fails: {(verified.stderr or verified.stdout)[-800:]}")
+    return True
+
+
 def assign_ticket_to_operator(item: dict[str, Any], operator: str,
                               apply: bool) -> None:
     """Reassign the PR's kanban ticket to the operator after a gate failure."""
@@ -460,7 +505,7 @@ def assign_ticket_to_operator(item: dict[str, Any], operator: str,
     ], timeout=60, check=False)
 
 
-def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_to: str | None) -> dict[str, Any]:
+def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_to: str | None, repair_deploy_drift_flag: bool = False) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for pr in list_prs(prefixes):
         cs = comments(int(pr["number"]))
@@ -482,6 +527,14 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
                 post_regression_gate_comment(item, apply, request_changes=True)
                 assign_ticket_to_operator(item, "red", apply)
                 item["applied"] = "gate-fail" if apply else "would-gate-fail"
+            elif item["action"] == "deploy-drift":
+                if not has_lifecycle_marker(cs, "deploy-drift", item["head"]):
+                    post_deploy_drift_comment(item, apply)
+                if repair_deploy_drift_flag:
+                    repair_deploy_drift(apply)
+                    item["applied"] = "deploy-drift-repaired" if apply else "would-deploy-drift-repair"
+                else:
+                    item["applied"] = "deploy-drift" if apply else "would-deploy-drift"
             elif item["action"] == "regression-gate-error":
                 # Tool error (aggregator crashed / worktree fetch failed / timeout).
                 # Comment only — do NOT reassign; operator must investigate.
@@ -499,16 +552,17 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
             log(f"PR #{item['pr']}: lifecycle action failed: {e}")
         items.append(item)
     cleanup_candidates = [i for i in items if i["state"] == "MERGED" and i.get("branch")]
-    return {"apply": apply, "auto_merge": auto_merge, "escalate_to": escalate_to, "items": items, "cleanup_candidates": cleanup_candidates}
+    return {"apply": apply, "auto_merge": auto_merge, "escalate_to": escalate_to, "repair_deploy_drift": repair_deploy_drift_flag, "items": items, "cleanup_candidates": cleanup_candidates}
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates")
     ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
     ap.add_argument("--escalate-to", help="assign mapped PR tickets that need operator action to this board profile")
+    ap.add_argument("--repair-deploy-drift", action="store_true", help="when a PR is blocked only by deployed swarm drift, run scripts/install-swarm.sh and verify sync; merge still requires a later lifecycle pass")
     ap.add_argument("--prefix", action="append")
     args = ap.parse_args()
-    result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply, args.auto_merge, args.escalate_to)
+    result = run_once(tuple(args.prefix or DEFAULT_PREFIXES), args.apply, args.auto_merge, args.escalate_to, args.repair_deploy_drift)
     print(json.dumps(result, indent=2))
     return 0
 
