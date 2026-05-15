@@ -17,6 +17,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
@@ -35,6 +36,7 @@ const CURRENT_BOARD = (() => {
   catch { return 'chitin'; }
 })();
 const BOARD_DB = path.join(KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+const BUS_DB = process.env.AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
 const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
@@ -43,6 +45,7 @@ const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
 
 let kanbanDB = null;
+let busDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
@@ -58,8 +61,9 @@ function openIfExists(p, readonly = true) {
 }
 
 function reopen() {
-  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
+  kanbanDB?.close(); busDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
   kanbanDB           = openIfExists(BOARD_DB);
+  busDB              = openIfExists(BUS_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
@@ -78,13 +82,15 @@ function json(res, status, body) {
 }
 const notFound  = (res) => json(res, 404, { error: 'not_found' });
 const serverErr = (res, e) => json(res, 500, { error: 'server_error', detail: String(e?.message || e) });
+const ATTACHMENT_CACHE_TTL_MS = 60_000;
+const attachmentCache = new Map();
 
 // ---------- Helpers ----------
 function* readJsonl(file) {
   const raw = fs.readFileSync(file, 'utf8');
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
-    try { yield JSON.parse(line); } catch {}
+    try { yield JSON.parse(line); } catch { continue; }
   }
 }
 
@@ -98,6 +104,95 @@ function listLedgerFiles({ maxDays = 14 } = {}) {
       .slice(0, maxDays);
     return files.map(f => f.path);
   } catch { return []; }
+}
+
+function slugify(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function previewText(value, max = 140) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function safeRepoPath(relPath) {
+  if (!relPath) return null;
+  const resolved = path.resolve(REPO_ROOT, relPath);
+  const relative = path.relative(REPO_ROOT, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return resolved;
+}
+
+function parseMarkdownPreview(content) {
+  const lines = String(content || '').split(/\r?\n/);
+  let title = '';
+  let i = 0;
+  while (i < lines.length && !title) {
+    const line = lines[i].trim();
+    if (line.startsWith('# ')) title = line.replace(/^# /, '').trim();
+    i += 1;
+  }
+  const bodyLines = [];
+  let inFence = false;
+  for (; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (!line) {
+      if (bodyLines.length) break;
+      continue;
+    }
+    bodyLines.push(line);
+  }
+  return {
+    title: title || '(untitled spec)',
+    preview: bodyLines.join(' '),
+  };
+}
+
+function currentRepoInfo() {
+  try {
+    const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = remote.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2], remote };
+  } catch {
+    return null;
+  }
+}
+
+const repoInfo = currentRepoInfo();
+
+function ghApi(route, extraArgs = []) {
+  const args = ['api', route, ...extraArgs];
+  const raw = execFileSync('gh', args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return JSON.parse(raw);
+}
+
+function withAttachmentCache(key, loader) {
+  const now = Date.now();
+  const hit = attachmentCache.get(key);
+  if (hit && now - hit.at < ATTACHMENT_CACHE_TTL_MS) return hit.value;
+  const value = loader();
+  attachmentCache.set(key, { at: now, value });
+  return value;
 }
 
 // ---------- Endpoints ----------
@@ -130,7 +225,9 @@ function getStats() {
       FROM task_runs WHERE ended_at IS NOT NULL AND ended_at > strftime('%s','now') - 86400
     `).get();
     runsLast24 = r24.total; runsCompleted24 = r24.ok;
-  } catch {}
+  } catch {
+    // Stats endpoints stay available even when task_runs is absent.
+  }
   return {
     board: CURRENT_BOARD,
     lanes,
@@ -202,18 +299,134 @@ function getTask(id) {
     'SELECT id, profile, step_key, status, started_at, ended_at, outcome, summary, error FROM task_runs WHERE task_id = ? ORDER BY started_at DESC'
   ).all(id);
   let comments = [];
-  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch { comments = []; }
   let links = [];
-  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch { links = []; }
   let clawtaDecisions = [];
   if (clawtaDecisionsDB) {
     try {
       clawtaDecisions = clawtaDecisionsDB.prepare(
         'SELECT id, driver, model, selection_mode, reasoning, ts FROM clawta_decisions WHERE ticket_id = ? ORDER BY ts DESC LIMIT 25'
       ).all(id);
-    } catch {}
+    } catch {
+      clawtaDecisions = [];
+    }
   }
   return { task, runs, events, comments, links, clawtaDecisions };
+}
+
+function listThreads(query) {
+  if (!busDB) return { threads: [], count: 0 };
+  const board = query.get('board');
+  const status = query.get('status');
+  const audience = query.get('audience');
+  const search = (query.get('q') || '').trim().toLowerCase();
+  const limit = Math.min(Number(query.get('limit') || 200), 1000);
+
+  const conds = [];
+  const params = {};
+  if (board) { conds.push('t.board = @board'); params.board = board; }
+  if (status) { conds.push('t.status = @status'); params.status = status; }
+  if (audience) {
+    conds.push("(t.audience IS NULL OR t.audience = '' OR ',' || t.audience || ',' LIKE @audience)");
+    params.audience = `%,${audience},%`;
+  }
+  if (search) {
+    conds.push('(LOWER(t.title) LIKE @q OR LOWER(COALESCE(first_msg.body, \'\')) LIKE @q OR t.task_id LIKE @qid)');
+    params.q = `%${search}%`;
+    params.qid = `%${query.get('q')}%`;
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const rows = busDB.prepare(`
+    SELECT
+      t.id,
+      t.board,
+      t.task_id,
+      t.title,
+      t.author,
+      t.audience,
+      t.status,
+      t.discord_thread_id,
+      t.created_at,
+      t.updated_at,
+      COALESCE(msg_counts.message_count, 0) AS message_count,
+      COALESCE(att_counts.attachment_count, 0) AS attachment_count,
+      latest_msg.author AS last_message_author,
+      latest_msg.body AS last_message_body
+    FROM threads t
+    LEFT JOIN (
+      SELECT thread_id, COUNT(*) AS message_count
+      FROM messages
+      GROUP BY thread_id
+    ) AS msg_counts ON msg_counts.thread_id = t.id
+    LEFT JOIN (
+      SELECT thread_id, COUNT(*) AS attachment_count
+      FROM attachments
+      GROUP BY thread_id
+    ) AS att_counts ON att_counts.thread_id = t.id
+    LEFT JOIN messages AS latest_msg
+      ON latest_msg.id = (
+        SELECT id FROM messages WHERE thread_id = t.id ORDER BY created_at DESC, id DESC LIMIT 1
+      )
+    LEFT JOIN messages AS first_msg
+      ON first_msg.id = (
+        SELECT id FROM messages WHERE thread_id = t.id ORDER BY created_at ASC, id ASC LIMIT 1
+      )
+    ${where}
+    ORDER BY t.updated_at DESC, t.id DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+  return {
+    threads: rows.map((row) => ({
+      ...row,
+      last_message_preview: previewText(row.last_message_body),
+    })),
+    count: rows.length,
+  };
+}
+
+function getThread(id) {
+  if (!busDB) return null;
+  const thread = busDB.prepare(`
+    SELECT
+      t.id,
+      t.board,
+      t.task_id,
+      t.title,
+      t.author,
+      t.audience,
+      t.status,
+      t.discord_thread_id,
+      t.created_at,
+      t.updated_at
+    FROM threads t
+    WHERE t.id = ?
+  `).get(id);
+  if (!thread) return null;
+  const messages = busDB.prepare(`
+    SELECT id, thread_id, parent_id, author, audience, body, kind,
+           discord_message_id, ack_required, created_at
+    FROM messages
+    WHERE thread_id = ?
+    ORDER BY created_at ASC, id ASC
+  `).all(id);
+  const attachments = busDB.prepare(`
+    SELECT id, thread_id, kind, ref, display, created_at
+    FROM attachments
+    WHERE thread_id = ?
+    ORDER BY created_at ASC, id ASC
+  `).all(id);
+  return {
+    thread: {
+      ...thread,
+      message_count: messages.length,
+      attachment_count: attachments.length,
+      last_message_preview: previewText(messages.at(-1)?.body),
+      last_message_author: messages.at(-1)?.author || null,
+    },
+    messages,
+    attachments,
+  };
 }
 
 function listAssignees() {
@@ -226,6 +439,252 @@ function listAssignees() {
     ORDER BY n DESC
   `).all();
   return { assignees: rows };
+}
+
+function getTaskAttachment(ref) {
+  if (!kanbanDB) {
+    return {
+      kind: 'task',
+      ref,
+      status: 'missing',
+      label: ref,
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  const task = kanbanDB.prepare('SELECT id, title, status, assignee FROM tasks WHERE id = ?').get(ref);
+  if (!task) {
+    return {
+      kind: 'task',
+      ref,
+      status: 'missing',
+      label: ref,
+      title: ref,
+      subtitle: '(missing)',
+      href: `/tickets?id=${encodeURIComponent(ref)}`,
+    };
+  }
+  return {
+    kind: 'task',
+    ref,
+    status: 'ok',
+    label: task.id,
+    title: task.title,
+    subtitle: task.assignee ? `${task.status} · ${task.assignee}` : task.status,
+    taskStatus: task.status,
+    assignee: task.assignee,
+    href: `/tickets?id=${encodeURIComponent(task.id)}`,
+  };
+}
+
+function getSpecAttachment(ref) {
+  const absPath = safeRepoPath(ref);
+  if (!absPath || !fs.existsSync(absPath)) {
+    return {
+      kind: 'spec',
+      ref,
+      status: 'missing',
+      label: 'spec',
+      title: path.basename(ref),
+      subtitle: '(missing)',
+    };
+  }
+  const content = fs.readFileSync(absPath, 'utf8');
+  const preview = parseMarkdownPreview(content);
+  return {
+    kind: 'spec',
+    ref,
+    status: 'ok',
+    label: 'spec',
+    title: preview.title,
+    subtitle: previewText(preview.preview, 180),
+    preview: preview.preview,
+    body: content,
+    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
+  };
+}
+
+function normalizePrRef(ref) {
+  const raw = String(ref || '').trim();
+  const simple = raw.match(/^#?(\d+)$/);
+  if (simple && repoInfo) return { ...repoInfo, number: Number(simple[1]), crossRepo: false };
+  const qualified = raw.match(/^([^/]+)\/([^#]+)#(\d+)$/);
+  if (qualified) {
+    return {
+      owner: qualified[1],
+      repo: qualified[2],
+      number: Number(qualified[3]),
+      crossRepo: !repoInfo || qualified[1] !== repoInfo.owner || qualified[2] !== repoInfo.repo,
+    };
+  }
+  return null;
+}
+
+function ciBucketFromState(state) {
+  switch (state) {
+    case 'success': return 'passing';
+    case 'failure':
+    case 'error': return 'failing';
+    case 'pending': return 'pending';
+    default: return 'unknown';
+  }
+}
+
+function getPrAttachment(ref) {
+  const parsed = normalizePrRef(ref);
+  if (!parsed) {
+    return {
+      kind: 'pr',
+      ref,
+      status: 'missing',
+      label: 'PR',
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  if (parsed.crossRepo) {
+    return {
+      kind: 'pr',
+      ref,
+      status: 'missing',
+      label: `PR #${parsed.number}`,
+      title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
+      subtitle: '(missing)',
+    };
+  }
+  return withAttachmentCache(`pr:${parsed.owner}/${parsed.repo}#${parsed.number}`, () => {
+    try {
+      const pr = ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}`);
+      const combined = ghApi(`repos/${parsed.owner}/${parsed.repo}/commits/${pr.head.sha}/status`);
+      const merged = pr.merged_at ? 'merged' : pr.state;
+      const ciBucket = ciBucketFromState(combined.state);
+      return {
+        kind: 'pr',
+        ref,
+        status: 'ok',
+        label: `PR #${pr.number}`,
+        title: pr.title,
+        subtitle: `${merged} · CI ${ciBucket}`,
+        prNumber: pr.number,
+        prState: merged,
+        checks: ciBucket,
+        href: pr.html_url,
+      };
+    } catch (e) {
+      return {
+        kind: 'pr',
+        ref,
+        status: 'error',
+        label: `PR #${parsed.number}`,
+        title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
+        subtitle: '(missing)',
+        error: e.message,
+      };
+    }
+  });
+}
+
+function discordHref(ref) {
+  if (/^https?:\/\//.test(ref)) return ref;
+  const cleaned = String(ref || '').trim().replace(/^discord:\/\//, '').replace(/^\/+/, '');
+  return `discord://-/channels/${cleaned}`;
+}
+
+function getDiscordAttachment(ref, display) {
+  const label = display || `#${slugify(ref).replace(/-/g, '-') || 'discord'}`;
+  return {
+    kind: 'discord',
+    ref,
+    status: ref ? 'ok' : 'missing',
+    label: 'discord',
+    title: label,
+    subtitle: ref ? previewText(ref, 80) : '(missing)',
+    href: ref ? discordHref(ref) : undefined,
+  };
+}
+
+function getUrlAttachment(ref, display) {
+  return {
+    kind: 'url',
+    ref,
+    status: ref ? 'ok' : 'missing',
+    label: display || 'url',
+    title: display || ref,
+    subtitle: ref ? previewText(ref, 90) : '(missing)',
+    href: ref || undefined,
+  };
+}
+
+function getFileAttachment(ref) {
+  const absPath = safeRepoPath(ref);
+  if (!absPath || !fs.existsSync(absPath)) {
+    return {
+      kind: 'file',
+      ref,
+      status: 'missing',
+      label: 'file',
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  let firstLine = '';
+  try {
+    firstLine = fs.readFileSync(absPath, 'utf8').split(/\r?\n/, 1)[0] || '';
+  } catch {
+    firstLine = '';
+  }
+  return {
+    kind: 'file',
+    ref,
+    status: 'ok',
+    label: 'file',
+    title: ref,
+    subtitle: previewText(firstLine || 'open file', 120),
+    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
+  };
+}
+
+function getAttachmentEnrichment(threadId, attachmentId) {
+  if (!busDB) return null;
+  const attachment = busDB.prepare(`
+    SELECT id, thread_id, kind, ref, display, created_at
+    FROM attachments
+    WHERE thread_id = ? AND id = ?
+  `).get(threadId, attachmentId);
+  if (!attachment) return null;
+  switch (attachment.kind) {
+    case 'spec':
+      return getSpecAttachment(attachment.ref);
+    case 'pr':
+      return getPrAttachment(attachment.ref);
+    case 'task':
+      return getTaskAttachment(attachment.ref);
+    case 'discord':
+      return getDiscordAttachment(attachment.ref, attachment.display);
+    case 'url':
+      return getUrlAttachment(attachment.ref, attachment.display);
+    case 'file':
+      return getFileAttachment(attachment.ref);
+    default:
+      return {
+        kind: attachment.kind,
+        ref: attachment.ref,
+        status: 'missing',
+        label: attachment.kind,
+        title: attachment.display || attachment.ref,
+        subtitle: '(missing)',
+      };
+  }
+}
+
+function getRepoFile(query) {
+  const relPath = query.get('path');
+  const absPath = safeRepoPath(relPath);
+  if (!absPath || !fs.existsSync(absPath)) return null;
+  return {
+    path: relPath,
+    content: fs.readFileSync(absPath, 'utf8'),
+  };
 }
 
 function listRunsRecent(query) {
@@ -253,7 +712,7 @@ function listArgusFindings(query) {
   ];
   for (const sql of candidates) {
     try { return { findings: argusDB.prepare(sql).all(limit) }; }
-    catch {}
+    catch { continue; }
   }
   try {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
@@ -267,7 +726,7 @@ function argusInfo() {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
     const counts = {};
     for (const t of tables) {
-      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch {}
+      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch { counts[t] = 0; }
     }
     return { available: true, tables, counts };
   } catch (e) { return { available: true, error: e.message }; }
@@ -441,6 +900,9 @@ const handlers = [
   [/^\/api\/stats$/,                 () => getStats()],
   [/^\/api\/tasks$/,                 (req, q) => listTasks(q)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1])],
+  [/^\/api\/threads$/,               (req, q) => listThreads(q)],
+  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]))],
+  [/^\/api\/threads\/(\d+)\/attachments\/(\d+)$/, (req, q, m) => getAttachmentEnrichment(Number(m[1]), Number(m[2]))],
   [/^\/api\/assignees$/,             () => listAssignees()],
   [/^\/api\/runs\/recent$/,          (req, q) => listRunsRecent(q)],
   [/^\/api\/argus\/info$/,           () => argusInfo()],
@@ -466,6 +928,17 @@ const server = http.createServer((req, res) => {
   }
   if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  if (url.pathname === '/api/repo-file') {
+    const file = getRepoFile(url.searchParams);
+    if (!file) return notFound(res);
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(file.content);
+    return;
+  }
   for (const [re, fn] of handlers) {
     const m = url.pathname.match(re);
     if (m) {
@@ -483,6 +956,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
   console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
   console.log(`[chitin-console-api] kanban=${BOARD_DB} (${kanbanDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] bus=${BUS_DB} (${busDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);

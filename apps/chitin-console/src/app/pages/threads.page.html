@@ -1,0 +1,138 @@
+<header class="head">
+  <div>
+    <h1 class="title">Threads</h1>
+    <p class="subtitle mono">
+      {{ threads().length }} threads · read-only bus view with async attachment badges
+    </p>
+  </div>
+  <div class="filters">
+    <input class="input compact" type="text" placeholder="board"
+      [(ngModel)]="board" (keyup.enter)="reload()" aria-label="Board filter"/>
+    <select class="input" [(ngModel)]="status" (ngModelChange)="reload()" aria-label="Status filter">
+      @for (o of statusOptions; track o.value) {
+        <option [value]="o.value">{{ o.label }}</option>
+      }
+    </select>
+    <input class="input compact" type="text" placeholder="audience"
+      [(ngModel)]="audience" (keyup.enter)="reload()" aria-label="Audience filter"/>
+    <input class="input search" type="text" placeholder="search title / opener / task id…"
+      [(ngModel)]="q" (keyup.enter)="reload()" aria-label="Search threads"/>
+    <button class="btn" type="button" (click)="reload()">filter</button>
+  </div>
+</header>
+
+@if (loading()) {
+  <cc-loader message="Loading threads"></cc-loader>
+} @else if (threads().length === 0) {
+  <div class="plate">
+    <cc-empty-state title="No threads" body="No bus threads match the current filters."></cc-empty-state>
+  </div>
+} @else {
+  <div class="plate panel">
+    <div class="panel-body">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>thread</th>
+            <th>status</th>
+            <th>board</th>
+            <th>attachments</th>
+            <th>updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (t of threads(); track t.id) {
+            <tr class="row-hover" (click)="openThread(t.id)">
+              <td class="thread-cell">
+                <div class="ttl">{{ t.title }}</div>
+                <div class="meta mono">
+                  #{{ t.id }} · {{ t.author }}
+                  @if (t.task_id) {
+                    <span>· {{ t.task_id }}</span>
+                  }
+                  @if (t.audience) {
+                    <span>· {{ t.audience }}</span>
+                  }
+                </div>
+                @if (t.last_message_preview) {
+                  <div class="preview">{{ t.last_message_preview }}</div>
+                }
+              </td>
+              <td><cc-status-pill [status]="t.status"></cc-status-pill></td>
+              <td class="mono small">{{ t.board || 'global' }}</td>
+              <td class="mono small">{{ t.attachment_count }} / {{ t.message_count }}</td>
+              <td class="mono small text-muted">{{ ageFromEpochSeconds(t.updated_at) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}
+
+@if (selectedDetail() || drawerLoading()) {
+  <aside class="drawer" role="dialog" aria-label="Thread detail" aria-modal="false">
+    <header class="drawer-head">
+      @if (selectedDetail(); as d) {
+        <div>
+          <div class="mono small text-muted">thread #{{ d.thread.id }}</div>
+          <div class="drawer-title">{{ d.thread.title }}</div>
+          <div class="meta">
+            <cc-status-pill [status]="d.thread.status"></cc-status-pill>
+            <span class="mono small text-muted">{{ d.thread.author }}</span>
+            <span class="mono small text-muted">{{ d.thread.board || 'global' }}</span>
+            <span class="mono small text-dim">updated {{ fmtTs(d.thread.updated_at) }}</span>
+          </div>
+        </div>
+      } @else {
+        <div class="mono small text-muted">loading…</div>
+      }
+      <button class="btn" type="button" (click)="closeDrawer()">close ✕</button>
+    </header>
+
+    <div class="drawer-body">
+      @if (drawerLoading()) {
+        <cc-loader message="Loading thread"></cc-loader>
+      } @else if (selectedDetail(); as d) {
+        <section class="block">
+          <h3 class="block-title">attachments ({{ d.attachments.length }})</h3>
+          @if (d.attachments.length === 0) {
+            <p class="text-muted small">No attachments on this thread.</p>
+          } @else {
+            <div class="attachments-grid">
+              @for (attachment of d.attachments; track attachment.id) {
+                <cc-attachment-badge [threadId]="d.thread.id" [attachment]="attachment"></cc-attachment-badge>
+              }
+            </div>
+          }
+        </section>
+
+        <section class="block">
+          <h3 class="block-title">messages ({{ d.messages.length }})</h3>
+          @if (d.messages.length === 0) {
+            <p class="text-muted small">No messages recorded.</p>
+          } @else {
+            <ul class="message-list">
+              @for (message of d.messages; track message.id) {
+                <li class="message-item">
+                  <div class="message-head">
+                    <span class="mono small text-glow">{{ message.author }}</span>
+                    <span class="mono tiny text-muted">{{ message.kind }}</span>
+                    @if (message.parent_id) {
+                      <span class="mono tiny text-muted">reply to #{{ message.parent_id }}</span>
+                    }
+                    @if (message.ack_required) {
+                      <span class="ack mono tiny">ack</span>
+                    }
+                    <span class="mono tiny text-dim">{{ fmtTs(message.created_at) }}</span>
+                  </div>
+                  <pre class="message-body mono">{{ message.body }}</pre>
+                </li>
+              }
+            </ul>
+          }
+        </section>
+      }
+    </div>
+  </aside>
+}

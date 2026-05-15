@@ -26,6 +26,7 @@ export class App implements OnInit, OnDestroy {
   readonly nav: NavItem[] = [
     { path: '/overview',    label: 'Overview',    icon: 'overview' },
     { path: '/sessions',    label: 'Sessions',    icon: 'sessions' },
+    { path: '/threads',     label: 'Threads',     icon: 'threads' },
     { path: '/tickets',     label: 'Tickets',     icon: 'tickets' },
     { path: '/elo',         label: 'Swarm ELO',   icon: 'elo' },
     { path: '/argus',       label: 'Argus',       icon: 'argus' },
