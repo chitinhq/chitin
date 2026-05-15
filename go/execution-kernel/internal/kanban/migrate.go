@@ -136,6 +136,53 @@ func copyTable(src, dest *sql.DB, table string) error {
 	return tx.Commit()
 }
 
+// RowCounts returns a map of table -> row count for every canonical
+// table. Missing tables map to 0.
+func RowCounts(db *sql.DB) (map[string]int, error) {
+	out := map[string]int{}
+	for _, table := range migrationTables {
+		cols, err := tableColumns(db, table)
+		if err != nil {
+			return nil, err
+		}
+		if len(cols) == 0 {
+			out[table] = 0
+			continue
+		}
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+			return nil, fmt.Errorf("count %s: %w", table, err)
+		}
+		out[table] = n
+	}
+	return out, nil
+}
+
+// VerifyCounts compares row counts table-by-table between two DBs and
+// returns an error listing every mismatch. nil means the two DBs
+// agree on every canonical table.
+func VerifyCounts(src, dest *sql.DB) error {
+	srcCounts, err := RowCounts(src)
+	if err != nil {
+		return fmt.Errorf("src: %w", err)
+	}
+	destCounts, err := RowCounts(dest)
+	if err != nil {
+		return fmt.Errorf("dest: %w", err)
+	}
+	var mismatches []string
+	for _, table := range migrationTables {
+		if srcCounts[table] != destCounts[table] {
+			mismatches = append(mismatches,
+				fmt.Sprintf("%s: src=%d dest=%d", table, srcCounts[table], destCounts[table]))
+		}
+	}
+	if len(mismatches) > 0 {
+		return fmt.Errorf("row-count mismatch: %s", strings.Join(mismatches, "; "))
+	}
+	return nil
+}
+
 // tableColumns returns the ordered column names of a table, or an
 // empty slice if the table doesn't exist.
 func tableColumns(db *sql.DB, table string) ([]string, error) {

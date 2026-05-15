@@ -167,3 +167,55 @@ func TestMigrateAcceptsReadybenchShapeWithoutBlockReason(t *testing.T) {
 		t.Errorf("block_reason: want NULL, got %q", blockReason.String)
 	}
 }
+
+func TestRowCountsReturnsPerTableCounts(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.db")
+	dest := filepath.Join(dir, "dest.db")
+	seedHermesChitinShape(t, src)
+	if err := Migrate(src, dest); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	srcDB, _ := sql.Open("sqlite", src)
+	defer srcDB.Close()
+	destDB, _ := sql.Open("sqlite", dest)
+	defer destDB.Close()
+
+	srcCounts, err := RowCounts(srcDB)
+	if err != nil {
+		t.Fatalf("src counts: %v", err)
+	}
+	destCounts, err := RowCounts(destDB)
+	if err != nil {
+		t.Fatalf("dest counts: %v", err)
+	}
+
+	for _, table := range migrationTables {
+		if srcCounts[table] != destCounts[table] {
+			t.Errorf("%s: src=%d dest=%d", table, srcCounts[table], destCounts[table])
+		}
+	}
+}
+
+func TestVerifyCountsReturnsMismatchAsError(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.db")
+	b := filepath.Join(dir, "b.db")
+	seedHermesChitinShape(t, a)
+	seedHermesChitinShape(t, b)
+	bDB, _ := sql.Open("sqlite", b)
+	if _, err := bDB.Exec("DELETE FROM tasks WHERE id='t_bbb'"); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	bDB.Close()
+
+	aDB, _ := sql.Open("sqlite", a)
+	defer aDB.Close()
+	bDB2, _ := sql.Open("sqlite", b)
+	defer bDB2.Close()
+
+	if err := VerifyCounts(aDB, bDB2); err == nil {
+		t.Fatal("VerifyCounts: want mismatch error, got nil")
+	}
+}
