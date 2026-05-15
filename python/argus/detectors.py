@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from argus import migrations
+
 
 def _utc_now() -> datetime:
     """Timezone-aware UTC now. Replaces the deprecated datetime.utcnow()."""
@@ -459,7 +461,19 @@ def detect_discord_narration_gap(
 
 
 def run_all_detectors(db_path: str) -> list[Finding]:
-    """Run all detectors and return all findings."""
+    """Run all detectors and return all findings.
+
+    Several detectors query the `source` / `kind` columns added by
+    Slice-3 migrations. A scheduled report against a pre-Slice-3 index
+    would otherwise fail with `no such column: source`, so bring the
+    schema current before any detector runs.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        migrations.apply_pending(conn)
+    finally:
+        conn.close()
+
     findings = []
     findings.extend(detect_deny_cluster(db_path, window_seconds=300, threshold_count=4))
     findings.extend(detect_unknown_rate_spike(db_path, window_hours=24, threshold_percent=1.0))

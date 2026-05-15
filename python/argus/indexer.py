@@ -82,20 +82,13 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         ON events(agent)
     """)
 
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_source_ts
-        ON events(source, ts_unix)
-    """)
-
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_kind_ts
-        ON events(kind, ts_unix)
-    """)
-
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_subject_ts
-        ON events(subject, ts_unix)
-    """)
+    # NOTE: indexes on source/kind/subject are intentionally NOT created
+    # here. Those columns only exist after migrations 1 and 7 run. On a
+    # pre-Slice-3 DB they are absent, so a CREATE INDEX here would raise
+    # `no such column` and crash init_db before migrations.apply_pending()
+    # gets a chance to repair the schema. Migrations 1 and 7 create these
+    # indexes (idx_source_ts, idx_kind_ts, idx_subject_ts) idempotently
+    # right after adding the columns they depend on.
 
     conn.commit()
     return conn

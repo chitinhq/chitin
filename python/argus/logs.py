@@ -39,7 +39,16 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 @dataclass(frozen=True)
 class PatternResult:
-    """Structured outcome for one free-form line."""
+    """Structured outcome for one free-form line.
+
+    `unparsed_reason` is set when the line is genuinely unparseable and
+    should be recorded as an `unparsed` event (the cursor advances past
+    it). `transient` is set when extraction was *skipped* for a transient
+    reason — GPU busy, circuit open, daily cap, or hourly token budget
+    exhausted. A transient skip must NOT advance the cursor and must NOT
+    write an `unparsed` row: the line is left to be retried once the
+    transient condition clears.
+    """
 
     matched: bool
     kind: str | None = None
@@ -48,6 +57,8 @@ class PatternResult:
     reason: str | None = None
     payload: dict | None = None
     unparsed_reason: str | None = None
+    transient: bool = False
+    transient_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +140,24 @@ def _pattern_budget_used(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+# Transient skip reasons mean "we never actually looked at this line" —
+# the LLM was unavailable (GPU busy / circuit open / daily cap) or the
+# hourly token budget was exhausted. These conditions clear on their own,
+# so the line must be retried rather than checkpointed as `unparsed`.
+def _is_transient_skip(skipped_reason: str | None) -> bool:
+    if not skipped_reason:
+        return False
+    if skipped_reason == "budget_exceeded":
+        return True
+    if skipped_reason == "circuit_open":
+        return True
+    if skipped_reason == "daily_cap":
+        return True
+    if skipped_reason.startswith("gpu:"):
+        return True
+    return False
+
+
 def _extract_via_qwen(
     conn: sqlite3.Connection,
     *,
@@ -154,6 +183,16 @@ def _extract_via_qwen(
         bypass_cap=True,
     )
     if not result.ok or not result.text:
+        # A transient skip (GPU busy / circuit open / daily cap) means the
+        # LLM was never consulted — the line is not unparseable, it just
+        # hasn't been looked at yet. Surface it as transient so the caller
+        # leaves the cursor where it is and retries the line later.
+        if _is_transient_skip(result.skipped_reason):
+            return PatternResult(
+                matched=False,
+                transient=True,
+                transient_reason=result.skipped_reason,
+            )
         reason = result.skipped_reason or result.error or "pattern_extract_failed"
         return PatternResult(matched=False, unparsed_reason=reason)
     try:
@@ -183,7 +222,14 @@ def extract_pattern(
 ) -> PatternResult:
     """Bounded qwen-backed extractor for one free-form line."""
     if _pattern_budget_used(conn) >= hourly_token_budget:
-        return PatternResult(matched=False, unparsed_reason="budget_exceeded")
+        # Hourly token budget is exhausted — this is transient. The budget
+        # window rolls forward, so the line must be retried rather than
+        # checkpointed as `unparsed` and skipped forever.
+        return PatternResult(
+            matched=False,
+            transient=True,
+            transient_reason="budget_exceeded",
+        )
     return _extract_via_qwen(
         conn,
         source=source,
@@ -212,6 +258,36 @@ def _record_unparsed(
         action_target=source_ref,
         reason=reason,
     )
+
+
+def _lines_with_byte_offsets(
+    data: bytes, start_offset: int
+) -> list[tuple[str, int]]:
+    """Split `data` into complete lines, each tagged with the byte offset
+    *immediately after* that line.
+
+    Mirrors `indexer._split_complete_lines` but keeps per-line byte
+    boundaries so a tail can checkpoint partway through a batch (needed
+    when a transient LLM skip forces us to stop without advancing past
+    the un-attempted line). A trailing partial line (no newline) is
+    dropped, same as `_split_complete_lines`.
+    """
+    if not data:
+        return []
+    if data.endswith(b"\n"):
+        complete = data
+    else:
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return []
+        complete = data[: nl + 1]
+
+    out: list[tuple[str, int]] = []
+    pos = start_offset
+    for raw in complete.splitlines(keepends=True):
+        pos += len(raw)
+        out.append((raw.decode("utf-8", errors="replace").rstrip("\n"), pos))
+    return out
 
 
 def ingest_log_file(
@@ -246,11 +322,18 @@ def ingest_log_file(
         fh.seek(offset)
         data = fh.read()
     lines, next_offset = _split_complete_lines(data, offset)
+    line_offsets = _lines_with_byte_offsets(data, offset)
 
     inserted = 0
     unparsed = 0
-    for idx, raw_line in enumerate(lines, start=1):
+    # `committed_offset` advances only past lines we have fully resolved
+    # (parsed, recorded unparsed, or skipped as non-matching). A transient
+    # LLM skip stops the loop here so the un-attempted line — and every
+    # line after it — is retried on the next pass.
+    committed_offset = offset
+    for idx, (raw_line, line_end_offset) in enumerate(line_offsets, start=1):
         if not raw_line.strip():
+            committed_offset = line_end_offset
             continue
         ts = _extract_timestamp(raw_line)
         source_ref = f"{file_path}:{offset + idx}"
@@ -261,6 +344,11 @@ def ingest_log_file(
             timeout_seconds=timeout_seconds,
             hourly_token_budget=hourly_token_budget,
         )
+        if result.transient:
+            # LLM unavailable / budget exhausted — do NOT advance the
+            # cursor and do NOT write an unparsed row. Stop the batch so
+            # this line is retried once the transient condition clears.
+            break
         if result.unparsed_reason:
             _record_unparsed(
                 conn,
@@ -271,8 +359,10 @@ def ingest_log_file(
                 reason=result.unparsed_reason,
             )
             unparsed += 1
+            committed_offset = line_end_offset
             continue
         if not result.matched or not result.kind:
+            committed_offset = line_end_offset
             continue
         if insert_event(
             conn,
@@ -286,6 +376,13 @@ def ingest_log_file(
             reason=result.reason,
         ):
             inserted += 1
+        committed_offset = line_end_offset
+    else:
+        # No transient break — the whole batch resolved. Advance to the
+        # safe next offset (covers any trailing partial line correctly).
+        committed_offset = next_offset
+
+    next_offset = committed_offset
 
     migrations.upsert_checkpoint(
         conn,
@@ -423,6 +520,11 @@ def ingest_discord_channel(
     for msg in messages:
         result = extract_pattern(conn, source="discord", raw_line=msg.content)
         source_ref = f"discord:{channel_name}:{msg.id}"
+        if result.transient:
+            # LLM unavailable / budget exhausted — do NOT advance the
+            # cursor past this message and do NOT write an unparsed row.
+            # Stop here so this message is re-fetched on the next pass.
+            break
         if result.unparsed_reason:
             _record_unparsed(
                 conn,
