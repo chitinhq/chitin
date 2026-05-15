@@ -119,6 +119,22 @@
           }
         </section>
 
+        @if (isHITL()) {
+          <section class="block hitl">
+            <header class="hitl-head">
+              <h3 class="block-title">⚑ operator prompt</h3>
+              <button class="btn copy-btn" type="button" (click)="copyOperatorPrompt()">
+                {{ promptCopied() ? '✓ copied' : 'copy' }}
+              </button>
+            </header>
+            <p class="text-muted small hitl-help">
+              This ticket is waiting on a human. Paste the prompt below into Claude Code,
+              an agent session, or a chat to delegate the investigation.
+            </p>
+            <pre class="mono small hitl-prompt">{{ operatorPrompt() }}</pre>
+          </section>
+        }
+
         <section class="block">
           <h3 class="block-title">body</h3>
           @if (d.task.body) {
