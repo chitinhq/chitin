@@ -187,6 +187,56 @@ class GateFailToolTests(unittest.TestCase):
         self.assertEqual(result["action"], "regression-gate-error")
 
 
+class DeployDriftTests(unittest.TestCase):
+    DRIFT_DIAGNOSTIC = """── scripts/check-swarm-deployed-sync.sh ──
+  DIFFERS  /home/red/.openclaw/bin/clawta-pr-reviewer
+
+═══ regression-gate summary ═══
+  PASS   scripts/check-governance-boundary.sh
+  FAIL   scripts/check-swarm-deployed-sync.sh
+  PASS   scripts/check-worktree-naming.sh
+
+1/5 invariant(s) broken.
+"""
+
+    def test_deploy_drift_diagnostic_matches_only_sync_failure(self) -> None:
+        m = load_module()
+        self.assertTrue(m.is_deploy_drift_diagnostic(self.DRIFT_DIAGNOSTIC))
+        self.assertFalse(m.is_deploy_drift_diagnostic(
+            self.DRIFT_DIAGNOSTIC + "  FAIL   scripts/check-governance-boundary.sh\n"
+        ))
+
+    def test_classify_deploy_drift_as_first_class_action(self) -> None:
+        m = load_module()
+        pr = base_pr()
+        with mock.patch.object(m, "run_regression_gate",
+                               return_value=(1, self.DRIFT_DIAGNOSTIC)), \
+             mock.patch.object(m, "checks_state", return_value="pass"), \
+             mock.patch.object(m, "ticket_info",
+                               return_value=_TICKET_INFO_PASS):
+            result = m.classify(pr, [approve_comment()])
+
+        self.assertEqual(result["gate_status"], "deploy-drift")
+        self.assertEqual(result["action"], "deploy-drift")
+        self.assertFalse(result["auto_merge_ready"])
+
+    def test_repair_deploy_drift_runs_install_then_verify(self) -> None:
+        m = load_module()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(m, "run", side_effect=fake_run):
+            self.assertTrue(m.repair_deploy_drift(apply=True))
+
+        self.assertEqual(calls, [
+            ["bash", "scripts/install-swarm.sh"],
+            ["bash", "scripts/check-swarm-deployed-sync.sh"],
+        ])
+
+
 class EscalationExclusionTests(unittest.TestCase):
     def test_regression_gate_fail_not_escalated_generically(self) -> None:
         """needs_operator_escalation must skip regression-gate-fail items
