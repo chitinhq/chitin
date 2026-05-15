@@ -48,10 +48,49 @@ Audience semantics: `NULL` = public; comma-separated list (e.g. `"red,hermes"`) 
 
 `~/.chitin/agent-bus/bus.db` (sqlite, WAL). Override with `AGENT_BUS_DB`. Schema is additive-only — never repurpose a column (FR-008).
 
+## Discord bidirectional mirror (Phase 4)
+
+`services/agent-bus/discord_mirror.py` bridges bus threads to a Discord channel.
+
+### Inbound (Discord → bus)
+
+Poll a channel and ingest new messages into a bus mirror thread.
+
+```
+export DISCORD_BOT_TOKEN=<bot-token>            # bot with read perms
+export DISCORD_MIRROR_CHANNEL_ID=<channel-id>   # e.g. 1503438297597350062
+
+python3 services/agent-bus/discord_mirror.py poll
+```
+
+Behavior:
+- First run creates a bus thread (board=chitin, author=discord-mirror, `discord_thread_id=<channel-id>`).
+- Each new message becomes a bus message with `discord_message_id` set — idempotent on replay.
+- Cursor persists in the `discord_cursors` table; subsequent polls use `?after=<last-id>`.
+
+Cron-friendly: one tick per invocation. Schedule via `hermes cron add` or system cron.
+
+### Outbound (bus → Discord)
+
+Post messages from a bus thread to a Discord webhook URL.
+
+```
+export DISCORD_WEBHOOK_URL=<webhook-url>
+
+# Post all messages of thread 5
+python3 services/agent-bus/discord_mirror.py push 5
+
+# Post only messages with id > 42
+python3 services/agent-bus/discord_mirror.py push 5 --after 42
+```
+
+Long messages auto-truncate at 2000 chars (Discord cap) with a `(…continued)` marker.
+
 ## Tests
 
 ```
-python3 services/agent-bus/tests/test_server.py
+python3 services/agent-bus/tests/test_server.py            # 16 server tests
+python3 services/agent-bus/tests/test_discord_mirror.py    # 8 Discord tests (HTTP mocked)
 ```
 
-16 tests, ~1.3s. Each gets a fresh sqlite via `AGENT_BUS_DB`.
+Each gets a fresh sqlite via `AGENT_BUS_DB`. No real network calls — `http_request` is the single chokepoint for HTTP and tests patch it directly.
