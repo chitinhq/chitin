@@ -30,9 +30,9 @@ export class App implements OnInit, OnDestroy {
     { path: '/tickets',     label: 'Tickets',     icon: 'tickets' },
     { path: '/elo',         label: 'Swarm ELO',   icon: 'elo' },
     { path: '/argus',       label: 'Argus',       icon: 'argus' },
+    { path: '/reports',     label: 'Reports',     icon: 'reports' },
     { path: '/policy',      label: 'Policy',      icon: 'policy' },
     { path: '/suggestions', label: 'Suggestions', icon: 'suggestions' },
-    { path: '/reports/',    label: 'Reports',     icon: 'reports',    external: true },
   ];
 
   ngOnInit() {

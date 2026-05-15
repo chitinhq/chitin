@@ -741,9 +741,12 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return serverErr(res, e); }
     }
   }
-  // /reports/* — legacy localhost:8888 content folded into this server.
-  if (REPORTS_ROOT && url.pathname.startsWith('/reports')) {
-    return serveReports(req, res, url.pathname);
+  // /api/reports/legacy/* — bridge to the pre-existing cron-generated
+  // HTML reports. Kept around so anyone bookmarking a specific report
+  // URL still resolves. The Angular /reports route renders the data
+  // natively from the same upstream sources.
+  if (REPORTS_ROOT && url.pathname.startsWith('/api/reports/legacy/')) {
+    return serveReports(req, res, url.pathname.replace('/api/reports/legacy', ''));
   }
   if (STATIC_ROOT && !url.pathname.startsWith('/api/')) {
     return serveStatic(req, res, url.pathname);
@@ -752,8 +755,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 function serveReports(req, res, pathname) {
-  // Strip the /reports prefix and treat the rest as a path under REPORTS_ROOT.
-  let rel = pathname.replace(/^\/reports\/?/, '');
+  // Strip the leading slash and treat as a path under REPORTS_ROOT.
+  let rel = pathname.replace(/^\/+/, '');
   if (rel === '') rel = 'index.html';
   rel = decodeURIComponent(rel);
   const safe = path.normalize(rel);

@@ -38,6 +38,11 @@ export const appRoutes: Route[] = [
     data: { title: 'Argus' },
   },
   {
+    path: 'reports',
+    loadComponent: () => import('./pages/reports.page').then(m => m.ReportsPage),
+    data: { title: 'Reports' },
+  },
+  {
     path: 'policy',
     loadComponent: () => import('./pages/policy.page').then(m => m.PolicyPage),
     data: { title: 'Policy' },

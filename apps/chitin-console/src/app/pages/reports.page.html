@@ -1,0 +1,343 @@
+<header class="head">
+  <div>
+    <h1 class="title">Reports</h1>
+    <p class="subtitle mono">
+      derived live from kanban + chain ledger + argus · refresh for newest
+    </p>
+  </div>
+  <div class="filters">
+    <button class="btn" type="button" (click)="reload()">refresh</button>
+  </div>
+</header>
+
+@if (loading()) {
+  <cc-loader message="Aggregating standup + chain + audit + argus"></cc-loader>
+} @else {
+  <!-- ========== STANDUP ========== -->
+  <section class="plate panel report-section">
+    <header class="panel-head">
+      <h2 class="section-title">📋 grooming standup</h2>
+      <span class="mono small text-muted">{{ tasks().length }} active · {{ standupBuckets().length }} assignees</span>
+    </header>
+    <div class="panel-body">
+      <!-- Per-assignee buckets -->
+      <div class="standup-grid">
+        @for (b of standupBuckets(); track b.assignee) {
+          <div class="assignee-card">
+            <div class="assignee-head">
+              <span class="mono small text-glow">{{ b.assignee }}</span>
+              <span class="counts mono tiny">
+                <span class="text-run">{{ b.in_progress }} in</span>
+                <span class="text-dim"> · </span>
+                <span class="text-chitin">{{ b.ready }} ready</span>
+                <span class="text-dim"> · </span>
+                <span class="text-danger">{{ b.blocked }} blocked</span>
+                <span class="text-dim"> · </span>
+                <span class="text-muted">{{ b.triage }} triage</span>
+              </span>
+            </div>
+            <ul class="ticket-list">
+              @for (t of b.tickets.slice(0, 5); track t.id) {
+                <li>
+                  <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                    <cc-status-pill [status]="t.status"></cc-status-pill>
+                    <span class="ttl">{{ t.title }}</span>
+                    <span class="mono tiny text-dim">{{ ageFromEpochSeconds(t.created_at) }}</span>
+                  </a>
+                </li>
+              }
+              @if (b.tickets.length > 5) {
+                <li class="more mono tiny text-dim">… {{ b.tickets.length - 5 }} more</li>
+              }
+            </ul>
+          </div>
+        }
+      </div>
+
+      <!-- Stale items callout -->
+      @if (staleItems().length > 0) {
+        <div class="stale-callout">
+          <header class="stale-head">
+            <h3 class="block-title">⚠ stale items ({{ staleItems().length }})</h3>
+            <span class="mono small text-muted">in_progress &gt; 2d · ready &gt; 5d · blocked &gt; 7d</span>
+          </header>
+          <ul class="stale-list">
+            @for (t of staleItems().slice(0, 12); track t.id) {
+              <li>
+                <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                  <cc-status-pill [status]="t.status"></cc-status-pill>
+                  <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                  <span class="ttl">{{ t.title }}</span>
+                  <span class="mono tiny text-danger">{{ fmtDur(now() - (t.started_at ?? t.created_at)) }}</span>
+                </a>
+              </li>
+            }
+          </ul>
+        </div>
+      }
+    </div>
+  </section>
+
+  <!-- ========== CHAIN SUMMARY ========== -->
+  <section class="plate panel report-section">
+    <header class="panel-head">
+      <h2 class="section-title">🛡️ chain summary</h2>
+      <span class="mono small text-muted">{{ chainSummary().sessionCount }} sessions</span>
+    </header>
+    <div class="panel-body">
+      <div class="chain-kpis">
+        <div class="chain-kpi">
+          <div class="label mono tiny">events</div>
+          <div class="value mono">{{ chainSummary().total }}</div>
+        </div>
+        <div class="chain-kpi">
+          <div class="label mono tiny">allowed</div>
+          <div class="value mono text-run">{{ chainSummary().allowed }}</div>
+        </div>
+        <div class="chain-kpi">
+          <div class="label mono tiny">denied</div>
+          <div class="value mono text-danger">{{ chainSummary().denied }}</div>
+        </div>
+        <div class="chain-kpi">
+          <div class="label mono tiny">deny rate</div>
+          <div class="value mono"
+               [class.text-danger]="chainSummary().denyRate > 0.10"
+               [class.text-chitin]="chainSummary().denyRate <= 0.10">
+            {{ fmtPct(chainSummary().denyRate) }}
+          </div>
+        </div>
+        <div class="chain-kpi">
+          <div class="label mono tiny">heuristic</div>
+          <div class="value mono text-glow">{{ chainSummary().heuristic }}</div>
+        </div>
+        <div class="chain-kpi">
+          <div class="label mono tiny">cost (usd)</div>
+          <div class="value mono">{{ fmtUsd(chainSummary().costUsd, 3) }}</div>
+        </div>
+      </div>
+
+      <div class="grid-2 chain-grid">
+        <div>
+          <h3 class="block-title">top tools (across sessions)</h3>
+          @if (chainSummary().topTools.length === 0) {
+            <p class="text-muted small">No tool data yet.</p>
+          } @else {
+            <table class="tbl">
+              <thead><tr><th>tool</th><th class="num">sessions</th></tr></thead>
+              <tbody>
+                @for (t of chainSummary().topTools; track t.tool) {
+                  <tr>
+                    <td class="mono small">{{ t.tool }}</td>
+                    <td class="num mono small text-chitin">{{ t.count }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          }
+        </div>
+        <div>
+          <h3 class="block-title">by day (last {{ chainSummary().byDay.length }}d)</h3>
+          @if (chainSummary().byDay.length === 0) {
+            <p class="text-muted small">No daily data yet.</p>
+          } @else {
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>day</th>
+                  <th class="num">events</th>
+                  <th class="num">deny%</th>
+                  <th class="num">cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (d of chainSummary().byDay; track d.day) {
+                  <tr>
+                    <td class="mono small">{{ d.day }}</td>
+                    <td class="num mono small">{{ d.events }}</td>
+                    <td class="num mono small"
+                        [class.text-danger]="(d.events > 0 ? d.denied / d.events : 0) > 0.10"
+                        [class.text-chitin]="(d.events > 0 ? d.denied / d.events : 0) <= 0.10">
+                      {{ d.events > 0 ? fmtPct(d.denied / d.events) : '–' }}
+                    </td>
+                    <td class="num mono small text-muted">{{ fmtUsd(d.costUsd, 3) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          }
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== BOARD AUDIT ========== -->
+  <section class="plate panel report-section">
+    <header class="panel-head">
+      <h2 class="section-title">🔍 board audit</h2>
+      <span class="mono small text-muted">leverage signals · click any row to open</span>
+    </header>
+    <div class="panel-body">
+      <div class="audit-grid">
+        <!-- Blocked tickets with no reason -->
+        <div class="audit-card">
+          <h3 class="block-title">blocked w/o reason ({{ boardAudit().blockedNoReason.length }})</h3>
+          @if (boardAudit().blockedNoReason.length === 0) {
+            <p class="text-muted small">All blocked tickets have a reason.</p>
+          } @else {
+            <ul class="audit-list">
+              @for (t of boardAudit().blockedNoReason.slice(0, 6); track t.id) {
+                <li>
+                  <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                    <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                    <span class="ttl">{{ t.title }}</span>
+                  </a>
+                </li>
+              }
+              @if (boardAudit().blockedNoReason.length > 6) {
+                <li class="more mono tiny text-dim">… {{ boardAudit().blockedNoReason.length - 6 }} more</li>
+              }
+            </ul>
+          }
+        </div>
+
+        <!-- Long-blocked -->
+        <div class="audit-card">
+          <h3 class="block-title">blocked &gt; 14d ({{ boardAudit().longBlocked.length }})</h3>
+          @if (boardAudit().longBlocked.length === 0) {
+            <p class="text-muted small">No long-blocked tickets.</p>
+          } @else {
+            <ul class="audit-list">
+              @for (t of boardAudit().longBlocked.slice(0, 6); track t.id) {
+                <li>
+                  <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                    <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                    <span class="ttl">{{ t.title }}</span>
+                    <span class="mono tiny text-danger">{{ ageFromEpochSeconds(t.created_at) }}</span>
+                  </a>
+                </li>
+              }
+            </ul>
+          }
+        </div>
+
+        <!-- In-progress too long -->
+        <div class="audit-card">
+          <h3 class="block-title">in_progress &gt; 3d ({{ boardAudit().inProgressTooLong.length }})</h3>
+          @if (boardAudit().inProgressTooLong.length === 0) {
+            <p class="text-muted small">No stuck in-progress.</p>
+          } @else {
+            <ul class="audit-list">
+              @for (t of boardAudit().inProgressTooLong.slice(0, 6); track t.id) {
+                <li>
+                  <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                    <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                    <span class="ttl">{{ t.title }}</span>
+                    <span class="mono tiny text-warn">{{ fmtDur(now() - (t.started_at ?? t.created_at)) }}</span>
+                  </a>
+                </li>
+              }
+            </ul>
+          }
+        </div>
+
+        <!-- High consecutive failures -->
+        <div class="audit-card">
+          <h3 class="block-title">high failures (≥2 in a row, {{ boardAudit().highConsecutiveFailures.length }})</h3>
+          @if (boardAudit().highConsecutiveFailures.length === 0) {
+            <p class="text-muted small">No retry-loop tickets.</p>
+          } @else {
+            <ul class="audit-list">
+              @for (t of boardAudit().highConsecutiveFailures.slice(0, 6); track t.id) {
+                <li>
+                  <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                    <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                    <span class="ttl">{{ t.title }}</span>
+                    <span class="mono tiny text-danger">{{ t.consecutive_failures }}× fail</span>
+                  </a>
+                </li>
+              }
+            </ul>
+          }
+        </div>
+
+        <!-- Duplicate titles -->
+        @if (boardAudit().duplicates.length > 0) {
+          <div class="audit-card full">
+            <h3 class="block-title">duplicate titles ({{ boardAudit().duplicates.length }} groups)</h3>
+            @for (group of boardAudit().duplicates.slice(0, 5); track group[0].id) {
+              <div class="dup-group">
+                <div class="mono tiny text-muted">{{ group[0].title }}</div>
+                <ul class="audit-list">
+                  @for (t of group; track t.id) {
+                    <li>
+                      <a [routerLink]="['/tickets']" [queryParams]="{ id: t.id }" class="ticket-row">
+                        <cc-status-pill [status]="t.status"></cc-status-pill>
+                        <span class="mono tiny">{{ shortenId(t.id, 10, 4) }}</span>
+                        <span class="mono tiny text-muted">{{ t.assignee || '–' }}</span>
+                      </a>
+                    </li>
+                  }
+                </ul>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ARGUS RESEARCH ========== -->
+  <section class="plate panel report-section">
+    <header class="panel-head">
+      <h2 class="section-title">🔬 argus research</h2>
+      <span class="mono small text-muted">
+        @if (argusInfo()?.available) {
+          {{ argusFindings().length }} findings in window
+        } @else {
+          index unavailable
+        }
+      </span>
+    </header>
+    <div class="panel-body">
+      @if (!argusInfo()?.available) {
+        <cc-empty-state
+          title="Argus index unavailable"
+          body="No findings to surface. Check ~/.argus/index.db."
+        ></cc-empty-state>
+      } @else if (argusFindings().length === 0) {
+        <p class="text-muted small">No findings within the latest window.</p>
+      } @else {
+        <div class="argus-grid">
+          @for (bucket of argusBuckets(); track bucket.source) {
+            <div class="argus-card">
+              <h3 class="block-title">{{ bucket.source }} ({{ bucket.items.length }})</h3>
+              <ul class="argus-list">
+                @for (item of bucket.items.slice(0, 5); track $index) {
+                  <li class="argus-item">
+                    <div class="mono small argus-title">
+                      {{ item['title'] || item['name'] || item['id'] || '(unnamed)' }}
+                    </div>
+                    @if (item['summary'] || item['body'] || item['snippet']) {
+                      <div class="mono tiny text-muted argus-snippet">
+                        {{ (item['summary'] || item['body'] || item['snippet'] || '').toString().slice(0, 200) }}
+                      </div>
+                    }
+                    @if (item['url'] || item['link']) {
+                      <a [href]="item['url'] || item['link']" target="_blank" rel="noopener"
+                         class="mono tiny text-chitin">{{ item['url'] || item['link'] }}</a>
+                    }
+                  </li>
+                }
+              </ul>
+            </div>
+          }
+        </div>
+      }
+    </div>
+  </section>
+
+  <footer class="report-footer mono tiny text-dim">
+    generated {{ fmtTs(generatedAt() / 1000) }} · regenerated on refresh ·
+    legacy HTML reports archived at /api/reports/legacy/
+  </footer>
+}
