@@ -423,6 +423,40 @@ class TestBeliefDrift:
             assert suppressed == []
             assert len(resurfaced) == 1
 
+    def test_cross_agent_disagreement_dedups_against_pretty_printed_body(self):
+        """Regression: findings_store.persist writes indent=2 pretty JSON.
+
+        The dedup check must match the claim set structurally, not by
+        substring-matching a compact json.dumps against the multi-line body.
+        """
+        from argus import findings_store
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            migrations.apply_pending(conn)
+            now_ts = int(_utc_now().timestamp())
+            _insert_belief(conn, agent="hermes", subject="t_789", claim="t_789 is P50", ts_unix=now_ts - 10)
+            _insert_belief(conn, agent="clawta", subject="t_789", claim="t_789 is P30", ts_unix=now_ts - 5)
+            conn.commit()
+
+            # First run produces a finding; persist it via the real store
+            # path so the body is pretty-printed exactly as in production.
+            first = detect_cross_agent_disagreement(str(db_path))
+            assert len(first) == 1
+            inserted, _ = findings_store.persist(conn, first)
+            assert inserted == 1
+
+            stored_body = conn.execute(
+                "SELECT body FROM findings WHERE detector = 'belief_cross_agent_disagreement'"
+            ).fetchone()[0]
+            assert "\n" in stored_body  # confirm it is pretty-printed
+
+            # Second run within the 7-day window must suppress the duplicate.
+            second = detect_cross_agent_disagreement(str(db_path))
+            conn.close()
+            assert second == []
+
     def test_belief_without_evidence_marks_deleted_ticket_as_orphan(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"

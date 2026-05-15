@@ -163,23 +163,41 @@ def _evidence_exists(conn: sqlite3.Connection, subject: str) -> bool:
 
 
 def _recently_reported_disagreement(conn: sqlite3.Connection, subject: str, claim_set: list[str], remind_every_days: int) -> bool:
+    """True if an equivalent disagreement finding was emitted within the window.
+
+    Compares the claim set *structurally* against the stored finding body.
+    `findings_store.persist` writes `body = json.dumps(details, indent=2)` —
+    pretty-printed, multi-line — so a compact-JSON substring match would
+    never hit. Parse each candidate body and compare subject + claim set.
+    """
     if not _table_exists(conn, "findings"):
         return False
     since_ts = int(_utc_now().timestamp()) - remind_every_days * 86400
-    payload = json.dumps(sorted(claim_set))
-    row = conn.execute(
+    target_claims = sorted(claim_set)
+    rows = conn.execute(
         """
-        SELECT 1
+        SELECT body
         FROM findings
         WHERE detector = 'belief_cross_agent_disagreement'
           AND ts_unix >= ?
-          AND body LIKE ?
-          AND body LIKE ?
-        LIMIT 1
         """,
-        (since_ts, f'%"{subject}"%', f"%{payload}%"),
-    ).fetchone()
-    return row is not None
+        (since_ts,),
+    ).fetchall()
+    for row in rows:
+        try:
+            details = json.loads(row["body"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(details, dict):
+            continue
+        if details.get("subject") != subject:
+            continue
+        stored_claims = details.get("claims")
+        if not isinstance(stored_claims, list):
+            continue
+        if sorted(str(c) for c in stored_claims) == target_claims:
+            return True
+    return False
 
 
 def detect_deny_cluster(

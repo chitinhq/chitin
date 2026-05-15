@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from argus import beliefs, findings_cli, migrations
-from argus.indexer import follow_all_decisions, tail_all_decisions
+from argus.indexer import follow_all_decisions, init_db, tail_all_decisions
 from argus.reporter import generate_daily_report
 
 
@@ -74,6 +74,11 @@ def cmd_report(args) -> int:
 def cmd_ingest_beliefs(args) -> int:
     db_path = Path(args.db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Ensure the base `events` schema exists before applying migrations.
+    # Migration 1 is `ALTER TABLE events ADD COLUMN`, which raises
+    # `no such table: events` on a fresh install where the kernel/indexer
+    # has never run. init_db is idempotent (CREATE TABLE IF NOT EXISTS).
+    init_db(db_path).close()
     conn = migrations.open_writable(db_path)
     try:
         migrations.apply_pending(conn)
