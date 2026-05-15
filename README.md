@@ -106,6 +106,7 @@ install paths, the policy schema, kill switches, and the escalation ladder.
 ├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect)
 ├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,
 │                                # envelope-rotate, codex-chain-ingest, codex-usage-feed)
+├── examples/                    # copyable examples: policy packs and router plugins
 ├── docs/decisions/              # durable boundary docs (positioning, scope, culls)
 ├── docs/runbooks/               # operator runbooks (health, router, spec lifecycle…)
 ├── docs/superpowers/specs/      # active spec set + auto-generated INDEX.md
@@ -152,6 +153,7 @@ $HOME/.chitin/
 - [`docs/governance-setup.md`](./docs/governance-setup.md) — per-driver install paths, policy schema, kill switches
 - [`docs/driver-conformance.md`](./docs/driver-conformance.md) — current driver hook matrix and normalizer gaps
 - [`docs/roadmap.md`](./docs/roadmap.md) — strategic arc + what's in flight
+- [`examples/README.md`](./examples/README.md) — copyable examples, including stack-specific policy packs
 - [`docs/runbooks/`](./docs/runbooks/) — health, router, sandbox, regression-gate, spec lifecycle, swarm SDLC
 - [`docs/superpowers/specs/INDEX.md`](./docs/superpowers/specs/INDEX.md) — active spec index (auto-generated)
 

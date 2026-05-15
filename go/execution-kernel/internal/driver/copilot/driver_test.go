@@ -42,7 +42,6 @@ mode: guide
 bounds:
   max_files_changed: 10
   max_lines_changed: 100
-  max_runtime_seconds: 60
 escalation:
   elevated_threshold: 3
   high_threshold: 7

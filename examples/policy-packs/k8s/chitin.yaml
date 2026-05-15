@@ -1,0 +1,122 @@
+id: chitin-pack-k8s
+name: Kubernetes governance pack
+description: Baseline governance for Kubernetes repos with production-context, namespace, and secret-manifest guardrails.
+mode: enforce
+
+bounds:
+  max_files_changed: 25
+  max_lines_changed: 500
+  per_action:
+    git.push:
+      max_files_changed: 60
+      max_lines_changed: 1500
+
+escalation:
+  elevated_threshold: 3
+  high_threshold: 7
+  lockdown_threshold: 10
+  max_retries_per_action: 3
+  deny_cascade_count: 4
+  deny_cascade_window_seconds: 300
+
+invariantModes:
+  no-governance-self-modification: enforce
+  no-gov-self-mod-via-shell: enforce
+  no-rm-recursive: guide
+  no-destructive-rm: guide
+  no-force-push: enforce
+  no-commit-to-protected: enforce
+  no-protected-push: enforce
+  no-env-file-write: enforce
+  no-remote-code-exec: enforce
+  protected-credential-path-write: enforce
+
+rules:
+  - id: no-rm-recursive
+    action: file.recursive_delete
+    effect: deny
+    reason: "Recursive delete is blocked"
+
+  - id: no-destructive-rm
+    action: shell.exec
+    effect: deny
+    target: "rm -rf"
+    reason: "Recursive delete is blocked"
+
+  - id: no-force-push
+    action: git.force-push
+    effect: deny
+    reason: "Force push rewrites shared history"
+
+  - id: no-protected-push
+    action: git.push
+    effect: deny
+    branches: [main, master, release]
+    reason: "Push to a feature branch and merge through review"
+
+  - id: no-env-file-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)\.env(?:\.[^/]+)?$'
+    reason: "Environment files often contain secrets and stay operator-managed"
+
+  - id: protected-credential-path-write
+    action: [file.write, file.delete]
+    effect: deny
+    target_regex: '^(?:/home/[^/]+|/Users/[^/]+|/root)/(?:\.ssh/|\.aws/|\.gnupg/|\.kube/|\.config/gh/|\.bashrc|\.zshrc|\.profile|\.netrc)'
+    reason: "Credential and shell-init files cannot be modified by agents"
+
+  - id: no-remote-code-exec
+    action: shell.exec
+    effect: deny
+    target_regex: '\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:bash|sh|zsh)\b|\b(?:bash|sh|zsh)\s*<\(\s*(?:curl|wget|fetch)\b'
+    reason: "Fetching and immediately executing remote code is blocked"
+
+  - id: no-k8s-secret-manifest-write
+    action: file.write
+    effect: deny
+    target_regex: '(?:^|/)(?:secrets|k8s/secrets|helm/.*/secrets)/.*\.ya?ml$'
+    reason: "Secret manifests should not be rewritten by agents"
+
+  - id: no-k8s-namespace-delete
+    action: shell.exec
+    effect: deny
+    target_regex: '\bkubectl\s+delete\s+(?:ns|namespace)\b'
+    reason: "Namespace deletion is blocked"
+
+  - id: no-k8s-prod-mutation
+    action: shell.exec
+    effect: deny
+    target_regex: '\bkubectl\b.*\b(?:--context|--namespace)\s*(?:=|\s)(?:prod|production)[^[:space:]]*.*\b(?:apply|delete|patch|replace|rollout\s+restart)\b|\bhelm\s+(?:upgrade|rollback|uninstall)\b.*\b(?:prod|production)\b'
+    reason: "Production cluster mutation is blocked from agent sessions"
+
+  - id: no-k8s-prod-context-switch
+    action: shell.exec
+    effect: deny
+    target_regex: '\bkubectl\s+config\s+use-context\s+.*(?:prod|production)'
+    reason: "Switching the active kubectl context to production is blocked"
+
+  - id: allow-reads
+    action: file.read
+    effect: allow
+    reason: "Reads are safe"
+
+  - id: allow-git-read
+    action: [git.diff, git.log, git.status]
+    effect: allow
+    reason: "Git inspection is safe"
+
+  - id: allow-tests
+    action: test.run
+    effect: allow
+    reason: "Running tests is always safe"
+
+  - id: allow-git-ops
+    action: [git.commit, git.checkout, git.branch.create, git.merge]
+    effect: allow
+    reason: "Standard git operations are allowed on non-protected branches"
+
+  - id: allow-git-push
+    action: git.push
+    effect: allow
+    reason: "Pushes to non-protected branches are allowed"

@@ -28,7 +28,7 @@ type Policy struct {
 type Rule struct {
 	ID                string            `yaml:"id"`
 	Action            ActionMatcher     `yaml:"action"`                 // single type OR list of types
-	Effect            string            `yaml:"effect"`                 // allow | deny | guide | monitor
+	Effect            string            `yaml:"effect"`                 // allow | deny
 	Target            string            `yaml:"target,omitempty"`       // substring match on Action.Target
 	TargetRegex       string            `yaml:"target_regex,omitempty"` // regex match on Action.Target
 	Params            map[string]string `yaml:"params,omitempty"`       // exact match on Action.Params string values
@@ -339,11 +339,11 @@ func LoadPolicyFileWithOptions(path string, opts PolicyLoadOptions) (Policy, err
 }
 
 // parsePolicyYAML is the single entry point for turning chitin.yaml bytes
-// into a validated Policy. Unmarshal → ApplyDefaults → reject `effect:
-// escalate` (cull Phase 3, 2026-05-08 — the escalate effect was a
-// parallel implementation of hermes' built-in approval system; see
-// docs/decisions/ for the cull rationale).
+// into a validated Policy.
 func parsePolicyYAML(data []byte) (Policy, error) {
+	if err := validateBoundsDSL(data); err != nil {
+		return Policy{}, fmt.Errorf("validate: %w", err)
+	}
 	var p Policy
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return Policy{}, fmt.Errorf("parse: %w", err)
@@ -351,18 +351,65 @@ func parsePolicyYAML(data []byte) (Policy, error) {
 	if err := p.ApplyDefaults(); err != nil {
 		return Policy{}, fmt.Errorf("validate: %w", err)
 	}
-	for _, r := range p.Rules {
-		if r.Effect == "escalate" {
-			return Policy{}, fmt.Errorf("rule %s: effect: escalate is no longer supported (cull Phase 3, 2026-05-08); use deny and let hermes' approval system prompt the operator", r.ID)
-		}
-	}
 	return p, nil
 }
 
+func validateBoundsDSL(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse bounds: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "bounds" {
+			continue
+		}
+		return validateBoundsNode(root.Content[i+1], "bounds", map[string]bool{
+			"max_files_changed": true,
+			"max_lines_changed": true,
+			"per_action":        true,
+		})
+	}
+	return nil
+}
+
+func validateBoundsNode(node *yaml.Node, path string, allowed map[string]bool) error {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		value := node.Content[i+1]
+		if !allowed[key] {
+			return fmt.Errorf("%s.%s is not supported by the v3 bounds DSL", path, key)
+		}
+		if key != "per_action" {
+			continue
+		}
+		if value.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(value.Content); j += 2 {
+			action := value.Content[j].Value
+			if err := validateBoundsNode(value.Content[j+1], path+".per_action."+action, map[string]bool{
+				"max_files_changed": true,
+				"max_lines_changed": true,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ApplyDefaults fills in unset fields with their baseline values,
-// validates that Mode is one of {monitor,guide,enforce}, and compiles
-// every rule's TargetRegex. Returns a non-nil error on any validation
-// failure (fail-closed at load time rather than silent at eval time).
+// validates that Mode is one of {monitor,guide,enforce}, validates rule
+// effects, and compiles every rule's TargetRegex. Returns a non-nil error on
+// any validation failure (fail-closed at load time rather than silent at eval
+// time).
 func (p *Policy) ApplyDefaults() error {
 	if p.Mode == "" {
 		p.Mode = "guide"
@@ -389,6 +436,17 @@ func (p *Policy) ApplyDefaults() error {
 	}
 	if p.Escalation.DenyCascadeWindowSeconds == 0 {
 		p.Escalation.DenyCascadeWindowSeconds = 300
+	}
+	for _, r := range p.Rules {
+		switch r.Effect {
+		case "allow", "deny":
+		case "guide", "monitor":
+			return fmt.Errorf("rule %s: invalid effect=%q: rule effects must be allow|deny; use invariantModes for guide|monitor", r.ID, r.Effect)
+		case "escalate":
+			return fmt.Errorf("rule %s: effect: escalate is no longer supported (cull Phase 3, 2026-05-08); use deny and let hermes' approval system prompt the operator", r.ID)
+		default:
+			return fmt.Errorf("rule %s: invalid effect=%q: must be one of allow|deny", r.ID, r.Effect)
+		}
 	}
 	for i, grant := range p.Authority.Trusted {
 		if grant.Authority == "" {
