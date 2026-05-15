@@ -420,3 +420,16 @@ class TestRepoRootResolution:
         wd = _load_module()
 
         assert wd.resolve_repo_root() == repo
+
+    def test_resolve_repo_root_falls_back_to_home_workspace(self, tmp_path, monkeypatch):
+        installed_script = tmp_path / ".openclaw" / "bin" / "clawta-stale-worker-watchdog"
+        installed_script.parent.mkdir(parents=True)
+        installed_script.write_text("#!/usr/bin/env python3\n")
+        repo = tmp_path / "workspace" / "chitin"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "swarm").mkdir()
+        (repo / "scripts" / "kanban-flow").write_text("#!/bin/sh\n")
+        monkeypatch.delenv("CHITIN_REPO", raising=False)
+        wd = _load_module()
+
+        assert wd.resolve_repo_root(script_path=installed_script, home=tmp_path) == repo
