@@ -172,3 +172,59 @@
 }
 
 .text-warn { color: #f59e0b; }
+
+/* ---- Industry scan ---- */
+.industry-section-title { margin-top: 16px; margin-bottom: 10px; }
+.paper-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+.paper-card {
+  background: var(--panel, #11161F);
+  border: 1px solid var(--border, rgba(212, 165, 116, 0.18));
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.paper-card:hover { border-color: var(--accent, #D4A574); }
+.paper-title {
+  color: var(--bone, #F5F5F0);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.paper-title:hover { color: var(--accent-glow, #F5C088); }
+.paper-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.paper-stars { color: #d29922; letter-spacing: 1px; }
+.paper-tag {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(212, 165, 116, 0.08);
+  border: 1px solid rgba(212, 165, 116, 0.25);
+  color: var(--accent, #D4A574);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.paper-tag[data-tag="safety"]        { color: #ef4444; border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.06); }
+.paper-tag[data-tag="security"]      { color: #ef4444; border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.06); }
+.paper-tag[data-tag="orchestration"] { color: #bc8cff; border-color: rgba(188, 140, 255, 0.35); background: rgba(188, 140, 255, 0.06); }
+.paper-tag[data-tag="alignment"]     { color: #f0883e; border-color: rgba(240, 136, 62, 0.35); background: rgba(240, 136, 62, 0.06); }
+.paper-tag[data-tag="memory"]        { color: #3fb950; border-color: rgba(63, 185, 80, 0.35); background: rgba(63, 185, 80, 0.06); }
+.paper-tag[data-tag="governance"]    { color: #d29922; border-color: rgba(210, 153, 34, 0.35); background: rgba(210, 153, 34, 0.06); }
+.paper-insight {
+  margin: 0;
+  padding: 6px 8px;
+  background: rgba(88, 166, 255, 0.06);
+  border-left: 2px solid #58a6ff;
+  border-radius: 0 3px 3px 0;
+  color: var(--bone, #F5F5F0);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.paper-summary { margin: 0; line-height: 1.4; }
+.action-list { margin: 0 0 0 18px; padding: 0; }
+.action-list li { margin-bottom: 4px; }

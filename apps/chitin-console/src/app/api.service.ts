@@ -86,6 +86,30 @@ export class ApiService {
   addTaskComment(id: string, body: { body: string; author?: string }): Observable<TaskCommentResponse> {
     return this.http.post<TaskCommentResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/comment`, body);
   }
+
+  /** Parsed industry-scan-latest.html — arXiv research scan with paper cards. */
+  industryScan(): Observable<IndustryScanReport | null> {
+    return this.http.get<IndustryScanReport | null>(`${API_BASE}/reports/industry-scan`);
+  }
+}
+
+export interface IndustryPaper {
+  title: string;
+  url: string;
+  authors: string | null;
+  stars: number;
+  tags: { kind: string; label: string }[];
+  insight: string | null;
+  summary: string | null;
+}
+
+export interface IndustryScanReport {
+  file: string;
+  date: string | null;
+  generatedAt: number;
+  telemetry: { value: string; label: string }[];
+  sections: { title: string; papers: IndustryPaper[] }[];
+  actions: string[];
 }
 
 export interface TaskStatusUpdateResponse {

@@ -336,6 +336,78 @@
     </div>
   </section>
 
+  <!-- ========== INDUSTRY SCAN ========== -->
+  <section class="plate panel report-section">
+    <header class="panel-head">
+      <h2 class="section-title">🔬 industry scan</h2>
+      @if (industryScan(); as scan) {
+        <span class="mono small text-muted">{{ scan.date || '–' }} · {{ scan.file }}</span>
+      } @else {
+        <span class="mono small text-muted">no scan available</span>
+      }
+    </header>
+    <div class="panel-body">
+      @if (!industryScan()) {
+        <cc-empty-state
+          title="No industry-scan report"
+          body="Run the industry-scan cron or check that ~/labs/local-ai-lab/wiki/assets has an industry-scan-*.html file."
+        ></cc-empty-state>
+      } @else {
+        @if (industryScan()!.telemetry.length > 0) {
+          <div class="chain-kpis" style="grid-template-columns: repeat({{ industryScan()!.telemetry.length }}, minmax(0, 1fr));">
+            @for (m of industryScan()!.telemetry; track m.label) {
+              <div class="chain-kpi">
+                <div class="label mono tiny">{{ m.label }}</div>
+                <div class="value mono">{{ m.value }}</div>
+              </div>
+            }
+          </div>
+        }
+
+        @for (sec of industryScan()!.sections; track sec.title) {
+          <h3 class="block-title industry-section-title">{{ sec.title }}</h3>
+          <div class="paper-grid">
+            @for (p of sec.papers; track p.url) {
+              <article class="paper-card">
+                <header class="paper-head">
+                  <a class="paper-title mono small" [href]="p.url" target="_blank" rel="noopener">{{ p.title }}</a>
+                </header>
+                @if (p.authors) {
+                  <div class="paper-authors mono tiny text-dim">{{ p.authors }}</div>
+                }
+                <div class="paper-meta">
+                  @if (p.stars > 0) {
+                    <span class="paper-stars mono small" [attr.title]="p.stars + ' / 10'">
+                      {{ '★'.repeat(p.stars) }}<span class="text-dim">{{ '☆'.repeat(10 - p.stars) }}</span>
+                    </span>
+                  }
+                  @for (tag of p.tags; track tag.kind) {
+                    <span class="paper-tag mono tiny" [attr.data-tag]="tag.kind">{{ tag.label }}</span>
+                  }
+                </div>
+                @if (p.insight) {
+                  <p class="paper-insight mono small">💡 {{ p.insight }}</p>
+                }
+                @if (p.summary) {
+                  <p class="paper-summary mono tiny text-muted">{{ p.summary }}</p>
+                }
+              </article>
+            }
+          </div>
+        }
+
+        @if (industryScan()!.actions.length > 0) {
+          <h3 class="block-title industry-section-title">📌 action items</h3>
+          <ul class="action-list">
+            @for (a of industryScan()!.actions; track a) {
+              <li class="mono small">{{ a }}</li>
+            }
+          </ul>
+        }
+      }
+    </div>
+  </section>
+
   <footer class="report-footer mono tiny text-dim">
     generated {{ fmtTs(generatedAt() / 1000) }} · regenerated on refresh ·
     legacy HTML reports archived at /api/reports/legacy/

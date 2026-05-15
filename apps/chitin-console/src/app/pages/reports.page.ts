@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, inject, signal, computed } 
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { forkJoin } from 'rxjs';
-import { ApiService } from '../api.service';
+import { ApiService, type IndustryScanReport } from '../api.service';
 import type { Task, SessionSummary, ArgusInfo } from '../api.types';
 import { StatusPillComponent } from '../ui/status-pill.component';
 import { LoaderComponent } from '../ui/loader.component';
@@ -49,6 +49,7 @@ export class ReportsPage implements OnInit {
   readonly sessions = signal<SessionSummary[]>([]);
   readonly argusInfo = signal<ArgusInfo | null>(null);
   readonly argusFindings = signal<Record<string, unknown>[]>([]);
+  readonly industryScan = signal<IndustryScanReport | null>(null);
   readonly generatedAt = signal<number>(0);
 
   // ---- Helpers ----
@@ -195,12 +196,14 @@ export class ReportsPage implements OnInit {
       sessions: this.api.sessions(200),
       argusInfo: this.api.argusInfo(),
       argusFindings: this.api.argusFindings(50),
+      industryScan: this.api.industryScan(),
     }).subscribe({
-      next: ({ tasks, sessions, argusInfo, argusFindings }) => {
+      next: ({ tasks, sessions, argusInfo, argusFindings, industryScan }) => {
         this.tasks.set(tasks.tasks);
         this.sessions.set(sessions.sessions);
         this.argusInfo.set(argusInfo);
         this.argusFindings.set(argusFindings.findings);
+        this.industryScan.set(industryScan);
         this.generatedAt.set(Date.now());
         this.loading.set(false);
       },
