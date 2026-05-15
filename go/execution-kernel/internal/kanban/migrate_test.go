@@ -84,3 +84,86 @@ func TestMigrateCopiesAllRowsFromChitinShape(t *testing.T) {
 		t.Errorf("block_reason: want 'no_pr', got %v", blockReason)
 	}
 }
+
+// seedHermesReadybenchShape creates a DB matching the readybench
+// hermes board schema (narrower — no block_reason etc.) and inserts
+// representative rows.
+func seedHermesReadybenchShape(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`
+		CREATE TABLE tasks (
+			id                   TEXT PRIMARY KEY,
+			title                TEXT NOT NULL,
+			body                 TEXT,
+			assignee             TEXT,
+			status               TEXT NOT NULL,
+			priority             INTEGER DEFAULT 0,
+			created_by           TEXT,
+			created_at           INTEGER NOT NULL,
+			started_at           INTEGER,
+			completed_at         INTEGER,
+			workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
+			workspace_path       TEXT,
+			claim_lock           TEXT,
+			claim_expires        INTEGER,
+			tenant               TEXT,
+			result               TEXT,
+			idempotency_key      TEXT,
+			spawn_failures       INTEGER NOT NULL DEFAULT 0,
+			worker_pid           INTEGER,
+			last_spawn_error     TEXT,
+			max_runtime_seconds  INTEGER,
+			last_heartbeat_at    INTEGER,
+			current_run_id       INTEGER,
+			workflow_template_id TEXT,
+			current_step_key     TEXT,
+			skills               TEXT,
+			consecutive_failures INTEGER NOT NULL DEFAULT 0,
+			last_failure_error   TEXT,
+			max_retries          INTEGER
+		);
+		INSERT INTO tasks (id, title, status, created_at)
+		VALUES ('t_rb1', 'rb only', 'ready', 2000);
+	`)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
+func TestMigrateAcceptsReadybenchShapeWithoutBlockReason(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "rb.db")
+	dest := filepath.Join(dir, "rb-chitin.db")
+	seedHermesReadybenchShape(t, src)
+
+	if err := Migrate(src, dest); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dest)
+	if err != nil {
+		t.Fatalf("open dest: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM tasks").Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("tasks: want 1, got %d", count)
+	}
+
+	var blockReason sql.NullString
+	if err := db.QueryRow("SELECT block_reason FROM tasks WHERE id='t_rb1'").Scan(&blockReason); err != nil {
+		t.Fatalf("block_reason: %v", err)
+	}
+	if blockReason.Valid {
+		t.Errorf("block_reason: want NULL, got %q", blockReason.String)
+	}
+}
