@@ -81,6 +81,11 @@ export class ApiService {
   updateTaskStatus(id: string, body: { status: string; author?: string; reason?: string }): Observable<TaskStatusUpdateResponse> {
     return this.http.post<TaskStatusUpdateResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/status`, body);
   }
+
+  /** Add a comment to a ticket. Persists in task_comments + emits a comment_added event. */
+  addTaskComment(id: string, body: { body: string; author?: string }): Observable<TaskCommentResponse> {
+    return this.http.post<TaskCommentResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/comment`, body);
+  }
 }
 
 export interface TaskStatusUpdateResponse {
@@ -88,6 +93,15 @@ export interface TaskStatusUpdateResponse {
   task_id: string;
   status: string;
   flow_stdout: string;
+  refreshed: boolean;
+  refresh_error: string | null;
+  task: TaskDetail | null;
+}
+
+export interface TaskCommentResponse {
+  ok: boolean;
+  task_id: string;
+  author: string;
   refreshed: boolean;
   refresh_error: string | null;
   task: TaskDetail | null;

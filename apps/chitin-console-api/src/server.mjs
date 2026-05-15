@@ -506,7 +506,8 @@ const handlers = [
 // read returns the post-write state. Yes, that's a small latency
 // blip; acceptable until Plan 4 retires the hermes DB.
 const writeHandlers = [
-  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/, (req, body, m) => postTaskStatus(m[1], body)],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/,   (req, body, m) => postTaskStatus(m[1], body)],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/comment$/,  (req, body, m) => postTaskComment(m[1], body)],
 ];
 
 function postTaskStatus(taskId, body) {
@@ -558,6 +559,79 @@ function postTaskStatus(taskId, body) {
     task_id: taskId,
     status,
     flow_stdout: (flow.stdout || '').trim(),
+    refreshed,
+    refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
+    task: getTask(taskId),
+  }};
+}
+
+function postTaskComment(taskId, body) {
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const text = (body?.body || '').trim();
+  if (!text) {
+    return { status: 400, body: { error: 'body_required', detail: 'comment body is required' } };
+  }
+  if (text.length > 8000) {
+    return { status: 400, body: { error: 'body_too_long', detail: 'comment must be <= 8000 chars' } };
+  }
+
+  // Verify the task exists before we touch the DB. getTask uses the
+  // current kanbanDB connection which is the chitin-owned mirror.
+  const existing = getTask(taskId);
+  if (!existing) {
+    return { status: 404, body: { error: 'task_not_found', detail: taskId } };
+  }
+
+  // Writes need a writable handle. We open a fresh non-readonly
+  // connection to the hermes-side DB (source of truth during the
+  // cutover window) so kanban-flow's audit invariant holds — every
+  // comment also gets a task_events row.
+  const home = os.homedir();
+  const hermesDB = path.join(home, '.hermes', 'kanban', 'boards', CURRENT_BOARD, 'kanban.db');
+  if (!fs.existsSync(hermesDB)) {
+    return { status: 500, body: { error: 'no_writable_db', detail: hermesDB } };
+  }
+
+  let writeDB;
+  try {
+    writeDB = new Database(hermesDB, { readonly: false, fileMustExist: true });
+  } catch (e) {
+    return { status: 500, body: { error: 'open_write_db_failed', detail: String(e.message || e) } };
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const insertComment = writeDB.prepare(
+      'INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const insertEvent = writeDB.prepare(
+      'INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const tx = writeDB.transaction(() => {
+      const c = insertComment.run(taskId, author, text, now);
+      insertEvent.run(taskId, 'comment_added', JSON.stringify({ author, comment_id: c.lastInsertRowid }), now);
+    });
+    tx();
+  } catch (e) {
+    return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
+  } finally {
+    writeDB.close();
+  }
+
+  // Refresh the chitin mirror so subsequent reads include the new
+  // comment. Same pattern as postTaskStatus — soft-fail if migrate
+  // returns non-zero; the next migrate cycle catches up.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: taskId,
+    author,
     refreshed,
     refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
     task: getTask(taskId),

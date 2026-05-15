@@ -48,6 +48,11 @@ export class TicketsPage implements OnInit {
     { value: 'done',    label: 'done (→ done)',           needsReason: true  },
   ];
 
+  // Comment composer state.
+  readonly commenting = signal(false);
+  readonly commentError = signal<string | null>(null);
+  pendingComment = '';
+
   status = 'in_progress,triage,ready,todo';
   assignee = '';
   q = '';
@@ -110,7 +115,9 @@ export class TicketsPage implements OnInit {
     this.selectedDetail.set(null);
     this.pendingStatus = '';
     this.pendingReason = '';
+    this.pendingComment = '';
     this.mutationError.set(null);
+    this.commentError.set(null);
     this.router.navigate([], { queryParams: { id }, queryParamsHandling: 'merge' });
     this.api.task(id).subscribe({
       next: (r) => { this.selectedDetail.set(r); this.drawerLoading.set(false); },
@@ -122,7 +129,9 @@ export class TicketsPage implements OnInit {
     this.selectedDetail.set(null);
     this.pendingStatus = '';
     this.pendingReason = '';
+    this.pendingComment = '';
     this.mutationError.set(null);
+    this.commentError.set(null);
     this.router.navigate([], { queryParams: { id: null }, queryParamsHandling: 'merge' });
   }
 
@@ -155,6 +164,26 @@ export class TicketsPage implements OnInit {
         this.mutating.set(false);
         const detail = err?.error?.detail || err?.error?.stderr || err?.message || 'unknown error';
         this.mutationError.set(String(detail));
+      },
+    });
+  }
+
+  submitComment() {
+    const detail = this.selectedDetail();
+    const body = this.pendingComment.trim();
+    if (!detail || !body) return;
+    this.commenting.set(true);
+    this.commentError.set(null);
+    this.api.addTaskComment(detail.task.id, { body }).subscribe({
+      next: (r) => {
+        this.commenting.set(false);
+        this.pendingComment = '';
+        if (r.task) this.selectedDetail.set(r.task);
+      },
+      error: (err) => {
+        this.commenting.set(false);
+        const msg = err?.error?.detail || err?.message || 'failed to post comment';
+        this.commentError.set(String(msg));
       },
     });
   }

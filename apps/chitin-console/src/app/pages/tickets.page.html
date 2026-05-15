@@ -129,6 +129,40 @@
         </section>
 
         <section class="block">
+          <h3 class="block-title">comments ({{ d.comments.length }})</h3>
+          @if (d.comments.length === 0) {
+            <p class="text-muted small">No comments yet.</p>
+          } @else {
+            <ul class="comment-list">
+              @for (c of d.comments; track c.id) {
+                <li class="comment-item">
+                  <div class="comment-head">
+                    <span class="mono small text-glow">{{ c.author }}</span>
+                    <span class="mono tiny text-dim">{{ fmtTs(c.created_at) }}</span>
+                  </div>
+                  <div class="comment-body mono small">{{ c.body }}</div>
+                </li>
+              }
+            </ul>
+          }
+          <div class="comment-composer">
+            <textarea class="input comment-input" rows="2"
+                      [(ngModel)]="pendingComment"
+                      [disabled]="commenting()"
+                      placeholder="Add a comment…"
+                      aria-label="Comment body"></textarea>
+            <button class="btn" type="button"
+                    [disabled]="!pendingComment.trim() || commenting()"
+                    (click)="submitComment()">
+              {{ commenting() ? 'posting…' : 'comment' }}
+            </button>
+          </div>
+          @if (commentError(); as err) {
+            <p class="status-mut-err mono small">{{ err }}</p>
+          }
+        </section>
+
+        <section class="block">
           <h3 class="block-title">runs ({{ d.runs.length }})</h3>
           @if (d.runs.length === 0) {
             <p class="text-muted small">No runs recorded.</p>
