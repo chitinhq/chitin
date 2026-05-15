@@ -36,14 +36,40 @@ type TimelineFilters struct {
 
 // TimelineSummary aggregates the filtered steps.
 type TimelineSummary struct {
-	StepCount         int              `json:"step_count"`
-	ToolCallCount     int              `json:"tool_call_count"`
-	TotalCostUSD      float64          `json:"total_cost_usd"`
-	TotalInputTokens  int64            `json:"total_input_tokens"`
-	TotalOutputTokens int64            `json:"total_output_tokens"`
-	TotalTokens       int64            `json:"total_tokens"`
-	DecisionsPerRule  map[string]int   `json:"decisions_per_rule"`
-	TimeOnToolMs      map[string]int64 `json:"time_on_tool_ms"`
+	StepCount         int                 `json:"step_count"`
+	ToolCallCount     int                 `json:"tool_call_count"`
+	DispatchCount     int                 `json:"dispatch_count"`
+	AllowedCount      int                 `json:"allowed_count"`
+	DeniedCount       int                 `json:"denied_count"`
+	SuccessRate       float64             `json:"success_rate"`
+	TotalCostUSD      float64             `json:"total_cost_usd"`
+	TotalInputTokens  int64               `json:"total_input_tokens"`
+	TotalOutputTokens int64               `json:"total_output_tokens"`
+	TotalTokens       int64               `json:"total_tokens"`
+	DecisionsPerRule  map[string]int      `json:"decisions_per_rule"`
+	TimeOnToolMs      map[string]int64    `json:"time_on_tool_ms"`
+	CostByDriver      map[string]float64  `json:"cost_by_driver"`
+	CostByTool        map[string]float64  `json:"cost_by_tool"`
+	CostTimeline      []CostTimelinePoint `json:"cost_timeline"`
+	CostHeatmap       []CostHeatmapCell   `json:"cost_heatmap"`
+}
+
+type CostTimelinePoint struct {
+	Ts             string             `json:"ts"`
+	StepIndex      int                `json:"step_index"`
+	CostUSD        float64            `json:"cost_usd"`
+	CumulativeUSD  float64            `json:"cumulative_usd"`
+	Driver         string             `json:"driver,omitempty"`
+	DriverCostsUSD map[string]float64 `json:"driver_costs_usd,omitempty"`
+}
+
+type CostHeatmapCell struct {
+	Driver    string  `json:"driver"`
+	Model     string  `json:"model"`
+	CostUSD   float64 `json:"cost_usd"`
+	Steps     int     `json:"steps"`
+	TokensIn  int64   `json:"tokens_in"`
+	TokensOut int64   `json:"tokens_out"`
 }
 
 // Step is one ordered event in the replay timeline.
@@ -53,13 +79,18 @@ type Step struct {
 	Ts         string          `json:"ts"`
 	Driver     string          `json:"driver,omitempty"`
 	Agent      string          `json:"agent,omitempty"`
+	Model      string          `json:"model,omitempty"`
 	Tool       string          `json:"tool,omitempty"`
+	TokensIn   int64           `json:"tokens_in,omitempty"`
+	TokensOut  int64           `json:"tokens_out,omitempty"`
+	CostUSD    float64         `json:"cost_usd,omitempty"`
 	Input      any             `json:"input,omitempty"`
 	Output     any             `json:"output,omitempty"`
 	Decision   *StepDecision   `json:"decision,omitempty"`
 	Cost       *StepCost       `json:"cost,omitempty"`
 	Prediction *StepPrediction `json:"prediction,omitempty"`
 	DurationMs *int64          `json:"duration_ms,omitempty"`
+	EnvelopeID string          `json:"envelope_id,omitempty"`
 }
 
 type StepDecision struct {
@@ -133,6 +164,8 @@ type decisionJoin struct {
 	RoutingDecision  string
 	Driver           string
 	Agent            string
+	Model            string
+	EnvelopeID       string
 }
 
 // BuildTimeline returns a structured session replay suitable for rendering.
@@ -179,6 +212,8 @@ func BuildTimeline(opts ReplayOptions) (*Timeline, error) {
 		Summary: TimelineSummary{
 			DecisionsPerRule: make(map[string]int),
 			TimeOnToolMs:     make(map[string]int64),
+			CostByDriver:     make(map[string]float64),
+			CostByTool:       make(map[string]float64),
 		},
 	}
 
@@ -195,9 +230,23 @@ func BuildTimeline(opts ReplayOptions) (*Timeline, error) {
 		}
 		tl.EndedAt = step.Ts
 		tl.Steps = append(tl.Steps, step)
-		accumulateSummary(&tl.Summary, step)
+	}
+	propagateStepModels(tl.Steps)
+	// Envelope-spend reconciliation redistributes an envelope's total
+	// SpentUSD across steps with missing per-step costs. That arithmetic
+	// is only sound when tl.Steps holds every step of the envelope: with
+	// a filter active, filtered-out steps' costs would be redistributed
+	// onto the visible ones, inflating the filtered replay total. Skip
+	// reconciliation whenever any filter is in effect.
+	filtersActive := opts.From != "" || opts.To != "" || opts.Driver != "" || opts.Tool != ""
+	if !filtersActive {
+		reconcileEnvelopeSpend(stateDir, tl.Steps)
+	}
+	for i := range tl.Steps {
+		accumulateSummary(&tl.Summary, tl.Steps[i])
 	}
 	tl.Summary.StepCount = len(tl.Steps)
+	finalizeSummary(&tl.Summary, tl.Steps)
 	if len(tl.Steps) == 0 {
 		tl.StartedAt = ""
 		tl.EndedAt = ""
@@ -359,6 +408,7 @@ func buildStep(ev sessionEvent, joined *decisionJoin, sidecars *sidecarStore) (S
 		Ts:      ev.Ts,
 		Driver:  deriveDriver(ev, joined),
 		Agent:   deriveAgent(ev.Event, joined),
+		Model:   deriveModel(ev.payload, joined),
 		Tool:    deriveTool(ev.payload, joined),
 	}
 	if dur, ok := int64Field(ev.payload, "duration_ms"); ok {
@@ -379,6 +429,7 @@ func buildStep(ev sessionEvent, joined *decisionJoin, sidecars *sidecarStore) (S
 			InputBytes:  joined.InputBytes,
 			OutputBytes: joined.OutputBytes,
 		})
+		step.EnvelopeID = joined.EnvelopeID
 		if hasJoinedPrediction(joined) {
 			step.Prediction = &StepPrediction{
 				PredictedBlast:   joined.PredictedBlast,
@@ -402,6 +453,7 @@ func buildStep(ev sessionEvent, joined *decisionJoin, sidecars *sidecarStore) (S
 		}
 	}
 	step = attachPayloadContent(step, ev, sidecars)
+	normalizeStepCost(&step)
 	if step.Type == "" || step.Ts == "" {
 		return Step{}, false
 	}
@@ -449,6 +501,13 @@ func attachPayloadContent(step Step, ev sessionEvent, sidecars *sidecarStore) St
 			cost.TotalTokens = cost.InputTokens + cost.OutputTokens + cost.ThinkingTokens
 			step.Cost = mergeCost(step.Cost, cost)
 		}
+	case "model_turn":
+		step.Model = firstNonEmpty(step.Model, stringField(ev.payload, "model_name"))
+		step.Cost = mergeCost(step.Cost, &StepCost{
+			InputTokens:  int64FromAny(ev.payload["input_tokens"]),
+			OutputTokens: int64FromAny(ev.payload["output_tokens"]),
+			TotalTokens:  int64FromAny(ev.payload["input_tokens"]) + int64FromAny(ev.payload["output_tokens"]),
+		})
 	case "pre_tool_use", "post_tool_use", "decision":
 		if step.Input == nil {
 			if toolInput, ok := mapField(ev.payload, "tool_input"); ok {
@@ -462,6 +521,39 @@ func attachPayloadContent(step Step, ev sessionEvent, sidecars *sidecarStore) St
 		}
 	}
 	return step
+}
+
+func normalizeStepCost(step *Step) {
+	if step == nil || step.Cost == nil {
+		return
+	}
+	if step.Cost.TotalTokens == 0 {
+		step.Cost.TotalTokens = step.Cost.InputTokens + step.Cost.OutputTokens + step.Cost.ThinkingTokens
+	}
+	step.TokensIn = step.Cost.InputTokens
+	step.TokensOut = step.Cost.OutputTokens
+	step.CostUSD = step.Cost.USD
+}
+
+func propagateStepModels(steps []Step) {
+	lastByDriver := map[string]string{}
+	lastGlobal := ""
+	for idx := range steps {
+		if steps[idx].Model != "" {
+			lastGlobal = steps[idx].Model
+			if steps[idx].Driver != "" {
+				lastByDriver[steps[idx].Driver] = steps[idx].Model
+			}
+			continue
+		}
+		if steps[idx].Driver != "" && lastByDriver[steps[idx].Driver] != "" {
+			steps[idx].Model = lastByDriver[steps[idx].Driver]
+			continue
+		}
+		if lastGlobal != "" {
+			steps[idx].Model = lastGlobal
+		}
+	}
 }
 
 func mergeCost(existing *StepCost, extra *StepCost) *StepCost {
@@ -499,19 +591,81 @@ func mergeCost(existing *StepCost, extra *StepCost) *StepCost {
 func accumulateSummary(sum *TimelineSummary, step Step) {
 	if isToolCallStep(step) {
 		sum.ToolCallCount++
+		sum.DispatchCount++
 	}
 	if step.Decision != nil && step.Decision.RuleID != "" {
 		sum.DecisionsPerRule[step.Decision.RuleID]++
+		if step.Decision.Allowed {
+			sum.AllowedCount++
+		} else {
+			sum.DeniedCount++
+		}
 	}
 	if step.Cost != nil {
 		sum.TotalCostUSD += step.Cost.USD
 		sum.TotalInputTokens += step.Cost.InputTokens
 		sum.TotalOutputTokens += step.Cost.OutputTokens
 		sum.TotalTokens += step.Cost.TotalTokens
+		if step.Driver != "" {
+			sum.CostByDriver[step.Driver] += step.Cost.USD
+		}
+		if step.Tool != "" {
+			sum.CostByTool[step.Tool] += step.Cost.USD
+		}
 	}
 	if step.DurationMs != nil && step.Tool != "" {
 		sum.TimeOnToolMs[step.Tool] += *step.DurationMs
 	}
+}
+
+func finalizeSummary(sum *TimelineSummary, steps []Step) {
+	if sum.DispatchCount > 0 {
+		sum.SuccessRate = float64(sum.AllowedCount) / float64(sum.DispatchCount)
+	}
+	driverRunning := map[string]float64{}
+	heat := map[string]*CostHeatmapCell{}
+	var cumulative float64
+	for idx, step := range steps {
+		if step.Cost != nil {
+			cumulative += step.Cost.USD
+			if step.Driver != "" {
+				driverRunning[step.Driver] += step.Cost.USD
+			}
+			if step.Cost.USD > 0 && (step.Driver != "" || step.Model != "") {
+				key := step.Driver + "\x1f" + emptyDash(step.Model)
+				cell := heat[key]
+				if cell == nil {
+					cell = &CostHeatmapCell{Driver: step.Driver, Model: emptyDash(step.Model)}
+					heat[key] = cell
+				}
+				cell.CostUSD += step.Cost.USD
+				cell.Steps++
+				cell.TokensIn += step.TokensIn
+				cell.TokensOut += step.TokensOut
+			}
+		}
+		pointDrivers := make(map[string]float64, len(driverRunning))
+		for driver, cost := range driverRunning {
+			pointDrivers[driver] = cost
+		}
+		sum.CostTimeline = append(sum.CostTimeline, CostTimelinePoint{
+			Ts:             step.Ts,
+			StepIndex:      idx,
+			CostUSD:        step.CostUSD,
+			CumulativeUSD:  cumulative,
+			Driver:         step.Driver,
+			DriverCostsUSD: pointDrivers,
+		})
+	}
+	for _, cell := range heat {
+		sum.CostHeatmap = append(sum.CostHeatmap, *cell)
+	}
+	sort.Slice(sum.CostHeatmap, func(i, j int) bool {
+		if sum.CostHeatmap[i].Driver != sum.CostHeatmap[j].Driver {
+			return sum.CostHeatmap[i].Driver < sum.CostHeatmap[j].Driver
+		}
+		return sum.CostHeatmap[i].Model < sum.CostHeatmap[j].Model
+	})
 }
 
 func isToolCallStep(step Step) bool {
@@ -681,6 +835,12 @@ func mergeDecisionJoin(dst *decisionJoin, d gov.Decision) {
 	if dst.Agent == "" {
 		dst.Agent = firstNonEmpty(d.AgentInstanceID, d.Agent)
 	}
+	if dst.Model == "" {
+		dst.Model = d.Model
+	}
+	if dst.EnvelopeID == "" {
+		dst.EnvelopeID = d.EnvelopeID
+	}
 }
 
 func parseDecisionLine(line []byte) (gov.Decision, error) {
@@ -812,6 +972,29 @@ func deriveTool(payload map[string]any, joined *decisionJoin) string {
 	return ""
 }
 
+func deriveModel(payload map[string]any, joined *decisionJoin) string {
+	if modelUsed, ok := mapField(payload, "model_used"); ok {
+		if v := stringField(modelUsed, "name"); v != "" {
+			return v
+		}
+	}
+	if v := stringField(payload, "model_name"); v != "" {
+		return v
+	}
+	if usage, ok := mapField(payload, "usage"); ok {
+		if v := stringField(usage, "model"); v != "" {
+			return v
+		}
+	}
+	if v := stringField(payload, "model"); v != "" {
+		return v
+	}
+	if joined != nil {
+		return joined.Model
+	}
+	return ""
+}
+
 func hasJoinedPrediction(joined *decisionJoin) bool {
 	return joined != nil && (joined.PredictedBlast != 0 || joined.FlounderingScore != 0 || joined.DriftScore != 0 || joined.RoutingDecision != "")
 }
@@ -872,6 +1055,187 @@ func chitinStateDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".chitin"), nil
+}
+
+func reconcileEnvelopeSpend(stateDir string, steps []Step) {
+	if len(steps) == 0 {
+		return
+	}
+	dbPath := filepath.Join(stateDir, "gov.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return
+	}
+	store, err := gov.OpenBudgetStore(dbPath)
+	if err != nil {
+		return
+	}
+	defer store.Close()
+
+	type group struct {
+		known   float64
+		missing []int
+	}
+	groups := map[string]*group{}
+	for idx := range steps {
+		envID := steps[idx].EnvelopeID
+		if envID == "" {
+			continue
+		}
+		g := groups[envID]
+		if g == nil {
+			g = &group{}
+			groups[envID] = g
+		}
+		if steps[idx].CostUSD > 0 {
+			g.known += steps[idx].CostUSD
+		} else {
+			g.missing = append(g.missing, idx)
+		}
+	}
+	for envID, g := range groups {
+		if len(g.missing) == 0 {
+			continue
+		}
+		env, err := store.Load(envID)
+		if err != nil {
+			continue
+		}
+		state, err := env.Inspect()
+		if err != nil {
+			continue
+		}
+		remainder := state.SpentUSD - g.known
+		if remainder <= 0 {
+			continue
+		}
+		var totalWeight float64
+		weights := make([]float64, len(g.missing))
+		for i, idx := range g.missing {
+			weight := float64(maxInt64(steps[idx].Cost.InputBytes, steps[idx].TokensIn))
+			if weight <= 0 {
+				weight = 1
+			}
+			weights[i] = weight
+			totalWeight += weight
+		}
+		if totalWeight <= 0 {
+			continue
+		}
+		remaining := remainder
+		for i, idx := range g.missing {
+			share := remainder * (weights[i] / totalWeight)
+			if i == len(g.missing)-1 {
+				share = remaining
+			}
+			if steps[idx].Cost == nil {
+				steps[idx].Cost = &StepCost{}
+			}
+			steps[idx].Cost.USD = share
+			steps[idx].CostUSD = share
+			remaining -= share
+		}
+	}
+}
+
+// cwdMatchesTicket reports whether ticketID appears in cwd as a discrete
+// token rather than an arbitrary substring. A plain strings.Contains would
+// match ticket "t_abc" against a "t_abcd" worktree path; here the match is
+// required to be bounded by non-identifier characters (path separators,
+// dashes, dots, string boundaries) on both sides so "t_abc" no longer
+// matches "t_abcd" while ".../swarm-codex-t_abc" still does.
+func cwdMatchesTicket(cwd, ticketID string) bool {
+	if ticketID == "" {
+		return false
+	}
+	from := 0
+	for {
+		idx := strings.Index(cwd[from:], ticketID)
+		if idx < 0 {
+			return false
+		}
+		start := from + idx
+		end := start + len(ticketID)
+		if !isTicketTokenChar(cwd, start-1) && !isTicketTokenChar(cwd, end) {
+			return true
+		}
+		from = start + 1
+		if from >= len(cwd) {
+			return false
+		}
+	}
+}
+
+// isTicketTokenChar reports whether the byte at index i of s is an
+// identifier character (letter, digit, or underscore). Out-of-range
+// indices count as a token boundary, not an identifier char.
+func isTicketTokenChar(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return c == '_' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z')
+}
+
+func FindSessionForTicket(ticketID string) (string, error) {
+	if ticketID == "" {
+		return "", fmt.Errorf("ticket_id is required")
+	}
+	stateDir, err := chitinStateDir()
+	if err != nil {
+		return "", err
+	}
+	pattern := filepath.Join(stateDir, "events-*.jsonl")
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+	type match struct {
+		sessionID string
+		ts        time.Time
+	}
+	var best match
+	for _, path := range paths {
+		if err := scanJSONLLines(path, func(line []byte) error {
+			var ev event.Event
+			if err := json.Unmarshal(line, &ev); err != nil {
+				return nil
+			}
+			if ev.EventType != "session_start" {
+				return nil
+			}
+			var payload map[string]any
+			if len(ev.Payload) > 0 {
+				if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+					return nil
+				}
+			}
+			cwd := stringField(payload, "cwd")
+			if cwd == "" || !cwdMatchesTicket(cwd, ticketID) {
+				return nil
+			}
+			ts := mustParseOrZero(ev.Ts)
+			if best.sessionID == "" || ts.After(best.ts) {
+				best = match{sessionID: firstNonEmpty(ev.ChainID, ev.SessionID), ts: ts}
+			}
+			return nil
+		}); err != nil {
+			return "", err
+		}
+	}
+	if best.sessionID == "" {
+		return "", fmt.Errorf("no session found for ticket %s", ticketID)
+	}
+	return best.sessionID, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func mapField(m map[string]any, key string) (map[string]any, bool) {

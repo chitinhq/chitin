@@ -70,6 +70,22 @@ func TestCLI_ChainSessions_Recent(t *testing.T) {
 	}
 }
 
+func TestCLI_ChainSessions_TicketLookup(t *testing.T) {
+	home := t.TempDir()
+	body := `{"schema_version":"2","run_id":"run-ticket","session_id":"sess-ticket","surface":"codex","agent_instance_id":"a1","agent_fingerprint":"fp","event_type":"session_start","chain_id":"sess-ticket","chain_type":"session","seq":0,"this_hash":"h1","ts":"2026-05-13T09:00:00Z","labels":{"driver":"codex"},"payload":{"cwd":"/tmp/swarm-codex-t_7ab3d45c"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(home, "events-ticket.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runCLIWithHome(t, home, "chain", "sessions", "--ticket=t_7ab3d45c")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != "sess-ticket" {
+		t.Fatalf("ticket lookup got %q", stdout)
+	}
+}
+
 func TestCLI_ChainBlobs(t *testing.T) {
 	home := t.TempDir()
 	store, err := sidecar.Open(filepath.Join(home, "sidecar.db"))

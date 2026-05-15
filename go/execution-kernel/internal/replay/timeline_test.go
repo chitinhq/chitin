@@ -58,7 +58,7 @@ func TestBuildTimeline_AggregatesAndJoins(t *testing.T) {
 		"allowed": true, "mode": "enforce", "rule_id": "allow-shell", "reason": "ok",
 		"action_type": "shell.exec", "action_target": "echo hi", "ts": "2026-05-13T10:00:02Z",
 		"cost_usd": 0.125, "input_bytes": 12, "output_bytes": 3,
-		"agent_instance_id": "agent-1", "agent": "agent-1", "driver": "codex",
+		"agent_instance_id": "agent-1", "agent": "agent-1", "driver": "codex", "model": "gpt-5.5",
 		"predicted_blast": 0.7, "floundering_score": 0.2, "routing_decision": "watch",
 	})+"\n")
 
@@ -101,10 +101,28 @@ func TestBuildTimeline_AggregatesAndJoins(t *testing.T) {
 	if timeline.Summary.TotalInputTokens != 10 || timeline.Summary.TotalOutputTokens != 5 || timeline.Summary.TotalTokens != 17 {
 		t.Fatalf("token summary=%+v", timeline.Summary)
 	}
+	if timeline.Summary.DispatchCount != 1 || timeline.Summary.AllowedCount != 1 || timeline.Summary.SuccessRate != 1 {
+		t.Fatalf("dispatch summary=%+v", timeline.Summary)
+	}
+	if got := timeline.Summary.CostByDriver["codex"]; got != 0.125 {
+		t.Fatalf("cost_by_driver=%v", timeline.Summary.CostByDriver)
+	}
+	if got := timeline.Summary.CostByTool["shell.exec"]; got != 0.125 {
+		t.Fatalf("cost_by_tool=%v", timeline.Summary.CostByTool)
+	}
+	if len(timeline.Summary.CostTimeline) != 4 || timeline.Summary.CostTimeline[2].CumulativeUSD != 0.125 {
+		t.Fatalf("cost_timeline=%+v", timeline.Summary.CostTimeline)
+	}
+	if len(timeline.Summary.CostHeatmap) != 1 || timeline.Summary.CostHeatmap[0].Model != "gpt-5.5" {
+		t.Fatalf("cost_heatmap=%+v", timeline.Summary.CostHeatmap)
+	}
 
 	decisionStep := timeline.Steps[2]
 	if decisionStep.Input == nil {
 		t.Fatalf("decision input missing: %+v", decisionStep)
+	}
+	if decisionStep.CostUSD != 0.125 || decisionStep.Model != "gpt-5.5" {
+		t.Fatalf("decision step cost/model missing: %+v", decisionStep)
 	}
 	if decisionStep.Prediction == nil || decisionStep.Prediction.PredictedBlast != 0.7 {
 		t.Fatalf("prediction missing: %+v", decisionStep.Prediction)
@@ -112,6 +130,261 @@ func TestBuildTimeline_AggregatesAndJoins(t *testing.T) {
 	postStep := timeline.Steps[3]
 	if postStep.Output == nil {
 		t.Fatalf("post output missing: %+v", postStep)
+	}
+}
+
+func TestBuildTimeline_ReconcilesMissingCostFromEnvelopeSpend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-run-c.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-c", "session_id": "sess-3", "surface": "codex",
+			"agent_instance_id": "agent-3", "agent_fingerprint": "fp", "event_type": "session_start",
+			"chain_id": "sess-3", "chain_type": "session", "seq": 0, "this_hash": "c0",
+			"ts": "2026-05-13T12:00:00Z", "labels": map[string]any{"driver": "codex", "agent_instance_id": "agent-3"},
+			"payload": map[string]any{"cwd": "/tmp/swarm-codex-t_7ab3d45c"},
+		}),
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-c", "session_id": "sess-3", "surface": "codex",
+			"agent_instance_id": "agent-3", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": "sess-3", "chain_type": "session", "seq": 1, "this_hash": "c1",
+			"ts": "2026-05-13T12:00:01Z", "labels": map[string]any{"driver": "codex", "agent_instance_id": "agent-3"},
+			"payload": map[string]any{"tool_name": "file.read", "action_type": "file.read", "action_target": "README.md", "decision": "allow"},
+		}),
+	}, "\n")+"\n")
+
+	writeReplayFile(t, filepath.Join(home, "gov-decisions-2026-05-13.jsonl"), mustJSON(t, map[string]any{
+		"allowed": true, "mode": "enforce", "rule_id": "allow-reads",
+		"action_type": "file.read", "action_target": "README.md", "ts": "2026-05-13T12:00:01Z",
+		"agent_instance_id": "agent-3", "agent": "agent-3", "driver": "codex", "envelope_id": "env-1",
+	})+"\n")
+
+	db, err := sql.Open("sqlite", filepath.Join(home, "gov.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE envelopes (
+		id TEXT PRIMARY KEY,
+		created_at TEXT NOT NULL,
+		closed_at TEXT,
+		max_tool_calls INTEGER NOT NULL DEFAULT 0,
+		max_input_bytes INTEGER NOT NULL DEFAULT 0,
+		budget_usd REAL NOT NULL DEFAULT 0,
+		spent_calls INTEGER NOT NULL DEFAULT 0,
+		spent_bytes INTEGER NOT NULL DEFAULT 0,
+		spent_usd REAL NOT NULL DEFAULT 0,
+		last_spend_at TEXT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO envelopes (id, created_at, spent_usd) VALUES ('env-1', '2026-05-13T12:00:00Z', 0.42)`); err != nil {
+		t.Fatal(err)
+	}
+
+	timeline, err := BuildTimeline(ReplayOptions{SessionID: "sess-3"})
+	if err != nil {
+		t.Fatalf("BuildTimeline: %v", err)
+	}
+	if got := timeline.Steps[1].CostUSD; got != 0.42 {
+		t.Fatalf("reconciled cost=%.2f want 0.42", got)
+	}
+}
+
+func TestFindSessionForTicket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-run-ticket.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-ticket", "session_id": "sess-old", "surface": "codex",
+			"agent_instance_id": "agent-1", "agent_fingerprint": "fp", "event_type": "session_start",
+			"chain_id": "sess-old", "chain_type": "session", "seq": 0, "this_hash": "t0",
+			"ts": "2026-05-13T11:00:00Z", "labels": map[string]any{"driver": "codex"},
+			"payload": map[string]any{"cwd": "/tmp/swarm-codex-t_7ab3d45c-old"},
+		}),
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-ticket", "session_id": "sess-new", "surface": "codex",
+			"agent_instance_id": "agent-1", "agent_fingerprint": "fp", "event_type": "session_start",
+			"chain_id": "sess-new", "chain_type": "session", "seq": 1, "this_hash": "t1",
+			"ts": "2026-05-13T12:00:00Z", "labels": map[string]any{"driver": "codex"},
+			"payload": map[string]any{"cwd": "/tmp/swarm-codex-t_7ab3d45c"},
+		}),
+	}, "\n")+"\n")
+
+	got, err := FindSessionForTicket("t_7ab3d45c")
+	if err != nil {
+		t.Fatalf("FindSessionForTicket: %v", err)
+	}
+	if got != "sess-new" {
+		t.Fatalf("session=%s want sess-new", got)
+	}
+}
+
+// TestCwdMatchesTicket guards the discrete-token fix: a ticket id must
+// match a cwd as a whole path token, not an arbitrary substring, so
+// "t_abc" never matches a "t_abcd" worktree path.
+func TestCwdMatchesTicket(t *testing.T) {
+	cases := []struct {
+		cwd    string
+		ticket string
+		want   bool
+	}{
+		{"/tmp/swarm-codex-t_7ab3d45c", "t_7ab3d45c", true},
+		{"/tmp/swarm-codex-t_7ab3d45c-old", "t_7ab3d45c", true},
+		{"/home/red/t_7ab3d45c/go", "t_7ab3d45c", true},
+		{"/tmp/swarm-codex-t_7ab3d45cd", "t_7ab3d45c", false},
+		{"/tmp/xt_7ab3d45c", "t_7ab3d45c", false},
+		{"/tmp/other", "t_7ab3d45c", false},
+		{"/tmp/t_7ab3d45c", "", false},
+	}
+	for _, tc := range cases {
+		if got := cwdMatchesTicket(tc.cwd, tc.ticket); got != tc.want {
+			t.Errorf("cwdMatchesTicket(%q, %q) = %v, want %v", tc.cwd, tc.ticket, got, tc.want)
+		}
+	}
+}
+
+// TestBuildTimeline_SkipsEnvelopeReconcileWhenFiltered guards the
+// filtered-replay fix: envelope-spend reconciliation must not run when a
+// filter is active, because redistributing an envelope's total SpentUSD
+// across only the visible steps inflates the filtered replay total.
+func TestBuildTimeline_SkipsEnvelopeReconcileWhenFiltered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-run-f.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-f", "session_id": "sess-f", "surface": "codex",
+			"agent_instance_id": "agent-f", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": "sess-f", "chain_type": "session", "seq": 0, "this_hash": "f0",
+			"ts": "2026-05-13T12:00:00Z", "labels": map[string]any{"driver": "codex", "agent_instance_id": "agent-f"},
+			"payload": map[string]any{"tool_name": "file.read", "action_type": "file.read", "action_target": "A.md", "decision": "allow"},
+		}),
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-f", "session_id": "sess-f", "surface": "hermes",
+			"agent_instance_id": "agent-f", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": "sess-f", "chain_type": "session", "seq": 1, "this_hash": "f1",
+			"ts": "2026-05-13T12:00:01Z", "labels": map[string]any{"driver": "hermes", "agent_instance_id": "agent-f"},
+			"payload": map[string]any{"tool_name": "file.read", "action_type": "file.read", "action_target": "B.md", "decision": "allow"},
+		}),
+	}, "\n")+"\n")
+
+	writeReplayFile(t, filepath.Join(home, "gov-decisions-2026-05-13.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"allowed": true, "mode": "enforce", "rule_id": "allow-reads",
+			"action_type": "file.read", "action_target": "A.md", "ts": "2026-05-13T12:00:00Z",
+			"agent_instance_id": "agent-f", "agent": "agent-f", "driver": "codex", "envelope_id": "env-f",
+		}),
+		mustJSON(t, map[string]any{
+			"allowed": true, "mode": "enforce", "rule_id": "allow-reads",
+			"action_type": "file.read", "action_target": "B.md", "ts": "2026-05-13T12:00:01Z",
+			"agent_instance_id": "agent-f", "agent": "agent-f", "driver": "hermes", "envelope_id": "env-f",
+		}),
+	}, "\n")+"\n")
+
+	db, err := sql.Open("sqlite", filepath.Join(home, "gov.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE envelopes (
+		id TEXT PRIMARY KEY,
+		created_at TEXT NOT NULL,
+		closed_at TEXT,
+		max_tool_calls INTEGER NOT NULL DEFAULT 0,
+		max_input_bytes INTEGER NOT NULL DEFAULT 0,
+		budget_usd REAL NOT NULL DEFAULT 0,
+		spent_calls INTEGER NOT NULL DEFAULT 0,
+		spent_bytes INTEGER NOT NULL DEFAULT 0,
+		spent_usd REAL NOT NULL DEFAULT 0,
+		last_spend_at TEXT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO envelopes (id, created_at, spent_usd) VALUES ('env-f', '2026-05-13T12:00:00Z', 0.80)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// With a driver filter, only the codex step is visible. The envelope's
+	// total 0.80 USD spans both steps; reconciliation must be skipped so
+	// the filtered-out hermes step's cost is not dumped onto the codex step.
+	timeline, err := BuildTimeline(ReplayOptions{SessionID: "sess-f", Driver: "codex"})
+	if err != nil {
+		t.Fatalf("BuildTimeline filtered: %v", err)
+	}
+	if len(timeline.Steps) != 1 {
+		t.Fatalf("filtered steps=%d want 1", len(timeline.Steps))
+	}
+	if got := timeline.Steps[0].CostUSD; got != 0 {
+		t.Fatalf("filtered step cost=%.2f want 0 (reconcile must be skipped under filter)", got)
+	}
+}
+
+func TestBuildTimeline_BoundaryEmptyFilteredTimeline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-empty-filter.jsonl"), mustJSON(t, map[string]any{
+		"schema_version": "2", "run_id": "run-empty", "session_id": "sess-empty", "surface": "codex",
+		"agent_instance_id": "agent-empty", "agent_fingerprint": "fp", "event_type": "decision",
+		"chain_id": "sess-empty", "chain_type": "session", "seq": 0, "this_hash": "empty0",
+		"ts": "2026-05-13T13:00:00Z", "labels": map[string]any{"driver": "codex"},
+		"payload": map[string]any{"tool_name": "file.read", "decision": "allow"},
+	})+"\n")
+
+	timeline, err := BuildTimeline(ReplayOptions{SessionID: "sess-empty", Driver: "hermes"})
+	if err != nil {
+		t.Fatalf("BuildTimeline empty filter: %v", err)
+	}
+	if len(timeline.Steps) != 0 || timeline.StartedAt != "" || timeline.EndedAt != "" {
+		t.Fatalf("empty filtered timeline should have no visible window: %+v", timeline)
+	}
+	if len(timeline.Summary.CostTimeline) != 0 {
+		t.Fatalf("empty filtered timeline cost points=%+v", timeline.Summary.CostTimeline)
+	}
+}
+
+func TestListRecentSessions_BoundaryMaxLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	for _, session := range []struct {
+		id string
+		ts string
+	}{
+		{id: "sess-old", ts: "2026-05-13T13:00:00Z"},
+		{id: "sess-new", ts: "2026-05-13T14:00:00Z"},
+	} {
+		writeReplayFile(t, filepath.Join(home, "events-"+session.id+".jsonl"), mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": session.id, "session_id": session.id, "surface": "codex",
+			"agent_instance_id": "agent", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": session.id, "chain_type": "session", "seq": 0, "this_hash": session.id,
+			"ts": session.ts, "labels": map[string]any{"driver": "codex"},
+			"payload": map[string]any{"tool_name": "file.read"},
+		})+"\n")
+	}
+
+	sessions, err := ListRecentSessions(1)
+	if err != nil {
+		t.Fatalf("ListRecentSessions max limit: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-new" {
+		t.Fatalf("sessions=%+v, want only most recent max-limited result", sessions)
+	}
+}
+
+func TestBuildTimeline_BoundaryErrorMissingSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	_, err := BuildTimeline(ReplayOptions{SessionID: "missing-session"})
+	if err == nil {
+		t.Fatal("expected error for missing session")
+	}
+	if !strings.Contains(err.Error(), "no chain events for session missing-session") {
+		t.Fatalf("error=%q, want missing-session context", err.Error())
 	}
 }
 

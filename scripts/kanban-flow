@@ -44,8 +44,9 @@
 #       ready|todo → triage. Comments with reason. Used by clawta when a
 #       ticket isn't actually ready to dispatch.
 #
-#   kanban-flow done <id> --result "<summary>" [--author NAME]
-#       in_progress → done. Comments with result.
+#   kanban-flow done <id> --result "<summary>" [--session <chain-session-id>] [--author NAME]
+#       in_progress → done. Comments with result, then posts a chain cost summary when a
+#       matching session can be resolved.
 #
 #   kanban-flow status <id>
 #       Print current status + last 5 transition comments.
@@ -398,6 +399,7 @@ esac
 author="$AUTHOR_DEFAULT"
 worktree=""
 assignee_override=""
+session_id=""
 event_chain_hash=""
 chain_file=""
 run_status_override=""
@@ -410,6 +412,7 @@ parse_flags() {
       --worktree) worktree="$2"; shift 2 ;;
       --result) result="$2"; shift 2 ;;
       --assignee) assignee_override="$2"; shift 2 ;;
+      --session) session_id="$2"; shift 2 ;;
       --event-chain-hash) event_chain_hash="$2"; shift 2 ;;
       --chain-file) chain_file="$2"; shift 2 ;;
       --run-status) run_status_override="$2"; shift 2 ;;
@@ -418,6 +421,43 @@ parse_flags() {
     esac
   done
   REST=("${rest[@]+"${rest[@]}"}")
+}
+
+post_cost_summary_comment() {
+  local id="$1"
+  local resolved_session="$2"
+  local summary_json
+  summary_json="$(chitin-kernel chain replay --session="$resolved_session" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    data=json.load(sys.stdin)
+    s=data.get("summary", {})
+    out={
+      "session_id": data.get("session_id",""),
+      "total_cost_usd": float(s.get("total_cost_usd",0) or 0),
+      "total_tokens": int(s.get("total_tokens",0) or 0),
+      "dispatch_count": int(s.get("dispatch_count",0) or 0),
+      "success_rate": float(s.get("success_rate",0) or 0),
+    }
+    print(json.dumps(out))
+except Exception:
+    sys.exit(1)')" || return 0
+  [[ -n "$summary_json" ]] || return 0
+
+  local body
+  body="$(printf '%s' "$summary_json" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(
+  (
+    "Chain cost summary: "
+    "session {session_id} | "
+    "${total_cost_usd:.4f} | "
+    "{total_tokens} tokens | "
+    "{dispatch_count} dispatches | "
+    "{success_pct:.1f}% success"
+  ).format(success_pct=d["success_rate"]*100, **d)
+)')" || return 0
+  hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null || true
 }
 
 case "$cmd" in
@@ -557,6 +597,15 @@ case "$cmd" in
     sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
     finalize_task_run "$id" done "${outcome_override:-completed}" "$result" ""
     emit_transition "$id" "$from" done "$author"
+    resolved_session="$session_id"
+    if [[ -z "$resolved_session" ]] && command -v chitin-kernel >/dev/null 2>&1; then
+      # Best-effort: a missing/failing chitin-kernel must not fail `done`.
+      # Standalone assignment from a failed $() trips `set -e`, so guard with `|| true`.
+      resolved_session="$(chitin-kernel chain sessions --ticket="$id" 2>/dev/null | head -1 | tr -d '\r')" || resolved_session=""
+    fi
+    if [[ -n "$resolved_session" ]]; then
+      post_cost_summary_comment "$id" "$resolved_session"
+    fi
     echo "$id: $from → done"
     ;;
   status)
