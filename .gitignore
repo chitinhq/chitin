@@ -75,3 +75,4 @@ python/argus/.pytest_cache/
 python/argus/build/
 __pycache__/
 *.pyc
+chitin.yaml.sig

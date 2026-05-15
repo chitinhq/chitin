@@ -117,7 +117,7 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       TICKET=$(cat)
-      PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
+      PROMPT='Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {"complexity": "low" | "med" | "high", "capabilities": ["go" | "ts" | "python" | "refactor" | "debug" | "review"], "estimated_loc": <integer>, "needs_frontier": <true|false>}. Ticket JSON:'"$TICKET"
       OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
@@ -172,10 +172,10 @@ steps:
       REASONING=$(cat)
       COMMENT=$(printf '%s' "$REASONING" | python3 /home/red/.openclaw/workflows/clawta_decisions.py record \
         --ticket-id ${ticket_id} \
-        --driver $pick_driver.json.driver \
-        --model $pick_driver.json.model \
-        --shape-bucket $pick_driver.json.shape_bucket \
-        --selection-mode $pick_driver.json.selection_mode)
+        --driver "$pick_driver.json.driver" \
+        --model "$pick_driver.json.model" \
+        --shape-bucket "$pick_driver.json.shape_bucket" \
+        --selection-mode "$pick_driver.json.selection_mode")
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
 
@@ -192,7 +192,7 @@ steps:
     description: Operator confirms the dispatch decision
     approval: >
       Dispatch ${ticket_id} to $pick_driver.json.driver?
-      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity | Capabilities: $pick_driver.json.caps_needed
+      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity
 
   # ─────────────────────────────────────────────────────────────────────
   # 6. Reassign the kanban ticket to the picked driver lane
@@ -304,9 +304,9 @@ steps:
       # scripts/create-worktree.sh which defaults to ../chitin-<branch>/
       # — a path finalize doesn't search. Lobster owns the worktree
       # contract end-to-end now; the leaf CLI just edits and commits.
-      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/swarm-${DRIVER}-${TICKET_ID}"
+      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/${DRIVER}-${TICKET_ID}"
       TICKET_ID_SHORT="${TICKET_ID#t_}"
-      BRANCH="swarm/${DRIVER}-${TICKET_ID_SHORT}"
+      BRANCH="agent/${DRIVER}-${TICKET_ID_SHORT}"
       BOARD_SLUG='$resolve_board.json.board'
       CHITIN_REPO=$(chitin-kernel board-config "$BOARD_SLUG" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
@@ -538,11 +538,10 @@ steps:
         esac
       fi
 
-      # Locate the most recent swarm worktree for this ticket. Pattern is
-      # ~/.cache/chitin/swarm-worktrees/swarm-<slug>-${ticket_id}/ — the
-      # leaf CLI creates it, slug varies by ticket title. Newest match wins
-      # if the worker re-tried.
-      WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/swarm-*-${ticket_id}*/ 2>/dev/null | head -1)
+      # Locate the most recent worktree for this ticket. Pattern is
+      # ~/.cache/chitin/swarm-worktrees/<driver>-<ticket_id>/ — the
+      # spawn_worker step creates it. Newest match wins if the worker re-tried.
+      WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/*-${ticket_id}*/ 2>/dev/null | head -1)
       if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
         hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
