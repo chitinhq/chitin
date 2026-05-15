@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -46,6 +48,69 @@ class ControllerProjectionTests(unittest.TestCase):
         sample = "\n".join(["t_aaaabbbb", "t_ccccdddd", "t_ccccdddd"])
         with mock.patch.object(module, "sh", return_value=(0, sample)):
             self.assertEqual(module.active_dispatch_tickets(), ["t_aaaabbbb", "t_ccccdddd"])
+
+    def test_lifecycle_orphans_flags_done_without_runs_and_runs_without_ticket(self) -> None:
+        module = load_module(REPORT, "clawta_report_lifecycle_orphans")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "kanban.db"
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE tasks (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL,
+                  assignee TEXT,
+                  status TEXT NOT NULL,
+                  priority INTEGER DEFAULT 0,
+                  created_at INTEGER NOT NULL,
+                  started_at INTEGER,
+                  completed_at INTEGER,
+                  last_heartbeat_at INTEGER,
+                  current_run_id INTEGER
+                );
+                CREATE TABLE task_comments (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  author TEXT,
+                  body TEXT NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                CREATE TABLE task_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  payload TEXT,
+                  created_at INTEGER,
+                  run_id INTEGER
+                );
+                CREATE TABLE task_runs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  started_at INTEGER NOT NULL,
+                  ended_at INTEGER,
+                  outcome TEXT,
+                  summary TEXT,
+                  last_heartbeat_at INTEGER
+                );
+                INSERT INTO tasks(id, title, assignee, status, created_at, completed_at)
+                VALUES
+                  ('t_done0001', 'done but no runs', 'codex', 'done', 1, 10),
+                  ('t_done0002', 'done with run', 'codex', 'done', 1, 11);
+                INSERT INTO task_runs(task_id, status, started_at, ended_at, outcome)
+                VALUES
+                  ('t_done0002', 'done', 2, 11, 'completed'),
+                  ('t_orphan01', 'failed', 3, 4, 'failed');
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "BOARD_DB", str(db_path)):
+                orphan_data = module.lifecycle_orphans()
+
+        self.assertEqual([row["id"] for row in orphan_data["done_without_runs"]], ["t_done0001"])
+        self.assertEqual([row["task_id"] for row in orphan_data["runs_without_ticket"]], ["t_orphan01"])
 
 
 class StuckClassificationTests(unittest.TestCase):
