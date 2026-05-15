@@ -409,3 +409,14 @@ class TestDryRun:
         assert checked == []
         assert retried == []
         assert escalated == []
+
+class TestRepoRootResolution:
+    def test_resolve_repo_root_prefers_env_when_valid(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "swarm").mkdir()
+        (repo / "scripts" / "kanban-flow").write_text("#!/bin/sh\n")
+        monkeypatch.setenv("CHITIN_REPO", str(repo))
+        wd = _load_module()
+
+        assert wd.resolve_repo_root() == repo

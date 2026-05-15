@@ -46,7 +46,22 @@ KANBAN_DB = Path(
         str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
     )
 )
-REPO_ROOT = Path(os.environ.get("CHITIN_REPO", Path(__file__).resolve().parents[2]))
+def resolve_repo_root() -> Path:
+    """Find the Chitin repo root from both repo and installed script paths."""
+    env_root = os.environ.get("CHITIN_REPO")
+    candidates: list[Path] = []
+    if env_root:
+        candidates.append(Path(env_root))
+    here = Path(__file__).resolve()
+    candidates.extend(here.parents)
+    candidates.append(Path.home() / "workspace" / "chitin")
+    for candidate in candidates:
+        if (candidate / "scripts" / "kanban-flow").exists() and (candidate / "swarm").exists():
+            return candidate
+    return here.parents[2]
+
+
+REPO_ROOT = resolve_repo_root()
 KANBAN_FLOW_BIN = Path(
     os.environ.get("KANBAN_FLOW_BIN", str(REPO_ROOT / "scripts" / "kanban-flow"))
 )
