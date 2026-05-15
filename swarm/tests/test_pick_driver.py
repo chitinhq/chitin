@@ -233,7 +233,7 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
 
-    def test_missing_soul_file_boundary_routes_with_unstamped_soul(self):
+    def test_missing_soul_file_error_boundary_routes_with_unstamped_soul(self):
         # Boundary: error. If the selected soul file genuinely cannot be
         # located (no CHITIN_SOULS_DIR, no souls/ under the repo root —
         # exactly how the installed ~/.openclaw workflow runs), routing must
@@ -343,7 +343,7 @@ class PickDriverTests(unittest.TestCase):
             hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
-    def test_missing_default_soul_file_boundary_routes_with_unstamped_soul(self):
+    def test_missing_default_soul_file_error_boundary_routes_with_unstamped_soul(self):
         # Boundary: error, default category. An empty souls dir plus a
         # souls-less repo root must not crash dispatch — the default
         # sun-tzu soul is reported with an empty hash.
