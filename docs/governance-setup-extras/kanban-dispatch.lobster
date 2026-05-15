@@ -37,6 +37,14 @@ description: |
 args:
   ticket_id:
     description: hermes kanban ticket ID (e.g. t_8bda2f95). Required.
+  board:
+    description: |
+      Kanban board slug (e.g. "chitin", "readybench"). Determines which
+      repo and base branch the dispatch targets. Board config is read
+      via chitin-kernel board-config for workspace_root, default_branch,
+      and repo — so the dispatch lands in the correct repo on the
+      correct integration branch.
+    default: chitin
   force_driver:
     description: |
       Optional driver override (e.g. "codex", "claude-code", "gemini",
@@ -48,11 +56,29 @@ args:
 
 steps:
   # ─────────────────────────────────────────────────────────────────────
-  # 1. Read the ticket from Hermes kanban
+  # 1. Resolve board configuration — repo path and base branch per board.
+  #
+  # The `board` arg (default "chitin") determines which kanban board's
+  # config to read. chitin-kernel board-config returns the workspace_root,
+  # default_branch, and repo for the board, so the dispatch can work on
+  # any repo, not just chitin.
+  # ─────────────────────────────────────────────────────────────────────
+  - id: resolve_board
+    description: Read board config for workspace_root, default_branch, and repo
+    run: |
+      BOARD=${board}
+      REPO=$(chitin-kernel board-config "$BOARD" repo 2>/dev/null || echo "chitinhq/chitin")
+      WORKSPACE_ROOT=$(chitin-kernel board-config "$BOARD" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
+      DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD" default_branch 2>/dev/null || echo "main")
+      # Output JSON for downstream steps to reference
+      printf '{"board":"%s","repo":"%s","workspace_root":"%s","default_branch":"%s"}\n' "$BOARD" "$REPO" "$WORKSPACE_ROOT" "$DEFAULT_BRANCH"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 2. Read the ticket from the correct kanban board
   # ─────────────────────────────────────────────────────────────────────
   - id: fetch_ticket
     description: Read the kanban ticket JSON
-    run: hermes kanban --board chitin show ${ticket_id} --json
+    run: hermes kanban --board $resolve_board.json.board show ${ticket_id} --json
 
   # ─────────────────────────────────────────────────────────────────────
   # 2. Classify complexity + required capabilities (LLM step via Clawta)
@@ -150,7 +176,7 @@ steps:
         --model $pick_driver.json.model \
         --shape-bucket $pick_driver.json.shape_bucket \
         --selection-mode $pick_driver.json.selection_mode)
-      hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 $COMMENT"
+      hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
 
   # ─────────────────────────────────────────────────────────────────────
@@ -174,7 +200,7 @@ steps:
   # Uses $pick_driver.json.driver (UNBRACED) — see header for syntax rules.
   - id: reassign
     description: Move ticket to the worker's lane on kanban
-    run: hermes kanban --board chitin assign ${ticket_id} $pick_driver.json.driver
+    run: hermes kanban --board $resolve_board.json.board assign ${ticket_id} $pick_driver.json.driver
 
   # ─────────────────────────────────────────────────────────────────────
   # 7. Comment on the ticket for audit (which driver, why)
@@ -189,7 +215,7 @@ steps:
   - id: audit_comment
     description: Announce dispatch + flip ready→in_progress + broadcast to Discord
     run: |
-      hermes kanban --board chitin comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
+      hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
       # Slice D: lifecycle discipline. Flip to in_progress so the board
       # reflects reality. kanban-flow is idempotent when the ticket is
       # already in_progress (e.g. clawta-poller flipped it before this
@@ -281,14 +307,16 @@ steps:
       WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/swarm-${DRIVER}-${TICKET_ID}"
       TICKET_ID_SHORT="${TICKET_ID#t_}"
       BRANCH="swarm/${DRIVER}-${TICKET_ID_SHORT}"
-      CHITIN_REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+      BOARD_SLUG='$resolve_board.json.board'
+      CHITIN_REPO=$(chitin-kernel board-config "$BOARD_SLUG" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
+      DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
       mkdir -p "$(dirname "$WORKTREE_DIR")"
       if [[ ! -d "$WORKTREE_DIR" ]]; then
         # Use git worktree add directly — scripts/create-worktree.sh
         # has extra bootstrap logic we don't need here. If the branch
         # already exists (re-dispatch case), check it out instead of
         # erroring on duplicate.
-        git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/main 2>&1 \
+        git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" "origin/$DEFAULT_BRANCH" 2>&1 \
           || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
       fi
       if ! cd "$WORKTREE_DIR"; then
@@ -312,8 +340,7 @@ steps:
       # NOTs, frontier LLMs read the role SKILL.md, attempt the full
       # SDLC, and fail at the create-worktree step (path mismatch) or
       # the push step (the worker has no GH_TOKEN).
-      ENV_HEADER=$(printf '# Working environment\n\nYou are already in a fresh git worktree at %s on branch %s (based on origin/main).\n\nDO NOT create another worktree or branch — you are in one.\nDO NOT run `git push` or `gh pr create` — lobster handles those after you exit.\n\nYour job: make the code change for the ticket, run any relevant tests, then commit with a clear message referencing %s. Then exit. That is it.\n\n# Ticket %s\n\n' \
-        "$WORKTREE_DIR" "$BRANCH" "$TICKET_ID" "$TICKET_ID")
+      ENV_HEADER=$(printf '# Working environment\n\nYou are already in a fresh git worktree at %s on branch %s (based on origin/%s).\n\nDO NOT create another worktree or branch — you are in one.\nDO NOT run `git push` or `gh pr create` — lobster handles those after you exit.\n\nYour job: make the code change for the ticket, run any relevant tests, then commit with a clear message referencing %s. Then exit. That is it.\n\n# Ticket %s\n\n' \\\n        "$WORKTREE_DIR" "$BRANCH" "$DEFAULT_BRANCH" "$TICKET_ID" "$TICKET_ID")
       PROMPT="${ROLE_HEADER}${ENV_HEADER}${TICKET_BODY}"
       MODEL='$pick_driver.json.model'
       if [[ -z "$MODEL" || "$MODEL" == "null" || "$MODEL" == '$pick_driver.json.model' ]]; then
@@ -324,7 +351,7 @@ steps:
         exit 1
       fi
       ROLE="${ROLE:-programmer}"
-      hermes kanban --board chitin comment "$TICKET_ID" --author clawta \
+      hermes kanban --board $resolve_board.json.board comment "$TICKET_ID" --author clawta \
         "dispatch driver=$DRIVER model=$MODEL soul_id=$pick_driver.json.soul_id soul_hash=$pick_driver.json.soul_hash role=$ROLE" 2>/dev/null || true
       SOUL_ID='$pick_driver.json.soul_id'
       SOUL_PROMPT=""
@@ -444,6 +471,8 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -uo pipefail  # NOT -e: each step below is best-effort
       DRIVER='$pick_driver.json.driver'
+      BOARD_SLUG='$resolve_board.json.board'
+      DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
 
       # Check worker result from spawn_worker step
       RESULT_FILE="/tmp/dispatch-worker-result-${ticket_id}.json"
@@ -456,14 +485,14 @@ steps:
         WORKER_OBSERVED_SOUL_HASH=$(echo "$WORKER_RESULT" | jq -r '.observed_soul_hash // ""')
 
         if [[ "$WORKER_SOUL_MISMATCH" == "true" ]]; then
-          hermes kanban --board chitin comment ${ticket_id} --author clawta \
+          hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta \
             "Audit flag: soul hash changed during run. dispatched=$pick_driver.json.soul_hash observed=$WORKER_OBSERVED_SOUL_HASH" 2>/dev/null || true
         fi
 
         case "$WORKER_STATUS" in
           timeout)
             MSG="🦞 ${ticket_id}: worker session timed out after 1 hour. No changes committed."
-            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow crash ${ticket_id} "worker timeout" --author clawta --run-status timed_out --outcome timed_out --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
@@ -481,7 +510,7 @@ steps:
               --ticket-id ${ticket_id} \
               --outcome failure \
               --failure-kind empty_branch >/dev/null 2>&1 || true
-            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
@@ -492,7 +521,7 @@ steps:
             BLOCK_REASON=$(printf '%s' "$REPORT" | jq -r '.block_reason // empty' 2>/dev/null || true)
             [[ -n "$MSG" ]] || MSG="🦞 ${ticket_id}: worker session failed. ${WORKER_ERROR:-(no error detail)}"
             [[ -n "$BLOCK_REASON" ]] || BLOCK_REASON="worker session failed; ${WORKER_ERROR:-see dispatch log}"
-            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
             exit 0
@@ -502,7 +531,7 @@ steps:
             ;;
           *)
             MSG="🦞 ${ticket_id}: worker returned unknown status: $WORKER_STATUS"
-            hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+            hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
             kanban-flow crash ${ticket_id} "unknown worker status" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
             exit 0
             ;;
@@ -516,7 +545,7 @@ steps:
       WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/swarm-*-${ticket_id}*/ 2>/dev/null | head -1)
       if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
-        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block the ticket so it isn't silently lost.
         kanban-flow crash ${ticket_id} "worker completed but produced no worktree" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
@@ -524,15 +553,15 @@ steps:
       fi
       if ! cd "$WORKTREE"; then
         MSG="🦞 ${ticket_id}: worker worktree exists but could not be entered: $WORKTREE"
-        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         kanban-flow crash ${ticket_id} "worker worktree could not be entered" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
       BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-      if [[ -z "$BRANCH" || "$BRANCH" == "main" || "$BRANCH" == "HEAD" ]]; then
-        MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH). No PR opened."
-        hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+      if [[ -z "$BRANCH" || "$BRANCH" == "$DEFAULT_BRANCH" || "$BRANCH" == "HEAD" ]]; then
+        MSG="🦞 ${ticket_id}: worker finished but no feature branch checked out (HEAD=$BRANCH, default_branch=$DEFAULT_BRANCH). No PR opened."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block, don't leave in_progress with no PR.
         kanban-flow crash ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta --run-status failed --outcome failed 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
@@ -553,6 +582,7 @@ steps:
         GH_PR_STDERR_FILE=$(mktemp)
         GH_PR_EXIT=0
         if gh pr create \
+          --base "$DEFAULT_BRANCH" \
           --title "$(git log -1 --pretty=%s)" \
           --body "Closes ticket ${ticket_id} (dispatched via clawta to $DRIVER). Auto-opened by kanban-dispatch.lobster finalize step. Branch $BRANCH." \
           >"$GH_PR_STDOUT_FILE" 2>"$GH_PR_STDERR_FILE"; then
@@ -595,7 +625,7 @@ steps:
         # GitHub state is the review-phase truth).
         kanban-flow pr ${ticket_id} "$PR_URL" --author clawta --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       fi
-      hermes kanban --board chitin comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+      hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
       # Broadcast to Clawta's default channel (operator-facing log).
       openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
       # Reply back to Hermes in #ares with @-mention so the peer-comm
@@ -612,7 +642,7 @@ steps:
       # we don't block the dispatch return on its completion.
       DRIVER='$pick_driver.json.driver'
       ROLE_DEFAULT="${ROLE:-programmer}"
-      TICKET_JSON=$(hermes kanban --board chitin show ${ticket_id} --json 2>/dev/null || true)
+      TICKET_JSON=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null || true)
       ROLE=$(printf '%s' "$TICKET_JSON" | python3 "$HOME/.openclaw/workflows/ticket_metadata.py" "$ROLE_DEFAULT" 2>/dev/null || true)
       if [[ -z "$ROLE" ]]; then
         ROLE="$ROLE_DEFAULT"
