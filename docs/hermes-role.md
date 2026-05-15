@@ -12,7 +12,7 @@ How hermes operates within the ChitinHQ ecosystem: what it owns, what it delegat
 | **codex** | gpt-5.4/5.5 | Well-scoped code generation | Chitin-governed via `chitin-kernel drive codex` |
 | **copilot** | gpt-4.1/5.4/haiku-4.5 | Zero-cost docs, tests, research | Chitin-governed via `chitin-kernel drive copilot` ONLY |
 | **gemini** | 2.5-flash/pro | Fast drafts, UI, research | Chitin-governed |
-| **claude-code** | opus-4 | Hard architecture, security, deep reasoning | Human-invoked |
+| **claude-code** | opus-4 | Invariant layer, adversarial review, hard architecture & security | Human-invoked |
 
 ## Priority Lanes
 
@@ -72,7 +72,7 @@ Script: `~/.hermes/scripts/hermes-dispatch-via-clawta.sh`
 
 ## What Hermes Does Not Own
 
-- **Driver selection**: Openclaw's `_pick_driver.py` with ELO rankings — hermes doesn't second-guess routing
+- **Driver selection**: Openclaw's `_pick_driver.py` — LLM routing (clawta classifies, picks driver+model) with deterministic fallback (capability filter + complexity-aware cost ranking). No ELO system; `elo_consulted` is always `false`.
 - **Worker spawning**: Openclaw's `spawn_worker_subprocess.py` — hermes delegates through it, not around it
 - **Finalization**: Openclaw's `kanban-dispatch.lobster` owns push → PR → comment → broadcast
 - **Human approval**: Hermes auto-merges when CI passes + reviewer approved, but never without both
@@ -150,6 +150,62 @@ Blocked (waiting)            → Hermes surfaces to Red with context
 - Second-guess `_pick_driver` routing decisions
 - Work around `kanban-flow` for board mutations — always use the substrate
 - Leave blocked tickets without a `block_reason` — vague blocked states are the enemy
+
+## Claude-Code Role (Invariant Owner)
+
+Claude-code sits beside hermes, not under it: hermes runs the *flow*
+(board engine, dispatch, P0/P1 execution), claude-code owns the
+*prevention layer* that keeps the flow from re-litigating the same
+defects. Hermes is throughput; claude-code is leverage.
+
+### What Claude-Code Owns
+
+- **The invariant layer.** Recurring bug classes — hash-before-parse,
+  pointer aliasing, finalization lifecycle, schema-column defense,
+  event-chain-on-timeout — get killed at the class level: a shared,
+  named primitive plus an invariant test that walks the boundaries.
+  Entrypoint: `/invariant`.
+- **Adversarial review as a gate.** The Clawta findings taxonomy
+  becomes typed lint/CI/pre-PR checks, so the adversarial pass runs
+  *before* PR open, not as a comment after. Entrypoint: `/gate`
+  (`/gate preflight` before `/land` or `gh pr create`).
+- **Durable disposition.** PR/ticket verdicts are recorded once into a
+  ledger `/queue` reads, so triage is O(new) not O(all). Entrypoint:
+  `/verdict`.
+- **Hard architecture & security.** Cross-session design calls,
+  security-sensitive surfaces (gov, policy, governance), deep
+  diagnosis where the cause is not obvious from one failed run.
+
+### What Claude-Code Does Not Own
+
+- **Flow.** Board engine, dispatch routing, worker spawning,
+  finalization — hermes and openclaw own these; claude-code does not
+  second-guess them.
+- **Volume.** P2/P3 well-scoped work routes through clawta to the
+  cheapest qualified worker — claude-code is not in that lane.
+- **Architecture *direction*.** Claude-code designs and consults on
+  hard calls; Red decides direction.
+- **The merge button on `swarm/*` PRs** — operator-confirmed.
+
+### Collaboration Contract (Claude-Code ↔ Hermes/Clawta)
+
+1. **Hermes finds the same bug five times; claude-code ends it once.**
+   A finding on 2+ PRs is a `/invariant` candidate, not five fixes.
+2. **Every recurring finding becomes a gate.** What `/invariant`
+   can't design out, `/gate` makes impossible to ship.
+3. **Verdicts are durable.** A disposition stays authoritative until
+   the PR head moves or someone runs `/verdict reopen` — no silent
+   re-litigation across queue runs.
+4. **Measured on bug *classes* eliminated, not PRs touched.** A
+   60-bugs-fixed session is also evidence the prevention layer was
+   missing.
+
+### What Should Trust More
+
+- Saying "rework" / "not yet" on a PR and having the `/verdict` stick.
+- Initiating the upstream `/invariant` without waiting for it to be
+  queued, when a class is clearly recurring.
+- Setting `/gate` checks that block merge on the recurring findings.
 
 ## Board Paths
 
