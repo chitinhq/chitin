@@ -6,7 +6,10 @@
     "moduleResolution": "bundler",
     "module": "preserve",
     "composite": false,
+    "declaration": true,
+    "declarationMap": false,
     "emitDeclarationOnly": false,
+    "noEmit": false,
     "noEmitOnError": false,
     "lib": ["es2022", "dom", "dom.iterable"]
   },
