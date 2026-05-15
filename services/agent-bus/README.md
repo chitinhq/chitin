@@ -2,14 +2,20 @@
 
 Chitin-owned threaded message bus for agent-to-agent and human-in-the-loop comms across the swarm. Spec at [`.specify/specs/001-agent-bus/spec.md`](../../.specify/specs/001-agent-bus/spec.md).
 
-## What ships in this PR (Phase 1)
+## What ships across Phases 1 + 2
 
+**Phase 1 (PR #676, merged):**
 - `schema.sql` — sqlite schema (threads, messages, reads, attachments, agents).
 - `db.py` — connection bootstrap.
 - `server.py` — stdio MCP server speaking JSON-RPC 2.0. Zero external deps.
 - `tests/test_server.py` — 16 integration tests via the JSON-RPC dispatcher.
 
-Phases 2–5 (session-start hook, console UI, Discord mirror, attachment renderers) ship as separate PRs against this schema.
+**Phase 2 (this PR):**
+- `inbox.py` — CLI that prints unread messages in markdown. Silent when there's nothing to surface.
+- `tests/test_inbox.py` — 6 subprocess tests over the inbox CLI.
+- SessionStart hook docs (see below).
+
+Phases 3–5 (console UI, Discord mirror, attachment renderers) ship as separate PRs against this schema.
 
 ## Install for an agent
 
@@ -48,10 +54,34 @@ Audience semantics: `NULL` = public; comma-separated list (e.g. `"red,hermes"`) 
 
 `~/.chitin/agent-bus/bus.db` (sqlite, WAL). Override with `AGENT_BUS_DB`. Schema is additive-only — never repurpose a column (FR-008).
 
+## Human-in-the-loop: SessionStart inbox
+
+Wire the inbox into Claude Code so unread messages surface as soon as you start a session.
+
+1. Add to `~/.claude/settings.json` (idempotent — merge into any existing `hooks` block):
+
+   ```json
+   {
+     "hooks": {
+       "SessionStart": [{
+         "hooks": [{
+           "type": "command",
+           "command": "python3 /home/red/workspace/chitin/services/agent-bus/inbox.py --agent red"
+         }]
+       }]
+     }
+   }
+   ```
+
+2. Next session start, you'll see a markdown summary of unread messages addressed to `red` (or `*`-broadcast). Silent when the inbox is empty.
+
+3. To auto-ack on display, append `--mark-read`. Default is OFF — listing the inbox doesn't clear it; you ack explicitly via `bus_mark_read`.
+
 ## Tests
 
 ```
-python3 services/agent-bus/tests/test_server.py
+python3 services/agent-bus/tests/test_server.py     # 16 server tests
+python3 services/agent-bus/tests/test_inbox.py      # 6 inbox tests
 ```
 
-16 tests, ~1.3s. Each gets a fresh sqlite via `AGENT_BUS_DB`.
+~1.5s total. Each gets a fresh sqlite via `AGENT_BUS_DB`.
