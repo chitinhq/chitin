@@ -176,6 +176,14 @@ def is_parent_hierarchy_prefix(prefix: str) -> bool:
 
 
 def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
+    # Exempt spec and epic tickets — they're containers/design docs, not dispatchable work
+    title = (ticket.get("title") or "").strip()
+    body = (ticket.get("body") or "")
+    if re.search(r"(?i)^spec[:\s]|^epic[:\s]", title):
+        return None
+    if re.search(r"(?i)stays in triage|tracking epic|epic stays in triage", body):
+        return None
+
     field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
     if not field_value:
         return (
@@ -917,22 +925,62 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     return demoted
 
 
+LOOP_DEMOTE_COOLDOWN_HOURS = 4  # Skip demotion if poller already demoted for same reason within N hours
+LOOP_DEMOTE_RE = re.compile(
+    r"Demoted ready→triage: missing invariants_and_boundaries", re.IGNORECASE
+)
+
+
+def list_comments(ticket_id: str) -> list[dict[str, Any]]:
+    """Return comments for a ticket, newest first."""
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT body, author, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at DESC, id DESC",
+            (ticket_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
-    """Demote ready/todo tickets that skipped the boundary-naming triage field."""
+    """Demote ready/todo tickets that skipped the boundary-naming triage field.
+
+    Skips tickets recently demoted for the same reason (circuit breaker)
+    and tickets that are specs/epics (exempted by missing_invariants_reason).
+    """
     candidates = fetch_dispatchable_with_bodies()
     if not candidates:
         return []
     demoted: list[str] = []
+    skipped_loop: list[str] = []
+    cutoff = int(time.time()) - LOOP_DEMOTE_COOLDOWN_HOURS * 3600
     for ticket in candidates:
         reason = missing_invariants_reason(ticket)
         if not reason:
             continue
-        if demote_ticket(ticket["id"], reason, dry_run):
-            demoted.append(ticket["id"])
+        tid = ticket["id"]
+        # Circuit breaker: check if this ticket was recently demoted for the same reason
+        recent_comments = list_comments(tid)
+        recently_demoted = False
+        for c in (recent_comments or []):
+            if c.get("created_at", 0) > cutoff and LOOP_DEMOTE_RE.search(c.get("body", "")):
+                recently_demoted = True
+                break
+        if recently_demoted:
+            skipped_loop.append(tid)
+            continue
+        if demote_ticket(tid, reason, dry_run):
+            demoted.append(tid)
     if demoted:
         log(
             "tick: demoted "
             f"{len(demoted)} ticket(s) missing invariants_and_boundaries"
+        )
+    if skipped_loop:
+        log(
+            f"tick: skipped {len(skipped_loop)} ticket(s) in promote/demote loop "
+            f"(cooldown {LOOP_DEMOTE_COOLDOWN_HOURS}h): "
+            + ", ".join(skipped_loop)
         )
     return demoted
 

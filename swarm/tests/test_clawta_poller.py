@@ -613,5 +613,132 @@ class ClawtaPollerRoutingTests(unittest.TestCase):
         self.assertEqual(driver, "codex")
 
 
+class ClawtaPollerLoopBreakerTests(unittest.TestCase):
+    """Tests for the promote/demote loop circuit breaker and spec/epic exemptions."""
+
+    def test_spec_title_exempt_from_invariants_gate(self) -> None:
+        module = load_module()
+        # Tickets starting with "Spec:" should be exempt
+        self.assertIsNone(module.missing_invariants_reason({
+            "title": "Spec: typed outbound network and MCP trust policy",
+            "body": "Some body without invariants_and_boundaries field",
+        }))
+
+    def test_epic_title_exempt_from_invariants_gate(self) -> None:
+        module = load_module()
+        self.assertIsNone(module.missing_invariants_reason({
+            "title": "Epic: Swarm Autopilot v1",
+            "body": "Acceptance:\n- all child tickets done",
+        }))
+
+    def test_stays_in_triage_body_exempt(self) -> None:
+        module = load_module()
+        self.assertIsNone(module.missing_invariants_reason({
+            "title": "Multi-repo board support",
+            "body": "Epic stays in triage on red; child slices dispatch to terminal lanes.",
+        }))
+
+    def test_tracking_epic_body_exempt(self) -> None:
+        module = load_module()
+        self.assertIsNone(module.missing_invariants_reason({
+            "title": "Dashboard feedback loop",
+            "body": "This is a tracking epic — not directly dispatchable.",
+        }))
+
+    def test_normal_ticket_still_requires_invariants(self) -> None:
+        module = load_module()
+        reason = module.missing_invariants_reason({
+            "title": "Fix boundary regex in poller",
+            "body": "Acceptance:\n- add regression test",
+        })
+        self.assertIsNotNone(reason)
+        self.assertIn("missing invariants_and_boundaries", reason)
+
+    def test_circuit_breaker_skips_recently_demoted(self) -> None:
+        module = load_module()
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_loop1", "fix the thing", "Acceptance:\n- test", "ready", "codex", 50, now),
+            )
+            # Add a recent demotion comment (within 4h)
+            conn.execute(
+                "INSERT INTO task_comments(task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("t_loop1", "clawta-poller",
+                 "Demoted ready→triage: missing invariants_and_boundaries: field",
+                 now - 3600),  # 1h ago
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+            # Should NOT demote — circuit breaker kicked in
+            self.assertEqual(result["demoted"], [])
+
+    def test_circuit_breaker_allows_old_demotion(self) -> None:
+        module = load_module()
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_old_loop", "fix the thing", "Acceptance:\n- test", "ready", "codex", 50, now),
+            )
+            # Add an OLD demotion comment (more than 4h ago)
+            conn.execute(
+                "INSERT INTO task_comments(task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("t_old_loop", "clawta-poller",
+                 "Demoted ready→triage: missing invariants_and_boundaries: field",
+                 now - 18000),  # 5h ago — past the 4h cooldown
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+            # Should demote — the old demotion is past cooldown
+            self.assertEqual(result["demoted"], ["t_old_loop"])
+
+
 if __name__ == "__main__":
+    unittest.main()
     unittest.main()
