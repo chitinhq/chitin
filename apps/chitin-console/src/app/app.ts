@@ -5,7 +5,7 @@ import { Subscription } from 'rxjs';
 import { filter, startWith } from 'rxjs/operators';
 import { ApiService } from './api.service';
 
-interface NavItem { path: string; label: string; icon: string; }
+interface NavItem { path: string; label: string; icon: string; external?: boolean; }
 
 @Component({
   imports: [CommonModule, RouterModule],
@@ -32,6 +32,7 @@ export class App implements OnInit, OnDestroy {
     { path: '/argus',       label: 'Argus',       icon: 'argus' },
     { path: '/policy',      label: 'Policy',      icon: 'policy' },
     { path: '/suggestions', label: 'Suggestions', icon: 'suggestions' },
+    { path: '/reports/',    label: 'Reports',     icon: 'reports',    external: true },
   ];
 
   ngOnInit() {

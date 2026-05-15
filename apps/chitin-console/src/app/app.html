@@ -15,12 +15,19 @@
 
     <nav class="nav" aria-label="Primary">
       @for (n of nav; track n.path) {
-        <a [routerLink]="n.path"
-           routerLinkActive="active"
-           class="nav-item">
-          <span class="nav-icon" aria-hidden="true" [attr.data-icon]="n.icon"></span>
-          <span class="nav-label">{{ n.label }}</span>
-        </a>
+        @if (n.external) {
+          <a [attr.href]="n.path" class="nav-item">
+            <span class="nav-icon" aria-hidden="true" [attr.data-icon]="n.icon"></span>
+            <span class="nav-label">{{ n.label }}</span>
+          </a>
+        } @else {
+          <a [routerLink]="n.path"
+             routerLinkActive="active"
+             class="nav-item">
+            <span class="nav-icon" aria-hidden="true" [attr.data-icon]="n.icon"></span>
+            <span class="nav-label">{{ n.label }}</span>
+          </a>
+        }
       }
     </nav>
 
