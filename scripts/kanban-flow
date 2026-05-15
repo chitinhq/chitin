@@ -587,8 +587,10 @@ case "$cmd" in
     finalize_task_run "$id" done "${outcome_override:-completed}" "$result" ""
     emit_transition "$id" "$from" done "$author"
     resolved_session="$session_id"
-    if [[ -z "$resolved_session" ]]; then
-      resolved_session="$(chitin-kernel chain sessions --ticket="$id" 2>/dev/null | head -1 | tr -d '\r')"
+    if [[ -z "$resolved_session" ]] && command -v chitin-kernel >/dev/null 2>&1; then
+      # Best-effort: a missing/failing chitin-kernel must not fail `done`.
+      # Standalone assignment from a failed $() trips `set -e`, so guard with `|| true`.
+      resolved_session="$(chitin-kernel chain sessions --ticket="$id" 2>/dev/null | head -1 | tr -d '\r')" || resolved_session=""
     fi
     if [[ -n "$resolved_session" ]]; then
       post_cost_summary_comment "$id" "$resolved_session"
