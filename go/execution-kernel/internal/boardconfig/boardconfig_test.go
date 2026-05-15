@@ -148,6 +148,21 @@ func TestResolveFieldOptionalDefault(t *testing.T) {
 	}
 }
 
+func TestResolveFieldSoulMapDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "soul_map")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := `{"correctness":"knuth","architecture":"davinci","dispatch":"sun-tzu","research":"socrates","default":"sun-tzu"}`
+	if got != want {
+		t.Fatalf("soul_map = %q, want %q", got, want)
+	}
+}
+
 func TestResolveFieldOptionalDefaultStillRequiresCompleteConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

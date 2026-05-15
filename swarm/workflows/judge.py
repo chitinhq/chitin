@@ -339,6 +339,8 @@ def main() -> int:
     ap.add_argument("--pr-url", required=True, help="GitHub PR url")
     ap.add_argument("--driver", required=True, help="Agent that did the work (e.g., codex)")
     ap.add_argument("--model", required=True, help="Model that did the work (e.g., gpt-5.5)")
+    ap.add_argument("--soul-id", default="", help="Soul id used for the dispatch (e.g., knuth)")
+    ap.add_argument("--soul-hash", default="", help="Exact soul content hash used for the dispatch")
     ap.add_argument("--role", default="programmer", help="Worker role that produced the PR")
     ap.add_argument("--task-class", default=None, help="Override task class (auto-inferred if absent)")
     ap.add_argument("--judge-model", default=DEFAULT_JUDGE, help=f"Judge LLM (default: {DEFAULT_JUDGE})")
@@ -382,7 +384,7 @@ def main() -> int:
 
     conn = elo.open_db()
     score_id = elo.record_score(
-        conn, args.ticket, args.pr_url, args.driver, args.model,
+        conn, args.ticket, args.pr_url, args.driver, args.model, args.soul_id, args.soul_hash,
         task_class, scores, args.judge_model, reasoning,
         role=metadata["role"],
         complexity_bucket=metadata["complexity_bucket"],
@@ -396,7 +398,7 @@ def main() -> int:
         inferred=args.inferred,
     )
     new_elo = elo.update_elo(
-        conn, args.driver, args.model, task_class, total,
+        conn, args.driver, args.model, args.soul_id, args.soul_hash, task_class, total,
         last_dispatch_id=args.ticket,
         role=metadata["role"],
         complexity_bucket=metadata["complexity_bucket"],
@@ -411,6 +413,8 @@ def main() -> int:
         "ticket": args.ticket,
         "driver": args.driver,
         "model": args.model,
+        "soul_id": args.soul_id,
+        "soul_hash": args.soul_hash,
         "role": metadata["role"],
         "task_class": task_class,
         "complexity_bucket": metadata["complexity_bucket"],

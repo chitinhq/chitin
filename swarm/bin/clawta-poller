@@ -710,6 +710,8 @@ Ticket JSON:
         "capabilities": caps,
         "estimated_loc": max(1, estimated_loc),
         "needs_frontier": needs_frontier,
+        "ticket_title": str(ticket.get("title") or ""),
+        "ticket_body": str(ticket.get("body") or ""),
     })
 
 

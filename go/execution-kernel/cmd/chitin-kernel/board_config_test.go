@@ -137,6 +137,20 @@ func TestCLI_BoardConfigOptionalLookupStillFailsForMissingRequiredField(t *testi
 	}
 }
 
+func TestCLI_BoardConfigSoulMapDefault(t *testing.T) {
+	home := t.TempDir()
+	writeCLIConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	stdout, stderr, code := runCLIWithEnv(t, t.TempDir(), []string{"HOME=" + home}, "board-config", "chitin", "soul_map")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := `{"correctness":"knuth","architecture":"davinci","dispatch":"sun-tzu","research":"socrates","default":"sun-tzu"}`
+	if strings.TrimSpace(stdout) != want {
+		t.Fatalf("stdout=%q, want %q", stdout, want)
+	}
+}
+
 func writeCLIConfig(t *testing.T, home, slug, raw string) {
 	t.Helper()
 	dir := filepath.Join(home, ".hermes", "kanban", "boards", slug)

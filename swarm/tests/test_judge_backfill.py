@@ -73,15 +73,24 @@ class JudgeBackfillTests(unittest.TestCase):
             )
         self.assertEqual(stats["scored"], 1)
         meta = calls[0][2]
-        self.assertEqual((meta.driver, meta.model, meta.role), ("clawta", "gpt-5.5", "programmer"))
+        self.assertEqual((meta.driver, meta.model, meta.soul_id, meta.soul_hash, meta.role), ("clawta", "gpt-5.5", "sun-tzu", "", "programmer"))
         self.assertTrue(meta.inferred)
 
     def test_comment_parse_path(self) -> None:
-        ticket_json = {"comments": [{"body": "dispatch driver=codex model=gpt-5.4 role=programmer"}]}
+        ticket_json = {
+            "comments": [
+                {
+                    "body": "dispatch driver=codex model=gpt-5.4 soul_id=knuth soul_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa role=programmer"
+                }
+            ]
+        }
         meta = self.backfill.parse_dispatch_meta_from_comments(ticket_json)
         self.assertIsNotNone(meta)
         assert meta is not None
-        self.assertEqual((meta.driver, meta.model, meta.role, meta.inferred), ("codex", "gpt-5.4", "programmer", False))
+        self.assertEqual(
+            (meta.driver, meta.model, meta.soul_id, meta.soul_hash, meta.role, meta.inferred),
+            ("codex", "gpt-5.4", "knuth", "a" * 64, "programmer", False),
+        )
 
     def test_error_isolation_between_prs(self) -> None:
         def fake_run(ticket_id, pr_url, meta, *, dry_run=False):

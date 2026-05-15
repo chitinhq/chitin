@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 
 
@@ -55,12 +56,17 @@ class PickDriverTests(unittest.TestCase):
     def run_pick_driver(self, classify: dict, **env_overrides: str) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             cards_dir = Path(tmp)
+            souls_dir = cards_dir / "souls"
+            souls_dir.mkdir()
             for card_id, payload in CARDS.items():
                 (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            for soul_id in ("knuth", "davinci", "sun-tzu", "socrates"):
+                (souls_dir / f"{soul_id}.md").write_text(f"{soul_id} soul\n", encoding="utf-8")
 
             env = {
                 **os.environ,
                 "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "CHITIN_SOULS_DIR": str(souls_dir),
                 "ROUTER_MODE": "deterministic",
                 **env_overrides,
             }
@@ -78,12 +84,17 @@ class PickDriverTests(unittest.TestCase):
     def run_pick_driver_raw(self, raw_input: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             cards_dir = Path(tmp)
+            souls_dir = cards_dir / "souls"
+            souls_dir.mkdir()
             for card_id, payload in CARDS.items():
                 (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            for soul_id in ("knuth", "davinci", "sun-tzu", "socrates"):
+                (souls_dir / f"{soul_id}.md").write_text(f"{soul_id} soul\n", encoding="utf-8")
 
             env = {
                 **os.environ,
                 "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "CHITIN_SOULS_DIR": str(souls_dir),
                 "ROUTER_MODE": "deterministic",
                 **env_overrides,
             }
@@ -221,6 +232,51 @@ class PickDriverTests(unittest.TestCase):
         result = self.run_pick_driver(classify, CLAWTA_EXPLORATION_PERCENT="0")
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
+
+    def test_correctness_ticket_selects_knuth_soul_and_composite_fingerprint(self):
+        result = self.run_pick_driver(
+            {
+                "complexity": "low",
+                "capabilities": ["python"],
+                "ticket_title": "Run ledger invariant regression",
+                "ticket_body": "Update the gate and run ledger schema with tests.",
+                "governance_critical": True,
+            },
+            CLAWTA_EXPLORATION_PERCENT="0",
+        )
+
+        expected_hash = hashlib.sha256("knuth soul\n".encode("utf-8")).hexdigest()
+        expected_fingerprint = hashlib.sha256(
+            f"{result['driver']}{result['model']}knuth{expected_hash}".encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(result["soul_id"], "knuth")
+        self.assertEqual(result["soul_hash"], expected_hash)
+        self.assertEqual(result["soul_category"], "correctness")
+        self.assertEqual(result["agent_fingerprint"], expected_fingerprint)
+
+    def test_board_config_soul_map_override_is_honored(self):
+        result = self.run_pick_driver(
+            {
+                "complexity": "low",
+                "capabilities": ["python"],
+                "ticket_title": "Architecture cleanup",
+                "ticket_body": "Refactor the dispatch boundary.",
+            },
+            CLAWTA_EXPLORATION_PERCENT="0",
+            KANBAN_BOARD_SOUL_MAP=json.dumps(
+                {
+                    "correctness": "knuth",
+                    "architecture": "socrates",
+                    "dispatch": "sun-tzu",
+                    "research": "davinci",
+                    "default": "sun-tzu",
+                }
+            ),
+        )
+
+        self.assertEqual(result["soul_id"], "socrates")
+        self.assertEqual(result["soul_category"], "architecture")
 
 
 if __name__ == "__main__":
