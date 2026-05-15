@@ -61,6 +61,30 @@ class StuckClassificationTests(unittest.TestCase):
         self.assertEqual(module.classify_stuck_ticket(task)["bucket"], "retryable-silent")
 
 
+    def test_load_board_state_handles_partial_retry_schema(self) -> None:
+        module = load_module(REPORT, "clawta_report_partial_retry_schema")
+
+        class FakeConn:
+            row_factory = None
+            def execute(self, sql):
+                if sql == "PRAGMA table_info(tasks)":
+                    return [(0, "id"), (1, "consecutive_failures")]
+                if "FROM tasks" in sql:
+                    self.task_sql = sql
+                    return []
+                return []
+            def close(self):
+                pass
+
+        conn = FakeConn()
+        with mock.patch.object(module, "board_conn", return_value=conn):
+            tasks, comments, events, runs = module.load_board_state()
+
+        self.assertEqual(tasks, [])
+        self.assertIn("consecutive_failures", conn.task_sql)
+        self.assertIn("NULL AS last_failure_error", conn.task_sql)
+
+
 class CopilotSentinelTests(unittest.TestCase):
     def test_quarantine_since_honors_healthy_checkpoint(self) -> None:
         module = load_module(SENTINEL, "clawta_worker_failure_sentinel_checkpoint")

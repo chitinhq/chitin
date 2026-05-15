@@ -257,9 +257,13 @@ def merge_blockers(item):
 def load_board_state():
     conn = board_conn()
     cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
-    retry_cols = ", consecutive_failures, last_failure_error" if "consecutive_failures" in cols else ", 0 AS consecutive_failures, NULL AS last_failure_error"
+    retry_cols = []
+    retry_cols.append("consecutive_failures" if "consecutive_failures" in cols else "0 AS consecutive_failures")
+    retry_cols.append("last_failure_error" if "last_failure_error" in cols else "NULL AS last_failure_error")
     tasks = [dict(row) for row in conn.execute(
-        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id" + retry_cols + " FROM tasks"
+        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id, "
+        + ", ".join(retry_cols)
+        + " FROM tasks"
     )]
     comments = [dict(row) for row in conn.execute(
         "SELECT task_id, author, body, created_at FROM task_comments ORDER BY created_at"
