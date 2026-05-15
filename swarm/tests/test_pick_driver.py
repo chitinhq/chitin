@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import tempfile
 import unittest
-import hashlib
 from pathlib import Path
 
 
@@ -232,6 +232,26 @@ class PickDriverTests(unittest.TestCase):
         result = self.run_pick_driver(classify, CLAWTA_EXPLORATION_PERCENT="0")
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
+
+    def test_missing_soul_file_error_boundary_fails_routing(self):
+        # Boundary: error. If the selected soul file is unavailable, routing
+        # must fail before emitting a run identity with an unverifiable soul.
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_souls_dir = Path(tmp) / "missing-souls"
+            result = self.run_pick_driver_raw(
+                json.dumps(
+                    {
+                        "complexity": "low",
+                        "capabilities": ["python"],
+                        "ticket_title": "Run ledger invariant regression",
+                    }
+                ),
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_SOULS_DIR=str(missing_souls_dir),
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("soul file not found for knuth", result.stderr)
 
     def test_correctness_ticket_selects_knuth_soul_and_composite_fingerprint(self):
         result = self.run_pick_driver(
