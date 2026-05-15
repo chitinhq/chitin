@@ -70,11 +70,13 @@ if [ -d "$CARDS_SRC" ]; then
         ! -name '*.bak*' 2>/dev/null)
 fi
 
-# Operator scripts (clawta-* cron helpers under swarm/bin/)
+# Operator scripts (clawta-* cron helpers under swarm/bin/) and shared
+# helper modules they import at runtime.
 if [ -d "$BIN_SRC" ] && [ -d "$BIN_DST" ]; then
     while IFS= read -r src; do
         check_pair "$src" "$BIN_DST/$(basename "$src")"
-    done < <(find "$BIN_SRC" -maxdepth 1 -type f -name 'clawta-*' \
+    done < <(find "$BIN_SRC" -maxdepth 1 -type f \
+        \( -name 'clawta-*' -o -name 'board_resolver.py' \) \
         ! -name '*.bak*' 2>/dev/null)
 fi
 

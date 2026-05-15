@@ -78,12 +78,13 @@ find "$CARDS_SRC" -maxdepth 1 -type f -name '*.json' \
     install_file "$src" "$CARDS_DST/$(basename "$src")"
 done
 
-# clawta-* operator cron + helper scripts. The poller (~/.local/bin/...)
-# is a separate install path managed by the operator; this set covers
-# the openclaw-cron-resident scripts (pool guard, failure sentinel,
-# escalator, etc.) that live under ~/.openclaw/bin/.
+# clawta-* operator cron scripts plus shared helper modules they import.
+# The poller (~/.local/bin/...) is a separate install path managed by the
+# operator; this set covers the openclaw-cron-resident scripts (pool guard,
+# failure sentinel, escalator, etc.) that live under ~/.openclaw/bin/.
 echo "Installing swarm operator scripts into $BIN_DST"
-find "$BIN_SRC" -maxdepth 1 -type f -name 'clawta-*' \
+find "$BIN_SRC" -maxdepth 1 -type f \
+    \( -name 'clawta-*' -o -name 'board_resolver.py' \) \
     ! -name '*.bak*' \
     -print 2>/dev/null \
 | while IFS= read -r src; do
@@ -113,7 +114,7 @@ done
 # survive. Recount the destination tree against the source as a final
 # summary.
 src_count=$(find "$WORKFLOWS_SRC" "$CARDS_SRC" "$BIN_SRC" -maxdepth 1 -type f \
-    \( -name '*.lobster' -o -name '*.py' -o -name '*.md' -o -name '*.json' -o -name 'clawta-*' \) \
+    \( -name '*.lobster' -o -name '*.py' -o -name '*.md' -o -name '*.json' -o -name 'clawta-*' -o -name 'board_resolver.py' \) \
     ! -name '*.bak*' 2>/dev/null | wc -l)
 src_count=$((src_count + $(find "$ROLES_SRC" -type f -name '*.md' ! -name '*.bak*' 2>/dev/null | wc -l)))
 
