@@ -51,6 +51,7 @@ Single-box. One Linux workstation with an RTX 3090 hosts the entire dev + dogfoo
 | Router signal stamping | Go kernel `internal/router` + `cmd/chitin-kernel/router_hook.go` | ✅ post-cull shape: pure-Go signals, no in-gate LLM advisor |
 | Removed in-tree orchestration | `apps/runner`, scheduler, Temporal, Slack app, in-gate peer spawn | ❌ culled 2026-05-06 to 2026-05-08; replaced by substrate composition |
 | Swarm (substrate composition) | `swarm/bin/clawta-poller`, `swarm/workflows/kanban-dispatch.lobster`, `scripts/kanban-flow` | ✅ shipping incrementally since 2026-05-11; composes hermes (kanban) + openclaw (Lobster) |
+| Hermes (operations agent) | `docs/hermes-role.md` + `~/.hermes/scripts/` | ✅ own P0/P1, board engine, clawta bridge, blocked digest |
 | Souls library | `souls/canonical/` + `souls/experimental/` | historical analytics/reference artifact; not a kernel runtime surface |
 
 ## Order of operations (current, not aspirational)

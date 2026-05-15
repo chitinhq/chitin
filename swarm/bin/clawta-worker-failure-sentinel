@@ -10,7 +10,10 @@ import subprocess
 import time
 from pathlib import Path
 
-DB = Path("/home/red/.hermes/kanban/boards/chitin/kanban.db")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
+DB = resolve_db()
 STATE = Path("/home/red/.openclaw/state/clawta-worker-failure-sentinel.json")
 CHANNEL = "channel:1503439202719760405"
 LOOKBACK_SECONDS = int(os.environ.get("CLAWTA_FAILURE_LOOKBACK_SECONDS", "86400"))

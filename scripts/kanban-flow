@@ -55,8 +55,13 @@
 
 set -euo pipefail
 
-DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/chitin/kanban.db}"
 BOARD="${KANBAN_BOARD:-chitin}"
+_boards_dir="${HOME}/.hermes/kanban/boards"
+if [[ -n "${KANBAN_DB:-}" ]]; then
+  DB="$KANBAN_DB"
+else
+  DB="${_boards_dir}/${BOARD}/kanban.db"
+fi
 AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
 CHITIN_HOME_DIR="${CHITIN_HOME:-$HOME/.chitin}"
 DEFAULT_LEASE_SECONDS="${KANBAN_FLOW_LEASE_SECONDS:-3600}"
@@ -523,6 +528,12 @@ case "$cmd" in
     [[ "$from" == triage || "$from" == blocked ]] || die "$id is in '$from'; can only mark ready from triage|blocked"
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
+
+    # Reset consecutive_failures when re-dispatching a previously-blocked ticket —
+    # mirrors the `unblock` path so the watchdog doesn't escalate prematurely.
+    if [[ "$from" == blocked ]]; then
+      sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+    fi
 
     # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then

@@ -32,6 +32,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
 
 BOARD = os.environ.get("SWARM_BOARD", "chitin")
 RED_ASSIGNEE = os.environ.get("CLAWTA_RED_ASSIGNEE", "red")
@@ -40,13 +43,26 @@ HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 OPENCLAW_BIN = os.environ.get(
     "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
 )
-KANBAN_DB = Path(
-    os.environ.get(
-        "KANBAN_DB",
-        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
-    )
-)
-REPO_ROOT = Path(os.environ.get("CHITIN_REPO", Path(__file__).resolve().parents[2]))
+KANBAN_DB = resolve_db()
+
+
+def resolve_repo_root(script_path: Path | None = None, home: Path | None = None) -> Path:
+    """Find the Chitin repo root from both repo and installed script paths."""
+    env_root = os.environ.get("CHITIN_REPO")
+    candidates: list[Path] = []
+    if env_root:
+        candidates.append(Path(env_root))
+    here = (script_path or Path(__file__)).resolve()
+    home = home or Path.home()
+    candidates.extend(here.parents)
+    candidates.append(home / "workspace" / "chitin")
+    for candidate in candidates:
+        if (candidate / "scripts" / "kanban-flow").exists() and (candidate / "swarm").exists():
+            return candidate
+    return here.parents[2]
+
+
+REPO_ROOT = resolve_repo_root()
 KANBAN_FLOW_BIN = Path(
     os.environ.get("KANBAN_FLOW_BIN", str(REPO_ROOT / "scripts" / "kanban-flow"))
 )

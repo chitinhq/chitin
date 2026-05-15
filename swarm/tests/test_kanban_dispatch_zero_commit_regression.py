@@ -42,7 +42,7 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         self.assertIn('--arg stderr "${GH_PR_STDERR:-}"', workflow)
         self.assertIn('python3 "$HOME/.openclaw/workflows/pr_failure_report.py"', workflow)
         self.assertIn("printf '%s\\n' \"$BLOCK_REASON\"", workflow)
-        self.assertIn('kanban-flow block ${ticket_id} "$BLOCK_REASON"', workflow)
+        self.assertIn('kanban-flow crash ${ticket_id} "$BLOCK_REASON"', workflow)
 
 
 if __name__ == "__main__":

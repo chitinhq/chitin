@@ -74,7 +74,11 @@ def persist(
     for f in findings:
         fhash = _finding_hash(f)
         body = json.dumps(f.details, indent=2, default=str)
-        cites = json.dumps(citations_by_detector.get(f.detector, []))
+        detail_cites = []
+        if isinstance(f.details, dict):
+            detail_cites = list(f.details.get("citations") or [])
+        merged_cites = list(dict.fromkeys([*citations_by_detector.get(f.detector, []), *detail_cites]))
+        cites = json.dumps(merged_cites)
         try:
             conn.execute(
                 """

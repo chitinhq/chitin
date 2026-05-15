@@ -38,13 +38,13 @@ import time
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
 from typing import Any
 
 DB_PATH = Path(
-    os.environ.get(
-        "KANBAN_DB",
-        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
-    )
+    os.environ.get("KANBAN_DB", str(resolve_db())),
 )
 LEDGER_DIR = Path(os.environ.get("CHITIN_LEDGER_DIR", str(Path.home() / ".chitin")))
 REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")

@@ -182,6 +182,7 @@ def test_generate_report_writes_dark_html_latest_contract():
         html = report_path.read_text()
         assert "Argus Research" in html
         assert "color-scheme: dark" in html
+        assert "Cross-Source Findings" in html
         # Reading through the symlink returns the dated file's content.
         assert latest.read_text() == html
 
