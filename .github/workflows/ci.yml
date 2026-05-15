@@ -41,6 +41,25 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
+      - name: Pin operator public key
+        # LoadWithInheritance fails closed when chitin.yaml.sig exists but
+        # no operator public key is pinned in ~/.chitin/trust/ ("signature
+        # exists but no operator public key is pinned"). Materialize the
+        # repo-secret public key into the runner's trust dir so every
+        # downstream step that loads chitin.yaml (Go tests, lifecycle
+        # smoke, etc.) can verify the sidecar signature.
+        env:
+          CHITIN_POLICY_PUBLIC_KEY: ${{ vars.CHITIN_POLICY_PUBLIC_KEY || secrets.CHITIN_POLICY_PUBLIC_KEY }}
+        run: |
+          if [ -n "${CHITIN_POLICY_PUBLIC_KEY:-}" ]; then
+            mkdir -p ~/.chitin/trust && chmod 700 ~/.chitin ~/.chitin/trust
+            printf '%s\n' "$CHITIN_POLICY_PUBLIC_KEY" > ~/.chitin/trust/chitin-policy-ed25519.pub
+            chmod 644 ~/.chitin/trust/chitin-policy-ed25519.pub
+            echo "pinned operator public key at ~/.chitin/trust/chitin-policy-ed25519.pub"
+          else
+            echo "::warning::CHITIN_POLICY_PUBLIC_KEY is not configured; LoadWithInheritance will fail on signed chitin.yaml"
+          fi
+
       - name: Dashboard dist matches source
         run: |
           pnpm exec nx run @chitin/dashboard:build
