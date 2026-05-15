@@ -10,6 +10,12 @@ export interface LaneCounts {
   [k: string]: number | undefined;
 }
 
+export interface PercentileStat {
+  p50: number | null;
+  p90: number | null;
+  n: number;
+}
+
 export interface Stats {
   board: string;
   lanes: LaneCounts;
@@ -19,6 +25,8 @@ export interface Stats {
   successRate7d: number | null;
   runsLast24: number;
   runsCompleted24: number;
+  cycleTime30d?: PercentileStat;
+  leadTime30d?: PercentileStat;
   generatedAt: number;
 }
 

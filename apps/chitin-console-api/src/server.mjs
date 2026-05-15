@@ -143,6 +143,12 @@ function listLedgerFiles({ maxDays = 14 } = {}) {
 }
 
 // ---------- Endpoints ----------
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+  return sorted[idx];
+}
+
 function getStats() {
   if (!kanbanDB) return { board: CURRENT_BOARD, lanes: {} };
   const rows = kanbanDB.prepare("SELECT status, COUNT(*) as n FROM tasks GROUP BY status").all();
@@ -155,6 +161,34 @@ function getStats() {
     "SELECT (strftime('%s','now') - created_at) AS age FROM tasks WHERE status IN ('ready','todo','triage') ORDER BY age"
   ).all().map(r => r.age);
   const median = ages.length ? ages[Math.floor(ages.length / 2)] : 0;
+
+  // Cycle time = completed_at - started_at (work-in-progress duration).
+  // Lead time   = completed_at - created_at (idea → done).
+  // 30-day window over completed tickets. Tasks with NULL started_at
+  // (done without ever flipping in_progress) skip the cycle bucket.
+  let cycle = { p50: null, p90: null, n: 0 };
+  let lead  = { p50: null, p90: null, n: 0 };
+  try {
+    const completed = kanbanDB.prepare(`
+      SELECT
+        (completed_at - started_at) AS cycle,
+        (completed_at - created_at) AS lead
+      FROM tasks
+      WHERE status = 'done'
+        AND completed_at IS NOT NULL
+        AND completed_at > strftime('%s','now') - 30*86400
+    `).all();
+    const cycleSamples = completed
+      .map(r => r.cycle)
+      .filter(v => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    const leadSamples = completed
+      .map(r => r.lead)
+      .filter(v => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    cycle = { p50: percentile(cycleSamples, 0.5), p90: percentile(cycleSamples, 0.9), n: cycleSamples.length };
+    lead  = { p50: percentile(leadSamples, 0.5),  p90: percentile(leadSamples, 0.9),  n: leadSamples.length };
+  } catch {}
   let successRate = null, runsLast24 = 0, runsCompleted24 = 0;
   try {
     const sr = kanbanDB.prepare(`
@@ -182,6 +216,8 @@ function getStats() {
     successRate7d: successRate,
     runsLast24,
     runsCompleted24,
+    cycleTime30d: cycle,
+    leadTime30d: lead,
     generatedAt: Date.now(),
   };
 }
