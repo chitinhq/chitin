@@ -1,0 +1,128 @@
+@if (loading()) {
+  <cc-loader message="Replaying chain session"></cc-loader>
+} @else if (!detail()) {
+  <div class="plate">
+    <cc-empty-state
+      title="Session not found"
+      body="No events match this chain_id in the last 30 days of ledger files."></cc-empty-state>
+    <div style="text-align:center;padding-bottom:18px;">
+      <a routerLink="/sessions" class="btn">← back to sessions</a>
+    </div>
+  </div>
+} @else {
+  <header class="head">
+    <div>
+      <div class="crumbs mono small">
+        <a routerLink="/sessions">sessions</a> /
+        <span class="text-glow">{{ shortenId(detail()!.chain_id, 12, 4) }}</span>
+      </div>
+      <h1 class="title">Chain Replay</h1>
+      <p class="subtitle mono">
+        {{ detail()!.driver || 'unknown driver' }} ·
+        {{ detail()!.agent || '–' }} ·
+        first {{ fmtTs(detail()!.firstTs) }} · last {{ fmtTs(detail()!.lastTs) }}
+      </p>
+    </div>
+  </header>
+
+  <section class="kpis">
+    <cc-kpi-card label="events" [value]="detail()!.eventCount"></cc-kpi-card>
+    <cc-kpi-card label="allowed" [value]="detail()!.allowed" tone="run"></cc-kpi-card>
+    <cc-kpi-card label="denied" [value]="detail()!.denied" tone="danger"></cc-kpi-card>
+    <cc-kpi-card label="heuristic" [value]="detail()!.heuristic" tone="warn"></cc-kpi-card>
+    <cc-kpi-card label="cost"
+      [value]="fmtUsd(detail()!.costUsd, 4)" tone="glow"></cc-kpi-card>
+  </section>
+
+  <section class="timeline-wrap plate">
+    <header class="panel-head">
+      <h2 class="section-title">timeline · by action_type</h2>
+      <div class="legend mono small">
+        <span class="legend-item"><i class="dot allow"></i>allow</span>
+        <span class="legend-item"><i class="dot deny"></i>deny</span>
+        <span class="legend-item"><i class="dot heuristic"></i>heuristic</span>
+        <span class="legend-item"><i class="dot other"></i>other</span>
+      </div>
+    </header>
+
+    <div class="timeline">
+      <div class="time-axis mono small">
+        <span>{{ fmtTs(detail()!.firstTs) }}</span>
+        <span>{{ fmtTs(detail()!.lastTs) }}</span>
+      </div>
+      @for (lane of lanes(); track lane.key) {
+        <div class="lane">
+          <div class="lane-label mono small">{{ lane.label }}</div>
+          <div class="lane-track">
+            @for (e of lane.rows; track $index) {
+              <button
+                type="button"
+                [class]="classFor(e)"
+                [style.left.%]="positionFor(e)"
+                [title]="(e.tool_name || e.action_type || '') + ' · ' + (e.decision || (e.allowed === true ? 'allow' : e.allowed === false ? 'deny' : '?'))"
+                (click)="selectEvent(e)"
+                [attr.aria-label]="'event ' + (e.tool_name || e.action_type)"
+              ></button>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="plate panel">
+      <header class="panel-head"><h2 class="section-title">top tools</h2></header>
+      <div class="panel-body">
+        @if (topTools().length === 0) {
+          <cc-empty-state title="—" body="no tool calls captured"></cc-empty-state>
+        } @else {
+          <table class="tbl">
+            <tbody>
+              @for (t of topTools(); track t[0]) {
+                <tr>
+                  <td class="mono small">{{ t[0] }}</td>
+                  <td class="num mono small text-glow">{{ t[1] }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
+    </div>
+    <div class="plate panel">
+      <header class="panel-head"><h2 class="section-title">top rules</h2></header>
+      <div class="panel-body">
+        @if (topRules().length === 0) {
+          <cc-empty-state title="—" body="no rule_id fields present on events"></cc-empty-state>
+        } @else {
+          <table class="tbl">
+            <tbody>
+              @for (r of topRules(); track r[0]) {
+                <tr>
+                  <td class="mono small">{{ r[0] }}</td>
+                  <td class="num mono small text-glow">{{ r[1] }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
+    </div>
+  </section>
+
+  @if (selected(); as e) {
+    <aside class="drawer" role="dialog" aria-modal="false" aria-label="Event detail">
+      <header class="drawer-head">
+        <div>
+          <div class="mono small text-muted">event · {{ e.action_type || e.tool_name || '?' }}</div>
+          <div class="mono" style="margin-top:2px;">{{ fmtTs(e.ts) }}</div>
+        </div>
+        <button class="btn" type="button" (click)="closeDetail()">close ✕</button>
+      </header>
+      <div class="drawer-body">
+        <pre class="mono">{{ prettyJson(e) }}</pre>
+      </div>
+    </aside>
+  }
+}

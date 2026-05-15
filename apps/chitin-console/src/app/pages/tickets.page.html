@@ -1,0 +1,175 @@
+<header class="head">
+  <div>
+    <h1 class="title">Tickets</h1>
+    <p class="subtitle mono">
+      {{ summary().total }} tickets · filters live below
+    </p>
+  </div>
+  <div class="filters">
+    <select class="input" [(ngModel)]="status" (ngModelChange)="reload()" aria-label="Status filter">
+      @for (o of statusOptions; track o.value) {
+        <option [value]="o.value">{{ o.label }}</option>
+      }
+    </select>
+    <select class="input" [(ngModel)]="assignee" (ngModelChange)="reload()" aria-label="Assignee filter">
+      <option value="">all assignees</option>
+      @for (a of assignees(); track a.assignee) {
+        <option [value]="a.assignee">{{ a.assignee }} ({{ a.n }})</option>
+      }
+    </select>
+    <input class="input search" type="text" placeholder="search title / body / id…"
+      [(ngModel)]="q" (keyup.enter)="reload()" aria-label="Search tickets"/>
+    <button class="btn" type="button" (click)="reload()">filter</button>
+  </div>
+</header>
+
+@if (loading()) {
+  <cc-loader message="Loading tickets"></cc-loader>
+} @else if (tasks().length === 0) {
+  <div class="plate">
+    <cc-empty-state title="No tickets" body="No tickets match the current filters."></cc-empty-state>
+  </div>
+} @else {
+  <div class="plate panel">
+    <div class="panel-body">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>title</th>
+            <th>status</th>
+            <th>assignee</th>
+            <th>priority</th>
+            <th>age</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (t of tasks(); track t.id) {
+            <tr class="row-hover" (click)="openTicket(t.id)">
+              <td class="mono small">{{ shortenId(t.id, 10, 4) }}</td>
+              <td class="title-cell">
+                <div class="ttl">{{ t.title }}</div>
+                @if (t.workflow_template_id) {
+                  <div class="mono tiny text-dim">tmpl: {{ t.workflow_template_id }}</div>
+                }
+              </td>
+              <td><cc-status-pill [status]="t.status"></cc-status-pill></td>
+              <td><span class="assignee mono small">{{ t.assignee || '–' }}</span></td>
+              <td>
+                <div class="prio-wrap" [attr.title]="'priority ' + t.priority">
+                  <div class="prio-bar" [style.width]="priorityBarWidth(t.priority)"></div>
+                  <span class="mono tiny">{{ t.priority }}</span>
+                </div>
+              </td>
+              <td class="mono small text-muted">{{ ageFromEpochSeconds(t.created_at) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}
+
+@if (selectedDetail() || drawerLoading()) {
+  <aside class="drawer" role="dialog" aria-label="Ticket detail" aria-modal="false">
+    <header class="drawer-head">
+      @if (selectedDetail(); as d) {
+        <div>
+          <div class="mono small text-muted">{{ d.task.id }}</div>
+          <div class="drawer-title">{{ d.task.title }}</div>
+          <div class="meta">
+            <cc-status-pill [status]="d.task.status"></cc-status-pill>
+            <span class="mono small text-muted">{{ d.task.assignee || '–' }}</span>
+            <span class="mono small text-muted">prio {{ d.task.priority }}</span>
+            <span class="mono small text-dim">created {{ fmtTs(d.task.created_at) }}</span>
+          </div>
+        </div>
+      } @else {
+        <div class="mono small text-muted">loading…</div>
+      }
+      <button class="btn" type="button" (click)="closeDrawer()">close ✕</button>
+    </header>
+
+    <div class="drawer-body">
+      @if (drawerLoading()) {
+        <cc-loader message="Loading ticket"></cc-loader>
+      } @else if (selectedDetail(); as d) {
+        <section class="block">
+          <h3 class="block-title">body</h3>
+          @if (d.task.body) {
+            <pre class="mono body-pre">{{ d.task.body }}</pre>
+          } @else {
+            <p class="text-muted small">No body.</p>
+          }
+        </section>
+
+        <section class="block">
+          <h3 class="block-title">runs ({{ d.runs.length }})</h3>
+          @if (d.runs.length === 0) {
+            <p class="text-muted small">No runs recorded.</p>
+          } @else {
+            <ul class="run-list">
+              @for (r of d.runs; track r.id) {
+                <li class="run-item">
+                  <div class="run-head">
+                    <cc-status-pill [status]="r.outcome || r.status"></cc-status-pill>
+                    <span class="mono small text-muted">run #{{ r.id }}</span>
+                    <span class="mono small text-dim">{{ fmtTs(r.started_at) }}</span>
+                  </div>
+                  @if (r.summary) {
+                    <div class="mono small run-summary">{{ r.summary }}</div>
+                  }
+                  @if (r.error) {
+                    <div class="mono small text-danger run-error">⚠ {{ r.error }}</div>
+                  }
+                </li>
+              }
+            </ul>
+          }
+        </section>
+
+        <section class="block">
+          <h3 class="block-title">clawta dispatch decisions ({{ d.clawtaDecisions.length }})</h3>
+          @if (d.clawtaDecisions.length === 0) {
+            <p class="text-muted small">No clawta dispatch decisions recorded.</p>
+          } @else {
+            <ul class="run-list">
+              @for (c of d.clawtaDecisions; track c.id) {
+                <li class="run-item">
+                  <div class="run-head">
+                    <span class="mono small text-glow">{{ c.driver }} · {{ c.model }}</span>
+                    <span class="mono tiny text-muted">{{ c.selection_mode }}</span>
+                    <span class="mono tiny text-dim">{{ c.ts }}</span>
+                  </div>
+                  <div class="mono small text-muted reasoning">{{ c.reasoning }}</div>
+                </li>
+              }
+            </ul>
+          }
+        </section>
+
+        <section class="block">
+          <h3 class="block-title">events ({{ d.events.length }})</h3>
+          @if (d.events.length === 0) {
+            <p class="text-muted small">No events.</p>
+          } @else {
+            <ul class="event-list">
+              @for (e of d.events.slice(0, 50); track e.id) {
+                <li class="event-item">
+                  <span class="kind mono tiny">{{ e.kind }}</span>
+                  <span class="mono tiny text-dim">{{ fmtTs(e.created_at) }}</span>
+                  @if (e.payload) {
+                    <pre class="mono tiny payload">{{ prettyJson(e.payload) }}</pre>
+                  }
+                </li>
+              }
+            </ul>
+            @if (d.events.length > 50) {
+              <p class="text-dim tiny mono">… {{ d.events.length - 50 }} more</p>
+            }
+          }
+        </section>
+      }
+    </div>
+  </aside>
+}
