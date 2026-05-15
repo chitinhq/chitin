@@ -2,7 +2,7 @@
   "name": "chitin-console",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
-  "prefix": "app",
+  "prefix": "cc",
   "sourceRoot": "apps/chitin-console/src",
   "tags": [],
   "targets": {
