@@ -2,7 +2,7 @@
 
 Turn a **recurring** finding into a shared, tested primitive plus an
 invariant test that makes the whole class structurally impossible.
-The unit of work is the *class*, not the instance: "bugs classes
+The unit of work is the *class*, not the instance: "bug classes
 eliminated," not "PRs touched."
 
 This is the upstream half of review. `/land` and adversarial review

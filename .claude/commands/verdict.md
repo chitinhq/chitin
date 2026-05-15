@@ -1,9 +1,10 @@
 # /verdict — Durable disposition state for PRs and tickets
 
 Record a disposition **once**, with a reason and a scope, into an
-append-only ledger. `/queue` reads the ledger instead of re-deriving
-state every run. Triage becomes O(new) — only items whose state
-actually moved — instead of O(all).
+append-only ledger. `/queue` is designed to read the ledger instead of
+re-deriving state every run (ledger integration is a planned follow-up).
+Triage becomes O(new) — only items whose state actually moved — instead
+of O(all).
 
 A verdict is durable: it stays authoritative until the underlying
 thing changes (a PR's head moves) or someone explicitly reopens it.
@@ -20,7 +21,7 @@ thing changes (a PR's head moves) or someone explicitly reopens it.
 ## Disposition vocabulary
 
 Standardized values — `/queue` keys its display and skip logic off
-these (parallels the `block_reason` vocabulary in `docs/hermes-role.md`):
+these (parallels the `block_reason` vocabulary used by Hermes):
 
 | Disposition | Meaning | /queue behaviour |
 |---|---|---|
