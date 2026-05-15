@@ -233,11 +233,16 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
 
-    def test_missing_soul_file_error_boundary_fails_routing(self):
-        # Boundary: error. If the selected soul file is unavailable, routing
-        # must fail before emitting a run identity with an unverifiable soul.
+    def test_missing_soul_file_boundary_routes_with_unstamped_soul(self):
+        # Boundary: error. If the selected soul file genuinely cannot be
+        # located (no CHITIN_SOULS_DIR, no souls/ under the repo root —
+        # exactly how the installed ~/.openclaw workflow runs), routing must
+        # still succeed and emit JSON. The soul_id is reported but the
+        # soul_hash is left empty rather than crashing dispatch.
         with tempfile.TemporaryDirectory() as tmp:
             missing_souls_dir = Path(tmp) / "missing-souls"
+            souls_less_repo = Path(tmp) / "souls-less-repo"
+            souls_less_repo.mkdir()
             result = self.run_pick_driver_raw(
                 json.dumps(
                     {
@@ -248,10 +253,14 @@ class PickDriverTests(unittest.TestCase):
                 ),
                 CLAWTA_EXPLORATION_PERCENT="0",
                 CHITIN_SOULS_DIR=str(missing_souls_dir),
+                CHITIN_REPO=str(souls_less_repo),
             )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("soul file not found for knuth", result.stderr)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["soul_id"], "knuth")
+        self.assertEqual(payload["soul_hash"], "")
+        self.assertEqual(payload["soul_category"], "correctness")
 
     def test_correctness_ticket_selects_knuth_soul_and_composite_fingerprint(self):
         result = self.run_pick_driver(
@@ -334,16 +343,25 @@ class PickDriverTests(unittest.TestCase):
             hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
-    def test_missing_soul_file_error_boundary_fails_before_dispatch(self):
+    def test_missing_default_soul_file_boundary_routes_with_unstamped_soul(self):
+        # Boundary: error, default category. An empty souls dir plus a
+        # souls-less repo root must not crash dispatch — the default
+        # sun-tzu soul is reported with an empty hash.
         with tempfile.TemporaryDirectory() as tmp:
+            souls_less_repo = Path(tmp) / "souls-less-repo"
+            souls_less_repo.mkdir()
             result = self.run_pick_driver_raw(
                 json.dumps({"complexity": "low", "capabilities": ["python"]}),
                 CLAWTA_EXPLORATION_PERCENT="0",
-                CHITIN_SOULS_DIR=tmp,
+                CHITIN_SOULS_DIR=str(souls_less_repo / "no-souls-here"),
+                CHITIN_REPO=str(souls_less_repo),
             )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("soul file not found for sun-tzu", result.stderr)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["soul_id"], "sun-tzu")
+        self.assertEqual(payload["soul_hash"], "")
+        self.assertEqual(payload["soul_category"], "default")
 
 
 if __name__ == "__main__":

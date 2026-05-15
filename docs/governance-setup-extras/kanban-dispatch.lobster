@@ -194,6 +194,13 @@ steps:
       # already in_progress (e.g. clawta-poller flipped it before this
       # workflow ran), so failure here is benign.
       kanban-flow start ${ticket_id} --author clawta 2>/dev/null || true
+      env \
+        CHITIN_DISPATCH_MODEL="$pick_driver.json.model" \
+        CHITIN_DISPATCH_SOUL_ID="$pick_driver.json.soul_id" \
+        CHITIN_DISPATCH_SOUL_HASH="$pick_driver.json.soul_hash" \
+        CHITIN_DISPATCH_AGENT_FINGERPRINT="$pick_driver.json.agent_fingerprint" \
+        CHITIN_ACTIVE_SOUL="$pick_driver.json.soul_id" \
+        kanban-flow stamp-run-identity ${ticket_id} --author clawta 2>/dev/null || true
       openclaw message send --channel discord --account default --text "🦞 Starting ${ticket_id} to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
@@ -317,7 +324,18 @@ steps:
       fi
       ROLE="${ROLE:-programmer}"
       hermes kanban --board chitin comment "$TICKET_ID" --author clawta \
-        "dispatch driver=$DRIVER model=$MODEL role=$ROLE" 2>/dev/null || true
+        "dispatch driver=$DRIVER model=$MODEL soul_id=$pick_driver.json.soul_id soul_hash=$pick_driver.json.soul_hash role=$ROLE" 2>/dev/null || true
+      SOUL_ID='$pick_driver.json.soul_id'
+      SOUL_PROMPT=""
+      for SOUL_PATH in \
+        "$CHITIN_REPO/souls/canonical/${SOUL_ID}.md" \
+        "$CHITIN_REPO/souls/experimental/${SOUL_ID}.md"
+      do
+        if [[ -f "$SOUL_PATH" ]]; then
+          SOUL_PROMPT=$(cat "$SOUL_PATH")
+          break
+        fi
+      done
       CMD=$(jq -r '.invocation.cmd' "$CARD_PATH")
       ARGS_JSON=$(jq -c --arg model "$MODEL" \
         '.invocation.args | map(if . == "{model}" then $model else . end)' \
@@ -345,6 +363,12 @@ steps:
         --arg worktree "$WORKTREE_DIR" \
         --arg branch "$BRANCH" \
         --arg cmd "$CMD" \
+        --arg NEW_ENV "$NEW_ENV" \
+        --arg system_prompt "$SOUL_PROMPT" \
+        --arg soul_id "$pick_driver.json.soul_id" \
+        --arg soul_hash "$pick_driver.json.soul_hash" \
+        --arg agent_fingerprint "$pick_driver.json.agent_fingerprint" \
+        --arg repo_root "$CHITIN_REPO" \
         --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
         '{
@@ -354,13 +378,24 @@ steps:
           branch: $branch,
           cmd: $cmd,
           prompt: $prompt,
+          system_prompt: $system_prompt,
+          soul_id: $soul_id,
+          soul_hash: $soul_hash,
+          agent_fingerprint: $agent_fingerprint,
+          repo_root: $repo_root,
           args: $args,
           env: {
             "CHITIN_DRIVER": "clawta",
-            "CHITIN_BUDGET_ENVELOPE": $NEW_ENV
+            "CHITIN_BUDGET_ENVELOPE": $NEW_ENV,
+            "CHITIN_DISPATCH_DRIVER": $driver,
+            "CHITIN_DISPATCH_MODEL": $model,
+            "CHITIN_DISPATCH_SOUL_ID": $soul_id,
+            "CHITIN_DISPATCH_SOUL_HASH": $soul_hash,
+            "CHITIN_DISPATCH_AGENT_FINGERPRINT": $agent_fingerprint,
+            "CHITIN_ACTIVE_SOUL": $soul_id,
+            "CHITIN_AGENT_FINGERPRINT": $agent_fingerprint
           }
-        }' \
-        --arg NEW_ENV "$NEW_ENV")
+        }')
 
       # `|| true`: spawn_worker_subprocess.py exits non-zero on timeout /
       # session-error, but it always emits a structured JSON result on
@@ -416,6 +451,13 @@ steps:
         WORKER_STATUS=$(echo "$WORKER_RESULT" | jq -r '.status // "unknown"')
         WORKER_ERROR=$(echo "$WORKER_RESULT" | jq -r '.error // ""')
         WORKER_EVENT_CHAIN_HASH=$(echo "$WORKER_RESULT" | jq -r '.event_chain_hash // ""')
+        WORKER_SOUL_MISMATCH=$(echo "$WORKER_RESULT" | jq -r '.soul_hash_mismatch // false')
+        WORKER_OBSERVED_SOUL_HASH=$(echo "$WORKER_RESULT" | jq -r '.observed_soul_hash // ""')
+
+        if [[ "$WORKER_SOUL_MISMATCH" == "true" ]]; then
+          hermes kanban --board chitin comment ${ticket_id} --author clawta \
+            "Audit flag: soul hash changed during run. dispatched=$pick_driver.json.soul_hash observed=$WORKER_OBSERVED_SOUL_HASH" 2>/dev/null || true
+        fi
 
         case "$WORKER_STATUS" in
           timeout)
@@ -570,6 +612,8 @@ steps:
           --pr-url "$PR_URL" \
           --driver "$DRIVER" \
           --model "$MODEL" \
+          --soul-id "$pick_driver.json.soul_id" \
+          --soul-hash "$pick_driver.json.soul_hash" \
           --role "$ROLE" \
           >> "$HOME/.openclaw/logs/judge.log" 2>&1 || true) &
         disown

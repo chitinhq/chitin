@@ -243,24 +243,65 @@ def classify_soul_category(classify: dict) -> str:
     return "default"
 
 
-def find_soul_file(soul_id: str) -> Path:
+def souls_dir_candidates() -> list[Path]:
+    """Ordered list of directories that may hold ``<soul_id>.md`` files.
+
+    ``CHITIN_SOULS_DIR`` wins when set; both the bare directory and its
+    ``canonical``/``experimental`` children are probed so callers can point
+    at either layout. Otherwise we fall back to the souls tree under the
+    resolved repo root (which honors ``CHITIN_REPO``).
+    """
+    candidates: list[Path] = []
     override = os.environ.get("CHITIN_SOULS_DIR", "").strip()
-    base_dirs = [Path(override).expanduser()] if override else [
-        repo_root() / "souls" / "canonical",
-        repo_root() / "souls" / "experimental",
-    ]
-    for base in base_dirs:
+    if override:
+        base = Path(override).expanduser()
+        candidates += [base, base / "canonical", base / "experimental"]
+    root = repo_root()
+    candidates += [root / "souls" / "canonical", root / "souls" / "experimental"]
+    # De-duplicate while preserving order.
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def find_soul_file(soul_id: str) -> Path | None:
+    """Return the path to ``<soul_id>.md`` if it can be located, else None.
+
+    Returns ``None`` rather than raising — the installed workflow runs from
+    ``~/.openclaw/workflows/`` without ``CHITIN_REPO``/``CHITIN_SOULS_DIR``,
+    so the souls tree is legitimately absent there and dispatch must still
+    proceed.
+    """
+    for base in souls_dir_candidates():
         candidate = base / f"{soul_id}.md"
         if candidate.is_file():
             return candidate
-    raise FileNotFoundError(f"soul file not found for {soul_id}")
+    return None
 
 
 def resolve_soul(classify: dict) -> tuple[str, str, str]:
+    """Resolve (soul_id, soul_hash, category) without crashing.
+
+    If the soul markdown file genuinely cannot be located on disk — the
+    common case for the installed workflow, which runs without
+    ``CHITIN_REPO``/``CHITIN_SOULS_DIR`` — fall back to the resolved
+    soul_id with an empty hash instead of raising ``FileNotFoundError``.
+    Dispatch can still proceed; the soul fingerprint is simply unstamped.
+    """
     soul_map = load_board_soul_map()
     category = classify_soul_category(classify)
     soul_id = soul_map.get(category) or soul_map["default"]
-    content = find_soul_file(soul_id).read_text(encoding="utf-8")
+    soul_path = find_soul_file(soul_id)
+    if soul_path is None:
+        return soul_id, "", category
+    try:
+        content = soul_path.read_text(encoding="utf-8")
+    except OSError:
+        return soul_id, "", category
     soul_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return soul_id, soul_hash, category
 
