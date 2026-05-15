@@ -26,8 +26,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-DB_PATH = Path(os.environ.get("KANBAN_DB", str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db")))
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
+DB_PATH = resolve_db()
+BOARD = resolve_board()
 AUTHOR = "clawta-invariants"
 REPO = Path(os.environ.get("CHITIN_REPO", str(Path.home() / "workspace/chitin")))
 LOG_DIR = Path.home() / ".openclaw" / "logs"

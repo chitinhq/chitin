@@ -29,10 +29,12 @@ Invocation:
   clawta-poller --once          one tick, print plan, exit
   clawta-poller --dry-run       one tick, print plan, no side effects
   clawta-poller --loop           run continuously every POLL_SEC seconds
-  clawta-poller --max-dispatch N max tickets to dispatch per tick (default 2)
+  clawta-poller --max-dispatch N max tickets to dispatch per tick (default 5)
+  clawta-poller --boards chitin,readybench   tick multiple boards sequentially
 
 Configured via env:
-  KANBAN_DB                 default: ~/.hermes/kanban/boards/chitin/kanban.db
+  KANBAN_DB                 default: resolved from KANBAN_BOARD
+  KANBAN_BOARD              default: chitin (comma-separated for multi-board)
   POLL_SEC                  default: 120
   TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
   ROUTING_LANE              assignee for routing-level tickets, default: clawta
@@ -60,13 +62,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
 
-DB_PATH = Path(
-    os.environ.get(
-        "KANBAN_DB",
-        str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db"),
-    )
-)
+
+DB_PATH: Path = resolve_db()
+BOARD: str = resolve_board()
+
+
+def _set_board(slug: str) -> None:
+    """Recompute module globals for the given board slug."""
+    global DB_PATH, BOARD
+    os.environ["KANBAN_BOARD"] = slug
+    DB_PATH = resolve_db(slug)
+    BOARD = slug
+    log(f"board context: {slug} (db={DB_PATH})")
 POLL_SEC = int(os.environ.get("POLL_SEC", "120"))
 TERMINAL_LANES = tuple(
     s.strip() for s in os.environ.get(
@@ -834,7 +844,7 @@ def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -
         return False
 
     subprocess.run(
-        ["hermes", "kanban", "--board", "chitin", "comment",
+        ["hermes", "kanban", "--board", BOARD, "comment",
          ticket_id, "--author", AUTHOR, comment],
         timeout=15,
     )
@@ -1022,36 +1032,61 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     }
 
 
+def _resolve_boards(boards_arg: str | None) -> list[str]:
+    """Parse --boards arg or fall back to KANBAN_BOARD env."""
+    if boards_arg:
+        return [s.strip() for s in boards_arg.split(",") if s.strip()]
+    env = os.environ.get("KANBAN_BOARD", "").strip()
+    if env:
+        return [s.strip() for s in env.split(",") if s.strip()]
+    return ["chitin"]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--once", action="store_true", help="run one tick, exit")
     g.add_argument("--dry-run", action="store_true", help="run one tick, no side effects")
     g.add_argument("--loop", action="store_true", help=f"loop every POLL_SEC ({POLL_SEC}s)")
-    ap.add_argument("--max-dispatch", type=int, default=2, help="max tickets to dispatch per tick (default 2)")
+    ap.add_argument("--max-dispatch", type=int, default=5, help="max tickets to dispatch per tick (default 5)")
+    ap.add_argument("--boards", type=str, default=None,
+                    help="comma-separated board slugs (default: KANBAN_BOARD env or 'chitin')")
     args = ap.parse_args()
 
-    if not DB_PATH.exists():
-        log(f"fatal: kanban DB not found at {DB_PATH}")
-        return 2
+    boards = _resolve_boards(args.boards)
+    log(f"boards: {','.join(boards)}")
 
-    if args.dry_run:
-        result = tick(args.max_dispatch, dry_run=True)
-        print(json.dumps(result, indent=2))
-        return 0
+    results: dict[str, Any] = {}
 
-    if args.once:
-        result = tick(args.max_dispatch, dry_run=False)
-        print(json.dumps(result, indent=2))
+    for slug in boards:
+        _set_board(slug)
+        if not DB_PATH.exists():
+            log(f"skip board {slug}: kanban DB not found at {DB_PATH}")
+            continue
+
+        if args.dry_run:
+            results[slug] = tick(args.max_dispatch, dry_run=True)
+        elif args.once:
+            results[slug] = tick(args.max_dispatch, dry_run=False)
+        else:
+            # --loop handled below
+            results[slug] = tick(args.max_dispatch, dry_run=False)
+
+    if args.dry_run or args.once:
+        print(json.dumps(results, indent=2))
         return 0
 
     if args.loop:
-        log(f"loop start (poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lane={ROUTING_LANE})")
+        log(f"loop start (boards={','.join(boards)}, poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lane={ROUTING_LANE})")
         while True:
-            try:
-                tick(args.max_dispatch, dry_run=False)
-            except Exception as e:
-                log(f"tick crashed: {e}")
+            for slug in boards:
+                _set_board(slug)
+                if not DB_PATH.exists():
+                    continue
+                try:
+                    tick(args.max_dispatch, dry_run=False)
+                except Exception as e:
+                    log(f"tick crashed on board {slug}: {e}")
             time.sleep(POLL_SEC)
 
     return 0

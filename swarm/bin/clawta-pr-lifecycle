@@ -32,9 +32,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
 REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
-DB_PATH = Path(os.environ.get("KANBAN_DB", str(Path.home() / ".hermes/kanban/boards/chitin/kanban.db")))
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+DB_PATH = resolve_db()
+BOARD = resolve_board()
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-pr-lifecycle.log"
 AUTHOR = "clawta-pr-lifecycle"

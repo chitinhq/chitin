@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+BOARD="${KANBAN_BOARD:-chitin}"
+_boards_dir="${HOME}/.hermes/kanban/boards"
+if [[ -n "${KANBAN_DB:-}" ]]; then
+  : # explicit path wins
+else
+  KANBAN_DB="${_boards_dir}/${BOARD}/kanban.db"
+fi
+export KANBAN_DB BOARD
 cd /home/red/workspace/chitin
 # Default: only claude-code is disabled (Anthropic ToS forbids it as a
 # subagent). Copilot is governance-aware via `chitin-kernel drive copilot`
@@ -23,10 +31,10 @@ for lane in "${lanes[@]}"; do
   while IFS=$'\t' read -r id st title; do
     [[ -n "${id:-}" ]] || continue
     ./scripts/kanban-flow block "$id" "$lane removed from autonomous worker pool; human-in-loop/operator only" --author clawta >/dev/null 2>&1 || true
-    hermes kanban --board chitin assign "$id" red >/dev/null
-    hermes kanban --board chitin comment "$id" --author clawta "$lane is disabled for autonomous dispatch; moved to red for human-in-loop/operator handling." >/dev/null || true
+    hermes kanban --board "$BOARD" assign "$id" red >/dev/null
+    hermes kanban --board "$BOARD" comment "$id" --author clawta "$lane is disabled for autonomous dispatch; moved to red for human-in-loop/operator handling." >/dev/null || true
     changed+=("blocked $lane queue ticket: $id — $title")
-  done < <(sqlite3 -tabs /home/red/.hermes/kanban/boards/chitin/kanban.db "SELECT id,status,title FROM tasks WHERE status IN ('ready','todo') AND assignee='$lane' ORDER BY priority DESC, created_at ASC;")
+  done < <(sqlite3 -tabs "$(eval echo "$KANBAN_DB")" "SELECT id,status,title FROM tasks WHERE status IN ('ready','todo') AND assignee='$lane' ORDER BY priority DESC, created_at ASC;")
 done
 
 if (( ${#changed[@]} )); then

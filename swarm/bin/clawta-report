@@ -3,10 +3,13 @@ import html, json, os, re, sqlite3, subprocess, sys, time, urllib.parse, urllib.
 from collections import Counter, defaultdict
 from datetime import datetime
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
 ASSETS = "/home/red/labs/local-ai-lab/wiki/assets"
 BASE = "http://100.115.89.9:8888"
 ACCENT = "#58a6ff"
-BOARD_DB = os.path.expanduser("~/.hermes/kanban/boards/chitin/kanban.db")
+BOARD_DB = str(resolve_db())
 ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
 BASE_ELO = 1500.0
 BASE_K = 32.0
