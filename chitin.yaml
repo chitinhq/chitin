@@ -21,12 +21,6 @@ bounds:
     github.pr.create:
       max_files_changed: 100
       max_lines_changed: 2000
-  # Generated artifacts that regenerate wholesale (lockfiles, vendored
-  # bundles) dominate diff line counts and trip ceilings even when the
-  # human-reviewed code change is small. Honored by bounds.exclude_paths
-  # (PR #672).
-  exclude_paths:
-    - "**/pnpm-lock.yaml"
 
 escalation:
   elevated_threshold: 3
