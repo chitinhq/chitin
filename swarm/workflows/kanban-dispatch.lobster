@@ -117,7 +117,7 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       TICKET=$(cat)
-      PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
+      PROMPT='Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {"complexity": "low" | "med" | "high", "capabilities": ["go" | "ts" | "python" | "refactor" | "debug" | "review"], "estimated_loc": <integer>, "needs_frontier": <true|false>}. Ticket JSON:'"$TICKET"
       OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
@@ -172,10 +172,10 @@ steps:
       REASONING=$(cat)
       COMMENT=$(printf '%s' "$REASONING" | python3 /home/red/.openclaw/workflows/clawta_decisions.py record \
         --ticket-id ${ticket_id} \
-        --driver $pick_driver.json.driver \
-        --model $pick_driver.json.model \
-        --shape-bucket $pick_driver.json.shape_bucket \
-        --selection-mode $pick_driver.json.selection_mode)
+        --driver "$pick_driver.json.driver" \
+        --model "$pick_driver.json.model" \
+        --shape-bucket "$pick_driver.json.shape_bucket" \
+        --selection-mode "$pick_driver.json.selection_mode")
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
 
@@ -192,7 +192,7 @@ steps:
     description: Operator confirms the dispatch decision
     approval: >
       Dispatch ${ticket_id} to $pick_driver.json.driver?
-      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity | Capabilities: $pick_driver.json.caps_needed
+      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity
 
   # ─────────────────────────────────────────────────────────────────────
   # 6. Reassign the kanban ticket to the picked driver lane
