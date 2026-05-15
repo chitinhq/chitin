@@ -256,8 +256,14 @@ def merge_blockers(item):
 
 def load_board_state():
     conn = board_conn()
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    retry_cols = []
+    retry_cols.append("consecutive_failures" if "consecutive_failures" in cols else "0 AS consecutive_failures")
+    retry_cols.append("last_failure_error" if "last_failure_error" in cols else "NULL AS last_failure_error")
     tasks = [dict(row) for row in conn.execute(
-        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id FROM tasks"
+        "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id, "
+        + ", ".join(retry_cols)
+        + " FROM tasks"
     )]
     comments = [dict(row) for row in conn.execute(
         "SELECT task_id, author, body, created_at FROM task_comments ORDER BY created_at"
@@ -304,6 +310,53 @@ def compute_complexity_elo(scores, complexity_map):
             "last_scored_at": max(group, key=lambda r: r["scored_at"])["scored_at"],
         })
     return sorted(rows, key=lambda r: (r["elo_score"], r["dispatches_count"]), reverse=True)
+
+def classify_stuck_ticket(task, *, pr=None, active=False, stale_note=""):
+    """Turn a vague stuck row into an operator/controller action bucket."""
+    assignee = task.get("assignee") or ""
+    failures = int(task.get("consecutive_failures") or 0)
+    if pr:
+        return {
+            "bucket": "has-pr",
+            "tone": "good",
+            "action": "PR lifecycle owns this; review/fix/rebase/merge from the PR queue",
+        }
+    if assignee == "red":
+        return {
+            "bucket": "operator-owned",
+            "tone": "warn",
+            "action": "waiting on red/operator decision",
+        }
+    if active:
+        return {
+            "bucket": "active-worker",
+            "tone": "good",
+            "action": "worker still running; monitor heartbeat/logs",
+        }
+    if failures >= 2:
+        return {
+            "bucket": "retry-exhausting",
+            "tone": "bad",
+            "action": "near/exhausted watchdog retries; escalate or re-spec",
+        }
+    if stale_note:
+        return {
+            "bucket": "watchdog-flagged",
+            "tone": "bad",
+            "action": "watchdog already flagged it; inspect comment and repair/retry",
+        }
+    if assignee in TERMINAL_LANES or assignee == ROUTING_LANE:
+        return {
+            "bucket": "retryable-silent",
+            "tone": "warn",
+            "action": "no PR/worker seen; eligible for watchdog retry",
+        }
+    return {
+        "bucket": "idle-unknown",
+        "tone": "warn",
+        "action": "needs classification; inspect board events and logs",
+    }
+
 
 def load_swarm_health():
     tasks, comments, events, runs = load_board_state()
@@ -369,6 +422,8 @@ def load_swarm_health():
     runs_by_task = defaultdict(list)
     for run in runs:
         runs_by_task[run["task_id"]].append(run)
+    active_tickets = active_dispatch_tickets()
+    active_ticket_set = set(active_tickets)
     for task in tasks:
         if task["status"] != "in_progress":
             continue
@@ -385,6 +440,14 @@ def load_swarm_health():
         ]
         if idle_seconds < 5400 and not stale_markers:
             continue
+        stale_note = stale_markers[-1]["body"] if stale_markers else ""
+        pr = pr_by_ticket.get(task["id"])
+        classification = classify_stuck_ticket(
+            task,
+            pr=pr,
+            active=task["id"] in active_ticket_set,
+            stale_note=stale_note,
+        )
         stuck.append({
             "id": task["id"],
             "title": task["title"],
@@ -392,8 +455,12 @@ def load_swarm_health():
             "started_at": task["started_at"] or task["created_at"],
             "idle_seconds": idle_seconds,
             "last_event_at": last_evt,
-            "stale_note": stale_markers[-1]["body"] if stale_markers else "",
-            "pr": pr_by_ticket.get(task["id"]),
+            "stale_note": stale_note,
+            "pr": pr,
+            "consecutive_failures": int(task.get("consecutive_failures") or 0),
+            "bucket": classification["bucket"],
+            "bucket_tone": classification["tone"],
+            "next_action": classification["action"],
         })
     stuck.sort(key=lambda row: (bool(row["pr"]), row["idle_seconds"]), reverse=True)
 
@@ -439,7 +506,6 @@ def load_swarm_health():
         if task["status"] in ("ready", "todo")
         and (task["assignee"] or "") in enabled_lanes.union({ROUTING_LANE})
     ]
-    active_tickets = active_dispatch_tickets()
     # Current OpenClaw cron is intentionally conservative; keep the report honest
     # even if no env is available inside the static report runner.
     max_active = int(os.environ.get("CLAWTA_MAX_ACTIVE_WORKERS", "1"))
@@ -469,6 +535,7 @@ def load_swarm_health():
         "dispatched_today": dispatched_today,
         "dispatch_attempts": dispatch_attempts,
         "stuck": stuck,
+        "stuck_buckets": dict(Counter(row["bucket"] for row in stuck)),
         "blocked_red": blocked_red,
         "pr_lifecycle": pr_lifecycle,
         "elo_rows": elo_rows,
@@ -579,6 +646,7 @@ def swarm_health():
     dispatched = data["dispatched_today"]
     dispatch_attempts = data["dispatch_attempts"]
     stuck = data["stuck"]
+    stuck_buckets = data.get("stuck_buckets", {})
     blocked_red = data["blocked_red"]
     prs = data["pr_lifecycle"]
     elo_rows = data["elo_rows"][:12]
@@ -618,10 +686,17 @@ def swarm_health():
         note_html = f"<div class='small bad'>{html.escape(row['stale_note'][:240])}</div>" if row["stale_note"] else ""
         stuck_parts.append(
             f"<li><span class='mono'>{html.escape(row['id'])}</span> {html.escape(row['title'])}"
-            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · {pr_text}</div>"
+            f"<div>{pill(row['bucket'], row.get('bucket_tone',''))}</div>"
+            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · failures {row.get('consecutive_failures', 0)} · {pr_text}</div>"
+            f"<div class='small'>{html.escape(row.get('next_action') or '')}</div>"
             f"{note_html}</li>"
         )
     stuck_items = ''.join(stuck_parts) or "<li>No currently-stuck in-progress tickets under the 90m+ / watchdog heuristic.</li>"
+
+    stuck_bucket_rows = ''.join(
+        f"<tr><td>{pill(bucket, 'bad' if bucket in {'retry-exhausting','watchdog-flagged'} else 'warn' if bucket not in {'has-pr','active-worker'} else 'good')}</td><td>{count}</td></tr>"
+        for bucket, count in sorted(stuck_buckets.items(), key=lambda item: (-item[1], item[0]))
+    ) or "<tr><td colspan='2'>No stuck buckets.</td></tr>"
 
     blocked_rows = ''.join(
         f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td></tr>"
@@ -673,6 +748,7 @@ def swarm_health():
         + f"<div class='card'><div class='section-head'><h2>Lane Health</h2><span class='small muted'>runtime agent-card presence</span></div><table><tr><th>Lane</th><th>Status</th><th>Models</th></tr>{lane_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Dispatchable Queue</h2><span class='small muted'>first 14</span></div><table><tr><th>Ticket</th><th>Status</th><th>Assignee</th><th>Title</th></tr>{queue_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Dispatched Today</h2><a href='{BASE}/clawta-swarm-health-latest.html'>latest asset</a></div><table><tr><th>Ticket</th><th>Title</th><th>Lane</th><th>Dispatched</th><th>PR</th></tr>{dispatched_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Stuck Buckets</h2><span class='small muted'>Control Tower classification</span></div><table><tr><th>Bucket</th><th>Count</th></tr>{stuck_bucket_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Stuck Tickets</h2><span class='small muted'>watchdog + idle heuristic</span></div><ul class='list'>{stuck_items}</ul></div>"
         + "</section>"
         + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Blocked At</th><th>Age</th></tr>{blocked_rows}</table></div>"
