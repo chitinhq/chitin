@@ -448,6 +448,7 @@ event_chain_hash=""
 chain_file=""
 run_status_override=""
 outcome_override=""
+force_flag=0
 parse_flags() {
   local rest=()
   while [[ $# -gt 0 ]]; do
@@ -461,10 +462,21 @@ parse_flags() {
       --chain-file) chain_file="$2"; shift 2 ;;
       --run-status) run_status_override="$2"; shift 2 ;;
       --outcome) outcome_override="$2"; shift 2 ;;
+      --force) force_flag=1; shift ;;
       *) rest+=("$1"); shift ;;
     esac
   done
   REST=("${rest[@]+"${rest[@]}"}")
+}
+
+# Tracking-epic guard: matches `Tracking-epic: true|yes|1` at start of line
+# in the ticket body, case-insensitive. Used by the `ready` subcommand to
+# refuse auto-promotion of parent containers (see ticket t_6eba6ad2).
+is_tracking_epic_id() {
+  local id="$1"
+  local body
+  body=$(sqlite3 "$DB" "SELECT COALESCE(body,'') FROM tasks WHERE id='$id'" 2>/dev/null)
+  [[ -n "$body" ]] && grep -qiE '^tracking-epic:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$body"
 }
 
 post_cost_summary_comment() {
@@ -610,6 +622,13 @@ case "$cmd" in
     id="${REST[0]:-}"; require_id "$id"
     from="$(ticket_status "$id")"
     [[ "$from" == triage || "$from" == blocked ]] || die "$id is in '$from'; can only mark ready from triage|blocked"
+    # Refuse to auto-promote tracking epics — they intentionally lack
+    # invariants_and_boundaries + a terminal-lane assignee, and will spin
+    # in a promote-demote loop with clawta-poller. Operator can override
+    # with --force. See ticket t_6eba6ad2.
+    if (( force_flag == 0 )) && is_tracking_epic_id "$id"; then
+      die "$id is marked 'Tracking-epic: true' — auto-promotion blocked. Pass --force to override (operator-explicit promotion)."
+    fi
     hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
     flip_status "$id" ready 0 0
 

@@ -122,6 +122,12 @@ TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
 )
+# Tracking-epic marker: a body line that opts a ticket out of auto-promotion
+# and out of the demote/stale-flag gates. Matches `Tracking-epic: true|yes|1`
+# at start of line, case-insensitive. See ticket t_6eba6ad2.
+TRACKING_EPIC_RE = re.compile(
+    r"(?im)^tracking-epic:\s*(true|yes|1)\s*$"
+)
 
 
 def log(msg: str) -> None:
@@ -168,6 +174,20 @@ def extract_named_boundaries(field_value: str | None) -> list[str]:
         seen.add(key)
         boundaries.append(cleaned)
     return boundaries
+
+
+def is_tracking_epic(body: str | None) -> bool:
+    """True when the body opts the ticket out of auto-promotion + demote gates.
+
+    The marker is a `Tracking-epic: true|yes|1` line (case-insensitive) at start
+    of line. Tracking epics intentionally lack `invariants_and_boundaries:` and
+    a terminal-lane assignee — they're parent containers, not dispatchable
+    work — so the demote and stale-flag gates must skip them or they spin in
+    a promote-demote loop forever (see t_6eba6ad2).
+    """
+    if not body:
+        return False
+    return bool(TRACKING_EPIC_RE.search(body))
 
 
 def is_parent_hierarchy_prefix(prefix: str) -> bool:
@@ -303,7 +323,7 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
-            SELECT id, title, assignee, priority, created_at
+            SELECT id, title, body, assignee, priority, created_at
               FROM tasks
              WHERE status IN ({status_placeholders})
                AND (assignee IS NULL
@@ -903,6 +923,8 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     lanes = "/".join(TERMINAL_LANES)
     for t in ungroomed:
         tid = t["id"]
+        if is_tracking_epic(t.get("body")):
+            continue
         if not t["assignee"]:
             reason = (
                 f"missing assignee — grooming step must route to a terminal "
@@ -926,6 +948,8 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
         return []
     demoted: list[str] = []
     for ticket in candidates:
+        if is_tracking_epic(ticket.get("body")):
+            continue
         reason = missing_invariants_reason(ticket)
         if not reason:
             continue
