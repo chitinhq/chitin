@@ -278,6 +278,53 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(result["soul_id"], "socrates")
         self.assertEqual(result["soul_category"], "architecture")
 
+    def test_soul_map_empty_boundary_uses_default_dispatch_soul(self):
+        result = self.run_pick_driver(
+            {"complexity": "low", "capabilities": ["python"]},
+            CLAWTA_EXPLORATION_PERCENT="0",
+            KANBAN_BOARD_SOUL_MAP="",
+        )
+
+        self.assertEqual(result["soul_id"], "sun-tzu")
+        self.assertEqual(result["soul_category"], "default")
+
+    def test_soul_file_max_boundary_hashes_large_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            souls_dir = Path(tmp)
+            content = "knuth\n" + ("x" * 200_000)
+            for soul_id in ("davinci", "sun-tzu", "socrates"):
+                (souls_dir / f"{soul_id}.md").write_text(
+                    f"{soul_id} soul\n", encoding="utf-8"
+                )
+            (souls_dir / "knuth.md").write_text(content, encoding="utf-8")
+
+            result = self.run_pick_driver(
+                {
+                    "complexity": "low",
+                    "capabilities": ["python"],
+                    "ticket_title": "Invariant regression",
+                },
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_SOULS_DIR=str(souls_dir),
+            )
+
+        self.assertEqual(result["soul_id"], "knuth")
+        self.assertEqual(
+            result["soul_hash"],
+            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+
+    def test_missing_soul_file_error_boundary_fails_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_pick_driver_raw(
+                json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_SOULS_DIR=tmp,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("soul file not found for sun-tzu", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
