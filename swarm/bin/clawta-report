@@ -260,6 +260,7 @@ def load_board_state():
     retry_cols = []
     retry_cols.append("consecutive_failures" if "consecutive_failures" in cols else "0 AS consecutive_failures")
     retry_cols.append("last_failure_error" if "last_failure_error" in cols else "NULL AS last_failure_error")
+    retry_cols.append("block_reason" if "block_reason" in cols else "NULL AS block_reason")
     tasks = [dict(row) for row in conn.execute(
         "SELECT id, title, assignee, status, priority, created_at, started_at, completed_at, last_heartbeat_at, current_run_id, "
         + ", ".join(retry_cols)
@@ -311,10 +312,41 @@ def compute_complexity_elo(scores, complexity_map):
         })
     return sorted(rows, key=lambda r: (r["elo_score"], r["dispatches_count"]), reverse=True)
 
+BLOCK_REASON_META = {
+    "needs-fix": {"owner": "clawta", "tone": "warn", "action": "Clawta re-dispatches/fixes once with review context"},
+    "needs-rebase": {"owner": "clawta", "tone": "warn", "action": "Clawta rebases and reruns lifecycle"},
+    "no-pr": {"owner": "hermes", "tone": "warn", "action": "Hermes/board engine opens or repairs PR creation"},
+    "retry-exhausted": {"owner": "hermes", "tone": "bad", "action": "Hermes diagnoses after retry budget exhaustion"},
+    "explicit-failure": {"owner": "hermes", "tone": "bad", "action": "Hermes diagnoses traceback/failing worker context"},
+    "silent-death": {"owner": "clawta", "tone": "warn", "action": "Watchdog retries up to budget, then escalates"},
+    "ci-fail": {"owner": "clawta", "tone": "bad", "action": "Clawta dispatches CI-fix worker once"},
+    "pr-rejected": {"owner": "hermes", "tone": "bad", "action": "Hermes reviews rejection and decides retry/spec change"},
+    "deploy-drift": {"owner": "clawta", "tone": "warn", "action": "Clawta restores deployed/repo sync or clean branch"},
+    "operator-decision": {"owner": "red", "tone": "bad", "action": "Red/operator decision required"},
+    "dep-gate": {"owner": "hermes", "tone": "warn", "action": "Auto-unblock when dependency clears"},
+    "poller-oscillation": {"owner": "hermes", "tone": "bad", "action": "Hermes stabilizes queue/poller state"},
+}
+
+
+def block_reason_meta(reason):
+    reason = (reason or "").strip()
+    if not reason:
+        return {"owner": "unknown", "tone": "", "action": "no structured block reason recorded"}
+    return BLOCK_REASON_META.get(reason, {"owner": "unknown", "tone": "warn", "action": "unrecognized block_reason; inspect Hermes vocabulary"})
+
+
 def classify_stuck_ticket(task, *, pr=None, active=False, stale_note=""):
     """Turn a vague stuck row into an operator/controller action bucket."""
     assignee = task.get("assignee") or ""
     failures = int(task.get("consecutive_failures") or 0)
+    block_reason = (task.get("block_reason") or "").strip()
+    if block_reason:
+        meta = block_reason_meta(block_reason)
+        return {
+            "bucket": f"block:{block_reason}",
+            "tone": meta["tone"],
+            "action": meta["action"],
+        }
     if pr:
         return {
             "bucket": "has-pr",
@@ -458,6 +490,7 @@ def load_swarm_health():
             "stale_note": stale_note,
             "pr": pr,
             "consecutive_failures": int(task.get("consecutive_failures") or 0),
+            "block_reason": task.get("block_reason") or "",
             "bucket": classification["bucket"],
             "bucket_tone": classification["tone"],
             "next_action": classification["action"],
@@ -467,12 +500,18 @@ def load_swarm_health():
     blocked_red = []
     for task in tasks:
         if task["status"] == "blocked" and (task["assignee"] or "") == "red":
+            reason = task.get("block_reason") or ""
+            meta = block_reason_meta(reason)
             blocked_red.append({
                 "id": task["id"],
                 "title": task["title"],
                 "priority": task["priority"] or 0,
                 "blocked_at": latest_event.get(task["id"], task["created_at"]),
                 "age_seconds": now - latest_event.get(task["id"], task["created_at"]),
+                "block_reason": reason,
+                "block_owner": meta["owner"],
+                "block_tone": meta["tone"],
+                "block_action": meta["action"],
             })
     blocked_red.sort(key=lambda row: (row["priority"], row["age_seconds"]), reverse=True)
 
@@ -537,6 +576,7 @@ def load_swarm_health():
         "stuck": stuck,
         "stuck_buckets": dict(Counter(row["bucket"] for row in stuck)),
         "blocked_red": blocked_red,
+        "blocked_red_reasons": dict(Counter((row["block_reason"] or "unclassified") for row in blocked_red)),
         "pr_lifecycle": pr_lifecycle,
         "elo_rows": elo_rows,
         "dispatchable_queue": dispatchable,
@@ -648,6 +688,7 @@ def swarm_health():
     stuck = data["stuck"]
     stuck_buckets = data.get("stuck_buckets", {})
     blocked_red = data["blocked_red"]
+    blocked_red_reasons = data.get("blocked_red_reasons", {})
     prs = data["pr_lifecycle"]
     elo_rows = data["elo_rows"][:12]
     dispatchable_queue = data["dispatchable_queue"]
@@ -687,7 +728,7 @@ def swarm_health():
         stuck_parts.append(
             f"<li><span class='mono'>{html.escape(row['id'])}</span> {html.escape(row['title'])}"
             f"<div>{pill(row['bucket'], row.get('bucket_tone',''))}</div>"
-            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · failures {row.get('consecutive_failures', 0)} · {pr_text}</div>"
+            f"<div class='small muted'>assignee {html.escape(row['assignee'])} · started {fmt_ts(row['started_at'])} · idle {age_human(row['idle_seconds'])} · failures {row.get('consecutive_failures', 0)} · block_reason {html.escape(row.get('block_reason') or '—')} · {pr_text}</div>"
             f"<div class='small'>{html.escape(row.get('next_action') or '')}</div>"
             f"{note_html}</li>"
         )
@@ -698,10 +739,15 @@ def swarm_health():
         for bucket, count in sorted(stuck_buckets.items(), key=lambda item: (-item[1], item[0]))
     ) or "<tr><td colspan='2'>No stuck buckets.</td></tr>"
 
+    blocked_reason_rows = ''.join(
+        f"<tr><td>{pill(reason, block_reason_meta(None if reason == 'unclassified' else reason)['tone'])}</td><td>{count}</td></tr>"
+        for reason, count in sorted(blocked_red_reasons.items(), key=lambda item: (-item[1], item[0]))
+    ) or "<tr><td colspan='2'>No blocked-red reasons.</td></tr>"
+
     blocked_rows = ''.join(
-        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td></tr>"
+        f"<tr><td class='mono'>{html.escape(row['id'])}</td><td>{html.escape(row['title'])}</td><td>{row['priority']}</td><td>{pill(row['block_reason'] or 'unclassified', row.get('block_tone',''))}</td><td>{html.escape(row.get('block_owner') or 'unknown')}</td><td>{fmt_ts(row['blocked_at'])}</td><td>{age_human(row['age_seconds'])}</td><td>{html.escape(row.get('block_action') or '')}</td></tr>"
         for row in blocked_red[:12]
-    ) or "<tr><td colspan='5'>No blocked tickets currently assigned to red.</td></tr>"
+    ) or "<tr><td colspan='8'>No blocked tickets currently assigned to red.</td></tr>"
 
     pr_rows = ''.join(
         f"<tr><td>{'#'+str(row['number'])}</td><td class='mono'>{html.escape(row['ticket_id'])}</td><td>{html.escape(row['head'])}</td><td>{pill('draft', 'warn') if row['is_draft'] else pill(row['checks']['label'], row['checks']['tone'])}</td><td>{html.escape(row['merge_state'])}</td><td>{row['checks']['success']}/{row['checks']['success'] + row['checks']['pending'] + row['checks']['failing']}</td><td>{html.escape(row['title'])}</td></tr>"
@@ -751,7 +797,8 @@ def swarm_health():
         + f"<div class='card'><div class='section-head'><h2>Stuck Buckets</h2><span class='small muted'>Control Tower classification</span></div><table><tr><th>Bucket</th><th>Count</th></tr>{stuck_bucket_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Stuck Tickets</h2><span class='small muted'>watchdog + idle heuristic</span></div><ul class='list'>{stuck_items}</ul></div>"
         + "</section>"
-        + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Blocked At</th><th>Age</th></tr>{blocked_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Blocked Red Reasons</h2><span class='small muted'>Hermes block_reason contract</span></div><table><tr><th>Reason</th><th>Count</th></tr>{blocked_reason_rows}</table></div>"
+        + f"<div class='card'><div class='section-head'><h2>Blocked Red Queue</h2><span class='small muted'>sorted by priority then age</span></div><table><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Reason</th><th>Owner</th><th>Blocked At</th><th>Age</th><th>Handler</th></tr>{blocked_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Why PRs Are Not Auto-Merging</h2><span class='small muted'>strict lifecycle gate blockers</span></div><table><tr><th>PR</th><th>Ticket</th><th>Ticket Status</th><th>Checks</th><th>Review</th><th>Merge</th><th>Blockers</th><th>Lifecycle Action</th></tr>{blocker_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Open PR Lifecycle</h2><span class='small muted'>GitHub state + check rollups</span></div><table><tr><th>PR</th><th>Ticket</th><th>Head</th><th>Checks</th><th>Merge</th><th>Pass</th><th>Title</th></tr>{pr_rows}</table></div>"
         + f"<div class='card'><div class='section-head'><h2>Model-Aware ELO</h2><span class='small muted'>driver + model + complexity replayed from local score history</span></div><table><tr><th>Driver</th><th>Model</th><th>Complexity</th><th>ELO</th><th>Dispatches</th><th>Avg Score</th><th>Last Ticket</th></tr>{elo_table}</table></div>"

@@ -60,6 +60,21 @@ class StuckClassificationTests(unittest.TestCase):
         self.assertEqual(module.classify_stuck_ticket(task, stale_note="watchdog flagged")["bucket"], "watchdog-flagged")
         self.assertEqual(module.classify_stuck_ticket(task)["bucket"], "retryable-silent")
 
+    def test_block_reason_takes_precedence_in_stuck_classification(self) -> None:
+        module = load_module(REPORT, "clawta_report_block_reason_stuck")
+        task = {"id": "t_deadbeef", "assignee": "codex", "consecutive_failures": 0, "block_reason": "retry-exhausted"}
+
+        result = module.classify_stuck_ticket(task)
+        self.assertEqual(result["bucket"], "block:retry-exhausted")
+        self.assertEqual(result["tone"], "bad")
+        self.assertIn("Hermes", result["action"])
+
+    def test_block_reason_metadata_declares_owner(self) -> None:
+        module = load_module(REPORT, "clawta_report_block_reason_meta")
+        self.assertEqual(module.block_reason_meta("operator-decision")["owner"], "red")
+        self.assertEqual(module.block_reason_meta("needs-rebase")["owner"], "clawta")
+        self.assertEqual(module.block_reason_meta("poller-oscillation")["owner"], "hermes")
+        self.assertEqual(module.block_reason_meta("new-reason")["owner"], "unknown")
 
     def test_load_board_state_handles_partial_retry_schema(self) -> None:
         module = load_module(REPORT, "clawta_report_partial_retry_schema")
@@ -83,6 +98,7 @@ class StuckClassificationTests(unittest.TestCase):
         self.assertEqual(tasks, [])
         self.assertIn("consecutive_failures", conn.task_sql)
         self.assertIn("NULL AS last_failure_error", conn.task_sql)
+        self.assertIn("NULL AS block_reason", conn.task_sql)
 
 
 class CopilotSentinelTests(unittest.TestCase):
