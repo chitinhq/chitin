@@ -3,18 +3,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from argus import migrations
 from analysis.models import parse_decision_line
 
 
 def _line_hash(line: str) -> str:
     """Deterministic hash of a decision line for idempotency."""
     return hashlib.sha256(line.encode()).hexdigest()
+
+
+def _source_line_hash(source: str, source_ref: str, line: str) -> str:
+    """Deterministic per-source hash for non-chain ingest."""
+    payload = f"{source}\0{source_ref}\0{line}"
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
@@ -117,6 +125,14 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         ON events(file_path)
     """)
 
+    # NOTE: indexes on source/kind/subject are intentionally NOT created
+    # here. Those columns only exist after migrations 1 and 7 run. On a
+    # pre-Slice-3 DB they are absent, so a CREATE INDEX here would raise
+    # `no such column` and crash init_db before migrations.apply_pending()
+    # gets a chance to repair the schema. Migrations 1 and 7 create these
+    # indexes (idx_source_ts, idx_kind_ts, idx_subject_ts) idempotently
+    # right after adding the columns they depend on.
+
     conn.commit()
     return conn
 
@@ -207,12 +223,13 @@ def index_jsonl_file_from_offset(
     if not file_path.exists():
         return 0, 0, offset
 
-    with file_path.open("r") as f:
+    with file_path.open("rb") as f:
         f.seek(offset)
+        chunk = f.read()
+        complete, next_offset = _split_complete_lines(chunk, offset)
         inserted = 0
         skipped = 0
-        for line in f:
-            raw = line.rstrip("\n")
+        for raw in complete:
             if not raw.strip():
                 continue
 
@@ -231,6 +248,7 @@ def index_jsonl_file_from_offset(
                     "source": "chain",
                     "kind": "chain_decision",
                     "subject": d.rule_id or d.action_type or d.reason,
+                    "source_ref": str(file_path),
                     "ts": d.ts.isoformat(),
                     "ts_unix": ts_unix,
                     "last_seen_ts": ts_unix,
@@ -258,7 +276,6 @@ def index_jsonl_file_from_offset(
                 skipped += 1
             except Exception:
                 continue
-        next_offset = f.tell()
     conn.commit()
     return inserted, skipped, next_offset
 
@@ -271,6 +288,7 @@ def tail_all_decisions(decisions_dir: Path) -> Path:
     """Create index.db in ~/.argus/ from all gov-decisions-*.jsonl files."""
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
+    migrations.apply_pending(conn)
 
     for f in _decision_files(decisions_dir):
         index_jsonl_file(conn, f)
@@ -297,6 +315,7 @@ def follow_all_decisions(
     """
     db_path = Path.home() / ".argus" / "index.db"
     conn = init_db(db_path)
+    migrations.apply_pending(conn)
     offsets: dict[Path, int] = {}
     next_aux_poll = time.time()
     try:
@@ -325,3 +344,101 @@ def follow_all_decisions(
     finally:
         conn.close()
     return db_path
+
+
+def _split_complete_lines(data: bytes, offset: int) -> tuple[list[str], int]:
+    """Return complete newline-terminated lines and the safe next offset."""
+    if not data:
+        return [], offset
+    if data.endswith(b"\n"):
+        complete = data
+        next_offset = offset + len(data)
+    else:
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return [], offset
+        complete = data[: nl + 1]
+        next_offset = offset + nl + 1
+    lines = [
+        line.decode("utf-8", errors="replace").rstrip("\n")
+        for line in complete.splitlines()
+    ]
+    return lines, next_offset
+
+
+def insert_source_event(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    kind: str,
+    ts: str,
+    source_ref: str,
+    allowed: int = 1,
+    subject: str | None = None,
+    payload: dict | None = None,
+    agent: str | None = None,
+    action_type: str | None = None,
+    action_target: str | None = None,
+    reason: str | None = None,
+    rule_id: str | None = None,
+) -> bool:
+    """Insert one external (non-chain) event; returns True when new.
+
+    Distinct from :func:`insert_event` (the canonical dict-based upsert
+    used for chain and cross-source rows): this is the append-only,
+    keyword-argument path used by log and Discord ingestion, keyed on a
+    per-source line hash rather than `external_id`.
+    """
+    ts_unix = _parse_ts_unix(ts)
+    if ts_unix is None:
+        return False
+    payload_json = json.dumps(payload or {}, sort_keys=True)
+    raw = payload_json if payload_json != "{}" else f"{kind}:{ts}:{subject or ''}"
+    line_hash = _source_line_hash(source, source_ref, raw)
+    try:
+        conn.execute(
+            """
+            INSERT INTO events (
+                line_hash, source, kind, subject, source_ref, payload_json,
+                ts, ts_unix, allowed, agent, action_type, action_target, reason, rule_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                line_hash,
+                source,
+                kind,
+                subject,
+                source_ref,
+                payload_json,
+                ts,
+                ts_unix,
+                int(allowed),
+                agent,
+                action_type or kind,
+                action_target,
+                reason,
+                rule_id,
+            ),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def checkpoint_key(source: str, path_or_name: str) -> str:
+    """Stable source checkpoint key."""
+    return f"{source}:{path_or_name}"
+
+
+def file_inode(path: Path) -> int | None:
+    """Best-effort inode read."""
+    try:
+        return int(path.stat().st_ino)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def env_path(name: str, default: str) -> Path:
+    """Read a source path from env with ~ expansion."""
+    return Path(os.environ.get(name, default)).expanduser()

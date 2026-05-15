@@ -20,6 +20,9 @@ from argus.detectors import (
     detect_unknown_rate_spike,
     detect_agent_failure_run,
     detect_stuck_flow,
+    detect_hermes_standup_gap,
+    detect_openclaw_workflow_failure_correlation,
+    detect_discord_narration_gap,
     detect_stuck_pr_green_ci,
     detect_time_to_merge_regression,
 )
@@ -333,6 +336,77 @@ class TestStuckFlow:
 
             findings = detect_stuck_flow(str(db_path), min_idle_seconds=3600)
             assert len(findings) == 1
+            conn.close()
+
+
+class TestLogDerivedDetectors:
+    def test_hermes_standup_gap_triggers_above_eight_hours(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            conn.executemany(
+                """
+                INSERT INTO events (
+                    line_hash, source, kind, source_ref, ts, ts_unix, allowed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    ("a", "hermes", "hermes_standup", "log:1", "2026-05-13T00:00:00+00:00", 1715558400, 1),
+                    ("b", "hermes", "hermes_standup", "log:2", "2026-05-13T09:01:00+00:00", 1715590860, 1),
+                ],
+            )
+            conn.commit()
+            findings = detect_hermes_standup_gap(str(db_path), max_gap_hours=8)
+            assert len(findings) == 1
+            conn.close()
+
+    def test_openclaw_workflow_failure_correlation_detects_block(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            conn.executemany(
+                """
+                INSERT INTO events (
+                    line_hash, source, kind, subject, source_ref, ts, ts_unix, allowed, action_target
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    ("a", "openclaw", "openclaw_workflow_failure", "t_deadbeef", "openclaw:1", "2026-05-13T08:00:00+00:00", 1715587200, 1, None),
+                    ("b", "chain", "chain_decision", None, "chain:1", "2026-05-13T08:10:00+00:00", 1715587800, 1, 'scripts/kanban-flow block t_deadbeef "boom"'),
+                ],
+            )
+            conn.commit()
+            findings = detect_openclaw_workflow_failure_correlation(str(db_path))
+            assert len(findings) == 1
+            assert findings[0].details["block_found"] is True
+            conn.close()
+
+    def test_discord_narration_gap_requires_matching_announce(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = init_db(db_path)
+            conn.execute(
+                """
+                INSERT INTO events (
+                    line_hash, source, kind, subject, source_ref, ts, ts_unix, allowed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("a", "openclaw", "openclaw_dispatch", "t_deadbeef", "openclaw:dispatch", "2026-05-13T08:00:00+00:00", 1715587200, 1),
+            )
+            conn.commit()
+            findings = detect_discord_narration_gap(str(db_path), announce_window_seconds=900)
+            assert len(findings) == 1
+            conn.execute(
+                """
+                INSERT INTO events (
+                    line_hash, source, kind, subject, source_ref, ts, ts_unix, allowed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("b", "discord", "discord_clawta_announce", "t_deadbeef", "discord:1", "2026-05-13T08:05:00+00:00", 1715587500, 1),
+            )
+            conn.commit()
+            findings = detect_discord_narration_gap(str(db_path), announce_window_seconds=900)
+            assert len(findings) == 0
             conn.close()
 
 
