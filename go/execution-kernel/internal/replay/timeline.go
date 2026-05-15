@@ -232,7 +232,16 @@ func BuildTimeline(opts ReplayOptions) (*Timeline, error) {
 		tl.Steps = append(tl.Steps, step)
 	}
 	propagateStepModels(tl.Steps)
-	reconcileEnvelopeSpend(stateDir, tl.Steps)
+	// Envelope-spend reconciliation redistributes an envelope's total
+	// SpentUSD across steps with missing per-step costs. That arithmetic
+	// is only sound when tl.Steps holds every step of the envelope: with
+	// a filter active, filtered-out steps' costs would be redistributed
+	// onto the visible ones, inflating the filtered replay total. Skip
+	// reconciliation whenever any filter is in effect.
+	filtersActive := opts.From != "" || opts.To != "" || opts.Driver != "" || opts.Tool != ""
+	if !filtersActive {
+		reconcileEnvelopeSpend(stateDir, tl.Steps)
+	}
 	for i := range tl.Steps {
 		accumulateSummary(&tl.Summary, tl.Steps[i])
 	}
@@ -1128,6 +1137,48 @@ func reconcileEnvelopeSpend(stateDir string, steps []Step) {
 	}
 }
 
+// cwdMatchesTicket reports whether ticketID appears in cwd as a discrete
+// token rather than an arbitrary substring. A plain strings.Contains would
+// match ticket "t_abc" against a "t_abcd" worktree path; here the match is
+// required to be bounded by non-identifier characters (path separators,
+// dashes, dots, string boundaries) on both sides so "t_abc" no longer
+// matches "t_abcd" while ".../swarm-codex-t_abc" still does.
+func cwdMatchesTicket(cwd, ticketID string) bool {
+	if ticketID == "" {
+		return false
+	}
+	from := 0
+	for {
+		idx := strings.Index(cwd[from:], ticketID)
+		if idx < 0 {
+			return false
+		}
+		start := from + idx
+		end := start + len(ticketID)
+		if !isTicketTokenChar(cwd, start-1) && !isTicketTokenChar(cwd, end) {
+			return true
+		}
+		from = start + 1
+		if from >= len(cwd) {
+			return false
+		}
+	}
+}
+
+// isTicketTokenChar reports whether the byte at index i of s is an
+// identifier character (letter, digit, or underscore). Out-of-range
+// indices count as a token boundary, not an identifier char.
+func isTicketTokenChar(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return c == '_' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z')
+}
+
 func FindSessionForTicket(ticketID string) (string, error) {
 	if ticketID == "" {
 		return "", fmt.Errorf("ticket_id is required")
@@ -1162,7 +1213,7 @@ func FindSessionForTicket(ticketID string) (string, error) {
 				}
 			}
 			cwd := stringField(payload, "cwd")
-			if cwd == "" || !strings.Contains(cwd, ticketID) {
+			if cwd == "" || !cwdMatchesTicket(cwd, ticketID) {
 				return nil
 			}
 			ts := mustParseOrZero(ev.Ts)

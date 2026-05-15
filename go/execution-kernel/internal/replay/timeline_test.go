@@ -222,6 +222,106 @@ func TestFindSessionForTicket(t *testing.T) {
 	}
 }
 
+// TestCwdMatchesTicket guards the discrete-token fix: a ticket id must
+// match a cwd as a whole path token, not an arbitrary substring, so
+// "t_abc" never matches a "t_abcd" worktree path.
+func TestCwdMatchesTicket(t *testing.T) {
+	cases := []struct {
+		cwd    string
+		ticket string
+		want   bool
+	}{
+		{"/tmp/swarm-codex-t_7ab3d45c", "t_7ab3d45c", true},
+		{"/tmp/swarm-codex-t_7ab3d45c-old", "t_7ab3d45c", true},
+		{"/home/red/t_7ab3d45c/go", "t_7ab3d45c", true},
+		{"/tmp/swarm-codex-t_7ab3d45cd", "t_7ab3d45c", false},
+		{"/tmp/xt_7ab3d45c", "t_7ab3d45c", false},
+		{"/tmp/other", "t_7ab3d45c", false},
+		{"/tmp/t_7ab3d45c", "", false},
+	}
+	for _, tc := range cases {
+		if got := cwdMatchesTicket(tc.cwd, tc.ticket); got != tc.want {
+			t.Errorf("cwdMatchesTicket(%q, %q) = %v, want %v", tc.cwd, tc.ticket, got, tc.want)
+		}
+	}
+}
+
+// TestBuildTimeline_SkipsEnvelopeReconcileWhenFiltered guards the
+// filtered-replay fix: envelope-spend reconciliation must not run when a
+// filter is active, because redistributing an envelope's total SpentUSD
+// across only the visible steps inflates the filtered replay total.
+func TestBuildTimeline_SkipsEnvelopeReconcileWhenFiltered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHITIN_HOME", home)
+
+	writeReplayFile(t, filepath.Join(home, "events-run-f.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-f", "session_id": "sess-f", "surface": "codex",
+			"agent_instance_id": "agent-f", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": "sess-f", "chain_type": "session", "seq": 0, "this_hash": "f0",
+			"ts": "2026-05-13T12:00:00Z", "labels": map[string]any{"driver": "codex", "agent_instance_id": "agent-f"},
+			"payload": map[string]any{"tool_name": "file.read", "action_type": "file.read", "action_target": "A.md", "decision": "allow"},
+		}),
+		mustJSON(t, map[string]any{
+			"schema_version": "2", "run_id": "run-f", "session_id": "sess-f", "surface": "hermes",
+			"agent_instance_id": "agent-f", "agent_fingerprint": "fp", "event_type": "decision",
+			"chain_id": "sess-f", "chain_type": "session", "seq": 1, "this_hash": "f1",
+			"ts": "2026-05-13T12:00:01Z", "labels": map[string]any{"driver": "hermes", "agent_instance_id": "agent-f"},
+			"payload": map[string]any{"tool_name": "file.read", "action_type": "file.read", "action_target": "B.md", "decision": "allow"},
+		}),
+	}, "\n")+"\n")
+
+	writeReplayFile(t, filepath.Join(home, "gov-decisions-2026-05-13.jsonl"), strings.Join([]string{
+		mustJSON(t, map[string]any{
+			"allowed": true, "mode": "enforce", "rule_id": "allow-reads",
+			"action_type": "file.read", "action_target": "A.md", "ts": "2026-05-13T12:00:00Z",
+			"agent_instance_id": "agent-f", "agent": "agent-f", "driver": "codex", "envelope_id": "env-f",
+		}),
+		mustJSON(t, map[string]any{
+			"allowed": true, "mode": "enforce", "rule_id": "allow-reads",
+			"action_type": "file.read", "action_target": "B.md", "ts": "2026-05-13T12:00:01Z",
+			"agent_instance_id": "agent-f", "agent": "agent-f", "driver": "hermes", "envelope_id": "env-f",
+		}),
+	}, "\n")+"\n")
+
+	db, err := sql.Open("sqlite", filepath.Join(home, "gov.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE envelopes (
+		id TEXT PRIMARY KEY,
+		created_at TEXT NOT NULL,
+		closed_at TEXT,
+		max_tool_calls INTEGER NOT NULL DEFAULT 0,
+		max_input_bytes INTEGER NOT NULL DEFAULT 0,
+		budget_usd REAL NOT NULL DEFAULT 0,
+		spent_calls INTEGER NOT NULL DEFAULT 0,
+		spent_bytes INTEGER NOT NULL DEFAULT 0,
+		spent_usd REAL NOT NULL DEFAULT 0,
+		last_spend_at TEXT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO envelopes (id, created_at, spent_usd) VALUES ('env-f', '2026-05-13T12:00:00Z', 0.80)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// With a driver filter, only the codex step is visible. The envelope's
+	// total 0.80 USD spans both steps; reconciliation must be skipped so
+	// the filtered-out hermes step's cost is not dumped onto the codex step.
+	timeline, err := BuildTimeline(ReplayOptions{SessionID: "sess-f", Driver: "codex"})
+	if err != nil {
+		t.Fatalf("BuildTimeline filtered: %v", err)
+	}
+	if len(timeline.Steps) != 1 {
+		t.Fatalf("filtered steps=%d want 1", len(timeline.Steps))
+	}
+	if got := timeline.Steps[0].CostUSD; got != 0 {
+		t.Fatalf("filtered step cost=%.2f want 0 (reconcile must be skipped under filter)", got)
+	}
+}
+
 func TestBuildTimeline_BoundaryEmptyFilteredTimeline(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CHITIN_HOME", home)
