@@ -1,4 +1,5 @@
 """Tests for argus.detectors with boundary conditions."""
+import json
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,8 @@ from argus.detectors import (
     detect_unknown_rate_spike,
     detect_agent_failure_run,
     detect_stuck_flow,
+    detect_stuck_pr_green_ci,
+    detect_time_to_merge_regression,
 )
 from argus.indexer import init_db
 
@@ -331,3 +334,83 @@ class TestStuckFlow:
             findings = detect_stuck_flow(str(db_path), min_idle_seconds=3600)
             assert len(findings) == 1
             conn.close()
+
+
+def test_stuck_pr_green_ci_handles_missing_kanban_join():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        conn = init_db(db_path)
+        old_ts = int((_utc_now() - timedelta(days=2)).timestamp())
+        conn.execute(
+            """
+            INSERT INTO events (
+                line_hash, external_id, source, kind, ts, ts_unix, last_seen_ts,
+                subject, repo, pr_number, status, payload_json
+            ) VALUES (?, ?, 'git', 'git_pr_opened', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "pr-open-1",
+                "git:chitin:pr:1:opened",
+                _from_unix(old_ts).isoformat(),
+                old_ts,
+                old_ts,
+                "Green PR",
+                "chitin",
+                1,
+                "OPEN",
+                json.dumps({"ci_state": "green"}),
+            ),
+        )
+        conn.commit()
+        findings = detect_stuck_pr_green_ci(str(db_path), min_open_seconds=24 * 3600)
+        assert len(findings) == 1
+        assert findings[0].details["citations"] == ["git:chitin:pr:1:opened"]
+        conn.close()
+
+
+def test_time_to_merge_regression_zero_merge_week_no_divide_by_zero():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        conn = init_db(db_path)
+        baseline_open = int((_utc_now() - timedelta(days=20)).timestamp())
+        baseline_merge = baseline_open + 3600
+        conn.execute(
+            """
+            INSERT INTO events (
+                line_hash, external_id, source, kind, ts, ts_unix, last_seen_ts,
+                repo, pr_number, payload_json
+            ) VALUES (?, ?, 'git', 'git_pr_opened', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "open-1",
+                "git:chitin:pr:1:opened",
+                _from_unix(baseline_open).isoformat(),
+                baseline_open,
+                baseline_open,
+                "chitin",
+                1,
+                json.dumps({"driver": "codex"}),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO events (
+                line_hash, external_id, source, kind, ts, ts_unix, last_seen_ts,
+                repo, pr_number, payload_json
+            ) VALUES (?, ?, 'git', 'git_pr_merged', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "merge-1",
+                "git:chitin:pr:1:merged",
+                _from_unix(baseline_merge).isoformat(),
+                baseline_merge,
+                baseline_merge,
+                "chitin",
+                1,
+                json.dumps({"driver": "codex"}),
+            ),
+        )
+        conn.commit()
+        findings = detect_time_to_merge_regression(str(db_path), recent_days=7, baseline_days=30, regression_factor=2.0)
+        assert findings == []
+        conn.close()
