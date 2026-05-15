@@ -31,6 +31,23 @@ export class TicketsPage implements OnInit {
   readonly selectedDetail = signal<TaskDetail | null>(null);
   readonly drawerLoading = signal(false);
 
+  // Status-mutation UI state. Lives on the page (not the drawer) so
+  // the form resets cleanly when the drawer reopens for a new ticket.
+  readonly mutating = signal(false);
+  readonly mutationError = signal<string | null>(null);
+  pendingStatus = '';
+  pendingReason = '';
+
+  readonly mutationOptions: { value: string; label: string; needsReason: boolean }[] = [
+    { value: '',        label: '—',                       needsReason: false },
+    { value: 'start',   label: 'start (→ in_progress)',   needsReason: false },
+    { value: 'ready',   label: 'ready (→ ready)',         needsReason: false },
+    { value: 'unblock', label: 'unblock (blocked → ready)', needsReason: false },
+    { value: 'block',   label: 'block (→ blocked)',       needsReason: true  },
+    { value: 'demote',  label: 'demote (→ triage)',       needsReason: true  },
+    { value: 'done',    label: 'done (→ done)',           needsReason: true  },
+  ];
+
   status = 'in_progress,triage,ready,todo';
   assignee = '';
   q = '';
@@ -91,6 +108,9 @@ export class TicketsPage implements OnInit {
   openTicket(id: string) {
     this.drawerLoading.set(true);
     this.selectedDetail.set(null);
+    this.pendingStatus = '';
+    this.pendingReason = '';
+    this.mutationError.set(null);
     this.router.navigate([], { queryParams: { id }, queryParamsHandling: 'merge' });
     this.api.task(id).subscribe({
       next: (r) => { this.selectedDetail.set(r); this.drawerLoading.set(false); },
@@ -100,7 +120,43 @@ export class TicketsPage implements OnInit {
 
   closeDrawer() {
     this.selectedDetail.set(null);
+    this.pendingStatus = '';
+    this.pendingReason = '';
+    this.mutationError.set(null);
     this.router.navigate([], { queryParams: { id: null }, queryParamsHandling: 'merge' });
+  }
+
+  selectedNeedsReason(): boolean {
+    return this.mutationOptions.find(o => o.value === this.pendingStatus)?.needsReason ?? false;
+  }
+
+  submitStatusChange() {
+    const detail = this.selectedDetail();
+    if (!detail || !this.pendingStatus) return;
+    if (this.selectedNeedsReason() && !this.pendingReason.trim()) {
+      this.mutationError.set(`${this.pendingStatus} requires a reason`);
+      return;
+    }
+    this.mutating.set(true);
+    this.mutationError.set(null);
+    this.api.updateTaskStatus(detail.task.id, {
+      status: this.pendingStatus,
+      reason: this.pendingReason.trim() || undefined,
+    }).subscribe({
+      next: (r) => {
+        this.mutating.set(false);
+        this.pendingStatus = '';
+        this.pendingReason = '';
+        if (r.task) this.selectedDetail.set(r.task);
+        // Reload list so the ticket's new status is reflected in the table.
+        this.reload();
+      },
+      error: (err) => {
+        this.mutating.set(false);
+        const detail = err?.error?.detail || err?.error?.stderr || err?.message || 'unknown error';
+        this.mutationError.set(String(detail));
+      },
+    });
   }
 
   prettyJson(s: string | null | undefined): string {

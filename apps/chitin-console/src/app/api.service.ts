@@ -72,4 +72,23 @@ export class ApiService {
       params: new HttpParams().set('limit', String(limit)),
     });
   }
+
+  /**
+   * Transition a ticket. `status` is the kanban-flow verb
+   * (start | ready | unblock | block | demote | done). `reason` is
+   * required for block, demote, done.
+   */
+  updateTaskStatus(id: string, body: { status: string; author?: string; reason?: string }): Observable<TaskStatusUpdateResponse> {
+    return this.http.post<TaskStatusUpdateResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/status`, body);
+  }
+}
+
+export interface TaskStatusUpdateResponse {
+  ok: boolean;
+  task_id: string;
+  status: string;
+  flow_stdout: string;
+  refreshed: boolean;
+  refresh_error: string | null;
+  task: TaskDetail | null;
 }
