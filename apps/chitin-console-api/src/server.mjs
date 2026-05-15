@@ -58,6 +58,32 @@ const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
 
+// Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
+// built chitin-console (e.g. dist/apps/chitin-console/browser), the
+// server doubles as the SPA host so a single port covers both the
+// frontend and /api. Used for Tailscale exposure (one port to share)
+// and for any production-style deployment. Leave unset for the dev
+// loop where `nx serve` runs the frontend on its own port.
+const STATIC_ROOT = process.env.CHITIN_CONSOLE_STATIC_ROOT
+  || (fs.existsSync(path.join(REPO_ROOT, 'dist/apps/chitin-console/browser'))
+        ? path.join(REPO_ROOT, 'dist/apps/chitin-console/browser')
+        : null);
+const STATIC_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'application/javascript; charset=utf-8',
+  '.mjs':  'application/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico':  'image/x-icon',
+  '.woff':  'font/woff',
+  '.woff2': 'font/woff2',
+  '.map':  'application/json; charset=utf-8',
+};
+
 let kanbanDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
@@ -596,8 +622,47 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return serverErr(res, e); }
     }
   }
+  if (STATIC_ROOT && !url.pathname.startsWith('/api/')) {
+    return serveStatic(req, res, url.pathname);
+  }
   notFound(res);
 });
+
+function serveStatic(req, res, pathname) {
+  // SPA shape: every non-/api GET that doesn't match a file on disk
+  // falls back to index.html so the Angular router can pick up the URL.
+  let rel = decodeURIComponent(pathname).replace(/^\/+/, '');
+  if (rel === '') rel = 'index.html';
+  const safe = path.normalize(rel);
+  if (safe.startsWith('..') || path.isAbsolute(safe)) {
+    return json(res, 400, { error: 'bad_path' });
+  }
+  let abs = path.join(STATIC_ROOT, safe);
+  let stat;
+  try { stat = fs.statSync(abs); } catch { stat = null; }
+  if (stat && stat.isDirectory()) {
+    abs = path.join(abs, 'index.html');
+    try { stat = fs.statSync(abs); } catch { stat = null; }
+  }
+  if (!stat || !stat.isFile()) {
+    // SPA fallback.
+    abs = path.join(STATIC_ROOT, 'index.html');
+    try { stat = fs.statSync(abs); } catch { stat = null; }
+    if (!stat) return notFound(res);
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = STATIC_MIME[ext] || 'application/octet-stream';
+  // Hashed bundles get a long cache; index.html is never cached.
+  const isHashed = /-[A-Z0-9]{8,}\.(?:js|css|woff2?|svg|png|jpe?g|ico|map)$/i.test(path.basename(abs));
+  const cacheControl = isHashed ? 'public, max-age=31536000, immutable' : 'no-store';
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': stat.size,
+    'Cache-Control': cacheControl,
+    'Access-Control-Allow-Origin': '*',
+  });
+  fs.createReadStream(abs).pipe(res);
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
@@ -607,6 +672,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
+  console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
 });
 
 process.on('SIGINT',  () => { server.close(); process.exit(0); });
