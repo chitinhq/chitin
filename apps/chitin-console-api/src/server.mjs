@@ -432,24 +432,31 @@ async function postThreadReply(threadId, body) {
     return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
   }
 
-  // Outbound Discord mirror: post the message directly via the bot
-  // token. The Phase 4 mirror is cron-style and not actively running,
-  // so without this every reply sat in bus.db unseen.
+  // Outbound mirror: post via the channel's webhook so the message
+  // appears authored as the human (e.g. "red") and Hermes/Clawta
+  // actually reply to it. Channel resolution order:
+  //   1. body.channel_id  (UI picker)
+  //   2. thread.discord_thread_id  (mirror-bound thread)
+  //   3. first discovered channel  (fallback)
   let discordMessageId = null;
   let discordError = null;
   try {
-    const channelId = thread.discord_thread_id || DISCORD_HOME_CHANNEL;
-    if (channelId && DISCORD_BOT_TOKEN) {
-      const formatted = `**${author}** · _${thread.title}_\n${text.slice(0, 1900)}`;
-      const res = await postToDiscord(channelId, formatted);
+    let channelId = body?.channel_id || thread.discord_thread_id || null;
+    if (!channelId && discordChannels.size > 0) {
+      channelId = discordChannels.keys().next().value;
+    }
+    if (channelId && discordChannels.has(channelId)) {
+      const res = await postToDiscord(channelId, text, author);
       if (res?.id) {
         discordMessageId = res.id;
         busDB.prepare('UPDATE messages SET discord_message_id = ? WHERE id = ?').run(res.id, messageId);
       }
     } else if (!DISCORD_BOT_TOKEN) {
       discordError = 'DISCORD_BOT_TOKEN not configured';
+    } else if (discordChannels.size === 0) {
+      discordError = 'no channels discovered yet — try again in a few seconds';
     } else {
-      discordError = 'no channel — thread.discord_thread_id and DISCORD_HOME_CHANNEL both empty';
+      discordError = `unknown channel ${channelId}`;
     }
   } catch (e) {
     discordError = String(e?.message || e);
@@ -464,32 +471,24 @@ async function postThreadReply(threadId, body) {
   }};
 }
 
-async function postToDiscord(channelId, content) {
-  const url = `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`;
-  const body = JSON.stringify({ content });
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bot ${DISCORD_BOT_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`discord ${res.status}: ${text.slice(0, 300)}`);
-  }
-  return await res.json();
-}
-
-// ---------- Discord → bus inbound poller ----------
-// Pulls new messages from the home channel every DISCORD_POLL_SEC
-// (default 30s) and inserts them into a bus thread keyed by
-// discord_thread_id == channel_id. Idempotent via the unique
-// discord_message_id we store on each message row. Skips messages
-// authored by our own bot to avoid echo loops with postToDiscord.
+// ---------- Discord mirror ----------
+// Generic over the bot's guild. On boot we discover every text
+// channel the bot can see and:
+//   inbound  — poll each every DISCORD_POLL_SEC into a per-channel
+//              bus thread (keyed by discord_thread_id == channel id)
+//   outbound — post via a per-channel WEBHOOK with username set to
+//              the bus message's author, so messages appear as the
+//              human (e.g. "red") rather than the bot — otherwise
+//              Hermes/Clawta filter out their own bot's messages
+//              and never reply.
 const DISCORD_POLL_SEC = Number(process.env.DISCORD_POLL_SEC || 30);
+const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '';
+const DISCORD_WEBHOOK_NAME = process.env.DISCORD_WEBHOOK_NAME || 'chitin-console';
+const DISCORD_CHANNEL_DENY = (process.env.DISCORD_CHANNEL_DENY || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 let discordPollerStarted = false;
+// channel id -> { name, webhookUrl }
+const discordChannels = new Map();
 
 function ensureCursorTable() {
   if (!busDB) return;
@@ -501,7 +500,6 @@ function ensureCursorTable() {
     )
   `);
 }
-
 function getCursor(channelId) {
   const row = busDB.prepare('SELECT last_message_id FROM discord_cursors WHERE channel_id = ?').get(channelId);
   return row?.last_message_id || null;
@@ -528,7 +526,82 @@ function findOrCreateChannelThread(channelId, title) {
   return r.lastInsertRowid;
 }
 
-async function pollDiscordChannel(channelId) {
+async function pickGuild() {
+  const res = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`guilds ${res.status}`);
+  const guilds = await res.json();
+  if (!guilds.length) return null;
+  if (DISCORD_GUILD_ID) return guilds.find(g => g.id === DISCORD_GUILD_ID) || null;
+  return guilds[0];
+}
+
+async function ensureChannelWebhook(channelId) {
+  const list = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (list.ok) {
+    const hooks = await list.json();
+    const found = hooks.find(h => h.name === DISCORD_WEBHOOK_NAME && h.token);
+    if (found) return `https://discord.com/api/webhooks/${found.id}/${found.token}`;
+  }
+  const create = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: DISCORD_WEBHOOK_NAME }),
+  });
+  if (!create.ok) {
+    const text = await create.text().catch(() => '');
+    throw new Error(`webhook create ${create.status}: ${text.slice(0, 200)}`);
+  }
+  const w = await create.json();
+  return `https://discord.com/api/webhooks/${w.id}/${w.token}`;
+}
+
+/** POSTs to a channel via its webhook with author as username. */
+async function postToDiscord(channelId, content, username) {
+  const entry = discordChannels.get(channelId);
+  if (!entry?.webhookUrl) throw new Error(`no webhook for channel ${channelId}`);
+  const payload = {
+    content: content.slice(0, 1990),
+    username: (username || 'console').slice(0, 80),
+    allowed_mentions: { parse: ['users', 'roles', 'everyone'] },
+  };
+  const res = await fetch(`${entry.webhookUrl}?wait=true`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`webhook ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return await res.json();
+}
+
+async function discoverChannels() {
+  const guild = await pickGuild();
+  if (!guild) { console.warn('[chitin-console-api] discord: bot is in no guilds'); return; }
+  const res = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) { console.warn(`[chitin-console-api] discord channels ${res.status}`); return; }
+  const channels = await res.json();
+  for (const c of channels) {
+    if (c.type !== 0) continue;
+    if (DISCORD_CHANNEL_DENY.includes(c.name)) continue;
+    try {
+      const webhookUrl = await ensureChannelWebhook(c.id);
+      discordChannels.set(c.id, { name: c.name, webhookUrl });
+    } catch (e) {
+      console.warn(`[chitin-console-api] discord #${c.name}: webhook failed (${e.message || e})`);
+    }
+  }
+  console.log(`[chitin-console-api] discord guild=${guild.name} channels=[${[...discordChannels.values()].map(c => '#' + c.name).join(', ')}]`);
+}
+
+async function pollDiscordChannel(channelId, channelName) {
   if (!busDB || !DISCORD_BOT_TOKEN || !channelId) return { ok: false, reason: 'not_configured' };
   const cursor = getCursor(channelId);
   const url = new URL(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`);
@@ -539,15 +612,13 @@ async function pollDiscordChannel(channelId) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`discord poll ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`#${channelName} poll ${res.status}: ${text.slice(0, 200)}`);
   }
-  /** @type {{id:string, content:string, author:{id:string,username:string,bot?:boolean}, attachments:unknown[], embeds:unknown[]}[]} */
   const msgs = await res.json();
-  // Discord returns newest first when using ?after — sort ascending so we insert in order.
   msgs.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
   if (msgs.length === 0) return { ok: true, ingested: 0 };
 
-  const threadId = findOrCreateChannelThread(channelId, `#${channelId.slice(-6)} (discord)`);
+  const threadId = findOrCreateChannelThread(channelId, `#${channelName} (discord)`);
   const insert = busDB.prepare(`
     INSERT INTO messages (thread_id, author, body, kind, discord_message_id, created_at)
     SELECT ?, ?, ?, 'message', ?, ?
@@ -558,12 +629,8 @@ async function pollDiscordChannel(channelId) {
   let lastId = cursor;
   for (const m of msgs) {
     const author = m.author?.username || 'discord';
-    // Skip our own bot's messages — postToDiscord already wrote the
-    // bus row before posting, so re-ingesting would duplicate.
-    if (m.author?.bot) {
-      lastId = m.id;  // still advance the cursor
-      continue;
-    }
+    // Skip our own webhook posts (their author username equals the bus author)
+    if (m.webhook_id) { lastId = m.id; continue; }
     let body = (m.content || '').trim();
     if (!body) {
       const a = (m.attachments || []).length;
@@ -582,21 +649,29 @@ async function pollDiscordChannel(channelId) {
 
 function startDiscordPoller() {
   if (discordPollerStarted) return;
-  if (!busDB || !DISCORD_BOT_TOKEN || !DISCORD_HOME_CHANNEL) {
-    console.log(`[chitin-console-api] discord poller disabled (bus=${!!busDB} token=${!!DISCORD_BOT_TOKEN} channel=${!!DISCORD_HOME_CHANNEL})`);
+  if (!busDB || !DISCORD_BOT_TOKEN) {
+    console.log(`[chitin-console-api] discord poller disabled (bus=${!!busDB} token=${!!DISCORD_BOT_TOKEN})`);
     return;
   }
   discordPollerStarted = true;
   ensureCursorTable();
-  const tick = () => {
-    pollDiscordChannel(DISCORD_HOME_CHANNEL)
-      .then(r => { if (r?.ingested > 0) console.log(`[chitin-console-api] discord poll: ingested ${r.ingested} message(s)`); })
-      .catch(e => console.warn(`[chitin-console-api] discord poll failed: ${e.message || e}`));
-  };
-  setInterval(tick, DISCORD_POLL_SEC * 1000);
-  // Kick once on boot so we don't wait the full interval.
-  setTimeout(tick, 2000);
-  console.log(`[chitin-console-api] discord poller started (every ${DISCORD_POLL_SEC}s, channel ${DISCORD_HOME_CHANNEL})`);
+  discoverChannels().then(() => {
+    const tick = async () => {
+      for (const [channelId, meta] of discordChannels.entries()) {
+        try {
+          const r = await pollDiscordChannel(channelId, meta.name);
+          if (r?.ingested > 0) {
+            console.log(`[chitin-console-api] discord #${meta.name}: ingested ${r.ingested} message(s)`);
+          }
+        } catch (e) {
+          console.warn(`[chitin-console-api] discord #${meta.name} poll failed: ${e.message || e}`);
+        }
+      }
+    };
+    setInterval(tick, DISCORD_POLL_SEC * 1000);
+    setTimeout(tick, 2000);
+    console.log(`[chitin-console-api] discord poller started (every ${DISCORD_POLL_SEC}s, ${discordChannels.size} channel(s))`);
+  }).catch(e => console.warn(`[chitin-console-api] discord discovery failed: ${e.message || e}`));
 }
 
 function listLedgerFiles({ maxDays = 14 } = {}) {
@@ -1014,6 +1089,7 @@ const handlers = [
   [/^\/api\/reports\/industry-scan$/, () => parseIndustryScan()],
   [/^\/api\/threads$/,               (req, q) => listThreads(q)],
   [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]))],
+  [/^\/api\/discord\/channels$/,     () => ({ channels: [...discordChannels.entries()].map(([id, c]) => ({ id, name: c.name })) })],
 ];
 
 // Write handlers. Body is the parsed JSON request body. Each handler

@@ -26,11 +26,13 @@ export class ThreadsPage implements OnInit, OnDestroy {
   readonly detailLoading = signal(false);
   readonly posting = signal(false);
   readonly postError = signal<string | null>(null);
+  readonly discordChannels = signal<{ id: string; name: string }[]>([]);
 
   composer = '';
   authorOverride = '';
   boardFilter = '';
   statusFilter = 'open';
+  composerChannelId = '';  // empty = thread.discord_thread_id or first known
 
   readonly fmtTs = fmtTs;
   readonly shortenId = shortenId;
@@ -46,6 +48,7 @@ export class ThreadsPage implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.reload();
+    this.api.discordChannels().subscribe(r => this.discordChannels.set(r.channels));
     const initial = this.route.snapshot.queryParamMap.get('thread');
     if (initial) this.openThread(Number(initial));
     // Light polling so new Discord-mirrored messages show up automatically.
@@ -98,6 +101,7 @@ export class ThreadsPage implements OnInit, OnDestroy {
     this.api.postThreadReply(sel.thread.id, {
       body: text,
       author: this.authorOverride.trim() || undefined,
+      channel_id: this.composerChannelId || undefined,
     }).subscribe({
       next: (r) => {
         this.posting.set(false);

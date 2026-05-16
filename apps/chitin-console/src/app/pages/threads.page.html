@@ -118,18 +118,34 @@
         </ul>
 
         <footer class="composer">
-          <textarea class="input composer-input" rows="2"
-                    [(ngModel)]="composer"
-                    [disabled]="posting()"
-                    placeholder="reply… (mirrors to Discord automatically)"
-                    aria-label="Reply body"
-                    (keydown.control.enter)="send()"
-                    (keydown.meta.enter)="send()"></textarea>
-          <button class="btn primary" type="button"
-                  [disabled]="!composer.trim() || posting()"
-                  (click)="send()">
-            {{ posting() ? 'sending…' : 'send' }}
-          </button>
+          <div class="composer-row">
+            <textarea class="input composer-input" rows="2"
+                      [(ngModel)]="composer"
+                      [disabled]="posting()"
+                      placeholder="reply… (mirrors to Discord as the author below)"
+                      aria-label="Reply body"
+                      (keydown.control.enter)="send()"
+                      (keydown.meta.enter)="send()"></textarea>
+            <button class="btn primary" type="button"
+                    [disabled]="!composer.trim() || posting()"
+                    (click)="send()">
+              {{ posting() ? 'sending…' : 'send' }}
+            </button>
+          </div>
+          <div class="composer-meta">
+            <label class="mono tiny text-muted">channel
+              <select class="input" [(ngModel)]="composerChannelId" [disabled]="posting()" aria-label="Discord channel">
+                <option value="">auto (thread or default)</option>
+                @for (c of discordChannels(); track c.id) {
+                  <option [value]="c.id">#{{ c.name }}</option>
+                }
+              </select>
+            </label>
+            <label class="mono tiny text-muted">as
+              <input class="input author-mini" type="text" [(ngModel)]="authorOverride"
+                     placeholder="$USER" aria-label="Author override" />
+            </label>
+          </div>
         </footer>
         @if (postError(); as err) {
           <p class="composer-err mono small">{{ err }}</p>

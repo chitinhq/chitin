@@ -119,8 +119,13 @@ export class ApiService {
   thread(id: number): Observable<BusThreadDetail> {
     return this.http.get<BusThreadDetail>(`${API_BASE}/threads/${id}`);
   }
-  postThreadReply(id: number, body: { body: string; author?: string; parent_id?: number; kind?: string; audience?: string }): Observable<BusReplyResponse> {
+  postThreadReply(id: number, body: { body: string; author?: string; parent_id?: number; kind?: string; audience?: string; channel_id?: string }): Observable<BusReplyResponse> {
     return this.http.post<BusReplyResponse>(`${API_BASE}/threads/${id}/reply`, body);
+  }
+
+  /** Discord channels the bot can see in its guild. */
+  discordChannels(): Observable<{ channels: { id: string; name: string }[] }> {
+    return this.http.get<{ channels: { id: string; name: string }[] }>(`${API_BASE}/discord/channels`);
   }
 }
 
