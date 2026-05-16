@@ -7,21 +7,32 @@ import type {
   Policy, SuggestionsResponse, ArgusInfo, ArgusFindingsResponse,
   CostHistogram, ClawtaDecision,
 } from './api.types';
+import { BoardService, type Board } from './board.service';
 
 const API_BASE = (window as { __CHITIN_API__?: string }).__CHITIN_API__ ?? '/api';
 
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private http = inject(HttpClient);
+  private boardSvc = inject(BoardService);
+
+  /** Returns an HttpParams (or appends to existing) seeded with the current board. */
+  private withBoard(params: HttpParams = new HttpParams()): HttpParams {
+    const b = this.boardSvc.current();
+    return b ? params.set('board', b) : params;
+  }
 
   health(): Observable<{ ok: boolean; board: string; ts: number }> {
     return this.http.get<{ ok: boolean; board: string; ts: number }>(`${API_BASE}/health`);
   }
+  boards(): Observable<{ boards: Board[]; current: string }> {
+    return this.http.get<{ boards: Board[]; current: string }>(`${API_BASE}/boards`);
+  }
   stats(): Observable<Stats> {
-    return this.http.get<Stats>(`${API_BASE}/stats`);
+    return this.http.get<Stats>(`${API_BASE}/stats`, { params: this.withBoard() });
   }
   tasks(opts: { status?: string; assignee?: string; q?: string; limit?: number } = {}): Observable<TaskListResponse> {
-    let params = new HttpParams();
+    let params = this.withBoard();
     if (opts.status) params = params.set('status', opts.status);
     if (opts.assignee) params = params.set('assignee', opts.assignee);
     if (opts.q) params = params.set('q', opts.q);
@@ -29,14 +40,14 @@ export class ApiService {
     return this.http.get<TaskListResponse>(`${API_BASE}/tasks`, { params });
   }
   task(id: string): Observable<TaskDetail> {
-    return this.http.get<TaskDetail>(`${API_BASE}/tasks/${encodeURIComponent(id)}`);
+    return this.http.get<TaskDetail>(`${API_BASE}/tasks/${encodeURIComponent(id)}`, { params: this.withBoard() });
   }
   assignees(): Observable<{ assignees: AssigneeRow[] }> {
-    return this.http.get<{ assignees: AssigneeRow[] }>(`${API_BASE}/assignees`);
+    return this.http.get<{ assignees: AssigneeRow[] }>(`${API_BASE}/assignees`, { params: this.withBoard() });
   }
   recentRuns(limit = 25): Observable<{ runs: RecentRun[] }> {
     return this.http.get<{ runs: RecentRun[] }>(`${API_BASE}/runs/recent`, {
-      params: new HttpParams().set('limit', String(limit)),
+      params: this.withBoard().set('limit', String(limit)),
     });
   }
   elo(): Observable<{ rows: EloRow[] }> {
@@ -79,12 +90,17 @@ export class ApiService {
    * required for block, demote, done.
    */
   updateTaskStatus(id: string, body: { status: string; author?: string; reason?: string }): Observable<TaskStatusUpdateResponse> {
-    return this.http.post<TaskStatusUpdateResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/status`, body);
+    return this.http.post<TaskStatusUpdateResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/status`, { ...body, board: this.boardSvc.current() });
   }
 
   /** Add a comment to a ticket. Persists in task_comments + emits a comment_added event. */
   addTaskComment(id: string, body: { body: string; author?: string }): Observable<TaskCommentResponse> {
-    return this.http.post<TaskCommentResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/comment`, body);
+    return this.http.post<TaskCommentResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/comment`, { ...body, board: this.boardSvc.current() });
+  }
+
+  /** Create a new ticket on the current board. */
+  createTask(body: { title: string; body?: string; assignee?: string; priority?: number; triage?: boolean; idempotency_key?: string }): Observable<TaskCreateResponse> {
+    return this.http.post<TaskCreateResponse>(`${API_BASE}/tasks`, { ...body, board: this.boardSvc.current() });
   }
 
   /** Parsed industry-scan-latest.html — arXiv research scan with paper cards. */
@@ -188,4 +204,13 @@ export interface TaskCommentResponse {
   refreshed: boolean;
   refresh_error: string | null;
   task: TaskDetail | null;
+}
+
+export interface TaskCreateResponse {
+  ok: boolean;
+  task_id: string | null;
+  title: string;
+  board: string;
+  refreshed: boolean;
+  created: { id?: string } | null;
 }

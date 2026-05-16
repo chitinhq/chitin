@@ -1,14 +1,16 @@
 import { Component, inject, signal, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule, Router, NavigationEnd } from '@angular/router';
+import { FormsModule } from '@angular/forms';
 import { Subscription } from 'rxjs';
 import { filter, startWith } from 'rxjs/operators';
 import { ApiService } from './api.service';
+import { BoardService } from './board.service';
 
 interface NavItem { path: string; label: string; icon: string; external?: boolean; }
 
 @Component({
-  imports: [CommonModule, RouterModule],
+  imports: [CommonModule, RouterModule, FormsModule],
   selector: 'app-root',
   templateUrl: './app.html',
   styleUrl: './app.css',
@@ -17,6 +19,7 @@ interface NavItem { path: string; label: string; icon: string; external?: boolea
 export class App implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
+  readonly boardSvc = inject(BoardService);
   private routerSub?: Subscription;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -38,6 +41,7 @@ export class App implements OnInit, OnDestroy {
   ];
 
   ngOnInit() {
+    this.boardSvc.loadBoards();
     this.pollHealth();
     this.healthTimer = setInterval(() => this.pollHealth(), 15_000);
     this.routerSub = this.router.events
@@ -46,6 +50,13 @@ export class App implements OnInit, OnDestroy {
         const url = this.router.url.split('?')[0].replace(/^\//, '') || 'overview';
         this.currentPath.set(url.split('/')[0]);
       });
+  }
+
+  onBoardChange(slug: string) {
+    this.boardSvc.setCurrent(slug);
+    // Hard reload so all pages re-fetch with the new board scope.
+    // Simpler than wiring a per-page reload signal everywhere.
+    window.location.reload();
   }
 
   ngOnDestroy() {

@@ -32,11 +32,21 @@
     </nav>
 
     <div class="topbar-right">
+      @if (boardSvc.boards().length > 1) {
+        <select class="board-picker mono"
+                aria-label="Board"
+                [ngModel]="boardSvc.current()"
+                (ngModelChange)="onBoardChange($event)">
+          @for (b of boardSvc.boards(); track b.slug) {
+            <option [value]="b.slug">{{ b.slug }}</option>
+          }
+        </select>
+      }
       @if (health()) {
         <div class="api-status" [class.ok]="health()?.ok" [class.bad]="!health()?.ok"
-             [title]="health()?.ok ? 'API connected · board ' + health()?.board : 'API unreachable'">
+             [title]="health()?.ok ? 'API connected · board ' + boardSvc.current() : 'API unreachable'">
           <span class="dot"></span>
-          <span class="mono">{{ health()?.ok ? (health()?.board || 'connected') : 'offline' }}</span>
+          <span class="mono">{{ health()?.ok ? (boardSvc.current() || 'connected') : 'offline' }}</span>
         </div>
       }
     </div>
