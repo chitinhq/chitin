@@ -938,7 +938,7 @@ class ClawtaPollerRoutingTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             self.assertEqual(cmd, [sys.executable, str(module.PICK_DRIVER)])
-            self.assertEqual(kwargs["timeout"], 60)
+            self.assertEqual(kwargs["timeout"], module.PICK_DRIVER_TIMEOUT_SECONDS)
             self.assertEqual(kwargs["env"]["ROUTER_MODE"], "deterministic")
             self.assertEqual(kwargs["env"]["FORCE_DRIVER"], "codex")
             self.assertEqual(kwargs["input"], '{"complexity":"low"}')
