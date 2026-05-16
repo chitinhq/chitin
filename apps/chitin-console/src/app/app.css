@@ -1,6 +1,8 @@
 :host {
   display: block;
   min-height: 100vh;
+  /* Safety net: no page should ever cause horizontal scroll on mobile. */
+  overflow-x: hidden;
 }
 
 .shell {
@@ -10,6 +12,8 @@
   /* Reserve room for the bottom tab bar on mobile. */
   padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   position: relative;
+  width: 100%;
+  max-width: 100vw;
 }
 @media (min-width: 769px) {
   .shell { padding-bottom: 0; }
