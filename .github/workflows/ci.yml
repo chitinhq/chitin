@@ -209,8 +209,10 @@ jobs:
       - name: Regression gate
         run: |
           # Runs every registered invariant in scripts/check-*.{sh,py}
-          # against the merged-state tree. Hard-block: failure = CI failure.
-          # See docs/superpowers/specs/2026-05-13-regression-gate.md
-          # and docs/runbooks/regression-gate.md.
+          # against the merged-state tree, including scripts manifest
+          # coverage / runtime-critical ownership / migration TTL checks.
+          # Hard-block: failure = CI failure. See
+          # docs/superpowers/specs/2026-05-13-regression-gate.md and
+          # docs/runbooks/regression-gate.md.
           python3 -m pip install --quiet --user pyyaml
           bash scripts/regression-gate.sh
