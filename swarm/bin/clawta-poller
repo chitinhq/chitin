@@ -128,6 +128,7 @@ INVARIANTS_FIELD_RE = re.compile(
 TRACKING_EPIC_RE = re.compile(
     r"(?im)^tracking-epic:\s*(true|yes|1)\s*$"
 )
+LOOP_DETECTED_RE = re.compile(r"loop_detected\s*=\s*true|promote-demote loop detected", re.IGNORECASE)
 
 
 def log(msg: str) -> None:
@@ -409,6 +410,30 @@ def filter_tickets_with_incomplete_runs(
     return filtered, sorted(blocked_ids)
 
 
+def ticket_has_loop_detected_marker(ticket_id: str) -> bool:
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "block_reason" in columns:
+                row = conn.execute("SELECT block_reason FROM tasks WHERE id = ?", (ticket_id,)).fetchone()
+                if row and row["block_reason"] and LOOP_DETECTED_RE.search(str(row["block_reason"])):
+                    return True
+            rows = conn.execute(
+                """
+                SELECT body
+                  FROM task_comments
+                 WHERE task_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 20
+                """,
+                (ticket_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return False
+    return any(LOOP_DETECTED_RE.search(str(row["body"])) for row in rows)
+
+
 def fetch_blocked_dependency_gate_tickets() -> list[dict[str, Any]]:
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
@@ -655,6 +680,10 @@ def auto_unblock_dependency_tickets(
     ticket_cache = {} if ticket_cache is None else ticket_cache
     unblocked: list[str] = []
     for ticket in fetch_blocked_dependency_gate_tickets():
+        ticket_id = str(ticket.get("id"))
+        if ticket_has_loop_detected_marker(ticket_id):
+            log(f"dependency probe: leaving {ticket_id} blocked because loop_detected=true")
+            continue
         refs = extract_dependency_refs(ticket.get("body"), self_ticket_id=ticket.get("id"))
         if not refs:
             continue
