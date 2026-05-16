@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +33,16 @@ def make_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT,
+          body TEXT,
+          status TEXT,
+          priority INTEGER,
+          assignee TEXT,
+          block_reason TEXT,
+          claim_lock TEXT
+        );
         CREATE TABLE task_comments (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id TEXT NOT NULL,
@@ -73,6 +84,35 @@ class HermesClawtaBridgeTests(unittest.TestCase):
                 "loop_detected=true: needs manual spec",
             )
         )
+
+    def test_has_spec_kit_entry_uses_owned_repo_spec_root(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "001-owned" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("# spec\n")
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, priority) VALUES (?, ?, ?, ?, ?)",
+                ("t_owned", "owned", "Spec: .specify/specs/001-owned/spec.md", "blocked", 50),
+            )
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(conn, "t_owned"))
+
+    def test_has_spec_kit_entry_rejects_missing_spec_file(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        with tempfile.TemporaryDirectory() as tmp:
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, priority) VALUES (?, ?, ?, ?, ?)",
+                ("t_shared", "shared", "Spec: .specify/specs/777-shared/spec.md", "blocked", 50),
+            )
+            with mock.patch.object(module, "BOARD", "readybench"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertFalse(module.has_spec_kit_entry(conn, "t_shared"))
 
     def test_installer_targets_hermes_scripts_path(self) -> None:
         installer = INSTALLER.read_text()

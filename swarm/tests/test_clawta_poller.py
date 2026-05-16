@@ -72,6 +72,29 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_has_spec_kit_entry_accepts_existing_board_spec(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "123-owned" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("# spec\n")
+            ticket = {"body": "Spec: .specify/specs/123-owned/spec.md"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(ticket))
+                self.assertIsNone(module.missing_spec_kit_reason(ticket))
+
+    def test_missing_spec_kit_reason_rejects_shared_ticket_without_workspace_spec(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket = {"body": "Spec: .specify/specs/123-shared/spec.md"}
+            with mock.patch.object(module, "BOARD", "readybench"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertFalse(module.has_spec_kit_entry(ticket))
+                self.assertIn("missing spec-kit entry", module.missing_spec_kit_reason(ticket) or "")
+
     def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,7 +258,7 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
             ["t_abcd1234"],
         )
 
-    def test_tick_demotes_ticket_missing_invariants_and_boundaries(self) -> None:
+    def test_tick_demotes_ticket_missing_spec_kit_entry(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             db_path = make_db(Path(tmp))
@@ -278,9 +301,9 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(result["demoted"], ["t_missinginv"])
         demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
         self.assertEqual(demote_cmd[:3], [module.KANBAN_FLOW_BIN, "demote", "t_missinginv"])
-        self.assertIn("missing invariants_and_boundaries: field", demote_cmd[3])
+        self.assertIn("missing spec-kit entry", demote_cmd[3])
 
-    def test_tick_demotes_ticket_with_invariant_but_no_boundaries(self) -> None:
+    def test_tick_demotes_ticket_with_missing_spec_file(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             db_path = make_db(Path(tmp))
@@ -293,7 +316,7 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                 (
                     "t_nobounds",
                     "missing boundary list",
-                    "invariants_and_boundaries: Invariant: parser never returns an empty action.",
+                    "Spec: .specify/specs/999-missing/spec.md",
                     "ready",
                     "codex",
                     50,
@@ -322,7 +345,7 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
 
         self.assertEqual(result["demoted"], ["t_nobounds"])
         demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
-        self.assertIn("missing explicit boundary list", demote_cmd[3])
+        self.assertIn("missing spec-kit entry", demote_cmd[3])
 
     def test_is_tracking_epic_recognizes_marker(self) -> None:
         module = load_module()
@@ -476,6 +499,8 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
             ), mock.patch.object(
                 module, "fetch_ready_for_terminal_lanes", return_value=[]
             ), mock.patch.object(
+                module, "demote_missing_spec_kit_entries", return_value=[]
+            ), mock.patch.object(
                 module.subprocess, "run", side_effect=fake_run
             ):
                 result = module.tick(max_dispatch=1, dry_run=False)
@@ -542,6 +567,8 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                 module, "fetch_routable", return_value=[]
             ), mock.patch.object(
                 module, "fetch_ready_for_terminal_lanes", return_value=[]
+            ), mock.patch.object(
+                module, "demote_missing_spec_kit_entries", return_value=[]
             ), mock.patch.object(
                 module.subprocess, "run", side_effect=fake_run
             ):
@@ -613,6 +640,8 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                         module, "fetch_routable", return_value=[]
                     ), mock.patch.object(
                         module, "fetch_ready_for_terminal_lanes", return_value=[]
+                    ), mock.patch.object(
+                        module, "demote_missing_spec_kit_entries", return_value=[]
                     ), mock.patch.object(
                         module.subprocess, "run", side_effect=fake_run
                     ):
