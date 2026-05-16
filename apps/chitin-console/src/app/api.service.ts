@@ -53,8 +53,27 @@ export class ApiService {
   policy(): Observable<Policy> {
     return this.http.get<Policy>(`${API_BASE}/policy`);
   }
-  suggestions(): Observable<SuggestionsResponse> {
-    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`);
+  suggestions(opts: { type?: string; target?: string; sort?: string } = {}): Observable<SuggestionsResponse> {
+    let params = new HttpParams();
+    if (opts.type) params = params.set('type', opts.type);
+    if (opts.target) params = params.set('target', opts.target);
+    if (opts.sort) params = params.set('sort', opts.sort);
+    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`, { params });
+  }
+  analyze(body: { window?: string; skip_llm?: boolean } = {}): Observable<{
+    ok: boolean;
+    summary?: Record<string, unknown>;
+    suggestions?: unknown[];
+    error?: string;
+    stderr?: string;
+  }> {
+    return this.http.post<{
+      ok: boolean;
+      summary?: Record<string, unknown>;
+      suggestions?: unknown[];
+      error?: string;
+      stderr?: string;
+    }>(`${API_BASE}/analyze`, body);
   }
   argusInfo(): Observable<ArgusInfo> {
     return this.http.get<ArgusInfo>(`${API_BASE}/argus/info`);

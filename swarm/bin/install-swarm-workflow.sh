@@ -25,6 +25,7 @@ link_file() {
 }
 
 link_file "$REPO_ROOT/swarm/workflows/kanban-dispatch.lobster" "$TARGET_DIR/kanban-dispatch.lobster"
+link_file "$REPO_ROOT/swarm/workflows/analyzer-cron.lobster" "$TARGET_DIR/analyzer-cron.lobster"
 link_file "$REPO_ROOT/swarm/workflows/_pick_driver.py" "$TARGET_DIR/_pick_driver.py"
 link_file "$REPO_ROOT/swarm/workflows/clawta_decisions.py" "$TARGET_DIR/clawta_decisions.py"
 link_file "$REPO_ROOT/swarm/workflows/spawn_worker_subprocess.py" "$TARGET_DIR/spawn_worker_subprocess.py"
