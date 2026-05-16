@@ -376,7 +376,7 @@ function listThreads(query) {
   return { threads: rows };
 }
 
-function getThread(id) {
+function getThread(id, query) {
   if (!busDB) return null;
   const thread = busDB.prepare(`
     SELECT id, board, task_id, title, author, audience, status,
@@ -384,18 +384,61 @@ function getThread(id) {
     FROM threads WHERE id = ?
   `).get(id);
   if (!thread) return null;
-  const messages = busDB.prepare(`
-    SELECT id, parent_id, author, audience, body, kind,
-           discord_message_id, ack_required, created_at
-    FROM messages WHERE thread_id = ?
-    ORDER BY id ASC
-  `).all(id);
+
+  // Chat-style pagination — default: newest N messages.
+  // before_id: lazy-load older (scroll up). after_id: poll for newer.
+  const limit  = Math.min(Math.max(Number(query?.get?.('limit') || 50), 1), 200);
+  const before = Number(query?.get?.('before_id') || 0);
+  const after  = Number(query?.get?.('after_id')  || 0);
+
+  let rows;
+  if (after > 0) {
+    rows = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ? AND id > ?
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(id, after, limit);
+  } else if (before > 0) {
+    const desc = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ? AND id < ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(id, before, limit);
+    rows = desc.reverse();
+  } else {
+    const desc = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(id, limit);
+    rows = desc.reverse();
+  }
+
+  let has_more_older = false;
+  if (rows.length > 0) {
+    const oldestId = rows[0].id;
+    const more = busDB.prepare(
+      'SELECT 1 FROM messages WHERE thread_id = ? AND id < ? LIMIT 1'
+    ).get(id, oldestId);
+    has_more_older = !!more;
+  }
+  const total = busDB.prepare('SELECT COUNT(*) AS n FROM messages WHERE thread_id = ?').get(id).n;
+
   const attachments = busDB.prepare(`
     SELECT id, kind, ref, display, created_at
     FROM attachments WHERE thread_id = ?
     ORDER BY id ASC
   `).all(id);
-  return { thread, messages, attachments };
+  return { thread, messages: rows, has_more_older, total, attachments };
 }
 
 async function postThreadReply(threadId, body) {
@@ -1142,7 +1185,7 @@ const handlers = [
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
   [/^\/api\/reports\/industry-scan$/, () => parseIndustryScan()],
   [/^\/api\/threads$/,               (req, q) => listThreads(q)],
-  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]))],
+  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]), q)],
   [/^\/api\/discord\/channels$/,     () => ({ channels: [...discordChannels.entries()].map(([id, c]) => ({ id, name: c.name })) })],
 ];
 

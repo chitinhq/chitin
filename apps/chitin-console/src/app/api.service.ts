@@ -116,8 +116,15 @@ export class ApiService {
     if (opts.limit) params = params.set('limit', String(opts.limit));
     return this.http.get<{ threads: BusThread[] }>(`${API_BASE}/threads`, { params });
   }
-  thread(id: number): Observable<BusThreadDetail> {
-    return this.http.get<BusThreadDetail>(`${API_BASE}/threads/${id}`);
+  /** Fetch a thread + a window of messages. Chat-style pagination:
+   *  no opts → newest `limit` (default 50); before_id → older window;
+   *  after_id → poll for newer. */
+  thread(id: number, opts: { limit?: number; before_id?: number; after_id?: number } = {}): Observable<BusThreadDetail> {
+    let params = new HttpParams();
+    if (opts.limit != null)     params = params.set('limit', String(opts.limit));
+    if (opts.before_id != null) params = params.set('before_id', String(opts.before_id));
+    if (opts.after_id != null)  params = params.set('after_id',  String(opts.after_id));
+    return this.http.get<BusThreadDetail>(`${API_BASE}/threads/${id}`, { params });
   }
   postThreadReply(id: number, body: { body: string; author?: string; parent_id?: number; kind?: string; audience?: string; channel_id?: string }): Observable<BusReplyResponse> {
     return this.http.post<BusReplyResponse>(`${API_BASE}/threads/${id}/reply`, body);
@@ -166,6 +173,8 @@ export interface BusThreadDetail {
   thread: BusThread;
   messages: BusMessage[];
   attachments: BusAttachment[];
+  has_more_older?: boolean;
+  total?: number;
 }
 export interface BusReplyResponse {
   ok: boolean;
