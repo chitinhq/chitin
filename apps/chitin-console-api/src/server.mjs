@@ -482,6 +482,123 @@ async function postToDiscord(channelId, content) {
   return await res.json();
 }
 
+// ---------- Discord → bus inbound poller ----------
+// Pulls new messages from the home channel every DISCORD_POLL_SEC
+// (default 30s) and inserts them into a bus thread keyed by
+// discord_thread_id == channel_id. Idempotent via the unique
+// discord_message_id we store on each message row. Skips messages
+// authored by our own bot to avoid echo loops with postToDiscord.
+const DISCORD_POLL_SEC = Number(process.env.DISCORD_POLL_SEC || 30);
+let discordPollerStarted = false;
+
+function ensureCursorTable() {
+  if (!busDB) return;
+  busDB.exec(`
+    CREATE TABLE IF NOT EXISTS discord_cursors (
+      channel_id      TEXT PRIMARY KEY,
+      last_message_id TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    )
+  `);
+}
+
+function getCursor(channelId) {
+  const row = busDB.prepare('SELECT last_message_id FROM discord_cursors WHERE channel_id = ?').get(channelId);
+  return row?.last_message_id || null;
+}
+function setCursor(channelId, messageId) {
+  busDB.prepare(`
+    INSERT INTO discord_cursors(channel_id, last_message_id, updated_at)
+    VALUES(?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET
+      last_message_id = excluded.last_message_id,
+      updated_at = excluded.updated_at
+  `).run(channelId, messageId, Math.floor(Date.now() / 1000));
+}
+
+/** Finds the bus thread bound to a Discord channel, creating one if absent. */
+function findOrCreateChannelThread(channelId, title) {
+  const existing = busDB.prepare('SELECT id FROM threads WHERE discord_thread_id = ? LIMIT 1').get(channelId);
+  if (existing) return existing.id;
+  const now = Math.floor(Date.now() / 1000);
+  const r = busDB.prepare(`
+    INSERT INTO threads (board, title, author, status, discord_thread_id, created_at, updated_at)
+    VALUES (NULL, ?, ?, 'open', ?, ?, ?)
+  `).run(title, 'discord-mirror', channelId, now, now);
+  return r.lastInsertRowid;
+}
+
+async function pollDiscordChannel(channelId) {
+  if (!busDB || !DISCORD_BOT_TOKEN || !channelId) return { ok: false, reason: 'not_configured' };
+  const cursor = getCursor(channelId);
+  const url = new URL(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`);
+  url.searchParams.set('limit', '50');
+  if (cursor) url.searchParams.set('after', cursor);
+  const res = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`discord poll ${res.status}: ${text.slice(0, 300)}`);
+  }
+  /** @type {{id:string, content:string, author:{id:string,username:string,bot?:boolean}, attachments:unknown[], embeds:unknown[]}[]} */
+  const msgs = await res.json();
+  // Discord returns newest first when using ?after — sort ascending so we insert in order.
+  msgs.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+  if (msgs.length === 0) return { ok: true, ingested: 0 };
+
+  const threadId = findOrCreateChannelThread(channelId, `#${channelId.slice(-6)} (discord)`);
+  const insert = busDB.prepare(`
+    INSERT INTO messages (thread_id, author, body, kind, discord_message_id, created_at)
+    SELECT ?, ?, ?, 'message', ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM messages WHERE discord_message_id = ?)
+  `);
+  const touch = busDB.prepare('UPDATE threads SET updated_at = ? WHERE id = ?');
+  let ingested = 0;
+  let lastId = cursor;
+  for (const m of msgs) {
+    const author = m.author?.username || 'discord';
+    // Skip our own bot's messages — postToDiscord already wrote the
+    // bus row before posting, so re-ingesting would duplicate.
+    if (m.author?.bot) {
+      lastId = m.id;  // still advance the cursor
+      continue;
+    }
+    let body = (m.content || '').trim();
+    if (!body) {
+      const a = (m.attachments || []).length;
+      const e = (m.embeds || []).length;
+      body = `(attachment x${a}, embed x${e})`;
+    }
+    const ts = Math.floor(Date.now() / 1000);
+    const r = insert.run(threadId, author, body, m.id, ts, m.id);
+    if (r.changes > 0) ingested++;
+    lastId = m.id;
+  }
+  if (ingested > 0) touch.run(Math.floor(Date.now() / 1000), threadId);
+  if (lastId && lastId !== cursor) setCursor(channelId, lastId);
+  return { ok: true, ingested, lastId };
+}
+
+function startDiscordPoller() {
+  if (discordPollerStarted) return;
+  if (!busDB || !DISCORD_BOT_TOKEN || !DISCORD_HOME_CHANNEL) {
+    console.log(`[chitin-console-api] discord poller disabled (bus=${!!busDB} token=${!!DISCORD_BOT_TOKEN} channel=${!!DISCORD_HOME_CHANNEL})`);
+    return;
+  }
+  discordPollerStarted = true;
+  ensureCursorTable();
+  const tick = () => {
+    pollDiscordChannel(DISCORD_HOME_CHANNEL)
+      .then(r => { if (r?.ingested > 0) console.log(`[chitin-console-api] discord poll: ingested ${r.ingested} message(s)`); })
+      .catch(e => console.warn(`[chitin-console-api] discord poll failed: ${e.message || e}`));
+  };
+  setInterval(tick, DISCORD_POLL_SEC * 1000);
+  // Kick once on boot so we don't wait the full interval.
+  setTimeout(tick, 2000);
+  console.log(`[chitin-console-api] discord poller started (every ${DISCORD_POLL_SEC}s, channel ${DISCORD_HOME_CHANNEL})`);
+}
+
 function listLedgerFiles({ maxDays = 14 } = {}) {
   try {
     const files = fs.readdirSync(CHAIN_LEDGER_DIR)
@@ -1233,6 +1350,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
   console.log(`[chitin-console-api] reports_root=${REPORTS_ROOT || '(none)'}`);
   console.log(`[chitin-console-api] agent-bus=${BUS_DB_PATH} (${busDB ? 'OK' : 'MISSING'})`);
+  startDiscordPoller();
 });
 
 process.on('SIGINT',  () => { server.close(); process.exit(0); });
