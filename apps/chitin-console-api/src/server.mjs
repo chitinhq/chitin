@@ -486,6 +486,27 @@ const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '';
 const DISCORD_WEBHOOK_NAME = process.env.DISCORD_WEBHOOK_NAME || 'chitin-console';
 const DISCORD_CHANNEL_DENY = (process.env.DISCORD_CHANNEL_DENY || '')
   .split(',').map(s => s.trim()).filter(Boolean);
+// Per-channel webhook URLs as fallback when the bot lacks Manage
+// Webhooks permission. Format: "hermes=https://...,clawta=https://..."
+// Also auto-loaded from ~/.hermes/.env if DISCORD_WEBHOOK_URLS isn't
+// in the process env.
+function loadWebhookOverrides() {
+  let raw = process.env.DISCORD_WEBHOOK_URLS || '';
+  if (!raw) {
+    try {
+      const env = fs.readFileSync(path.join(HOME, '.hermes', '.env'), 'utf8');
+      const m = env.match(/^DISCORD_WEBHOOK_URLS=(.*)$/m);
+      if (m) raw = m[1].trim();
+    } catch { /* env file optional */ }
+  }
+  const out = new Map();
+  for (const pair of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+    const eq = pair.indexOf('=');
+    if (eq > 0) out.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+  }
+  return out;
+}
+const DISCORD_WEBHOOK_OVERRIDES = loadWebhookOverrides();
 let discordPollerStarted = false;
 // channel id -> { name, webhookUrl }
 const discordChannels = new Map();
@@ -537,15 +558,24 @@ async function pickGuild() {
   return guilds[0];
 }
 
-async function ensureChannelWebhook(channelId) {
+async function ensureChannelWebhook(channelId, channelName) {
+  // 1. Env override
+  if (DISCORD_WEBHOOK_OVERRIDES.has(channelName)) {
+    return DISCORD_WEBHOOK_OVERRIDES.get(channelName);
+  }
+  // 2. List existing webhooks (bot needs MANAGE_WEBHOOKS for GET too)
   const list = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
     headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
   });
   if (list.ok) {
     const hooks = await list.json();
-    const found = hooks.find(h => h.name === DISCORD_WEBHOOK_NAME && h.token);
+    // Prefer one we created; else any with a token
+    const ours = hooks.find(h => h.name === DISCORD_WEBHOOK_NAME && h.token);
+    const any  = hooks.find(h => h.token);
+    const found = ours || any;
     if (found) return `https://discord.com/api/webhooks/${found.id}/${found.token}`;
   }
+  // 3. Try to create (needs MANAGE_WEBHOOKS)
   const create = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
     method: 'POST',
     headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
@@ -559,23 +589,38 @@ async function ensureChannelWebhook(channelId) {
   return `https://discord.com/api/webhooks/${w.id}/${w.token}`;
 }
 
-/** POSTs to a channel via its webhook with author as username. */
+/** POSTs to a channel via its webhook (preferred) or bot token (fallback). */
 async function postToDiscord(channelId, content, username) {
   const entry = discordChannels.get(channelId);
-  if (!entry?.webhookUrl) throw new Error(`no webhook for channel ${channelId}`);
-  const payload = {
-    content: content.slice(0, 1990),
-    username: (username || 'console').slice(0, 80),
-    allowed_mentions: { parse: ['users', 'roles', 'everyone'] },
-  };
-  const res = await fetch(`${entry.webhookUrl}?wait=true`, {
+  if (entry?.webhookUrl) {
+    const payload = {
+      content: content.slice(0, 1990),
+      username: (username || 'console').slice(0, 80),
+      allowed_mentions: { parse: ['users', 'roles', 'everyone'] },
+    };
+    const res = await fetch(`${entry.webhookUrl}?wait=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`webhook ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return await res.json();
+  }
+  // Fallback: bot-token POST (message appears as the bot, NOT as the
+  // user — Hermes/Clawta will likely ignore it). Format the body to
+  // surface the intended author at least.
+  const formatted = `**${username || 'console'}**\n${content.slice(0, 1900)}`;
+  const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: formatted, allowed_mentions: { parse: ['users', 'roles', 'everyone'] } }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`webhook ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`bot post ${res.status}: ${text.slice(0, 300)}`);
   }
   return await res.json();
 }
@@ -591,14 +636,23 @@ async function discoverChannels() {
   for (const c of channels) {
     if (c.type !== 0) continue;
     if (DISCORD_CHANNEL_DENY.includes(c.name)) continue;
+    let webhookUrl = null;
     try {
-      const webhookUrl = await ensureChannelWebhook(c.id);
-      discordChannels.set(c.id, { name: c.name, webhookUrl });
+      webhookUrl = await ensureChannelWebhook(c.id, c.name);
     } catch (e) {
-      console.warn(`[chitin-console-api] discord #${c.name}: webhook failed (${e.message || e})`);
+      // Permission missing — fall through; postToDiscord will use the
+      // bot-token fallback for this channel (posts as the bot).
+      console.warn(`[chitin-console-api] discord #${c.name}: no webhook (${e.message || e}); will use bot-token fallback`);
     }
+    discordChannels.set(c.id, { name: c.name, webhookUrl });
   }
-  console.log(`[chitin-console-api] discord guild=${guild.name} channels=[${[...discordChannels.values()].map(c => '#' + c.name).join(', ')}]`);
+  const summary = [...discordChannels.values()]
+    .map(c => `#${c.name}${c.webhookUrl ? '✓' : '(bot)'}`)
+    .join(', ');
+  console.log(`[chitin-console-api] discord guild=${guild.name} channels=[${summary}]`);
+  if ([...discordChannels.values()].some(c => !c.webhookUrl)) {
+    console.log('[chitin-console-api] hint: grant the bot MANAGE_WEBHOOKS, or set DISCORD_WEBHOOK_URLS=hermes=URL,clawta=URL so posts show as the user instead of the bot');
+  }
 }
 
 async function pollDiscordChannel(channelId, channelName) {
