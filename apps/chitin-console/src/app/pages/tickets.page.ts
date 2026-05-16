@@ -8,6 +8,7 @@ import { StatusPillComponent } from '../ui/status-pill.component';
 import { LoaderComponent } from '../ui/loader.component';
 import { EmptyStateComponent } from '../ui/empty-state.component';
 import { ageFromEpochSeconds, fmtTs, shortenId, priorityBarWidth } from '../utils';
+import { copyToClipboard } from '../copy.util';
 
 @Component({
   selector: 'cc-tickets',
@@ -135,16 +136,17 @@ Use any chitin / hermes / clawta tooling available. Report what you found and wh
 
   readonly promptCopied = signal(false);
 
-  copyOperatorPrompt() {
+  async copyOperatorPrompt() {
     const text = this.operatorPrompt();
     if (!text) return;
-    void navigator.clipboard.writeText(text).then(
-      () => {
-        this.promptCopied.set(true);
-        setTimeout(() => this.promptCopied.set(false), 1800);
-      },
-      () => { this.promptCopied.set(false); },
-    );
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      this.promptCopied.set(true);
+      setTimeout(() => this.promptCopied.set(false), 1800);
+    } else {
+      this.promptCopied.set(false);
+      this.mutationError.set('Copy failed — select the prompt and copy manually.');
+    }
   }
 
   constructor() {

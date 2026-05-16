@@ -8,6 +8,7 @@ import { StatusPillComponent } from '../ui/status-pill.component';
 import { LoaderComponent } from '../ui/loader.component';
 import { EmptyStateComponent } from '../ui/empty-state.component';
 import { ageFromEpochSeconds, fmtTs, shortenId } from '../utils';
+import { copyToClipboard } from '../copy.util';
 
 const AGENT_ASSIGNEES = new Set<string>([
   'codex', 'claude-code', 'copilot', 'gemini', 'clawta', 'chitin-worker', 'hermes',
@@ -147,15 +148,16 @@ Use any chitin / hermes / clawta tooling available. Report what you found and wh
     return this.buildPrompt(t, comments);
   }
 
-  copyPrompt(t: Task) {
+  async copyPrompt(t: Task) {
     const text = this.promptFor(t);
-    void navigator.clipboard.writeText(text).then(
-      () => {
-        this.copiedId.set(t.id);
-        setTimeout(() => { if (this.copiedId() === t.id) this.copiedId.set(null); }, 1800);
-      },
-      () => { this.copiedId.set(null); },
-    );
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      this.copiedId.set(t.id);
+      setTimeout(() => { if (this.copiedId() === t.id) this.copiedId.set(null); }, 1800);
+    } else {
+      this.copiedId.set(null);
+      this.mutationError.set('Copy failed — browser blocked clipboard. Select the prompt text and copy manually.');
+    }
   }
 
   quickUnblock(t: Task) {
