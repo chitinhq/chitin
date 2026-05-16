@@ -107,7 +107,20 @@ PICK_DRIVER = Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"
 CLAWTA_DECISIONS = Path.home() / ".openclaw" / "workflows" / "clawta_decisions.py"
 CLAWTA_ROUTER_MODE = os.environ.get("CLAWTA_ROUTER_MODE", "").strip().lower()
 CLAWTA_FORCE_DRIVER = os.environ.get("CLAWTA_FORCE_DRIVER", "").strip()
-PICK_DRIVER_TIMEOUT_SECONDS = int(os.environ.get("CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS", "75"))
+
+
+def parse_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"{name}={raw!r} is not an integer; using {default}", file=sys.stderr)
+        return default
+
+
+PICK_DRIVER_TIMEOUT_SECONDS = parse_int_env("CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS", 75)
 INVARIANT_BIN = Path(os.environ.get(
     "CLAWTA_INVARIANT_BIN",
     str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
