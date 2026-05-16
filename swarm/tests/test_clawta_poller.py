@@ -731,6 +731,102 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(unblocked, [])
         fake_run.assert_not_called()
 
+    def test_ticket_has_loop_detected_marker_empty_boundary_returns_false(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("t_nomarker", "blocked on pr", "", "blocked", "red", 50, 1),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                has_marker = module.ticket_has_loop_detected_marker("t_nomarker")
+
+        self.assertFalse(has_marker)
+
+    def test_ticket_has_loop_detected_marker_max_boundary_checks_latest_20_comments(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("t_latest20", "blocked on pr", "", "blocked", "red", 50, 1),
+            )
+            conn.executemany(
+                """
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "t_latest20",
+                        "board-watchdog",
+                        "Blocked: loop_detected=true; oldest comment beyond scan limit",
+                        1,
+                    ),
+                    *[
+                        (
+                            "t_latest20",
+                            "clawta-poller",
+                            f"Blocked: dependency gate still waiting, comment {i}",
+                            i,
+                        )
+                        for i in range(2, 22)
+                    ],
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                has_marker = module.ticket_has_loop_detected_marker("t_latest20")
+
+        self.assertFalse(has_marker)
+
+    def test_ticket_has_loop_detected_marker_error_boundary_returns_false(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "kanban.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE tasks (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL,
+                  body TEXT,
+                  status TEXT NOT NULL,
+                  assignee TEXT,
+                  priority INTEGER DEFAULT 0,
+                  created_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("t_badshape", "blocked on pr", "", "blocked", "red", 50, 1),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                has_marker = module.ticket_has_loop_detected_marker("t_badshape")
+
+        self.assertFalse(has_marker)
+
 
 class ClawtaPollerRoutingTests(unittest.TestCase):
     def test_route_ticket_propagates_router_circuit_breaker_env(self) -> None:
