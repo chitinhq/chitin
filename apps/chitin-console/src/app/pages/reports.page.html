@@ -364,6 +364,9 @@
           </div>
         }
 
+        @if (filingError(); as err) {
+          <p class="filing-err mono small" role="alert">⚠ {{ err }}</p>
+        }
         @for (sec of industryScan()!.sections; track sec.title) {
           <h3 class="block-title industry-section-title">{{ sec.title }}</h3>
           <div class="paper-grid">
@@ -391,6 +394,23 @@
                 @if (p.summary) {
                   <p class="paper-summary mono tiny text-muted">{{ p.summary }}</p>
                 }
+                <footer class="paper-footer">
+                  <button type="button" class="btn paper-file-btn"
+                          [disabled]="filingPaper() === p.url"
+                          (click)="fileAsTicket(p)">
+                    @if (filedPaper() === p.url) {
+                      ✓ filed as {{ filedTaskId() || 'ticket' }}
+                    } @else if (filingPaper() === p.url) {
+                      filing…
+                    } @else {
+                      📥 file as ticket
+                    }
+                  </button>
+                  @if (filedTaskId() && filedPaper() === p.url) {
+                    <a class="mono tiny text-chitin"
+                       [routerLink]="['/tickets']" [queryParams]="{ id: filedTaskId() }">open →</a>
+                  }
+                </footer>
               </article>
             }
           </div>

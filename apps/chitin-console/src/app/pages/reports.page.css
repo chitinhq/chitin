@@ -228,3 +228,18 @@
 .paper-summary { margin: 0; line-height: 1.4; }
 .action-list { margin: 0 0 0 18px; padding: 0; }
 .action-list li { margin-bottom: 4px; }
+.paper-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.paper-file-btn { font-size: 11px; padding: 2px 8px; }
+.filing-err {
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border-radius: 4px;
+}

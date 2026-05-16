@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, inject, signal, computed } 
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { forkJoin } from 'rxjs';
-import { ApiService, type IndustryScanReport } from '../api.service';
+import { ApiService, type IndustryScanReport, type IndustryPaper } from '../api.service';
 import type { Task, SessionSummary, ArgusInfo } from '../api.types';
 import { StatusPillComponent } from '../ui/status-pill.component';
 import { LoaderComponent } from '../ui/loader.component';
@@ -51,6 +51,12 @@ export class ReportsPage implements OnInit {
   readonly argusFindings = signal<Record<string, unknown>[]>([]);
   readonly industryScan = signal<IndustryScanReport | null>(null);
   readonly generatedAt = signal<number>(0);
+
+  // Paper → ticket filing state
+  readonly filingPaper = signal<string | null>(null);    // currently in-flight paper url
+  readonly filedPaper = signal<string | null>(null);     // last successfully filed url
+  readonly filedTaskId = signal<string | null>(null);    // id of the created ticket
+  readonly filingError = signal<string | null>(null);
 
   // ---- Helpers ----
   readonly ageFromEpochSeconds = ageFromEpochSeconds;
@@ -213,6 +219,59 @@ export class ReportsPage implements OnInit {
 
   /** Epoch-seconds "now" — used by template duration computations. */
   now(): number { return Math.floor(Date.now() / 1000); }
+
+  /** Files an arxiv paper as a kanban ticket on the current board. */
+  fileAsTicket(p: IndustryPaper) {
+    if (this.filingPaper()) return;
+    this.filingPaper.set(p.url);
+    this.filingError.set(null);
+    const tags = p.tags.map(t => t.label).join(', ');
+    const body =
+`**Source:** industry-scan
+**arXiv:** ${p.url}
+**Authors:** ${p.authors || '(unknown)'}
+**Tags:** ${tags || '(none)'}
+**Rating:** ${p.stars}/10
+
+**Insight**
+${p.insight || '(none)'}
+
+**Summary**
+${p.summary || '(none)'}
+
+invariants_and_boundaries
+boundary: implementation must reference the arXiv id above
+boundary: read the linked paper before designing the integration`;
+    // Idempotency key keyed on the URL — re-filing the same paper returns the existing ticket id.
+    const idempotencyKey = `industry-scan:${p.url}`;
+    this.api.createTask({
+      title: p.title.slice(0, 200),
+      body,
+      triage: true,
+      idempotency_key: idempotencyKey,
+    }).subscribe({
+      next: (r) => {
+        this.filingPaper.set(null);
+        if (r.task_id) {
+          this.filedPaper.set(p.url);
+          this.filedTaskId.set(r.task_id);
+          setTimeout(() => {
+            if (this.filedPaper() === p.url) {
+              this.filedPaper.set(null);
+              this.filedTaskId.set(null);
+            }
+          }, 5000);
+        } else {
+          this.filingError.set(`${p.title}: hermes returned no task id`);
+        }
+      },
+      error: (err) => {
+        this.filingPaper.set(null);
+        const msg = err?.error?.detail || err?.error?.stderr || err?.message || 'failed';
+        this.filingError.set(`${p.title}: ${msg}`);
+      },
+    });
+  }
 
   fmtPct(n: number, digits = 1): string {
     return (n * 100).toFixed(digits) + '%';
