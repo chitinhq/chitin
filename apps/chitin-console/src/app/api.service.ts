@@ -91,6 +91,65 @@ export class ApiService {
   industryScan(): Observable<IndustryScanReport | null> {
     return this.http.get<IndustryScanReport | null>(`${API_BASE}/reports/industry-scan`);
   }
+
+  /** Agent-bus threads (Discord-mirrored). */
+  threads(opts: { board?: string; status?: string; limit?: number } = {}): Observable<{ threads: BusThread[] }> {
+    let params = new HttpParams();
+    if (opts.board) params = params.set('board', opts.board);
+    if (opts.status) params = params.set('status', opts.status);
+    if (opts.limit) params = params.set('limit', String(opts.limit));
+    return this.http.get<{ threads: BusThread[] }>(`${API_BASE}/threads`, { params });
+  }
+  thread(id: number): Observable<BusThreadDetail> {
+    return this.http.get<BusThreadDetail>(`${API_BASE}/threads/${id}`);
+  }
+  postThreadReply(id: number, body: { body: string; author?: string; parent_id?: number; kind?: string; audience?: string }): Observable<BusReplyResponse> {
+    return this.http.post<BusReplyResponse>(`${API_BASE}/threads/${id}/reply`, body);
+  }
+}
+
+export interface BusThread {
+  id: number;
+  board: string | null;
+  task_id: string | null;
+  title: string;
+  author: string;
+  audience: string | null;
+  status: 'open' | 'resolved' | 'archived';
+  discord_thread_id: string | null;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+  last_message_body: string | null;
+  last_message_author: string | null;
+}
+export interface BusMessage {
+  id: number;
+  parent_id: number | null;
+  author: string;
+  audience: string | null;
+  body: string;
+  kind: 'message' | 'directive' | 'ack' | 'system';
+  discord_message_id: string | null;
+  ack_required: number;
+  created_at: number;
+}
+export interface BusAttachment {
+  id: number;
+  kind: 'spec' | 'pr' | 'task' | 'discord' | 'url' | 'file';
+  ref: string;
+  display: string | null;
+  created_at: number;
+}
+export interface BusThreadDetail {
+  thread: BusThread;
+  messages: BusMessage[];
+  attachments: BusAttachment[];
+}
+export interface BusReplyResponse {
+  ok: boolean;
+  message_id: number;
+  thread: BusThreadDetail | null;
 }
 
 export interface IndustryPaper {

@@ -1,0 +1,140 @@
+<header class="head">
+  <div>
+    <h1 class="title">Threads</h1>
+    <p class="subtitle mono">
+      agent-bus + Discord mirror · replies sync to <code>#hermes</code> automatically
+    </p>
+  </div>
+  <div class="filters">
+    <select class="input" [(ngModel)]="boardFilter" (ngModelChange)="reload()" aria-label="Board filter">
+      <option value="">all boards</option>
+      <option value="chitin">chitin</option>
+      <option value="readybench">readybench</option>
+    </select>
+    <select class="input" [(ngModel)]="statusFilter" (ngModelChange)="reload()" aria-label="Status filter">
+      <option value="">all status</option>
+      <option value="open">open</option>
+      <option value="resolved">resolved</option>
+      <option value="archived">archived</option>
+    </select>
+    <input class="input author-input" type="text" [(ngModel)]="authorOverride"
+           placeholder="post as (default: $USER)" aria-label="Author override" />
+    <button class="btn" type="button" (click)="reload()">refresh</button>
+  </div>
+</header>
+
+@if (loading()) {
+  <cc-loader message="Loading threads"></cc-loader>
+} @else {
+  <div class="threads-layout">
+    <aside class="thread-list">
+      @if (threads().length === 0) {
+        <cc-empty-state title="No threads"
+          body="agent-bus has no threads matching this filter. Post one via the MCP server or Discord."
+        ></cc-empty-state>
+      }
+      @for (t of threads(); track t.id) {
+        <a class="thread-row"
+           [class.active]="selected()?.thread?.id === t.id"
+           (click)="openThread(t.id)">
+          <div class="thread-row-head">
+            <span class="mono small thread-title">{{ t.title }}</span>
+            @if (t.discord_thread_id) { <span class="badge discord mono tiny">discord</span> }
+          </div>
+          <div class="thread-row-meta mono tiny text-muted">
+            <span>{{ t.author }}</span>
+            @if (t.board) { <span class="text-dim">· {{ t.board }}</span> }
+            @if (t.task_id) { <span class="text-chitin">· {{ shortenId(t.task_id, 8, 4) }}</span> }
+            <span class="text-dim">· {{ t.message_count }} msg</span>
+            <span class="text-dim">· {{ fmtTs(t.updated_at) }}</span>
+          </div>
+          @if (t.last_message_body) {
+            <div class="thread-row-preview mono tiny text-muted">
+              <span class="text-glow">{{ t.last_message_author }}:</span>
+              {{ t.last_message_body.slice(0, 120) }}
+            </div>
+          }
+        </a>
+      }
+    </aside>
+
+    <section class="thread-detail">
+      @if (detailLoading()) {
+        <cc-loader message="Loading thread"></cc-loader>
+      } @else if (!selected()) {
+        <cc-empty-state title="Select a thread"
+          body="Pick a thread on the left to read messages or send a reply."
+        ></cc-empty-state>
+      } @else if (selected(); as d) {
+        <header class="detail-head">
+          <div>
+            <div class="mono small text-muted">thread #{{ d.thread.id }}</div>
+            <div class="detail-title">{{ d.thread.title }}</div>
+            <div class="detail-meta mono tiny text-muted">
+              {{ d.thread.author }}
+              @if (d.thread.board) { · {{ d.thread.board }} }
+              · status {{ d.thread.status }}
+              @if (d.thread.discord_thread_id) {
+                · <span class="badge discord mono tiny">discord {{ d.thread.discord_thread_id.slice(-6) }}</span>
+              }
+            </div>
+          </div>
+          <button class="btn" type="button" (click)="closeThread()">close ✕</button>
+        </header>
+
+        @if (d.attachments.length > 0) {
+          <section class="attachments">
+            <div class="block-title">attachments ({{ d.attachments.length }})</div>
+            <ul class="attach-list">
+              @for (a of d.attachments; track a.id) {
+                <li class="mono small">
+                  <span class="badge mono tiny" [attr.data-kind]="a.kind">{{ a.kind }}</span>
+                  <span class="text-muted">{{ a.display || a.ref }}</span>
+                </li>
+              }
+            </ul>
+          </section>
+        }
+
+        <ul class="message-list">
+          @for (m of d.messages; track m.id) {
+            <li class="msg" [attr.data-kind]="m.kind">
+              <div class="msg-head">
+                <span class="mono small text-glow">{{ m.author }}</span>
+                <span class="mono tiny text-dim">{{ fmtTs(m.created_at) }}</span>
+                @if (m.kind !== 'message') {
+                  <span class="badge mono tiny" [attr.data-kind]="m.kind">{{ m.kind }}</span>
+                }
+                @if (m.discord_message_id) {
+                  <span class="badge mono tiny discord">discord</span>
+                }
+                @if (m.ack_required) {
+                  <span class="badge mono tiny warn">ack required</span>
+                }
+              </div>
+              <div class="msg-body mono small">{{ m.body }}</div>
+            </li>
+          }
+        </ul>
+
+        <footer class="composer">
+          <textarea class="input composer-input" rows="2"
+                    [(ngModel)]="composer"
+                    [disabled]="posting()"
+                    placeholder="reply… (mirrors to Discord automatically)"
+                    aria-label="Reply body"
+                    (keydown.control.enter)="send()"
+                    (keydown.meta.enter)="send()"></textarea>
+          <button class="btn primary" type="button"
+                  [disabled]="!composer.trim() || posting()"
+                  (click)="send()">
+            {{ posting() ? 'sending…' : 'send' }}
+          </button>
+        </footer>
+        @if (postError(); as err) {
+          <p class="composer-err mono small">{{ err }}</p>
+        }
+      }
+    </section>
+  </div>
+}

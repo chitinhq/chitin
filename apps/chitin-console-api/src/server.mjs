@@ -57,6 +57,7 @@ const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
 const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
+const BUS_DB_PATH = process.env.CHITIN_AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 
 // Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
 // built chitin-console (e.g. dist/apps/chitin-console/browser), the
@@ -97,6 +98,7 @@ let kanbanDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
+let busDB = null;
 
 function openIfExists(p, readonly = true) {
   try {
@@ -109,11 +111,13 @@ function openIfExists(p, readonly = true) {
 }
 
 function reopen() {
-  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
+  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); busDB?.close();
   kanbanDB           = openIfExists(BOARD_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
+  // bus.db needs read+write since the threads page lets you reply.
+  busDB              = openIfExists(BUS_DB_PATH, false);
 }
 reopen();
 
@@ -269,6 +273,92 @@ function stripTags(s) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, ' ');
+}
+
+// ---------- Agent-bus threads ----------
+// Read+write surface for ~/.chitin/agent-bus/bus.db. The Phase 4
+// Discord mirror runs as a separate process and propagates new
+// messages both ways, so a reply posted via this endpoint shows up
+// in #hermes (or whichever channel the thread is bound to) without
+// any extra wiring here.
+function listThreads(query) {
+  if (!busDB) return { threads: [], note: 'agent-bus DB unavailable' };
+  const limit = Math.min(Number(query.get('limit') || 100), 500);
+  const board = query.get('board');
+  const status = query.get('status');
+  const conds = [];
+  const params = {};
+  if (board) { conds.push('board = @board'); params.board = board; }
+  if (status) { conds.push('status = @status'); params.status = status; }
+  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  const rows = busDB.prepare(`
+    SELECT t.id, t.board, t.task_id, t.title, t.author, t.audience, t.status,
+           t.discord_thread_id, t.created_at, t.updated_at,
+           (SELECT COUNT(*) FROM messages WHERE thread_id = t.id) AS message_count,
+           (SELECT body FROM messages WHERE thread_id = t.id ORDER BY id DESC LIMIT 1) AS last_message_body,
+           (SELECT author FROM messages WHERE thread_id = t.id ORDER BY id DESC LIMIT 1) AS last_message_author
+    FROM threads t
+    ${where}
+    ORDER BY t.updated_at DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+  return { threads: rows };
+}
+
+function getThread(id) {
+  if (!busDB) return null;
+  const thread = busDB.prepare(`
+    SELECT id, board, task_id, title, author, audience, status,
+           discord_thread_id, created_at, updated_at
+    FROM threads WHERE id = ?
+  `).get(id);
+  if (!thread) return null;
+  const messages = busDB.prepare(`
+    SELECT id, parent_id, author, audience, body, kind,
+           discord_message_id, ack_required, created_at
+    FROM messages WHERE thread_id = ?
+    ORDER BY id ASC
+  `).all(id);
+  const attachments = busDB.prepare(`
+    SELECT id, kind, ref, display, created_at
+    FROM attachments WHERE thread_id = ?
+    ORDER BY id ASC
+  `).all(id);
+  return { thread, messages, attachments };
+}
+
+function postThreadReply(threadId, body) {
+  if (!busDB) return { status: 503, body: { error: 'bus_unavailable' } };
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const text = (body?.body || '').trim();
+  if (!text) return { status: 400, body: { error: 'body_required' } };
+  if (text.length > 8000) return { status: 400, body: { error: 'body_too_long' } };
+  const parentId = body?.parent_id != null ? Number(body.parent_id) : null;
+  const kind = ['message', 'directive', 'ack', 'system'].includes(body?.kind) ? body.kind : 'message';
+  const audience = body?.audience || null;
+  const ackRequired = body?.ack_required ? 1 : 0;
+
+  const thread = busDB.prepare('SELECT id FROM threads WHERE id = ?').get(threadId);
+  if (!thread) return { status: 404, body: { error: 'thread_not_found' } };
+
+  const now = Math.floor(Date.now() / 1000);
+  const insert = busDB.prepare(`
+    INSERT INTO messages (thread_id, parent_id, author, audience, body, kind, ack_required, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const touchThread = busDB.prepare('UPDATE threads SET updated_at = ? WHERE id = ?');
+  let messageId;
+  try {
+    const tx = busDB.transaction(() => {
+      const r = insert.run(threadId, parentId, author, audience, text, kind, ackRequired, now);
+      messageId = r.lastInsertRowid;
+      touchThread.run(now, threadId);
+    });
+    tx();
+  } catch (e) {
+    return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
+  }
+  return { status: 200, body: { ok: true, message_id: messageId, thread: getThread(threadId) } };
 }
 
 function listLedgerFiles({ maxDays = 14 } = {}) {
@@ -672,6 +762,8 @@ const handlers = [
   [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
   [/^\/api\/reports\/industry-scan$/, () => parseIndustryScan()],
+  [/^\/api\/threads$/,               (req, q) => listThreads(q)],
+  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]))],
 ];
 
 // Write handlers. Body is the parsed JSON request body. Each handler
@@ -686,6 +778,7 @@ const handlers = [
 const writeHandlers = [
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/,   (req, body, m) => postTaskStatus(m[1], body)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/comment$/,  (req, body, m) => postTaskComment(m[1], body)],
+  [/^\/api\/threads\/(\d+)\/reply$/,             (req, body, m) => postThreadReply(Number(m[1]), body)],
 ];
 
 function postTaskStatus(taskId, body) {
@@ -962,6 +1055,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
   console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
   console.log(`[chitin-console-api] reports_root=${REPORTS_ROOT || '(none)'}`);
+  console.log(`[chitin-console-api] agent-bus=${BUS_DB_PATH} (${busDB ? 'OK' : 'MISSING'})`);
 });
 
 process.on('SIGINT',  () => { server.close(); process.exit(0); });
