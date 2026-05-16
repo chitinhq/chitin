@@ -114,6 +114,47 @@ class HermesClawtaBridgeTests(unittest.TestCase):
             ):
                 self.assertFalse(module.has_spec_kit_entry(conn, "t_shared"))
 
+    def test_claim_priority_tickets_skips_ready_ticket_without_spec(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        conn.execute(
+            """
+            INSERT INTO tasks(id, title, body, status, priority, assignee, claim_lock)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_nospec",
+                "high priority without spec",
+                "Acceptance: do the thing",
+                "ready",
+                80,
+                None,
+                None,
+            ),
+        )
+
+        calls: list[list[str]] = []
+
+        def fake_run_cmd(args, **kwargs):
+            calls.append(list(args))
+            return "", 0
+
+        with mock.patch.object(module, "DRY_RUN", False), mock.patch.object(
+            module, "run_cmd", side_effect=fake_run_cmd
+        ), mock.patch.object(module, "spec_dir_for_board", return_value=Path("/tmp/no-specs-here")):
+            stats = module.claim_priority_tickets(conn)
+
+        self.assertEqual(stats["claimed_for_hermes"], 0)
+        self.assertEqual(stats["skipped"], 1)
+        self.assertFalse(
+            any(call[:2] == [module.KANBAN_FLOW, "start"] for call in calls),
+            f"missing-spec ticket must not be started; calls={calls}",
+        )
+        self.assertTrue(
+            any("missing spec-kit entry" in " ".join(call) for call in calls),
+            f"missing-spec skip should be commented; calls={calls}",
+        )
+
     def test_installer_targets_hermes_scripts_path(self) -> None:
         installer = INSTALLER.read_text()
         self.assertIn("HERMES_SCRIPTS_DIR", installer)

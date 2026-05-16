@@ -227,6 +227,20 @@ def claim_priority_tickets(conn):
             stats["skipped"] += 1
             continue
 
+        # Spec-kit is the shared dispatch prerequisite. Hermes must not bypass
+        # the poller by claiming high-priority work that lacks a spec entry.
+        if not has_spec_kit_entry(conn, tid):
+            print(f"  ⏭️  Skipping {tid}: missing spec-kit entry")
+            if not DRY_RUN:
+                run_cmd([
+                    "hermes", "kanban", "--board", BOARD, "comment", tid,
+                    "--author", "hermes",
+                    "⏭️ Hermes did not claim: missing spec-kit entry. "
+                    "Add .specify/specs/NNN-<slug>/spec.md before dispatch.",
+                ])
+            stats["skipped"] += 1
+            continue
+
         print(f"  🎯 Claiming {tid} (P{pri}): {title}")
         if not DRY_RUN:
             # Start = claim + move to in_progress
