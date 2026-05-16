@@ -16,7 +16,7 @@ local policy file into a single dashboard.
 | `/elo` | Sortable swarm ELO leaderboard from `~/.openclaw/data/clawta.db:swarm_elo`, filterable by class / driver, with elo distribution bar |
 | `/argus` | Status of `~/.argus/index.db` (table/row counts) and latest findings (gracefully degrades when the findings table is absent) |
 | `/policy` | Read-only line-numbered view of `chitin.yaml` with simple syntax highlighting. Edit + adopt flow ships with slice 6 of the dashboard epic |
-| `/suggestions` | Placeholder for the analyzer cron (slice 5). Surfaces the planned rubric so the page is informative pre-ship |
+| `/suggestions` | Analyzer suggestions from `~/.chitin/analyzer.db`, filterable by type/target with an on-demand analysis trigger |
 
 ## Coverage against the dashboard epic (`t_8f4d2ee5`)
 
@@ -24,7 +24,7 @@ local policy file into a single dashboard.
 - ✅ Slice 4 (cost vis): per-session cost rollup KPI + 24h cost histogram on overview. Stacked-area is a follow-up.
 - ⏳ Slice 1 (capture extension): the prompt/thinking/I/O sidecar is a kernel-side feature; the console renders any extra fields that show up on chain events but doesn't capture them.
 - ⏳ Slice 2 (replay API in Go): the JS API server here does the same join (ledger ⨝ blobs), but written in Node so the dashboard can stand alone. Trivial to swap for the eventual Go `chitin chain replay` JSON output.
-- ⏳ Slice 5 (analyzer cron): `/suggestions` is wired to read from a future `analyzer_suggestions` table; rubric is surfaced today.
+- ✅ Slice 5 (analyzer cron): `/suggestions` reads `~/.chitin/analyzer.db:analyzer_suggestions`, supports filtering, and can trigger a fresh 24h analyzer run.
 - ⏳ Slice 6 (policy composer): policy view is read-only; the editable form + auto-PR adoption flow is not yet built.
 
 ## Layout
@@ -109,9 +109,9 @@ so drawers/modals don't collide with the sticky topbar.
 
 ## What's intentionally not done yet
 
-- No write-back. Every endpoint opens DBs read-only and the policy view is
-  display-only. The chain-replay preview, adoption flow, and analyzer-side
-  table writes are out of scope until kernel slices 1, 5, 6 land.
+- No policy write-back. The analyzer trigger writes `~/.chitin/analyzer.db`,
+  but policy adoption, replay preview, and `chitin.yaml` mutation are still
+  out of scope until slice 6 lands.
 - No event capture for tool I/O / prompts / thinking. The console renders
   whatever fields the ledger has today; once slice 1 ships the sidecar, the
   drawer can render prompt + thinking + tool I/O by event id.

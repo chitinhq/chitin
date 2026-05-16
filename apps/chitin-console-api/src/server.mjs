@@ -56,6 +56,7 @@ const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
 const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
+const ANALYZER_DB = process.env.CHITIN_ANALYZER_DB || path.join(CHAIN_LEDGER_DIR, 'analyzer.db');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
 
 // Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
@@ -88,6 +89,23 @@ let kanbanDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
+let analyzerDB = null;
+
+const ANALYZER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS analyzer_suggestions (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  target TEXT NOT NULL,
+  diff TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_created_at
+  ON analyzer_suggestions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_type_target
+  ON analyzer_suggestions(type, target);
+`;
 
 function openIfExists(p, readonly = true) {
   try {
@@ -99,12 +117,25 @@ function openIfExists(p, readonly = true) {
   }
 }
 
+function openAnalyzerDB() {
+  try {
+    fs.mkdirSync(path.dirname(ANALYZER_DB), { recursive: true });
+    const db = new Database(ANALYZER_DB);
+    db.exec(ANALYZER_SCHEMA);
+    return db;
+  } catch (e) {
+    console.warn(`[console-api] could not open ${ANALYZER_DB}: ${e.message}`);
+    return null;
+  }
+}
+
 function reopen() {
-  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
+  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); analyzerDB?.close();
   kanbanDB           = openIfExists(BOARD_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
+  analyzerDB         = openAnalyzerDB();
 }
 reopen();
 
@@ -439,13 +470,84 @@ function getPolicy() {
   } catch (e) { return { path: POLICY_FILE, error: e.message }; }
 }
 
-function getAnalyzerSuggestions() {
+function getAnalyzerSuggestions(query) {
+  if (!analyzerDB) {
+    return {
+      enabled: false,
+      note: `analyzer db unavailable at ${ANALYZER_DB}`,
+      suggestions: [],
+      filters: { type: '', target: '', sort: 'created_at_desc' },
+    };
+  }
+  const type = (query.get('type') || '').trim();
+  const target = (query.get('target') || '').trim().toLowerCase();
+  const sort = (query.get('sort') || 'created_at_desc').trim();
+  const clauses = [];
+  const params = {};
+  if (type) {
+    clauses.push('type = @type');
+    params.type = type;
+  }
+  if (target) {
+    clauses.push('LOWER(target) LIKE @target');
+    params.target = `%${target}%`;
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const order = sort === 'created_at_asc' ? 'created_at ASC' : 'created_at DESC';
+  const suggestions = analyzerDB.prepare(`
+    SELECT id, type, target, diff, rationale, applied, created_at
+    FROM analyzer_suggestions
+    ${where}
+    ORDER BY ${order}, id ASC
+    LIMIT 500
+  `).all(params);
   return {
-    enabled: false,
-    note: 'Analyzer cron (slice 5 of the dashboard epic) not yet implemented. ' +
-          'Once `analyzer-cron.lobster` ships, this endpoint will read from ' +
-          'analyzer_suggestions(id, type, target, diff, rationale, applied, created_at).',
-    suggestions: [],
+    enabled: true,
+    note: suggestions.length ? '' : 'No suggestions yet. Run the analyzer to generate a fresh batch.',
+    suggestions,
+    filters: { type, target, sort },
+  };
+}
+
+function runAnalyzer(body) {
+  const window = String(body?.window || '24h').trim() || '24h';
+  const args = [
+    '-m', 'analysis.analyzer',
+    '--window', window,
+    '--db-path', ANALYZER_DB,
+    '--policy-file', POLICY_FILE,
+  ];
+  if (body?.skip_llm === true) args.push('--skip-llm');
+  const proc = spawnSync('python3', args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, PYTHONPATH: 'python' },
+  });
+  reopen();
+  let summary = null;
+  try {
+    summary = JSON.parse(proc.stdout || '{}');
+  } catch {}
+  if (proc.status !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: 'analyzer_failed',
+        exit: proc.status,
+        stdout: (proc.stdout || '').slice(-2000),
+        stderr: (proc.stderr || '').slice(-2000),
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      summary,
+      suggestions: getAnalyzerSuggestions(new URLSearchParams()).suggestions,
+    },
   };
 }
 
@@ -491,7 +593,7 @@ const handlers = [
   [/^\/api\/sessions$/,              (req, q) => listSessions(q)],
   [/^\/api\/sessions\/([a-zA-Z0-9_\-:.]+)$/, (req, q, m) => getSession(decodeURIComponent(m[1]))],
   [/^\/api\/policy$/,                () => getPolicy()],
-  [/^\/api\/suggestions$/,           () => getAnalyzerSuggestions()],
+  [/^\/api\/suggestions$/,           (req, q) => getAnalyzerSuggestions(q)],
   [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
 ];
@@ -507,6 +609,7 @@ const handlers = [
 // blip; acceptable until Plan 4 retires the hermes DB.
 const writeHandlers = [
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/, (req, body, m) => postTaskStatus(m[1], body)],
+  [/^\/api\/analyze$/, (req, body) => runAnalyzer(body)],
 ];
 
 function postTaskStatus(taskId, body) {
@@ -671,6 +774,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] analyzer=${ANALYZER_DB} (${analyzerDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
   console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
 });
