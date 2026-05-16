@@ -99,6 +99,9 @@ let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
 let busDB = null;
+// Per-board kanban DB cache. Lets ?board=<slug> swap data sources
+// per request without thrashing connections.
+const boardDBCache = new Map();
 
 function openIfExists(p, readonly = true) {
   try {
@@ -110,8 +113,51 @@ function openIfExists(p, readonly = true) {
   }
 }
 
+function boardKanbanPath(slug) {
+  if (!slug) return BOARD_DB;
+  const chitinPath = path.join(CHITIN_KANBAN_ROOT, slug, 'kanban.db');
+  const hermesPath = path.join(HERMES_KANBAN_ROOT, 'boards', slug, 'kanban.db');
+  if (fs.existsSync(chitinPath)) return chitinPath;
+  if (fs.existsSync(hermesPath)) return hermesPath;
+  return null;
+}
+
+/** Returns the kanban DB for a board. Falls back to the default when slug matches CURRENT_BOARD. */
+function getBoardDB(slug) {
+  if (!slug || slug === CURRENT_BOARD) return kanbanDB;
+  if (boardDBCache.has(slug)) return boardDBCache.get(slug);
+  const p = boardKanbanPath(slug);
+  if (!p) { boardDBCache.set(slug, null); return null; }
+  const db = openIfExists(p);
+  boardDBCache.set(slug, db);
+  return db;
+}
+
+/** Lists every board with a discoverable kanban DB. */
+function listBoards() {
+  const boards = new Map();
+  try {
+    for (const d of fs.readdirSync(CHITIN_KANBAN_ROOT)) {
+      const f = path.join(CHITIN_KANBAN_ROOT, d, 'kanban.db');
+      if (fs.existsSync(f)) boards.set(d, { slug: d, source: 'chitin', path: f });
+    }
+  } catch { /* may not exist yet */ }
+  try {
+    const root = path.join(HERMES_KANBAN_ROOT, 'boards');
+    for (const d of fs.readdirSync(root)) {
+      const f = path.join(root, d, 'kanban.db');
+      if (fs.existsSync(f) && !boards.has(d)) {
+        boards.set(d, { slug: d, source: 'hermes', path: f });
+      }
+    }
+  } catch { /* may not exist yet */ }
+  return { boards: [...boards.values()], current: CURRENT_BOARD };
+}
+
 function reopen() {
   kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); busDB?.close();
+  for (const db of boardDBCache.values()) { try { db?.close(); } catch { /* ignore */ } }
+  boardDBCache.clear();
   kanbanDB           = openIfExists(BOARD_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
@@ -380,8 +426,11 @@ function percentile(sorted, p) {
   return sorted[idx];
 }
 
-function getStats() {
-  if (!kanbanDB) return { board: CURRENT_BOARD, lanes: {} };
+function getStats(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const db = getBoardDB(board);
+  if (!db) return { board, lanes: {} };
+  const kanbanDB = db;  // shadow so the rest of the body is unchanged
   const rows = kanbanDB.prepare("SELECT status, COUNT(*) as n FROM tasks GROUP BY status").all();
   const lanes = Object.fromEntries(rows.map(r => [r.status, r.n]));
   const last7 = kanbanDB.prepare(
@@ -439,7 +488,7 @@ function getStats() {
     runsLast24 = r24.total; runsCompleted24 = r24.ok;
   } catch {}
   return {
-    board: CURRENT_BOARD,
+    board,
     lanes,
     completedLast7Days: last7,
     inFlight,
@@ -454,7 +503,9 @@ function getStats() {
 }
 
 function listTasks(query) {
-  if (!kanbanDB) return { board: CURRENT_BOARD, tasks: [] };
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
+  if (!kanbanDB) return { board, tasks: [] };
   const status   = query.get('status');
   const assignee = query.get('assignee');
   const search   = query.get('q');
@@ -497,10 +548,12 @@ function listTasks(query) {
   `;
   params.limit = limit;
   const rows = kanbanDB.prepare(sql).all(params);
-  return { board: CURRENT_BOARD, count: rows.length, tasks: rows };
+  return { board, count: rows.length, tasks: rows };
 }
 
-function getTask(id) {
+function getTask(id, board) {
+  const slug = board || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(slug);
   if (!kanbanDB) return null;
   const task = kanbanDB.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return null;
@@ -525,7 +578,9 @@ function getTask(id) {
   return { task, runs, events, comments, links, clawtaDecisions };
 }
 
-function listAssignees() {
+function listAssignees(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
   if (!kanbanDB) return { assignees: [] };
   const rows = kanbanDB.prepare(`
     SELECT assignee, COUNT(*) AS n
@@ -538,6 +593,8 @@ function listAssignees() {
 }
 
 function listRunsRecent(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
   if (!kanbanDB) return { runs: [] };
   const limit = Math.min(Number(query.get('limit') || 50), 500);
   const rows = kanbanDB.prepare(`
@@ -747,11 +804,12 @@ function getCostHistogram() {
 // ---------- Routing ----------
 const handlers = [
   [/^\/api\/health$/,                () => ({ ok: true, board: CURRENT_BOARD, ts: Date.now() })],
-  [/^\/api\/stats$/,                 () => getStats()],
+  [/^\/api\/stats$/,                 (req, q) => getStats(q)],
   [/^\/api\/tasks$/,                 (req, q) => listTasks(q)],
-  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1])],
-  [/^\/api\/assignees$/,             () => listAssignees()],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1], q.get('board'))],
+  [/^\/api\/assignees$/,             (req, q) => listAssignees(q)],
   [/^\/api\/runs\/recent$/,          (req, q) => listRunsRecent(q)],
+  [/^\/api\/boards$/,                () => listBoards()],
   [/^\/api\/argus\/info$/,           () => argusInfo()],
   [/^\/api\/argus\/findings$/,       (req, q) => listArgusFindings(q)],
   [/^\/api\/elo$/,                   () => listEloLeaderboard()],
@@ -776,15 +834,65 @@ const handlers = [
 // read returns the post-write state. Yes, that's a small latency
 // blip; acceptable until Plan 4 retires the hermes DB.
 const writeHandlers = [
+  [/^\/api\/tasks$/,                             (req, body) => createTask(body)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/,   (req, body, m) => postTaskStatus(m[1], body)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/comment$/,  (req, body, m) => postTaskComment(m[1], body)],
   [/^\/api\/threads\/(\d+)\/reply$/,             (req, body, m) => postThreadReply(Number(m[1]), body)],
 ];
 
+function createTask(body) {
+  const title = (body?.title || '').trim();
+  const text = (body?.body || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
+  const assignee = (body?.assignee || '').trim();
+  const priority = body?.priority != null ? Number(body.priority) : null;
+  const triage = body?.triage === false ? false : true;  // default to triage
+  const idempotencyKey = (body?.idempotency_key || '').trim();
+  if (!title) return { status: 400, body: { error: 'title_required' } };
+  if (title.length > 200) return { status: 400, body: { error: 'title_too_long' } };
+  if (text.length > 16000) return { status: 400, body: { error: 'body_too_long' } };
+
+  const args = ['kanban', '--board', board, 'create', title, '--json'];
+  if (text) args.push('--body', text);
+  if (assignee) args.push('--assignee', assignee);
+  if (priority != null && Number.isFinite(priority)) args.push('--priority', String(priority));
+  if (triage) args.push('--triage');
+  if (idempotencyKey) args.push('--idempotency-key', idempotencyKey);
+
+  const proc = spawnSync('hermes', args, { encoding: 'utf8', timeout: 30_000 });
+  if (proc.status !== 0) {
+    return { status: 502, body: {
+      error: 'hermes_create_failed',
+      exit: proc.status,
+      stderr: (proc.stderr || '').slice(-1000),
+      stdout: (proc.stdout || '').slice(-1000),
+    }};
+  }
+  let created = null;
+  try { created = JSON.parse(proc.stdout || '{}'); } catch {}
+
+  // Refresh the chitin mirror so the new task shows up on next GET.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
+    encoding: 'utf8', timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: created?.id ?? null,
+    title,
+    board,
+    refreshed,
+    created,
+  }};
+}
+
 function postTaskStatus(taskId, body) {
   const status = (body?.status || '').trim();
   const author = (body?.author || os.userInfo().username || 'console').trim();
   const reason = (body?.reason || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
   const allowed = new Set(['start', 'ready', 'unblock', 'block', 'demote', 'done']);
   if (!allowed.has(status)) {
     return { status: 400, body: { error: 'invalid_status', detail: `status must be one of ${[...allowed].join(', ')}` } };
@@ -802,7 +910,7 @@ function postTaskStatus(taskId, body) {
 
   const flow = spawnSync('kanban-flow', flowArgs, {
     encoding: 'utf8',
-    env: { ...process.env, KANBAN_BOARD: CURRENT_BOARD },
+    env: { ...process.env, KANBAN_BOARD: board },
     timeout: 15_000,
   });
   if (flow.status !== 0) {
@@ -815,10 +923,7 @@ function postTaskStatus(taskId, body) {
   }
 
   // Refresh the chitin-owned mirror so the next GET reflects the write.
-  // If migration fails we still return success — the write landed in
-  // hermes, and the next migrate cycle (whether manual or via a cron)
-  // will catch up.
-  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
     encoding: 'utf8',
     timeout: 30_000,
   });
@@ -829,16 +934,18 @@ function postTaskStatus(taskId, body) {
     ok: true,
     task_id: taskId,
     status,
+    board,
     flow_stdout: (flow.stdout || '').trim(),
     refreshed,
     refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
-    task: getTask(taskId),
+    task: getTask(taskId, board),
   }};
 }
 
 function postTaskComment(taskId, body) {
   const author = (body?.author || os.userInfo().username || 'console').trim();
   const text = (body?.body || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
   if (!text) {
     return { status: 400, body: { error: 'body_required', detail: 'comment body is required' } };
   }
@@ -846,19 +953,15 @@ function postTaskComment(taskId, body) {
     return { status: 400, body: { error: 'body_too_long', detail: 'comment must be <= 8000 chars' } };
   }
 
-  // Verify the task exists before we touch the DB. getTask uses the
-  // current kanbanDB connection which is the chitin-owned mirror.
-  const existing = getTask(taskId);
+  const existing = getTask(taskId, board);
   if (!existing) {
     return { status: 404, body: { error: 'task_not_found', detail: taskId } };
   }
 
-  // Writes need a writable handle. We open a fresh non-readonly
-  // connection to the hermes-side DB (source of truth during the
-  // cutover window) so kanban-flow's audit invariant holds — every
-  // comment also gets a task_events row.
+  // Writes need a writable handle on the hermes-side DB (source of
+  // truth during cutover) so kanban-flow's audit invariant holds.
   const home = os.homedir();
-  const hermesDB = path.join(home, '.hermes', 'kanban', 'boards', CURRENT_BOARD, 'kanban.db');
+  const hermesDB = path.join(home, '.hermes', 'kanban', 'boards', board, 'kanban.db');
   if (!fs.existsSync(hermesDB)) {
     return { status: 500, body: { error: 'no_writable_db', detail: hermesDB } };
   }
@@ -889,10 +992,8 @@ function postTaskComment(taskId, body) {
     writeDB.close();
   }
 
-  // Refresh the chitin mirror so subsequent reads include the new
-  // comment. Same pattern as postTaskStatus — soft-fail if migrate
-  // returns non-zero; the next migrate cycle catches up.
-  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+  // Refresh the chitin mirror so subsequent reads include the new comment.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
     encoding: 'utf8',
     timeout: 30_000,
   });
@@ -903,9 +1004,10 @@ function postTaskComment(taskId, body) {
     ok: true,
     task_id: taskId,
     author,
+    board,
     refreshed,
     refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
-    task: getTask(taskId),
+    task: getTask(taskId, board),
   }};
 }
 
