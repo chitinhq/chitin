@@ -59,6 +59,31 @@ const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
 const BUS_DB_PATH = process.env.CHITIN_AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 
+// Discord outbound. Auto-loaded from ~/.hermes/.env if process env
+// doesn't already have them — lets the console-api push to the
+// #hermes channel without a separate config step.
+function loadDiscordEnv() {
+  const out = {
+    token: process.env.DISCORD_BOT_TOKEN || '',
+    home: process.env.DISCORD_HOME_CHANNEL || '',
+  };
+  if (!out.token || !out.home) {
+    try {
+      const raw = fs.readFileSync(path.join(HOME, '.hermes', '.env'), 'utf8');
+      for (const line of raw.split('\n')) {
+        const m = line.match(/^([A-Z_]+)=(.*)$/);
+        if (!m) continue;
+        if (m[1] === 'DISCORD_BOT_TOKEN' && !out.token) out.token = m[2].trim();
+        if (m[1] === 'DISCORD_HOME_CHANNEL' && !out.home) out.home = m[2].trim();
+      }
+    } catch { /* env file optional */ }
+  }
+  return out;
+}
+const _discord = loadDiscordEnv();
+const DISCORD_BOT_TOKEN = _discord.token;
+const DISCORD_HOME_CHANNEL = _discord.home;
+
 // Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
 // built chitin-console (e.g. dist/apps/chitin-console/browser), the
 // server doubles as the SPA host so a single port covers both the
@@ -373,7 +398,7 @@ function getThread(id) {
   return { thread, messages, attachments };
 }
 
-function postThreadReply(threadId, body) {
+async function postThreadReply(threadId, body) {
   if (!busDB) return { status: 503, body: { error: 'bus_unavailable' } };
   const author = (body?.author || os.userInfo().username || 'console').trim();
   const text = (body?.body || '').trim();
@@ -384,7 +409,9 @@ function postThreadReply(threadId, body) {
   const audience = body?.audience || null;
   const ackRequired = body?.ack_required ? 1 : 0;
 
-  const thread = busDB.prepare('SELECT id FROM threads WHERE id = ?').get(threadId);
+  const thread = busDB.prepare(
+    'SELECT id, title, discord_thread_id FROM threads WHERE id = ?'
+  ).get(threadId);
   if (!thread) return { status: 404, body: { error: 'thread_not_found' } };
 
   const now = Math.floor(Date.now() / 1000);
@@ -404,7 +431,55 @@ function postThreadReply(threadId, body) {
   } catch (e) {
     return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
   }
-  return { status: 200, body: { ok: true, message_id: messageId, thread: getThread(threadId) } };
+
+  // Outbound Discord mirror: post the message directly via the bot
+  // token. The Phase 4 mirror is cron-style and not actively running,
+  // so without this every reply sat in bus.db unseen.
+  let discordMessageId = null;
+  let discordError = null;
+  try {
+    const channelId = thread.discord_thread_id || DISCORD_HOME_CHANNEL;
+    if (channelId && DISCORD_BOT_TOKEN) {
+      const formatted = `**${author}** · _${thread.title}_\n${text.slice(0, 1900)}`;
+      const res = await postToDiscord(channelId, formatted);
+      if (res?.id) {
+        discordMessageId = res.id;
+        busDB.prepare('UPDATE messages SET discord_message_id = ? WHERE id = ?').run(res.id, messageId);
+      }
+    } else if (!DISCORD_BOT_TOKEN) {
+      discordError = 'DISCORD_BOT_TOKEN not configured';
+    } else {
+      discordError = 'no channel — thread.discord_thread_id and DISCORD_HOME_CHANNEL both empty';
+    }
+  } catch (e) {
+    discordError = String(e?.message || e);
+  }
+
+  return { status: 200, body: {
+    ok: true,
+    message_id: messageId,
+    discord_message_id: discordMessageId,
+    discord_error: discordError,
+    thread: getThread(threadId),
+  }};
+}
+
+async function postToDiscord(channelId, content) {
+  const url = `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`;
+  const body = JSON.stringify({ content });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bot ${DISCORD_BOT_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`discord ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return await res.json();
 }
 
 function listLedgerFiles({ maxDays = 14 } = {}) {
