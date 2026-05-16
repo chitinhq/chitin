@@ -566,6 +566,26 @@ steps:
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
+      # Defensive invariant: the worker's branch MUST have at least one commit
+      # not present in origin/$DEFAULT_BRANCH before we push. Without this, a
+      # worker that exits with WORKER_STATUS=completed but never actually
+      # committed (lying or buggy worker) produces a zombie branch on the
+      # remote (HEAD == origin/$DEFAULT_BRANCH HEAD) and `gh pr create` then
+      # fails with "no commits between …", silently losing the ticket.
+      # This gate runs regardless of WORKER_STATUS — git is the source of truth.
+      git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+      COMMITS_AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo 0)
+      if [[ "${COMMITS_AHEAD:-0}" -eq 0 ]]; then
+        MSG="🦞 ${ticket_id}: worker reported status=$WORKER_STATUS but branch $BRANCH has 0 commits ahead of $DEFAULT_BRANCH. Refusing to push an empty branch. Worktree=$WORKTREE."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome failure \
+          --failure-kind empty_branch >/dev/null 2>&1 || true
+        kanban-flow crash ${ticket_id} "worker produced 0 commits on branch $BRANCH ahead of $DEFAULT_BRANCH (worktree=$WORKTREE, worker_status=$WORKER_STATUS)" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
       # Push (idempotent — git push on already-up-to-date is fine).
       git push -u origin "$BRANCH" 2>&1 | tail -3 || true
       # Open PR. Reuse if one already exists for this head.

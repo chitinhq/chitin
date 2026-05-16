@@ -33,6 +33,30 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         self.assertIn("pr_failure_report.py", installer)
         self.assertIn("spawn_worker_subprocess.py", installer)
 
+    def test_independent_git_commit_count_gate_runs_before_push(self):
+        """The finalize step must verify the branch has commits ahead of
+        origin/$DEFAULT_BRANCH before pushing, independent of the worker's
+        self-reported WORKER_STATUS. Without this, a worker that lies about
+        completing (or a buggy worker that exits clean without committing)
+        leaves a zombie branch pointing at origin/main, then `gh pr create`
+        fails with "no commits between…" and the ticket is silently lost.
+        """
+        workflow = CANONICAL.read_text()
+
+        # The gate must use git rev-list (independent of WORKER_STATUS).
+        self.assertIn('git rev-list --count "origin/$DEFAULT_BRANCH..HEAD"', workflow)
+        self.assertIn('COMMITS_AHEAD', workflow)
+        # The gate must precede the push (extract slice between gate and push).
+        gate_idx = workflow.find('COMMITS_AHEAD=$(git rev-list')
+        push_idx = workflow.find('git push -u origin "$BRANCH"')
+        self.assertGreater(gate_idx, 0, 'gate must exist')
+        self.assertGreater(push_idx, gate_idx, 'gate must come before push')
+        # On gate failure, must crash via kanban-flow and exit before push.
+        between = workflow[gate_idx:push_idx]
+        self.assertIn('kanban-flow crash', between)
+        self.assertIn('exit 0', between)
+        self.assertIn('empty_branch', between)
+
     def test_pr_create_failure_path_surfaces_gh_output(self):
         workflow = CANONICAL.read_text()
 
