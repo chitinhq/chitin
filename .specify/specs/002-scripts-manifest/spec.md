@@ -28,6 +28,10 @@ have a test or a Go-port plan.
 ## Boundaries
 
 - **Empty MANIFEST.yaml**: linter must pass with zero scripts (baseline)
+- **Max script set**: linter must pass when every non-excluded file under
+  `scripts/` is represented exactly once in `MANIFEST.yaml`
+- **Manifest error**: malformed YAML, unknown categories, and missing
+  runtime-critical coverage fields fail closed with a non-zero exit
 - **Missing category**: every entry must have exactly one category from the
   four-value enum; linter rejects unknown categories
 - **Untracked script**: any `.sh`/`.py` under `scripts/` not in MANIFEST.yaml
@@ -36,6 +40,13 @@ have a test or a Go-port plan.
   runtime-critical status
 - **Dual-tagged entries**: a script cannot be both `runtime-critical` and
   `migration`; linter rejects
+
+## Implementation test obligations
+
+- Boundary: empty - empty `MANIFEST.yaml` with zero scripts passes
+- Boundary: max - full recursive `scripts/` inventory passes when every
+  non-excluded script appears once
+- Boundary: error - malformed YAML or invalid manifest entries fail closed
 
 ## Scope
 

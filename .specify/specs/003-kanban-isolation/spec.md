@@ -47,7 +47,9 @@ DB from any `swarm/*` code path; record forensic evidence of any bypass.
 
 ## Out of scope
 
-- Hermes bridge mutations (it already routes through `kanban-flow`)
+- Hermes bridge mutation implementation, unless audit finds a direct-write
+  bridge path; implementation must verify current bridge writes route through
+  `kanban-flow` before excluding them from the migration work
 - Dashboard read paths (SELECT-only)
 - Rewriting test fixtures to use `kanban-flow` (separate effort)
 - SQLite trigger-based forensic provenance (unreliable for per-connection
