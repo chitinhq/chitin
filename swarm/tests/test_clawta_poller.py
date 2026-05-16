@@ -680,6 +680,57 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(seen[1][0:4], [module.KANBAN_FLOW_BIN, "unblock", "t_unblock", "--author"])
         self.assertIn("Dependency gate cleared: PR #99999", seen[2][-1])
 
+    def test_auto_unblock_skips_loop_detected_ticket(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "t_looped",
+                    "blocked on pr",
+                    "Depends on PR #99999.",
+                    "blocked",
+                    "red",
+                    50,
+                    1,
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "t_looped",
+                        "clawta-poller",
+                        "Blocked: dependency gate: waiting on PR #99999 (state=open)",
+                        10,
+                    ),
+                    (
+                        "t_looped",
+                        "board-watchdog",
+                        "Blocked: loop_detected=true; watchdog owns this until manual repair",
+                        11,
+                    ),
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module.subprocess, "run"
+            ) as fake_run:
+                unblocked = module.auto_unblock_dependency_tickets(dry_run=False)
+
+        self.assertEqual(unblocked, [])
+        fake_run.assert_not_called()
+
 
 class ClawtaPollerRoutingTests(unittest.TestCase):
     def test_route_ticket_propagates_router_circuit_breaker_env(self) -> None:
