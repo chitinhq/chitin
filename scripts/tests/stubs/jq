@@ -13,6 +13,24 @@ if [[ " $* " == *" -n "* ]]; then
   exit 0
 fi
 
+if [[ "$*" == *"closed_at == null"* ]]; then
+  input=$(cat)
+  id=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "id" ]]; then
+      id="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  if [[ -n "$id" && "$input" == *"\"id\":\"$id\""* && "$input" == *"\"closed_at\":null"* ]]; then
+    printf 'true\n'
+    exit 0
+  fi
+  exit 1
+fi
+
 count=0
 if [[ "$*" == *"index(\$rid) == null"* ]]; then
   count="${STUB_JQ_POLICY_COUNT:-0}"
