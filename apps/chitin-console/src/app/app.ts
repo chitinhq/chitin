@@ -7,7 +7,12 @@ import { filter, startWith } from 'rxjs/operators';
 import { ApiService } from './api.service';
 import { BoardService } from './board.service';
 
-interface NavItem { path: string; label: string; icon: string; external?: boolean; }
+interface NavItem {
+  path: string;
+  label: string;
+  icon: string;
+  external?: boolean;
+}
 
 @Component({
   imports: [CommonModule, RouterModule, FormsModule],
@@ -24,18 +29,25 @@ export class App implements OnInit, OnDestroy {
   private healthTimer: ReturnType<typeof setInterval> | null = null;
 
   readonly health = signal<{ ok: boolean; board?: string; lastTs?: number } | null>(null);
-  readonly currentPath = signal<string>('overview');
+  readonly currentPath = signal<string>('queue');
+  readonly moreOpen = signal<boolean>(false);
 
-  readonly nav: NavItem[] = [
+  // Primary surfaces — bottom tab bar on mobile, topbar on desktop.
+  // Four items + a More button = five thumb-reachable tabs.
+  readonly primaryNav: NavItem[] = [
+    { path: '/queue',    label: 'Inbox',    icon: 'inbox' },
+    { path: '/board',    label: 'Board',    icon: 'board' },
+    { path: '/threads',  label: 'Chat',     icon: 'chat' },
+    { path: '/reports',  label: 'Insights', icon: 'insights' },
+  ];
+
+  // Secondary — accessible via the "More" overflow.
+  readonly secondaryNav: NavItem[] = [
     { path: '/overview',    label: 'Overview',    icon: 'overview' },
-    { path: '/queue',       label: 'My Queue',    icon: 'queue' },
-    { path: '/threads',     label: 'Threads',     icon: 'threads' },
-    { path: '/board',       label: 'Board',       icon: 'board' },
+    { path: '/tickets',     label: 'All tickets', icon: 'tickets' },
     { path: '/sessions',    label: 'Sessions',    icon: 'sessions' },
-    { path: '/tickets',     label: 'Tickets',     icon: 'tickets' },
     { path: '/elo',         label: 'Swarm ELO',   icon: 'elo' },
     { path: '/argus',       label: 'Argus',       icon: 'argus' },
-    { path: '/reports',     label: 'Reports',     icon: 'reports' },
     { path: '/policy',      label: 'Policy',      icon: 'policy' },
     { path: '/suggestions', label: 'Suggestions', icon: 'suggestions' },
   ];
@@ -47,22 +59,24 @@ export class App implements OnInit, OnDestroy {
     this.routerSub = this.router.events
       .pipe(filter(e => e instanceof NavigationEnd), startWith(null))
       .subscribe(() => {
-        const url = this.router.url.split('?')[0].replace(/^\//, '') || 'overview';
+        const url = this.router.url.split('?')[0].replace(/^\//, '') || 'queue';
         this.currentPath.set(url.split('/')[0]);
+        this.moreOpen.set(false);
       });
-  }
-
-  onBoardChange(slug: string) {
-    this.boardSvc.setCurrent(slug);
-    // Hard reload so all pages re-fetch with the new board scope.
-    // Simpler than wiring a per-page reload signal everywhere.
-    window.location.reload();
   }
 
   ngOnDestroy() {
     if (this.healthTimer) clearInterval(this.healthTimer);
     this.routerSub?.unsubscribe();
   }
+
+  onBoardChange(slug: string) {
+    this.boardSvc.setCurrent(slug);
+    window.location.reload();
+  }
+
+  toggleMore() { this.moreOpen.update(v => !v); }
+  closeMore()  { this.moreOpen.set(false); }
 
   private pollHealth() {
     this.api.health().subscribe({
