@@ -183,8 +183,30 @@ SPEC_KIT_REF_RE = re.compile(
 )
 
 
+def spec_kit_entry_mentions_ticket(tid: str) -> bool:
+    """True when any board-appropriate spec.md explicitly binds to this ticket id."""
+    if not tid:
+        return False
+    spec_root = spec_dir_for_board(BOARD).expanduser().resolve()
+    if not spec_root.is_dir():
+        return False
+    needle = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(tid)}(?![A-Za-z0-9_])")
+    for spec_path in spec_root.glob("*/spec.md"):
+        try:
+            if needle.search(spec_path.read_text(errors="ignore")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def has_spec_kit_entry(conn, tid: str) -> bool:
-    """Check if the ticket references an existing board-appropriate spec.md."""
+    """Check for an existing board-appropriate spec binding for this ticket.
+
+    Accept both directions used by operators:
+    - ticket body references `.specify/specs/NNN-slug/spec.md`
+    - spec.md contains the exact ticket id (for specs created after tickets)
+    """
     row = conn.execute("SELECT body FROM tasks WHERE id = ?", (tid,)).fetchone()
     body = (row["body"] or "") if row else ""
     spec_root = spec_dir_for_board(BOARD).expanduser().resolve()
@@ -196,7 +218,7 @@ def has_spec_kit_entry(conn, tid: str) -> bool:
             continue
         if candidate.is_file():
             return True
-    return False
+    return spec_kit_entry_mentions_ticket(tid)
 
 
 def claim_priority_tickets(conn):

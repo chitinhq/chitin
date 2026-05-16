@@ -235,9 +235,28 @@ def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[
     return paths
 
 
+def spec_kit_entry_mentions_ticket(tid: str | None, *, board: str | None = None) -> bool:
+    """True when any board-appropriate spec.md explicitly binds to this ticket id."""
+    if not tid:
+        return False
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    if not spec_root.is_dir():
+        return False
+    needle = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(tid)}(?![A-Za-z0-9_])")
+    for spec_path in spec_root.glob("*/spec.md"):
+        try:
+            if needle.search(spec_path.read_text(errors="ignore")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def has_spec_kit_entry(ticket: dict[str, Any], *, board: str | None = None) -> bool:
-    """True when a ticket references an existing board-appropriate spec.md."""
-    return any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board))
+    """True when ticket/spec content has an existing board-appropriate spec binding."""
+    if any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board)):
+        return True
+    return spec_kit_entry_mentions_ticket(ticket.get("id"), board=board)
 
 
 def missing_spec_kit_reason(ticket: dict[str, Any]) -> str | None:
