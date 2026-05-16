@@ -1125,7 +1125,7 @@ const server = http.createServer(async (req, res) => {
         try { body = await readBody(req); }
         catch (e) { return json(res, 400, { error: 'bad_body', detail: String(e.message || e) }); }
         try {
-          const out = fn(req, body, m);
+          const out = await fn(req, body, m);
           return json(res, out.status, out.body);
         } catch (e) { return serverErr(res, e); }
       }
