@@ -117,7 +117,7 @@ steps:
       bash -c "$(cat <<'BASH_SCRIPT'
       set -euo pipefail
       TICKET=$(cat)
-      PROMPT="Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {\"complexity\": \"low\" | \"med\" | \"high\", \"capabilities\": [\"go\" | \"ts\" | \"python\" | \"refactor\" | \"debug\" | \"review\"], \"estimated_loc\": <integer>, \"needs_frontier\": <true|false>}. Ticket JSON: $TICKET"
+      PROMPT='Classify this ticket and reply with ONLY a JSON object (no prose, no markdown fences): {"complexity": "low" | "med" | "high", "capabilities": ["go" | "ts" | "python" | "refactor" | "debug" | "review"], "estimated_loc": <integer>, "needs_frontier": <true|false>}. Ticket JSON:'"$TICKET"
       OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
       "$OPENCLAW_BIN" agent --agent clawta --message "$PROMPT"
       BASH_SCRIPT
@@ -172,10 +172,10 @@ steps:
       REASONING=$(cat)
       COMMENT=$(printf '%s' "$REASONING" | python3 /home/red/.openclaw/workflows/clawta_decisions.py record \
         --ticket-id ${ticket_id} \
-        --driver $pick_driver.json.driver \
-        --model $pick_driver.json.model \
-        --shape-bucket $pick_driver.json.shape_bucket \
-        --selection-mode $pick_driver.json.selection_mode)
+        --driver "$pick_driver.json.driver" \
+        --model "$pick_driver.json.model" \
+        --shape-bucket "$pick_driver.json.shape_bucket" \
+        --selection-mode "$pick_driver.json.selection_mode")
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 $COMMENT"
     stdin: $router_explanation.stdout
 
@@ -192,7 +192,7 @@ steps:
     description: Operator confirms the dispatch decision
     approval: >
       Dispatch ${ticket_id} to $pick_driver.json.driver?
-      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity | Capabilities: $pick_driver.json.caps_needed
+      Model: $pick_driver.json.model | Complexity: $pick_driver.json.complexity
 
   # ─────────────────────────────────────────────────────────────────────
   # 6. Reassign the kanban ticket to the picked driver lane
@@ -304,9 +304,9 @@ steps:
       # scripts/create-worktree.sh which defaults to ../chitin-<branch>/
       # — a path finalize doesn't search. Lobster owns the worktree
       # contract end-to-end now; the leaf CLI just edits and commits.
-      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/swarm-${DRIVER}-${TICKET_ID}"
+      WORKTREE_DIR="$HOME/.cache/chitin/swarm-worktrees/${DRIVER}-${TICKET_ID}"
       TICKET_ID_SHORT="${TICKET_ID#t_}"
-      BRANCH="swarm/${DRIVER}-${TICKET_ID_SHORT}"
+      BRANCH="agent/${DRIVER}-${TICKET_ID_SHORT}"
       BOARD_SLUG='$resolve_board.json.board'
       CHITIN_REPO=$(chitin-kernel board-config "$BOARD_SLUG" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
@@ -538,11 +538,10 @@ steps:
         esac
       fi
 
-      # Locate the most recent swarm worktree for this ticket. Pattern is
-      # ~/.cache/chitin/swarm-worktrees/swarm-<slug>-${ticket_id}/ — the
-      # leaf CLI creates it, slug varies by ticket title. Newest match wins
-      # if the worker re-tried.
-      WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/swarm-*-${ticket_id}*/ 2>/dev/null | head -1)
+      # Locate the most recent worktree for this ticket. Pattern is
+      # ~/.cache/chitin/swarm-worktrees/<driver>-<ticket_id>/ — the
+      # spawn_worker step creates it. Newest match wins if the worker re-tried.
+      WORKTREE=$(ls -td "$HOME"/.cache/chitin/swarm-worktrees/*-${ticket_id}*/ 2>/dev/null | head -1)
       if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
         MSG="🦞 spawn_worker completed but no worktree found for ${ticket_id} — worker may have failed before committing."
         hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
@@ -564,6 +563,26 @@ steps:
         hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block, don't leave in_progress with no PR.
         kanban-flow crash ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta --run-status failed --outcome failed 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      # Defensive invariant: the worker's branch MUST have at least one commit
+      # not present in origin/$DEFAULT_BRANCH before we push. Without this, a
+      # worker that exits with WORKER_STATUS=completed but never actually
+      # committed (lying or buggy worker) produces a zombie branch on the
+      # remote (HEAD == origin/$DEFAULT_BRANCH HEAD) and `gh pr create` then
+      # fails with "no commits between …", silently losing the ticket.
+      # This gate runs regardless of WORKER_STATUS — git is the source of truth.
+      git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+      COMMITS_AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo 0)
+      if [[ "${COMMITS_AHEAD:-0}" -eq 0 ]]; then
+        MSG="🦞 ${ticket_id}: worker reported status=$WORKER_STATUS but branch $BRANCH has 0 commits ahead of $DEFAULT_BRANCH. Refusing to push an empty branch. Worktree=$WORKTREE."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome failure \
+          --failure-kind empty_branch >/dev/null 2>&1 || true
+        kanban-flow crash ${ticket_id} "worker produced 0 commits on branch $BRANCH ahead of $DEFAULT_BRANCH (worktree=$WORKTREE, worker_status=$WORKER_STATUS)" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
