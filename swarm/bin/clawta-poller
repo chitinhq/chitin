@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import resolve_db, resolve_board, spec_dir_for_board
 
 
 DB_PATH: Path = resolve_db()
@@ -122,6 +122,10 @@ TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
 )
+SPEC_KIT_REF_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_.~/-]*/)?\.specify/specs/"
+    r"(?P<slug>[0-9A-Za-z][0-9A-Za-z_.-]*)/spec\.md)"
+)
 # Tracking-epic marker: a body line that opts a ticket out of auto-promotion
 # and out of the demote/stale-flag gates. Matches `Tracking-epic: true|yes|1`
 # at start of line, case-insensitive. See ticket t_6eba6ad2.
@@ -177,6 +181,22 @@ def extract_named_boundaries(field_value: str | None) -> list[str]:
     return boundaries
 
 
+def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
+    """Legacy validator kept for reviewer/test callers; dispatch uses spec-kit."""
+    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
+    if not field_value:
+        return (
+            "missing invariants_and_boundaries: field — triage must name the "
+            "preserved invariant and explicit boundary list before promotion to ready"
+        )
+    if not extract_named_boundaries(field_value):
+        return (
+            "invariants_and_boundaries: missing explicit boundary list — "
+            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
+        )
+    return None
+
+
 def is_tracking_epic(body: str | None) -> bool:
     """True when the body opts the ticket out of auto-promotion + demote gates.
 
@@ -196,19 +216,38 @@ def is_parent_hierarchy_prefix(prefix: str) -> bool:
     return normalized.endswith("parent:")
 
 
-def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
-    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
-    if not field_value:
-        return (
-            "missing invariants_and_boundaries: field — triage must name the "
-            "preserved invariant and explicit boundary list before promotion to ready"
-        )
-    if not extract_named_boundaries(field_value):
-        return (
-            "invariants_and_boundaries: missing explicit boundary list — "
-            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
-        )
-    return None
+def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[Path]:
+    """Return referenced spec-kit `spec.md` paths that stay under this board's spec root."""
+    if not body:
+        return []
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in SPEC_KIT_REF_RE.finditer(body):
+        candidate = (spec_root / match.group("slug") / "spec.md").resolve()
+        try:
+            candidate.relative_to(spec_root)
+        except ValueError:
+            continue
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
+    return paths
+
+
+def has_spec_kit_entry(ticket: dict[str, Any], *, board: str | None = None) -> bool:
+    """True when a ticket references an existing board-appropriate spec.md."""
+    return any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board))
+
+
+def missing_spec_kit_reason(ticket: dict[str, Any]) -> str | None:
+    if has_spec_kit_entry(ticket, board=BOARD):
+        return None
+    spec_root = spec_dir_for_board(BOARD)
+    return (
+        "missing spec-kit entry — dispatch/re-dispatch requires an existing "
+        f".specify/specs/NNN-<slug>/spec.md under {spec_root} before promotion to ready"
+    )
 
 
 @dataclass(frozen=True)
@@ -970,8 +1009,8 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     return demoted
 
 
-def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
-    """Demote ready/todo tickets that skipped the boundary-naming triage field."""
+def demote_missing_spec_kit_entries(dry_run: bool) -> list[str]:
+    """Demote ready/todo tickets that lack an existing spec-kit spec.md."""
     candidates = fetch_dispatchable_with_bodies()
     if not candidates:
         return []
@@ -979,7 +1018,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     for ticket in candidates:
         if is_tracking_epic(ticket.get("body")):
             continue
-        reason = missing_invariants_reason(ticket)
+        reason = missing_spec_kit_reason(ticket)
         if not reason:
             continue
         if demote_ticket(ticket["id"], reason, dry_run):
@@ -987,7 +1026,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     if demoted:
         log(
             "tick: demoted "
-            f"{len(demoted)} ticket(s) missing invariants_and_boundaries"
+            f"{len(demoted)} ticket(s) missing spec-kit entries"
         )
     return demoted
 
@@ -1036,21 +1075,21 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
-    # Step 2: Reject tickets that reached ready/todo without the mandatory
-    # invariants_and_boundaries triage field. This is the poller's enforcement
-    # point for the triage -> ready contract.
-    invariants_demoted = demote_missing_invariants_and_boundaries(dry_run)
-
-    # Step 3: Block ready/todo tickets with unresolved cross-ticket / cross-PR
+    # Step 2: Block ready/todo tickets with unresolved cross-ticket / cross-PR
     # dependencies so they don't get dispatched before their prerequisites land.
     dependency_blocked = apply_dependency_gate(
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
+    # Step 3: Reject remaining ready/todo tickets without the mandatory
+    # spec-kit entry. This is the poller's enforcement point for the
+    # triage -> ready contract.
+    spec_demoted = demote_missing_spec_kit_entries(dry_run)
+
     # Step 4: Dispatch already-routed terminal-lane work first so visible
     # ready→in_progress movement is not starved by a large clawta routing queue.
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
-    demoted = invariants_demoted + demoted
+    demoted = spec_demoted + demoted
 
     # Step 5: Demote ungroomed tickets (no assignee or non-dispatchable).
     ungroomed_demoted = demote_ungroomed(dry_run)

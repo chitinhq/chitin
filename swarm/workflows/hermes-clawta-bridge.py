@@ -9,9 +9,13 @@ import json
 import os
 import sqlite3
 import subprocess
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
+from board_resolver import spec_dir_for_board
 
 BOARD = os.environ.get("KANBAN_BOARD", "chitin")
 KANBAN_DB = Path.home() / f".hermes/kanban/boards/{BOARD}/kanban.db"
@@ -173,10 +177,26 @@ def is_operator_blocked(conn, tid: str, assignee: str | None, block_reason: str 
     return False
 
 
-def has_invariants_and_boundaries(conn, tid: str) -> bool:
-    """Check if ticket body contains invariants_and_boundaries."""
-    body = conn.execute("SELECT body FROM tasks WHERE id = ?", (tid,)).fetchone()
-    return bool(body and "invariants_and_boundaries" in (body["body"] or ""))
+SPEC_KIT_REF_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_.~/-]*/)?\.specify/specs/"
+    r"(?P<slug>[0-9A-Za-z][0-9A-Za-z_.-]*)/spec\.md)"
+)
+
+
+def has_spec_kit_entry(conn, tid: str) -> bool:
+    """Check if the ticket references an existing board-appropriate spec.md."""
+    row = conn.execute("SELECT body FROM tasks WHERE id = ?", (tid,)).fetchone()
+    body = (row["body"] or "") if row else ""
+    spec_root = spec_dir_for_board(BOARD).expanduser().resolve()
+    for match in SPEC_KIT_REF_RE.finditer(body):
+        candidate = (spec_root / match.group("slug") / "spec.md").resolve()
+        try:
+            candidate.relative_to(spec_root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            return True
+    return False
 
 
 def claim_priority_tickets(conn):
@@ -204,6 +224,20 @@ def claim_priority_tickets(conn):
         # Skip if already claimed by someone else
         if claim_lock and assignee != "hermes":
             print(f"  ⏭️  Skipping {tid} (claimed by {assignee})")
+            stats["skipped"] += 1
+            continue
+
+        # Spec-kit is the shared dispatch prerequisite. Hermes must not bypass
+        # the poller by claiming high-priority work that lacks a spec entry.
+        if not has_spec_kit_entry(conn, tid):
+            print(f"  ⏭️  Skipping {tid}: missing spec-kit entry")
+            if not DRY_RUN:
+                run_cmd([
+                    "hermes", "kanban", "--board", BOARD, "comment", tid,
+                    "--author", "hermes",
+                    "⏭️ Hermes did not claim: missing spec-kit entry. "
+                    "Add .specify/specs/NNN-<slug>/spec.md before dispatch.",
+                ])
             stats["skipped"] += 1
             continue
 
@@ -243,7 +277,7 @@ def escalate_failures(conn):
     - Never auto-unblock tickets assigned to operator (red/jp)
     - Never auto-unblock tickets blocked by watchdog or for spec reasons
     - Only classify based on the LATEST comment, not stale history
-    - Skip tickets without invariants_and_boundaries
+    - Skip tickets without an existing spec-kit entry
     """
     stats = {"escalated_from_clawta": 0, "auto_unblocked": 0, "operator_blocked": 0}
 
@@ -301,9 +335,9 @@ def escalate_failures(conn):
             stats["escalated_from_clawta"] += 1
             continue
 
-        # Guard 3: Never unblock tickets without invariants_and_boundaries
-        if not has_invariants_and_boundaries(conn, tid):
-            print(f"      ⏭️  Skipping auto-unblock: no invariants_and_boundaries in body")
+        # Guard 3: Never unblock tickets without a board-appropriate spec-kit entry
+        if not has_spec_kit_entry(conn, tid):
+            print(f"      ⏭️  Skipping auto-unblock: no spec-kit entry for board {BOARD}")
             conn.execute("UPDATE tasks SET block_reason = ? WHERE id = ?", (fclass, tid))
             conn.commit()
             stats["operator_blocked"] += 1
