@@ -59,6 +59,18 @@ hardcode its own.
 - Fallback logic with structured warnings and `approval_source` stamps
 - Tests for approved/unapproved/empty-list/kernel-unavailable scenarios
 
+## Boundary coverage test plan
+
+- **empty boundary**: kernel returns `[]`; `_pick_driver` falls back to the
+  hardcoded roster, emits a structured warning, and stamps
+  `approval_source=fallback`.
+- **max boundary**: kernel returns a large driver registry containing every
+  configured driver plus unknown future drivers; `_pick_driver` filters to
+  locally routable cards without caching stale approvals.
+- **error boundary**: `chitin-kernel drivers list --json` is unavailable,
+  times out, exits non-zero, or emits malformed JSON; `_pick_driver` falls
+  back with the same warning + `approval_source=fallback` stamp.
+
 ## Out of scope
 
 - ELO score recalculation or routing algorithm changes (pick *which* driver
