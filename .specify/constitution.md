@@ -22,7 +22,8 @@ kernel to write chain events; never bypass hermes to write kanban state.
 - Integration branch: `main` (this is the chitin board's default branch)
 - Workers PR against `main`, not against feature branches
 - Sibling worktrees (`~/workspace/chitin-*`) are ephemeral dispatch targets.
-  Canonical source is always the main checkout at `~/workspace/chitin`.
+  Canonical source is the tracked repo on `main`; branch work happens in
+  sibling worktrees.
 
 ## 3. Spec-kit promotion gate
 
