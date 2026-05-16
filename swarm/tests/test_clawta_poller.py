@@ -88,12 +88,37 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
     def test_missing_spec_kit_reason_rejects_shared_ticket_without_workspace_spec(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
-            ticket = {"body": "Spec: .specify/specs/123-shared/spec.md"}
+            ticket = {"id": "t_missing1", "body": "Spec: .specify/specs/123-shared/spec.md"}
             with mock.patch.object(module, "BOARD", "readybench"), mock.patch.object(
                 module, "spec_dir_for_board", return_value=Path(tmp)
             ):
                 self.assertFalse(module.has_spec_kit_entry(ticket))
                 self.assertIn("missing spec-kit entry", module.missing_spec_kit_reason(ticket) or "")
+
+    def test_has_spec_kit_entry_accepts_spec_that_mentions_ticket_id(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("> Spec-kit entry for ticket `t_75c8c8c1`\n")
+            ticket = {"id": "t_75c8c8c1", "body": "No spec path in ticket body"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(ticket))
+                self.assertIsNone(module.missing_spec_kit_reason(ticket))
+
+    def test_has_spec_kit_entry_requires_exact_ticket_id_in_spec(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("> Spec-kit entry for ticket `t_75c8c8c10`\n")
+            ticket = {"id": "t_75c8c8c1", "body": "No spec path in ticket body"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertFalse(module.has_spec_kit_entry(ticket))
 
     def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
         module = load_module()

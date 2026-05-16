@@ -114,6 +114,38 @@ class HermesClawtaBridgeTests(unittest.TestCase):
             ):
                 self.assertFalse(module.has_spec_kit_entry(conn, "t_shared"))
 
+    def test_has_spec_kit_entry_accepts_spec_that_mentions_ticket_id(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("> Spec-kit entry for ticket `t_75c8c8c1`\n")
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, priority) VALUES (?, ?, ?, ?, ?)",
+                ("t_75c8c8c1", "scripts manifest", "No spec path in body", "ready", 50),
+            )
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(conn, "t_75c8c8c1"))
+
+    def test_has_spec_kit_entry_requires_exact_ticket_id_in_spec(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("> Spec-kit entry for ticket `t_75c8c8c10`\n")
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, priority) VALUES (?, ?, ?, ?, ?)",
+                ("t_75c8c8c1", "scripts manifest", "No spec path in body", "ready", 50),
+            )
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertFalse(module.has_spec_kit_entry(conn, "t_75c8c8c1"))
+
     def test_claim_priority_tickets_skips_ready_ticket_without_spec(self) -> None:
         module = load_module()
         conn = make_conn()
