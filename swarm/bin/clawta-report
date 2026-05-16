@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
-import html, json, os, re, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+import html, json, os, re, shlex, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 ASSETS = "/home/red/labs/local-ai-lab/wiki/assets"
 BASE = "http://100.115.89.9:8888"
 ACCENT = "#58a6ff"
 BOARD_DB = str(resolve_db())
+BOARD = resolve_board()
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
+WORKSPACE = Path(os.environ.get("CHITIN_REPO", str(board_workspace())))
 ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
 BASE_ELO = 1500.0
 BASE_K = 32.0
@@ -198,7 +211,12 @@ def board_conn():
     return conn
 
 def open_prs():
-    _, raw = sh("gh pr list --repo chitinhq/chitin --state open --json number,title,headRefName,state,mergeStateStatus,updatedAt,isDraft,statusCheckRollup", 180)
+    _, raw = sh(
+        "gh pr list --repo "
+        + shlex.quote(REPO)
+        + " --state open --json number,title,headRefName,state,mergeStateStatus,updatedAt,isDraft,statusCheckRollup",
+        180,
+    )
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -229,7 +247,14 @@ def pr_check_summary(pr):
     return {"failing": failing, "pending": pending, "success": success, "tone": tone, "label": label}
 
 def lifecycle_snapshot():
-    code, raw = sh("cd /home/red/workspace/chitin && ./swarm/bin/clawta-pr-lifecycle --auto-merge --escalate-to red", 240)
+    code, raw = sh(
+        "cd "
+        + shlex.quote(str(WORKSPACE))
+        + " && ./swarm/bin/clawta-pr-lifecycle --board "
+        + shlex.quote(BOARD)
+        + " --auto-merge --escalate-to red",
+        240,
+    )
     if code != 0:
         return {"items": [], "error": raw[:1000]}
     try:
@@ -650,7 +675,7 @@ def chain():
     print(f"🛡️ Clawta chain summary: {rate:.1f}% 24h denial rate across {total} decisions. {url}")
 
 def board_lines():
-    _, out = sh("hermes kanban --board chitin list", 180)
+    _, out = sh("hermes kanban --board " + shlex.quote(BOARD) + " list", 180)
     items=[]
     for line in out.splitlines():
         m=re.match(r'\S+\s+(t_[0-9a-f]+)\s+(\S+)\s+(.*?)\s{2,}(.+)$', line)
@@ -671,7 +696,12 @@ def standup():
     print(f"📋 Clawta grooming standup: {len(active)} active/attention items, {counts.get('blocked',0)} blocked. {url}")
 
 def board_audit():
-    raw,items=board_lines(); _,prs=sh("gh pr list --repo chitinhq/chitin --state open --json number,title,statusCheckRollup,headRefName,mergeStateStatus,updatedAt",180)
+    raw,items=board_lines(); _,prs=sh(
+        "gh pr list --repo "
+        + shlex.quote(REPO)
+        + " --state open --json number,title,statusCheckRollup,headRefName,mergeStateStatus,updatedAt",
+        180,
+    )
     counts=Counter(i['status'] for i in items)
     leverage=[]
     for i in items:

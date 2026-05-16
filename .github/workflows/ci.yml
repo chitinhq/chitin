@@ -137,6 +137,9 @@ jobs:
       - name: Governance boundary
         run: bash scripts/check-governance-boundary.sh
 
+      - name: No chitin hardcodes in swarm scripts
+        run: bash scripts/check-no-chitin-hardcodes.sh
+
       # Nx affected: only run the test target on TS projects whose
       # source (or whose dependencies' source) changed since main.
       # Falls back to running EVERY project on push events to main

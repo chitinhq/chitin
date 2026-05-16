@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+SCRIPT_PATH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 BOARD="${KANBAN_BOARD:-chitin}"
 _boards_dir="${HOME}/.hermes/kanban/boards"
 if [[ -n "${KANBAN_DB:-}" ]]; then
@@ -8,7 +11,11 @@ else
   KANBAN_DB="${_boards_dir}/${BOARD}/kanban.db"
 fi
 export KANBAN_DB BOARD
-cd /home/red/workspace/chitin
+if [[ -z "${KANBAN_BOARD:-}" && -z "${KANBAN_DB:-}" ]]; then
+  echo "clawta-worker-pool-guard: defaulting to board 'chitin' because neither KANBAN_BOARD nor KANBAN_DB was set. This legacy fallback is deprecated; set one explicitly." >&2
+fi
+REPO_DIR="${CHITIN_REPO:-$(python3 "$SCRIPT_DIR/board_resolver.py" workspace)}"
+cd "$REPO_DIR"
 # Default: only claude-code is disabled (Anthropic ToS forbids it as a
 # subagent). Copilot is governance-aware via `chitin-kernel drive copilot`
 # (which uses the in-kernel Go SDK driver — the authority carve-out for

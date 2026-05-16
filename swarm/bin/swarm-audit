@@ -24,7 +24,7 @@ Env:
   CHITIN_KERNEL_BIN            chitin-kernel binary (default: chitin-kernel)
   KANBAN_DB                    kanban sqlite path
   CHITIN_LEDGER_DIR            ~/.chitin/ override
-  GITHUB_REPOSITORY            default: chitinhq/chitin
+  GITHUB_REPOSITORY            override the board-config repo slug
 """
 
 from __future__ import annotations
@@ -40,14 +40,22 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    resolve_db,
+    warn_implicit_default_board,
+)
 from typing import Any
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH = Path(
     os.environ.get("KANBAN_DB", str(resolve_db())),
 )
 LEDGER_DIR = Path(os.environ.get("CHITIN_LEDGER_DIR", str(Path.home() / ".chitin")))
-REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
 DISCORD_CHANNEL = os.environ.get("SWARM_AUDIT_DISCORD_CHANNEL", "")
 AGENT = os.environ.get("SWARM_AUDIT_AGENT", "clawta")
 MODEL = os.environ.get("SWARM_AUDIT_MODEL", "openai-codex/gpt-5.5")
@@ -423,6 +431,7 @@ def deliver(summary: str, dry_run: bool, facts: dict[str, Any], window_hours: in
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--board", help="board slug override (default: KANBAN_BOARD or deprecated implicit chitin)")
     ap.add_argument("--dry-run", action="store_true", help="print summary, do not post")
     ap.add_argument(
         "--hours",

@@ -13,7 +13,8 @@
 
 set -euo pipefail
 
-REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="${CHITIN_REPO:-$(python3 "$REPO_ROOT/swarm/bin/board_resolver.py" workspace)}"
 HOOK_BIN="${CHITIN_ROUTER_HOOK_BIN:-$REPO/bin/chitin-router-hook}"
 HERMES_CONFIG="${HERMES_CONFIG:-$HOME/.hermes/config.yaml}"
 

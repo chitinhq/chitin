@@ -22,9 +22,9 @@ Required sequence. Perform each step; stop on the first failure.
 
 1. Choose a branch name: `fix/<issue_number>-<slug-of-reason>`.
 2. Create or reuse a linked worktree:
-   `cd $HOME/workspace/chitin && pnpm worktree -- --branch <branch> --path $HOME/workspace/chitin-<issue_number>`.
+   `cd $HERMES_TICK_REPO_ROOT && pnpm worktree -- --branch <branch> --path ${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}/$(basename "$HERMES_TICK_REPO_ROOT")-<issue_number>`.
    The helper hydrates local `node_modules` from the shared pnpm store.
-3. `cd $HOME/workspace/chitin-<issue_number>`.
+3. `cd ${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}/$(basename "$HERMES_TICK_REPO_ROOT")-<issue_number>`.
 4. Apply the diff:
    `printf '%s' "$diff" | git apply -` (in the worktree). If it fails,
    log the stderr and stop.
@@ -43,8 +43,8 @@ Required sequence. Perform each step; stop on the first failure.
 
 Based on `plan.external_action.kind`:
 
-- `comment`: `gh issue comment <linked_issue> --repo chitinhq/chitin --body <body_or_label>`
-- `label`: `gh issue edit <linked_issue> --repo chitinhq/chitin --add-label <body_or_label>`
+- `comment`: `gh issue comment <linked_issue> --repo <repo_slug> --body <body_or_label>`
+- `label`: `gh issue edit <linked_issue> --repo <repo_slug> --add-label <body_or_label>`
 - `pr_open`: this form is for opening a PR when a diff was produced in a
   previous tick. v1 behavior: log `pr_open-unsupported-in-v1` and stop.
   (This branch ships in v2 when cross-tick memory is added.)
@@ -57,8 +57,8 @@ log `stage3-invoked-for-skip-action` and exit.
 ## Hard rules
 
 - Never merge a PR. Never force-push. Never delete a branch.
-- Never modify files in `$HOME/workspace/chitin/` — that is the primary
-  checkout; all work happens in `$HOME/workspace/chitin-<N>/`.
+- Never modify files in `$HERMES_TICK_REPO_ROOT/` — that is the primary
+  checkout; all work happens in `${HERMES_TICK_WORKTREE_BASE:-$HOME/workspace}/<repo>-<N>/`.
 - Never use `rm -rf` or `git reset --hard` on any path.
 - Git identity is `jpleva91@gmail.com` — set by repo config, do not
   override.
