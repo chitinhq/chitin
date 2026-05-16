@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
-from board_resolver import spec_dir_for_board
+from board_resolver import spec_dir_for_board, spec_paths_for_ticket
 
 BOARD = os.environ.get("KANBAN_BOARD", "chitin")
 KANBAN_DB = Path.home() / f".hermes/kanban/boards/{BOARD}/kanban.db"
@@ -184,7 +184,11 @@ SPEC_KIT_REF_RE = re.compile(
 
 
 def has_spec_kit_entry(conn, tid: str) -> bool:
-    """Check if the ticket references an existing board-appropriate spec.md."""
+    """Check if the ticket has an existing board-appropriate spec.md.
+
+    Accept explicit ticket-body spec paths and spec files that reference the
+    ticket id. This keeps Hermes' claim path aligned with the poller gate.
+    """
     row = conn.execute("SELECT body FROM tasks WHERE id = ?", (tid,)).fetchone()
     body = (row["body"] or "") if row else ""
     spec_root = spec_dir_for_board(BOARD).expanduser().resolve()
@@ -196,7 +200,7 @@ def has_spec_kit_entry(conn, tid: str) -> bool:
             continue
         if candidate.is_file():
             return True
-    return False
+    return any(path.is_file() for path in spec_paths_for_ticket(tid, BOARD))
 
 
 def claim_priority_tickets(conn):

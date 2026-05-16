@@ -95,6 +95,19 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                 self.assertFalse(module.has_spec_kit_entry(ticket))
                 self.assertIn("missing spec-kit entry", module.missing_spec_kit_reason(ticket) or "")
 
+    def test_has_spec_kit_entry_accepts_spec_that_references_ticket_id(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "009-poller-respects-spec-kit" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("# Poller respects spec-kit\n\n**Refs**: t_75c8c8c1\n")
+            ticket = {"id": "t_75c8c8c1", "body": "Acceptance only; no copied spec path"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(ticket))
+                self.assertIsNone(module.missing_spec_kit_reason(ticket))
+
     def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -346,6 +359,56 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(result["demoted"], ["t_nobounds"])
         demote_cmd = next(cmd for cmd in seen if cmd[0] == module.KANBAN_FLOW_BIN)
         self.assertIn("missing spec-kit entry", demote_cmd[3])
+
+    def test_tick_does_not_demote_ticket_when_spec_mentions_ticket_id(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("# Scripts manifest\n\n> Spec-kit entry for ticket `t_75c8c8c1`\n")
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "t_75c8c8c1",
+                    "scripts manifest",
+                    "Acceptance only; spec path not copied into body",
+                    "ready",
+                    "codex",
+                    50,
+                    1,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "BOARD", "chitin"
+            ), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(result["demoted"], [])
+        self.assertFalse(any(cmd[:2] == [module.KANBAN_FLOW_BIN, "demote"] for cmd in seen))
 
     def test_is_tracking_epic_recognizes_marker(self) -> None:
         module = load_module()

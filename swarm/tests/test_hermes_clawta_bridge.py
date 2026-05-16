@@ -114,6 +114,22 @@ class HermesClawtaBridgeTests(unittest.TestCase):
             ):
                 self.assertFalse(module.has_spec_kit_entry(conn, "t_shared"))
 
+    def test_has_spec_kit_entry_accepts_spec_that_references_ticket_id(self) -> None:
+        module = load_module()
+        conn = make_conn()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "009-poller-respects-spec-kit" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("# Poller respects spec-kit\n\n**Refs**: t_75c8c8c1\n")
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, priority) VALUES (?, ?, ?, ?, ?)",
+                ("t_75c8c8c1", "owned", "Acceptance only", "blocked", 50),
+            )
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(conn, "t_75c8c8c1"))
+
     def test_claim_priority_tickets_skips_ready_ticket_without_spec(self) -> None:
         module = load_module()
         conn = make_conn()

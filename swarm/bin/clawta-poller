@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board, spec_dir_for_board
+from board_resolver import resolve_db, resolve_board, spec_dir_for_board, spec_paths_for_ticket
 
 
 DB_PATH: Path = resolve_db()
@@ -216,13 +216,18 @@ def is_parent_hierarchy_prefix(prefix: str) -> bool:
     return normalized.endswith("parent:")
 
 
-def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[Path]:
-    """Return referenced spec-kit `spec.md` paths that stay under this board's spec root."""
-    if not body:
-        return []
+def spec_kit_entry_paths(ticket: dict[str, Any], *, board: str | None = None) -> list[Path]:
+    """Return board-appropriate spec.md paths for a ticket.
+
+    Accept both explicit ticket-body `Spec: .specify/specs/.../spec.md` refs and
+    spec-kit files whose contents name this ticket id. The latter is required
+    because specs are the durable artifact; kanban bodies are not always edited
+    after a spec lands.
+    """
     spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
     paths: list[Path] = []
     seen: set[Path] = set()
+    body = ticket.get("body") or ""
     for match in SPEC_KIT_REF_RE.finditer(body):
         candidate = (spec_root / match.group("slug") / "spec.md").resolve()
         try:
@@ -232,12 +237,17 @@ def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[
         if candidate not in seen:
             seen.add(candidate)
             paths.append(candidate)
+    for candidate in spec_paths_for_ticket(ticket.get("id"), board or BOARD):
+        candidate = candidate.resolve()
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
     return paths
 
 
 def has_spec_kit_entry(ticket: dict[str, Any], *, board: str | None = None) -> bool:
-    """True when a ticket references an existing board-appropriate spec.md."""
-    return any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board))
+    """True when a ticket has an existing board-appropriate spec.md."""
+    return any(path.is_file() for path in spec_kit_entry_paths(ticket, board=board))
 
 
 def missing_spec_kit_reason(ticket: dict[str, Any]) -> str | None:

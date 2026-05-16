@@ -10,6 +10,7 @@ Resolution order:
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -110,3 +111,31 @@ def spec_dir_for_board(board: str | None = None) -> Path:
     if is_owned_repo(board):
         return board_workspace(board) / ".specify" / "specs"
     return workspace_spec_root()
+
+
+def spec_paths_for_ticket(ticket_id: str | None, board: str | None = None) -> list[Path]:
+    """Return existing spec.md files that explicitly reference a ticket id.
+
+    Spec-kit entries are the durable source of truth. Tickets may be promoted
+    without copying spec paths back into the kanban body, so dispatch gates must
+    accept either a ticket-body path reference or a spec whose contents name the
+    ticket (for example `**Refs**: t_1234abcd`).
+    """
+    if not ticket_id:
+        return []
+    ticket_id = str(ticket_id).strip()
+    if not re.fullmatch(r"t_[a-f0-9]+", ticket_id):
+        return []
+    spec_root = spec_dir_for_board(board).expanduser().resolve()
+    if not spec_root.is_dir():
+        return []
+    ticket_re = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(ticket_id)}(?![A-Za-z0-9_])")
+    matches: list[Path] = []
+    for spec in sorted(spec_root.glob("*/spec.md")):
+        try:
+            text = spec.read_text(errors="ignore")
+        except OSError:
+            continue
+        if ticket_re.search(text):
+            matches.append(spec.resolve())
+    return matches
