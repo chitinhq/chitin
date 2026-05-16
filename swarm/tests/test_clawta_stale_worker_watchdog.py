@@ -206,15 +206,40 @@ class TestConsecutiveFailures:
 
     def test_increment_consecutive_failures(self, tmp_path):
         wd = _import_watchdog(tmp_path)
-        _create_test_db(tmp_path / "kanban.db")
-        _insert_task(tmp_path / "kanban.db", "t_abc123", consecutive_failures=1)
-        new_count = wd.increment_consecutive_failures(
-            tmp_path / "kanban.db", "t_abc123",
-            wd.FailureClass.SILENT_DEATH, "test reason"
-        )
+        db_path = tmp_path / "kanban.db"
+        _create_test_db(db_path)
+        _insert_task(db_path, "t_abc123", consecutive_failures=1)
+
+        def fake_run(cmd, *, check=True, timeout=30):
+            assert cmd[0] == str(wd.KANBAN_FLOW_BIN)
+            assert cmd[1] == "record-failure"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                       SET consecutive_failures = consecutive_failures + 1,
+                           last_failure_error = ?
+                     WHERE id = ?
+                    """,
+                    (f"[{cmd[3]}] {cmd[4]}", cmd[2]),
+                )
+                conn.commit()
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        with patch.object(wd, "run", side_effect=fake_run):
+            new_count = wd.increment_consecutive_failures(
+                db_path, "t_abc123",
+                wd.FailureClass.SILENT_DEATH, "test reason"
+            )
         assert new_count == 2
         # Verify it persisted
-        result = wd.get_consecutive_failures(tmp_path / "kanban.db", "t_abc123")
+        result = wd.get_consecutive_failures(db_path, "t_abc123")
         assert result == 2
 
 

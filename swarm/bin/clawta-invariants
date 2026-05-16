@@ -150,7 +150,7 @@ def record_pr(ticket_id: str, pr_url: str, dry_run: bool) -> bool:
             return False
 
     msg = f"🦞 invariant repaired: transient PR finalize recovered. PR: {pr_url}"
-    run(["hermes", "kanban", "--board", BOARD, "comment", ticket_id, "--author", AUTHOR, msg], timeout=20)
+    run(["kanban-flow", "comment", ticket_id, "--author", AUTHOR, msg], timeout=20)
     log(f"repaired {ticket_id}: {pr_url}")
     return True
 

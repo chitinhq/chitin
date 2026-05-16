@@ -230,24 +230,22 @@ def increment_consecutive_failures(db_path: Path, ticket_id: str, failure_class:
     must gate retry decisions on schema_supports_retry_tracking() rather than
     trusting this return value on legacy boards.
     """
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                UPDATE tasks
-                   SET consecutive_failures = consecutive_failures + 1,
-                       last_failure_error = ?
-                 WHERE id = ?
-                """,
-                (f"[{failure_class}] {reason}", ticket_id),
-            )
-            row = conn.execute(
-                "SELECT consecutive_failures FROM tasks WHERE id = ?",
-                (ticket_id,),
-            ).fetchone()
-        return int(row[0]) if row else 0
-    except sqlite3.OperationalError:
+    if not schema_supports_retry_tracking(db_path):
         return 0
+    result = run(
+        [
+            str(KANBAN_FLOW_BIN),
+            "record-failure",
+            ticket_id,
+            failure_class,
+            reason,
+        ],
+        check=False,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        return 0
+    return get_consecutive_failures(db_path, ticket_id)
 
 
 def get_dispatch_history(db_path: Path, ticket_id: str, limit: int = 5) -> list[dict]:
@@ -349,7 +347,7 @@ def block_ticket_with_history(escalation: Escalation) -> None:
         timeout=45,
     )
     run(
-        [HERMES_BIN, "kanban", "--board", BOARD, "assign", escalation.id, RED_ASSIGNEE],
+        [str(KANBAN_FLOW_BIN), "assign", escalation.id, RED_ASSIGNEE],
         check=True,
     )
 
@@ -380,7 +378,7 @@ def block_ticket_with_history(escalation: Escalation) -> None:
     )
     run(
         [
-            HERMES_BIN, "kanban", "--board", BOARD, "comment", escalation.id,
+            str(KANBAN_FLOW_BIN), "comment", escalation.id,
             "--author", AUTHOR, comment,
         ],
         check=True,

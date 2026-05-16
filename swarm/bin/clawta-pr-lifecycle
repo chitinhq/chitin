@@ -436,7 +436,7 @@ def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
         return
     run(["gh", "pr", "comment", item["pr"], "--repo", REPO, "--body", msg], timeout=60, check=True)
     if item.get("ticket"):
-        run(["hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
+        run(["kanban-flow", "comment", item["ticket"], "--author", AUTHOR,
              f"Ready to merge: PR #{item['pr']} {item['url']} (review={item['review']}, checks={item['checks']})."], timeout=30, check=True)
 
 
@@ -506,9 +506,9 @@ def escalate_to_operator(item: dict[str, Any], operator: str | None, apply: bool
     reason = escalation_reason(item)
     if not apply:
         return True
-    run(["hermes", "kanban", "--board", BOARD, "assign", item["ticket"], operator], timeout=30, check=True)
+    run(["kanban-flow", "assign", item["ticket"], operator], timeout=30, check=True)
     run([
-        "hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
+        "kanban-flow", "comment", item["ticket"], "--author", AUTHOR,
         f"Escalated to {operator}: {reason}. {item['url']}",
     ], timeout=30, check=True)
     item["ticket_assignee"] = operator
@@ -577,9 +577,9 @@ def assign_ticket_to_operator(item: dict[str, Any], operator: str,
     if not ticket or not apply:
         return
     run([
-        "hermes", "kanban", "--board", BOARD,
+        "kanban-flow",
         "reassign", ticket, operator,
-        "--reclaim",
+        "--author", AUTHOR,
         "--reason", "regression-gate fail-invariant on PR "
                     f"#{item['pr']} head={item['head']}",
     ], timeout=60, check=False)
@@ -606,7 +606,7 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
                 # PR references a ticket but does not close it (e.g. "Refs t_XXX").
                 # Post a link comment on the kanban ticket but do NOT change status.
                 if item.get("ticket") and apply:
-                    run(["hermes", "kanban", "--board", BOARD, "comment", item["ticket"],
+                    run(["kanban-flow", "comment", item["ticket"],
                          "--author", AUTHOR,
                          f"Referenced by merged PR #{item['pr']} {item['url']} "
                          f"(close_intent=False, status unchanged)."], timeout=30, check=True)
