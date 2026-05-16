@@ -154,6 +154,12 @@
   align-items: center;
 }
 
+.message-pane {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
 .message-list {
   list-style: none;
   margin: 0;
@@ -163,6 +169,34 @@
   gap: 10px;
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: auto;
+}
+.msg-sentinel {
+  text-align: center;
+  padding: 6px 0 2px;
+  opacity: 0.6;
+  user-select: none;
+}
+.new-pill {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent, #D4A574);
+  color: var(--bg, #0A0E15);
+  border: 1px solid var(--accent, #D4A574);
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  animation: cc-pill-in 180ms ease-out;
+}
+.new-pill:hover { background: var(--accent-glow, #F5C088); }
+@keyframes cc-pill-in {
+  from { transform: translate(-50%, 6px); opacity: 0; }
+  to   { transform: translate(-50%, 0);   opacity: 1; }
 }
 .msg {
   padding: 8px 10px;
@@ -228,5 +262,12 @@
     grid-template-columns: 1fr;
     min-height: auto;
   }
-  .thread-list { max-height: 40vh; }
+  .thread-list { max-height: 35vh; }
+  /* When viewing a thread on mobile, give the detail a fixed slice of the
+     viewport so .message-list can flex/scroll inside it instead of pushing
+     the whole page taller. 60px = bottom tab bar, ~150px = page chrome. */
+  .thread-detail {
+    height: calc(100dvh - 60px - 150px - env(safe-area-inset-bottom, 0px));
+    min-height: 320px;
+  }
 }

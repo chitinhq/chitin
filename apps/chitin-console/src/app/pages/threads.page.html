@@ -96,26 +96,42 @@
           </section>
         }
 
-        <ul class="message-list">
-          @for (m of d.messages; track m.id) {
-            <li class="msg" [attr.data-kind]="m.kind">
-              <div class="msg-head">
-                <span class="mono small text-glow">{{ m.author }}</span>
-                <span class="mono tiny text-dim">{{ fmtTs(m.created_at) }}</span>
-                @if (m.kind !== 'message') {
-                  <span class="badge mono tiny" [attr.data-kind]="m.kind">{{ m.kind }}</span>
-                }
-                @if (m.discord_message_id) {
-                  <span class="badge mono tiny discord">discord</span>
-                }
-                @if (m.ack_required) {
-                  <span class="badge mono tiny warn">ack required</span>
-                }
-              </div>
-              <div class="msg-body mono small">{{ m.body }}</div>
+        <div class="message-pane">
+          <ul class="message-list" #messageList (scroll)="onScroll()">
+            <li class="msg-sentinel mono tiny text-dim">
+              @if (loadingOlder()) {
+                loading older…
+              } @else if (d.has_more_older) {
+                scroll up for older
+              } @else {
+                — start of thread —
+              }
             </li>
+            @for (m of d.messages; track m.id) {
+              <li class="msg" [attr.data-kind]="m.kind">
+                <div class="msg-head">
+                  <span class="mono small text-glow">{{ m.author }}</span>
+                  <span class="mono tiny text-dim">{{ fmtTs(m.created_at) }}</span>
+                  @if (m.kind !== 'message') {
+                    <span class="badge mono tiny" [attr.data-kind]="m.kind">{{ m.kind }}</span>
+                  }
+                  @if (m.discord_message_id) {
+                    <span class="badge mono tiny discord">discord</span>
+                  }
+                  @if (m.ack_required) {
+                    <span class="badge mono tiny warn">ack required</span>
+                  }
+                </div>
+                <div class="msg-body mono small">{{ m.body }}</div>
+              </li>
+            }
+          </ul>
+          @if (newSince() > 0) {
+            <button class="new-pill mono tiny" type="button" (click)="jumpToLatest()">
+              ↓ {{ newSince() }} new
+            </button>
           }
-        </ul>
+        </div>
 
         <footer class="composer">
           <div class="composer-row">
