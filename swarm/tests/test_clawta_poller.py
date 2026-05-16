@@ -120,6 +120,43 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
             ):
                 self.assertFalse(module.has_spec_kit_entry(ticket))
 
+    def test_has_spec_kit_entry_empty_boundary_rejects_ticket_without_bindings(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket = {"id": "", "body": ""}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertFalse(module.has_spec_kit_entry(ticket))
+                self.assertIn("missing spec-kit entry", module.missing_spec_kit_reason(ticket) or "")
+
+    def test_has_spec_kit_entry_max_boundary_accepts_large_spec_reverse_binding(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text(("context\n" * 5000) + "Refs: t_75c8c8c1\n")
+            ticket = {"id": "t_75c8c8c1", "body": "No spec path in ticket body"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(ticket))
+
+    def test_has_spec_kit_entry_error_boundary_skips_unreadable_spec(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "001-broken" / "spec.md"
+            broken.parent.mkdir(parents=True)
+            broken.symlink_to(Path(tmp) / "missing-target.md")
+            valid = Path(tmp) / "002-scripts-manifest" / "spec.md"
+            valid.parent.mkdir(parents=True)
+            valid.write_text("Refs: t_75c8c8c1\n")
+            ticket = {"id": "t_75c8c8c1", "body": "No spec path in ticket body"}
+            with mock.patch.object(module, "BOARD", "chitin"), mock.patch.object(
+                module, "spec_dir_for_board", return_value=Path(tmp)
+            ):
+                self.assertTrue(module.has_spec_kit_entry(ticket))
+
     def test_dispatch_ready_batch_skips_ticket_with_incomplete_task_run(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
