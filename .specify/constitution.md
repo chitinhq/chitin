@@ -23,7 +23,8 @@ kernel to write chain events; never bypass hermes to write kanban state.
 - Workers PR against `main`, not against feature branches
 - Sibling worktrees (`~/workspace/chitin-*`) are ephemeral dispatch targets.
   Canonical source is the tracked repo on `main`; branch work happens in
-  sibling worktrees.
+  sibling worktrees. Do not edit the primary checkout directly — always
+  use a worktree for branch changes.
 
 ## 3. Spec-kit promotion gate
 
