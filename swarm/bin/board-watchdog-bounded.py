@@ -272,14 +272,29 @@ def report_board(board: str) -> tuple[list[str], int]:
         if cls in {"needs spec", "needs reviewed spec", "needs spec review"}:
             spec_queue.append((t.id, t.title, reason))
 
-    lines.append(f"Blocked/triage tickets examined: **{len(tasks)}**")
-    lines.append("")
-    lines.append("| Ticket | Loop | Classification | Finding |")
-    lines.append("|---|---:|---|---|")
-    for tid, title, loop, cls, reason, spec_label in rows:
-        safe_title = title.replace("|", "/")[:70]
-        safe_reason = reason.replace("|", "/")[:170]
-        lines.append(f"| `{tid}` {safe_title} | {loop} | {cls} | {safe_reason} |")
+    # Loop-detection table — show only loop-flagged ("yes") tickets inline,
+    # capped at 3 so the cron transport doesn't split the report into
+    # multiple Discord messages. Full detail via the kanban CLI.
+    # (See PR #726 + ticket t_74c2cab6 for the broader noise-reduction work.)
+    loop_rows = [r for r in rows if r[2] == "yes"]
+    inline_loop = loop_rows[:3]
+    lines.append(
+        f"Blocked/triage tickets examined: **{len(tasks)}** "
+        f"({len(loop_rows)} loop-flagged)"
+    )
+    if inline_loop:
+        lines.append("")
+        lines.append("| Ticket | Classification | Finding |")
+        lines.append("|---|---|---|")
+        for tid, title, loop, cls, reason, spec_label in inline_loop:
+            safe_title = title.replace("|", "/")[:50]
+            safe_reason = reason.replace("|", "/")[:80]
+            lines.append(f"| `{tid}` {safe_title} | {cls} | {safe_reason} |")
+        if len(loop_rows) > 3:
+            lines.append(
+                f"… +{len(loop_rows) - 3} more loop-flagged tickets — "
+                f"run `hermes kanban --board {board} ls --status blocked` for the full set"
+            )
 
     if actions:
         lines.extend(["", "**Actions taken**", *actions])
