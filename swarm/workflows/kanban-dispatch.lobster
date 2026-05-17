@@ -514,7 +514,7 @@ steps:
       BOARD_SLUG='$resolve_board.json.board'
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
 
-      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.task.status // .status // empty' 2>/dev/null || true)
       if [[ "$CURRENT_STATUS" == "blocked" ]]; then
         MSG="🦞 ${ticket_id}: finalize skipped because ticket is blocked. Refusing to reopen or push worker output from a stale active run."
         hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
