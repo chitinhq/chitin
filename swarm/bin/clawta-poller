@@ -63,8 +63,18 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board, spec_dir_for_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    spec_dir_for_board,
+    warn_implicit_default_board,
+)
 
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH: Path = resolve_db()
 BOARD: str = resolve_board()
@@ -109,11 +119,11 @@ CLAWTA_ROUTER_MODE = os.environ.get("CLAWTA_ROUTER_MODE", "").strip().lower()
 CLAWTA_FORCE_DRIVER = os.environ.get("CLAWTA_FORCE_DRIVER", "").strip()
 INVARIANT_BIN = Path(os.environ.get(
     "CLAWTA_INVARIANT_BIN",
-    str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
+    str(board_workspace() / "swarm" / "bin" / "clawta-invariants"),
 ))
 AUTHOR = "clawta-poller"
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
-DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO", "chitinhq/chitin")
+BOARD = resolve_board()
+DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO") or board_repo()
 DEPENDENCY_BLOCK_PREFIX = "dependency gate:"
 PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
 PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
@@ -869,7 +879,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         # ticket stays visible for a later retry instead of being counted as
         # routed when kanban did not actually change.
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "assign",
+            ["hermes", "kanban", "--board", BOARD, "assign",
              ticket["id"], driver],
             timeout=15,
             check=True,
@@ -895,7 +905,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             check=True,
         )
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "comment",
+            ["hermes", "kanban", "--board", BOARD, "comment",
              ticket["id"], "--author", AUTHOR,
              f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
             timeout=15,

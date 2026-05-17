@@ -32,7 +32,8 @@
 
 set -euo pipefail
 
-REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="${CHITIN_REPO:-$(python3 "$REPO_ROOT/swarm/bin/board_resolver.py" workspace)}"
 BIN="${CHITIN_KERNEL_BIN:-$HOME/.local/bin/chitin-kernel}"
 PREV="$BIN.prev"
 LOG="${CHITIN_INSTALL_KERNEL_LOG:-$HOME/.cache/chitin/install-kernel.jsonl}"

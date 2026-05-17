@@ -24,7 +24,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import apply_board_cli_override, board_repo, resolve_board, warn_implicit_default_board
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
+
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw"))
 REVIEW_AGENT = os.environ.get("CLAWTA_REVIEW_AGENT", "clawta")
 MARKER = "<!-- clawta-reviewer:v1 -->"
@@ -34,7 +40,7 @@ LOG_FILE = LOG_DIR / "clawta-pr-reviewer.log"
 DEFAULT_PREFIXES = ("swarm/", "clawta/")
 MAX_DIFF_CHARS = int(os.environ.get("CLAWTA_REVIEW_MAX_DIFF_CHARS", "45000"))
 MAX_META_CHARS = 12000
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
+BOARD = resolve_board()
 TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
@@ -346,6 +352,7 @@ def review_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool, include_
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--board", help="board slug override (default: KANBAN_BOARD or deprecated implicit chitin)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-prs", type=int, default=2)
     ap.add_argument("--prefix", action="append", help="head branch prefix to review; repeatable")

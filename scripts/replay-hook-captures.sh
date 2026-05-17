@@ -25,8 +25,22 @@ set -uo pipefail
 # when head closes early (SAMPLE mode), and per-iteration jq/gate calls
 # can fail without aborting the whole replay. We handle errors row-by-row.
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CAPTURE_DIR="${CAPTURE_DIR:-$HOME/.chitin/hook-capture}"
-POLICY_FILE="${POLICY_FILE:-$HOME/workspace/chitin/chitin.yaml}"
+DEFAULT_POLICY_PATH="$(python3 - <<'PY' "$REPO_ROOT"
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "swarm" / "bin"))
+from board_resolver import board_config, board_workspace
+
+cfg = board_config()
+value = cfg.get("chitin_yaml", "chitin.yaml")
+print(Path(board_workspace()) / value)
+PY
+)"
+POLICY_FILE="${POLICY_FILE:-$DEFAULT_POLICY_PATH}"
 OUT_DIR="${OUT_DIR:-/tmp}"
 RESULTS="$OUT_DIR/replay-results.jsonl"
 REPORT="$OUT_DIR/replay-report.md"

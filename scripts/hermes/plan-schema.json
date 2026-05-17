@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://chitinhq/chitin/scripts/hermes/plan-schema.json",
+  "$id": "https://local.invalid/hermes/plan-schema.json",
   "title": "Hermes staged-tick plan",
   "type": "object",
   "required": ["action", "issue_number", "reason"],

@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL = REPO_ROOT / "scripts" / "install-swarm.sh"
 CHECK_SYNC = REPO_ROOT / "scripts" / "check-swarm-deployed-sync.sh"
+CHECK_HARDCODES = REPO_ROOT / "scripts" / "check-no-chitin-hardcodes.sh"
 
 
 class InstallSwarmSyncTests(unittest.TestCase):
@@ -30,8 +31,30 @@ class InstallSwarmSyncTests(unittest.TestCase):
 
             subprocess.run(["bash", str(INSTALL)], cwd=REPO_ROOT, env=env, check=True, text=True, capture_output=True)
             subprocess.run(["bash", str(CHECK_SYNC)], cwd=REPO_ROOT, env=env, check=True, text=True, capture_output=True)
+            subprocess.run(["bash", str(CHECK_HARDCODES)], cwd=REPO_ROOT, env=env, check=True, text=True, capture_output=True)
 
             self.assertTrue((openclaw / "bin" / "board_resolver.py").exists())
+            board_config = home / ".hermes" / "kanban" / "boards" / "chitin" / "config.json"
+            self.assertTrue(board_config.exists())
+
+            repo_value = subprocess.run(
+                ["python3", str(openclaw / "bin" / "board_resolver.py"), "repo"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            workspace_value = subprocess.run(
+                ["python3", str(openclaw / "bin" / "board_resolver.py"), "workspace"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(repo_value, "chitinhq/chitin")
+            self.assertEqual(workspace_value, str(home / "workspace" / "chitin"))
 
             for script in ("clawta-report", "clawta-pr-lifecycle"):
                 deployed = openclaw / "bin" / script
@@ -44,6 +67,16 @@ class InstallSwarmSyncTests(unittest.TestCase):
                     timeout=20,
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_hardcode_guard_passes_for_repo_tree(self) -> None:
+        proc = subprocess.run(
+            ["bash", str(CHECK_HARDCODES)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

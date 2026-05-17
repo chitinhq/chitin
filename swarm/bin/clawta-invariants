@@ -27,12 +27,21 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH = resolve_db()
 BOARD = resolve_board()
 AUTHOR = "clawta-invariants"
-REPO = Path(os.environ.get("CHITIN_REPO", str(Path.home() / "workspace/chitin")))
+REPO = Path(os.environ.get("CHITIN_REPO", str(board_workspace())))
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-invariants.log"
 

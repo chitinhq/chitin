@@ -33,9 +33,18 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
+
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
 DB_PATH = resolve_db()
 BOARD = resolve_board()
 LOG_DIR = Path.home() / ".openclaw" / "logs"
@@ -652,6 +661,7 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--board", help="board slug override (default: KANBAN_BOARD or deprecated implicit chitin)")
     ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates")
     ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
     ap.add_argument("--escalate-to", help="assign mapped PR tickets that need operator action to this board profile")

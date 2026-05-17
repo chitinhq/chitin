@@ -9,9 +9,11 @@ Resolution order:
   3. Default: KANBAN_BOARD=chitin
 """
 
+import argparse
 import os
+import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 BOARDS_DIR = Path(os.environ.get(
     "KANBAN_BOARDS_DIR",
@@ -110,3 +112,72 @@ def spec_dir_for_board(board: str | None = None) -> Path:
     if is_owned_repo(board):
         return board_workspace(board) / ".specify" / "specs"
     return workspace_spec_root()
+
+
+def board_flag(argv: Sequence[str] | None = None) -> str | None:
+    """Extract a --board override from argv without mutating parser state."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    for i, arg in enumerate(args):
+        if arg == "--board" and i + 1 < len(args):
+            value = args[i + 1].strip()
+            return value or None
+        if arg.startswith("--board="):
+            value = arg.split("=", 1)[1].strip()
+            return value or None
+    return None
+
+
+def using_implicit_default_board(argv: Sequence[str] | None = None) -> bool:
+    """True when the caller is falling back to the legacy implicit `chitin` board."""
+    return (
+        board_flag(argv) is None
+        and not os.environ.get("KANBAN_BOARD")
+        and not os.environ.get("KANBAN_DB")
+    )
+
+
+def apply_board_cli_override(argv: Sequence[str] | None = None) -> str:
+    """Apply a --board override into KANBAN_BOARD and return the effective slug."""
+    slug = board_flag(argv)
+    if slug:
+        os.environ["KANBAN_BOARD"] = slug
+        return slug
+    return resolve_board()
+
+
+def warn_implicit_default_board(script_name: str, argv: Sequence[str] | None = None) -> None:
+    """Emit the board-default deprecation warning once per invocation."""
+    if using_implicit_default_board(argv):
+        print(
+            f"{script_name}: defaulting to board 'chitin' because neither --board nor "
+            "KANBAN_BOARD was set. This legacy fallback is deprecated; set one explicitly.",
+            file=sys.stderr,
+        )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resolve board-config fields for shell callers.")
+    parser.add_argument("--board", help="board slug override (defaults to KANBAN_BOARD or chitin)")
+    parser.add_argument(
+        "field",
+        choices=("board", "db", "repo", "workspace", "spec-dir", "config"),
+        help="field to print",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.board:
+        os.environ["KANBAN_BOARD"] = args.board
+
+    field_map = {
+        "board": lambda: resolve_board(),
+        "db": lambda: str(resolve_db()),
+        "repo": lambda: board_repo(),
+        "workspace": lambda: str(board_workspace()),
+        "spec-dir": lambda: str(spec_dir_for_board()),
+        "config": lambda: str(BOARDS_DIR / resolve_board() / "config.json"),
+    }
+    print(field_map[args.field]())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

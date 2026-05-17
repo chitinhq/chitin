@@ -34,11 +34,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # Default high. Lower if budget is tight; max if you want a thorough sweep.
 # ARCH_AUDIT_EFFORT=high
 
-# Workspace dir for sibling repo discovery. Default ~/workspace.
-# ARCH_AUDIT_WORKSPACE_DIR=/home/red/workspace
+# Workspace dir for sibling repo discovery. Default: parent of board workspace_root.
+# ARCH_AUDIT_WORKSPACE_DIR=/home/operator/workspace
 
-# Primary chitin checkout. Default ~/workspace/chitin.
-# ARCH_AUDIT_REPO_DIR=/home/red/workspace/chitin
+# Primary board checkout. Default: board config workspace_root.
+# ARCH_AUDIT_REPO_DIR=/home/operator/workspace/repo-name
 
 # Set to 1 to write the report locally without opening a PR (debug runs).
 # ARCH_AUDIT_SKIP_PR=0
