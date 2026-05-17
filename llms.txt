@@ -6,6 +6,32 @@ A small Go kernel sits between AI coding agents and the operating system. The ke
 
 Three drivers are gated through it today: Claude Code (PreToolUse hook, PR #66), Copilot CLI (in-kernel SDK driver, PR #51), and openclaw (acpx config-override). Same `gov.Gate` API across all three. Same canonical event chain on disk. Same OTEL projection out the back. The chain is the source of truth; OTEL is a one-way projection — no policy depends on OTEL data.
 
+## Swarm operating model (who's at the keyboard)
+
+Around the kernel sits a 3-agent swarm that coordinates over an agent-bus (`~/.chitin/agent-bus.sqlite` + MCP server + Discord mirror) and through the `chitin-console` operator UI (`apps/chitin-console`, served via Tailscale).
+
+| Actor | Role | Surface |
+|---|---|---|
+| **red** | Operator. Direction, pair-writes specs, ratifies decisions, owns `assignee=red` tickets. | `chitin-console`, agent-bus, Discord |
+| **Hermes (Ares)** | Watchdog + Hermes↔Clawta bridge + standup-fold. Board grooming + Clawta failure escalation. | `~/.hermes/` cron, bus `#hermes` thread |
+| **Clawta** | Poller + dispatch routing + PR lifecycle observation/cleanup. | `~/.openclaw/` runtime, bus `#clawta` thread |
+| **Workers** | Disposable per-ticket agents — `codex`, `copilot`, `claude-code`, `gemini`. | `~/.cache/chitin/swarm-worktrees/<driver>-<ticket>/` |
+
+## Constitution (the swarm's 10 rules)
+
+[`.specify/constitution.md`](.specify/constitution.md) — repo overlay; extends the workspace constitution at `~/workspace/.specify/constitution.md`. Both ratified via agent-bus standup threads.
+
+1. **Spec before dispatch** — every triage→ready needs `.specify/specs/NNN-<slug>/spec.md` (ownership-aware)
+2. **Git is source of truth at boundaries** — worker self-report is advisory; finalize refuses zero-commit pushes
+3. **No auto-unblock for loop-detected tickets** — watchdog owns them until manual repair
+4. **Operator-owned tickets are sacred** — `assignee=red` not auto-mutated without in-thread authorization
+5. **Multi-repo: workspace meta layer, ownership-aware** — owned repos get in-repo `.specify/`; team repos get workspace overlay
+6. **Tracked source over local patches** — shared swarm runtime needs tracked source + idempotent installer; drift is a bug
+7. **Boundary cases are named, not assumed** — empty / single / duplicate / max-N / out-of-order
+8. **The bus is shared memory, not a chatroom** — cross-agent decisions land in bus threads
+9. **Don't fight the watchdog** — rule conflicts go to bus, not silently overridden in a cron loop
+10. **Coordination protocols** — author≠reviewer, auto-coordinate on new work, auto-cleanup on rule violation, amendments via PR + agreement, escalate to other agent before red, standup-style decisions in bus threads, no hidden queues
+
 ## Start here
 
 - [README](README.md): orientation — install commands, top-level layout, where state lives on disk
@@ -28,20 +54,27 @@ The wiki uses `[[Article Name]]` Obsidian-style links; the corresponding file is
 ## Specs and plans
 
 - [`.specify/specs/`](.specify/specs/): spec-kit entries (the dispatch gate — no ticket dispatches without one)
-  - Specs 001-010 are shipped (agent-bus through pr-lifecycle-exact-match)
-  - Specs 011-014 are script coverage (Bats smoke tests)
-  - Specs 015-016 are draft (diagnostics separation, watchdog prompt durability)
-  - Each spec has acceptance criteria (Given/When/Then) and ties to a ticket via `ticket: t_XXXX`
+  - Current set runs **001-017** with varying status. Coverage: agent-bus (001), scripts manifest (002), kanban mutation isolation (003), driver allowlist (004, **blocked** on `chitin-kernel drivers list --json`), drift-guard (005), wiki pipeline (006), analyzer cron (007), watchdog spec-aware (008), poller respects spec-kit (009), pr-lifecycle exact match (010), Bats per-script coverage (011-014), diagnostics separation (015-016), poller dependency-unblock veto (017)
+  - **Each spec's actual status is in its own front-matter — check there before quoting.** Some are shipped, some draft, some explicitly blocked on upstream work.
+  - Ticket binding is not single-form: specs use `ticket: t_XXXX`, `Spec-kit entry for ticket t_XXXX`, or are linked via the ticket body referencing the spec path. `has_spec_kit_entry()` accepts both forward and reverse bindings.
 - [docs/superpowers/specs/](docs/superpowers/specs/): pre-spec-kit design docs (superseded by `.specify/specs/`)
 - [docs/superpowers/plans/](docs/superpowers/plans/): execution plans, one per shipped initiative, dated
 - [docs/architecture/layer-contracts.md](docs/architecture/layer-contracts.md): contracts between layers
+
+### Empty-branch gate (constitution §2)
+
+`swarm/workflows/kanban-dispatch.lobster` refuses to push when `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`. Workers that exit without committing don't get zombie branches or empty PRs — the dispatch reports zero-commit and the ticket goes back through routing.
+
+### Loop-detected auto-unblock skip (constitution §3)
+
+`swarm/bin/clawta-poller` will not auto-unblock tickets carrying `loop_detected=true` (or `loop_detected` in `block_reason`). The watchdog owns those tickets until an operator-authored fix lands and clears the flag.
 
 ### Spec-kit gate (constitution §1)
 
 The spec-kit gate is the dispatch trigger. Before a ticket can be dispatched to a worker:
 1. A spec-kit entry must exist at `.specify/specs/NNN-<slug>/spec.md`
-2. It must reference the ticket via `ticket: t_XXXX`
-3. The bridge `has_spec_kit_entry()` checks this at dispatch time
+2. The entry must be bound to the ticket — either via a `ticket: t_XXXX` (or `Spec-kit entry for ticket t_XXXX`) line in the spec, OR via the ticket body referencing the spec path. Both forward and reverse binding are accepted.
+3. The bridge `has_spec_kit_entry()` checks this at dispatch time.
 
 The poller also checks in reverse: tickets with valid spec-kit entries are not demoted from `ready` to `triage`.
 
@@ -51,13 +84,17 @@ The PR lifecycle (`clawta-pr-lifecycle`) distinguishes between:
 - **Close-intent**: `Closes`, `Fixes`, `Resolves` + ticket ID → marks ticket `done`
 - **Ref-intent**: `Refs`, `References`, `ticket`, `task`, `kanban` + ticket ID → comments only, no status change
 
-Branch-name matches (e.g., `agent/codex-t_XXXX`) default to close-intent for backward compatibility.
+Branch-name matches to a trusted prefix default to close-intent. Default prefixes are `DEFAULT_PREFIXES = ("swarm/", "clawta/")` (see `swarm/bin/clawta-pr-lifecycle:53`); pass `--prefix agent/` to extend if your dispatcher emits `agent/<driver>-<ticket>` branches.
 
 ### Worker PR pattern
 
-Workers push branches named `agent/<driver>-<ticket-hash>` and open PRs with auto-generated
-bodies like `Closes ticket t_XXXX (dispatched via clawta to codex)`. The lifecycle script
-picks these up and marks tickets `done` on merge.
+Workers push branches under one of the trusted prefixes above — current dispatchers use `swarm/<driver>-<ticket-hash>` or `clawta/<driver>-<ticket-hash>` — and open PRs with auto-generated bodies like `Closes ticket t_XXXX (dispatched via clawta to codex)`. The lifecycle script picks these up and marks tickets `done` on merge. Older docs and some runbooks reference an `agent/` prefix; that requires running the lifecycle script with `--prefix agent/`.
+
+## Operator UI + bus
+
+- [`apps/chitin-console/`](apps/chitin-console/): Angular operator UI, mobile-first, served via Tailscale at `http://100.115.89.9:7878/` — board, threads, inbox, suggestions, achievements.
+- [`apps/chitin-console-api/`](apps/chitin-console-api/): Node API backing the console — kanban + agent-bus reads/writes, suggestion routing.
+- Agent-bus: SQLite (`~/.chitin/agent-bus.sqlite`) + MCP server (HTTP on `:7878`) + Discord bidirectional mirror. Threads are first-class — cross-agent decisions and standups live there per Constitution §8.
 
 ## Observations and research
 
