@@ -403,6 +403,24 @@ steps:
         || echo '{"may":[],"must_not":[],"source":null}')
       echo "spawn_worker: file_system_scope: $FS_SCOPE_JSON" >&2
 
+      # Inject the file-system scope INTO the prompt as a hard rule so the
+      # worker sees it before writing anything. Without this, workers read
+      # only the ticket body + ENV_HEADER and may write to the wrong app
+      # surface (see day-0 retro: workers wrote to frontend/ instead of
+      # apps/portal/). The post-spawn validator catches violations, but
+      # making the constraint VISIBLE in the prompt converts catch-after-
+      # commit into don't-commit-in-the-first-place. Only injected when
+      # the resolver found a non-empty scope (back-compat with legacy
+      # specs).
+      FS_MAY=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.may | if length == 0 then "" else "  - " + join("\n  - ") end')
+      FS_MUST_NOT=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.must_not | if length == 0 then "" else "  - " + join("\n  - ") end')
+      if [[ -n "$FS_MAY" || -n "$FS_MUST_NOT" ]]; then
+        SCOPE_HEADER=$(printf '\n# ⛔ File-system scope (HARD RULE — enforced post-commit)\n\nYour commits MUST stay within these path globs:\n\n**MAY write:**\n%s\n\n**MUST NOT write:**\n%s\n\nThe post-spawn validator will reject your commit and close your PR if you touch ANY file outside MAY-write or matching MUST-NOT. If the spec is wrong, STOP and comment on the ticket; do not silently expand scope.\n\n' "${FS_MAY:-  (no MAY rules — anything goes)}" "${FS_MUST_NOT:-  (no MUST NOT rules)}")
+        # Prepend scope above the existing prompt so it lands BEFORE the
+        # ticket body in the worker's reading order.
+        PROMPT="${SCOPE_HEADER}${PROMPT}"
+      fi
+
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
       # session tracking via parent_chain_id in chain ledger.
