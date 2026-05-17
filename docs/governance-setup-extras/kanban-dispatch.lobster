@@ -324,6 +324,16 @@ steps:
       CHITIN_REPO=$(chitin-kernel board-config "$BOARD_SLUG" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
       mkdir -p "$(dirname "$WORKTREE_DIR")"
+      # Spec 018 base-freshness invariant: every spawn — including
+      # re-dispatch — must run on a worktree whose base matches
+      # origin/$DEFAULT_BRANCH as of NOW. Re-dispatch on a stale
+      # worktree previously caused agent/codex-5f18463a to be branched
+      # from af771d3 (pre-PR-#915), which would have deleted apps/portal
+      # on merge. Fail-loud over silently destroy newer commits.
+      if ! git -C "$CHITIN_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>&1; then
+        echo "spawn_worker: base-freshness fetch failed for origin/$DEFAULT_BRANCH" >&2
+        exit 1
+      fi
       if [[ ! -d "$WORKTREE_DIR" ]]; then
         # Use git worktree add directly — scripts/create-worktree.sh
         # has extra bootstrap logic we don't need here. If the branch
@@ -331,11 +341,26 @@ steps:
         # erroring on duplicate.
         git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" "origin/$DEFAULT_BRANCH" 2>&1 \
           || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
+      else
+        # Re-dispatch case: worktree exists from a previous run.
+        # Reset to fresh base. Per spec 018 R2 we discard prior worker
+        # commits — they've already been pushed as agent/$DRIVER-$TICKET
+        # and either landed or were abandoned.
+        git -C "$WORKTREE_DIR" reset --hard "origin/$DEFAULT_BRANCH" 2>&1
+        git -C "$WORKTREE_DIR" clean -fd 2>&1
       fi
       if ! cd "$WORKTREE_DIR"; then
         echo "spawn_worker: failed to enter worktree $WORKTREE_DIR" >&2
         exit 1
       fi
+      # Spec 018 R3 + R4: assert base-freshness invariant + log the base.
+      BASE_SHA=$(git -C "$CHITIN_REPO" rev-parse "origin/$DEFAULT_BRANCH")
+      HEAD_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD)
+      if [[ "$BASE_SHA" != "$HEAD_SHA" ]]; then
+        echo "spawn_worker: base-freshness invariant violated: worktree HEAD=$HEAD_SHA != origin/$DEFAULT_BRANCH=$BASE_SHA" >&2
+        exit 1
+      fi
+      echo "spawn_worker: [base-freshness] $WORKTREE_DIR @ origin/$DEFAULT_BRANCH ${BASE_SHA:0:7}"
       # Inline role SKILL.md into the worker's system prompt. Role is
       # set via ROLE env var (default 'programmer'). Falls back to
       # no-prefix if the role file is missing. printf %s avoids the
@@ -402,6 +427,43 @@ steps:
         --board "$BOARD_SLUG" --ticket-id "${TICKET_ID}" 2>/dev/null \
         || echo '{"may":[],"must_not":[],"source":null}')
       echo "spawn_worker: file_system_scope: $FS_SCOPE_JSON" >&2
+
+      # Install the pre-commit scope hook into the worktree so commits
+      # touching out-of-scope files are rejected BEFORE landing locally
+      # (third defense layer alongside prompt-scope injection + post-spawn
+      # validator). Scope JSON lives in the worktree's git dir so the
+      # hook can read it. Per ECC pattern (everything-claude-code) +
+      # chitinhq/workspace#418 day-0 retro.
+      HOOK_SOURCE="$HOME/workspace/chitin/swarm/bin/worker-pre-commit-scope-hook.sh"
+      WORKTREE_GIT_DIR=$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)
+      if [[ -n "$WORKTREE_GIT_DIR" && -f "$HOOK_SOURCE" ]]; then
+        # Resolve git-dir to absolute path (rev-parse can return relative)
+        if [[ "$WORKTREE_GIT_DIR" != /* ]]; then
+          WORKTREE_GIT_DIR="$WORKTREE_DIR/$WORKTREE_GIT_DIR"
+        fi
+        printf '%s' "$FS_SCOPE_JSON" > "$WORKTREE_GIT_DIR/swarm-scope.json"
+        mkdir -p "$WORKTREE_GIT_DIR/hooks"
+        ln -sfn "$HOOK_SOURCE" "$WORKTREE_GIT_DIR/hooks/pre-commit"
+        echo "spawn_worker: pre-commit scope hook installed at $WORKTREE_GIT_DIR/hooks/pre-commit" >&2
+      fi
+
+      # Inject the file-system scope INTO the prompt as a hard rule so the
+      # worker sees it before writing anything. Without this, workers read
+      # only the ticket body + ENV_HEADER and may write to the wrong app
+      # surface (see day-0 retro: workers wrote to frontend/ instead of
+      # apps/portal/). The post-spawn validator catches violations, but
+      # making the constraint VISIBLE in the prompt converts catch-after-
+      # commit into don't-commit-in-the-first-place. Only injected when
+      # the resolver found a non-empty scope (back-compat with legacy
+      # specs).
+      FS_MAY=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.may | if length == 0 then "" else "  - " + join("\n  - ") end')
+      FS_MUST_NOT=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.must_not | if length == 0 then "" else "  - " + join("\n  - ") end')
+      if [[ -n "$FS_MAY" || -n "$FS_MUST_NOT" ]]; then
+        SCOPE_HEADER=$(printf '\n# ⛔ File-system scope (HARD RULE — enforced post-commit)\n\nYour commits MUST stay within these path globs:\n\n**MAY write:**\n%s\n\n**MUST NOT write:**\n%s\n\nThe post-spawn validator will reject your commit and close your PR if you touch ANY file outside MAY-write or matching MUST-NOT. If the spec is wrong, STOP and comment on the ticket; do not silently expand scope.\n\n' "${FS_MAY:-  (no MAY rules — anything goes)}" "${FS_MUST_NOT:-  (no MUST NOT rules)}")
+        # Prepend scope above the existing prompt so it lands BEFORE the
+        # ticket body in the worker's reading order.
+        PROMPT="${SCOPE_HEADER}${PROMPT}"
+      fi
 
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
