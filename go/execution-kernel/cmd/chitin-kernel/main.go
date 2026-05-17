@@ -58,6 +58,8 @@ func main() {
 		cmdHealth(args)
 	case "board-config":
 		cmdBoardConfig(args)
+	case "drivers":
+		cmdDrivers(args)
 	case "kanban":
 		cmdKanban(args)
 	case "gate":

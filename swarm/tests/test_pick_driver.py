@@ -54,11 +54,33 @@ CARDS = {
 
 
 class PickDriverTests(unittest.TestCase):
+    def make_fake_kernel(self, root: Path) -> Path:
+        kernel = root / "chitin-kernel"
+        kernel.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "mode = os.environ.get('TEST_KERNEL_BEHAVIOR', 'ok')\n"
+            "if len(sys.argv) < 4 or sys.argv[1:4] != ['drivers', 'list', '--json']:\n"
+            "    print(json.dumps({'error':'unexpected_args','argv':sys.argv[1:]}), file=sys.stderr)\n"
+            "    raise SystemExit(9)\n"
+            "if mode == 'nonzero':\n"
+            "    print('kernel failed', file=sys.stderr)\n"
+            "    raise SystemExit(7)\n"
+            "if mode == 'malformed':\n"
+            "    print('{broken json')\n"
+            "    raise SystemExit(0)\n"
+            "print(os.environ.get('TEST_KERNEL_DRIVERS_JSON', '{\"drivers\":[{\"id\":\"copilot\"},{\"id\":\"gemini\"},{\"id\":\"codex\"}]}'))\n",
+            encoding="utf-8",
+        )
+        kernel.chmod(0o755)
+        return kernel
+
     def run_pick_driver(self, classify: dict, **env_overrides: str) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             cards_dir = Path(tmp)
             souls_dir = cards_dir / "souls"
             souls_dir.mkdir()
+            kernel_bin = self.make_fake_kernel(cards_dir)
             for card_id, payload in CARDS.items():
                 (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
             for soul_id in ("knuth", "davinci", "sun-tzu", "socrates"):
@@ -68,6 +90,7 @@ class PickDriverTests(unittest.TestCase):
                 **os.environ,
                 "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
                 "CHITIN_SOULS_DIR": str(souls_dir),
+                "CHITIN_KERNEL_BIN": str(kernel_bin),
                 "ROUTER_MODE": "deterministic",
                 **env_overrides,
             }
@@ -87,6 +110,7 @@ class PickDriverTests(unittest.TestCase):
             cards_dir = Path(tmp)
             souls_dir = cards_dir / "souls"
             souls_dir.mkdir()
+            kernel_bin = self.make_fake_kernel(cards_dir)
             for card_id, payload in CARDS.items():
                 (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
             for soul_id in ("knuth", "davinci", "sun-tzu", "socrates"):
@@ -96,6 +120,7 @@ class PickDriverTests(unittest.TestCase):
                 **os.environ,
                 "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
                 "CHITIN_SOULS_DIR": str(souls_dir),
+                "CHITIN_KERNEL_BIN": str(kernel_bin),
                 "ROUTER_MODE": "deterministic",
                 **env_overrides,
             }
@@ -117,6 +142,7 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(result["driver"], "copilot")
         self.assertEqual(result["selection_mode"], "exploitation")
         self.assertEqual(result["exploration_candidates_considered"], 0)
+        self.assertEqual(result["approval_source"], "kernel")
 
     def test_deterministic_router_mode_emits_valid_pick_without_llm(self):
         result = self.run_pick_driver(
@@ -374,6 +400,78 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(payload["soul_id"], "sun-tzu")
         self.assertEqual(payload["soul_hash"], "")
         self.assertEqual(payload["soul_category"], "default")
+        self.assertEqual(payload["approval_source"], "kernel")
+
+    def test_kernel_approved_driver_list_filters_candidates_and_logs_skips(self):
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            TEST_KERNEL_DRIVERS_JSON=json.dumps({"drivers": [{"id": "copilot"}]}),
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "kernel")
+        self.assertIn('"event": "kernel_driver_registry_skip"', result.stderr)
+        self.assertIn('"driver": "codex"', result.stderr)
+        self.assertIn('"driver": "gemini"', result.stderr)
+
+    def test_kernel_empty_driver_list_falls_back_with_warning(self):
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            TEST_KERNEL_DRIVERS_JSON=json.dumps({"drivers": []}),
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"event": "kernel_driver_registry_fallback"', result.stderr)
+        self.assertIn('"reason": "kernel_empty_driver_list"', result.stderr)
+
+    def test_kernel_nonzero_exit_falls_back_with_warning(self):
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            TEST_KERNEL_BEHAVIOR="nonzero",
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"reason": "kernel_nonzero_exit"', result.stderr)
+
+    def test_kernel_malformed_json_falls_back_with_warning(self):
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            TEST_KERNEL_BEHAVIOR="malformed",
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"reason": "kernel_malformed_json"', result.stderr)
+
+    def test_large_kernel_driver_registry_ignores_unknown_future_drivers(self):
+        large_registry = {
+            "drivers": [{"id": "copilot"}, {"id": "gemini"}, {"id": "codex"}]
+            + [{"id": f"future-driver-{idx}"} for idx in range(200)]
+        }
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            TEST_KERNEL_DRIVERS_JSON=json.dumps(large_registry),
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "kernel")
+        self.assertIn('"event": "kernel_driver_registry_unroutable"', result.stderr)
 
     def test_recent_same_shape_failures_demote_lane_for_fifth_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:

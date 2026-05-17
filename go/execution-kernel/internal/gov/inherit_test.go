@@ -89,6 +89,46 @@ rules:
 	}
 }
 
+func TestLoadWithInheritance_DriversMergeByID(t *testing.T) {
+	t.Setenv("CHITIN_POLICY_TRUST_DIR", filepath.Join(t.TempDir(), "trust"))
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "chitin.yaml"), `
+id: parent
+mode: enforce
+drivers:
+  - id: copilot
+    driver: copilot
+  - id: gemini
+    driver: gemini
+rules: []
+`)
+	child := filepath.Join(root, "sub")
+	writeFile(t, filepath.Join(child, "chitin.yaml"), `
+id: child
+mode: enforce
+drivers:
+  - id: gemini
+    driver: gemini
+    role: reviewer
+  - id: codex
+    driver: codex
+rules: []
+`)
+	p, _, err := LoadWithInheritance(child)
+	if err != nil {
+		t.Fatalf("LoadWithInheritance: %v", err)
+	}
+	if len(p.Drivers) != 3 {
+		t.Fatalf("Drivers len=%d want 3", len(p.Drivers))
+	}
+	if p.Drivers[1].ID != "gemini" || p.Drivers[1].Role != "reviewer" {
+		t.Fatalf("child driver override missing: %+v", p.Drivers[1])
+	}
+	if p.Drivers[2].ID != "codex" {
+		t.Fatalf("child-added driver missing: %+v", p.Drivers[2])
+	}
+}
+
 func TestLoadWithInheritance_NoPolicyFound(t *testing.T) {
 	dir := t.TempDir()
 	_, _, err := LoadWithInheritance(dir)
@@ -168,10 +208,10 @@ rules: []
 // 500-line global instead of the 5000-line override.
 //
 // Boundaries:
-//   1. parent has no PerAction, child has one — child's PerAction wins.
-//   2. parent has PerAction, child has none — parent survives.
-//   3. both have PerAction with overlapping keys — child overrides on
-//      collision, parent-only keys survive.
+//  1. parent has no PerAction, child has one — child's PerAction wins.
+//  2. parent has PerAction, child has none — parent survives.
+//  3. both have PerAction with overlapping keys — child overrides on
+//     collision, parent-only keys survive.
 func TestMergePolicies_PerActionMergedAdditively(t *testing.T) {
 	t.Run("parent_empty_child_has_perAction", func(t *testing.T) {
 		parent := Policy{}

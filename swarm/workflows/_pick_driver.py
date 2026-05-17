@@ -70,6 +70,11 @@ FAILURE_KINDS = {
 }
 
 
+def emit_structured_log(level: str, event: str, **fields: object) -> None:
+    payload = {"level": level, "event": event, **fields}
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+
+
 def env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -107,6 +112,116 @@ def load_cards(cards_dir: str = CARDS_DIR) -> tuple[list[dict], list[str]]:
     for error in errors:
         print(f"_pick_driver: failed to load agent card: {error}", file=sys.stderr)
     return cards, errors
+
+
+def kernel_drivers_context() -> tuple[list[str], str | None]:
+    kernel_bin = os.environ.get("CHITIN_KERNEL_BIN", "chitin-kernel").strip() or "chitin-kernel"
+    cmd = [kernel_bin, "drivers", "list", "--json"]
+
+    policy_file = os.environ.get("CHITIN_POLICY_FILE", "").strip()
+    if policy_file:
+        cmd.extend(["--policy-file", policy_file])
+    else:
+        cmd.extend(["--cwd", str(repo_root())])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_fallback",
+            reason="kernel_unavailable",
+            detail=str(error),
+        )
+        return [], "fallback"
+
+    if result.returncode != 0:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_fallback",
+            reason="kernel_nonzero_exit",
+            detail=result.stderr.strip() or result.stdout.strip() or f"exit={result.returncode}",
+        )
+        return [], "fallback"
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_fallback",
+            reason="kernel_malformed_json",
+            detail=str(error),
+        )
+        return [], "fallback"
+
+    drivers = payload.get("drivers")
+    if not isinstance(drivers, list):
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_fallback",
+            reason="kernel_invalid_payload",
+            detail="drivers field must be a list",
+        )
+        return [], "fallback"
+
+    approved_ids: list[str] = []
+    for item in drivers:
+        if not isinstance(item, dict):
+            continue
+        driver_id = item.get("id")
+        if isinstance(driver_id, str) and driver_id.strip():
+            approved_ids.append(driver_id.strip())
+
+    if not approved_ids:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_fallback",
+            reason="kernel_empty_driver_list",
+            detail="kernel returned no approved driver ids",
+        )
+        return [], "fallback"
+
+    return approved_ids, "kernel"
+
+
+def approved_cards(cards: list[dict]) -> tuple[list[dict], str]:
+    approved_ids, approval_source = kernel_drivers_context()
+    if approval_source == "fallback":
+        return cards, approval_source
+
+    approved_set = set(approved_ids)
+    approved: list[dict] = []
+    kernel_only = sorted(approved_set)
+    for card in cards:
+        card_id = str(card.get("id") or "").strip()
+        if card_id in approved_set:
+            approved.append(card)
+            if card_id in kernel_only:
+                kernel_only.remove(card_id)
+            continue
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_skip",
+            driver=card_id,
+            reason="driver_missing_from_kernel_registry",
+        )
+
+    for driver_id in kernel_only:
+        emit_structured_log(
+            "info",
+            "kernel_driver_registry_unroutable",
+            driver=driver_id,
+            reason="kernel_approved_but_no_local_agent_card",
+        )
+
+    return approved, approval_source
 
 
 def card_capabilities(card: dict) -> set[str]:
@@ -713,6 +828,7 @@ def emit_result(
     soul_hash: str,
     soul_category: str,
     shape: str,
+    approval_source: str,
 ) -> None:
     agent_fingerprint = composite_fingerprint(driver, model, soul_id, soul_hash)
     print(
@@ -734,6 +850,7 @@ def emit_result(
                 "card_load_errors": card_load_errors,
                 "exploration_candidates_considered": exploration_candidates_considered,
                 "shape_bucket": shape,
+                "approval_source": approval_source,
             }
         )
     )
@@ -746,6 +863,7 @@ def main() -> None:
     classify = json.loads(raw)
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
+    cards, approval_source = approved_cards(cards)
     soul_id, soul_hash, soul_category = resolve_soul(classify)
     shape = shape_bucket(classify)
 
@@ -768,6 +886,7 @@ def main() -> None:
             soul_hash=soul_hash,
             soul_category=soul_category,
             shape=shape,
+            approval_source=approval_source,
         )
         return
 
@@ -805,6 +924,7 @@ def main() -> None:
             soul_hash=soul_hash,
             soul_category=soul_category,
             shape=shape,
+            approval_source=approval_source,
         )
         return
 
@@ -830,6 +950,7 @@ def main() -> None:
                 soul_hash=soul_hash,
                 soul_category=soul_category,
                 shape=shape,
+                approval_source=approval_source,
             )
             return
 
@@ -874,6 +995,7 @@ def main() -> None:
         soul_hash=soul_hash,
         soul_category=soul_category,
         shape=shape,
+        approval_source=approval_source,
     )
 
 

@@ -17,11 +17,23 @@ type Policy struct {
 	Name           string            `yaml:"name,omitempty"`
 	Mode           string            `yaml:"mode,omitempty"` // monitor | enforce | guide; default guide
 	Pack           string            `yaml:"pack,omitempty"`
+	Drivers        []DriverIdentity  `yaml:"drivers,omitempty"`
 	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
 	Bounds         Bounds            `yaml:"bounds,omitempty"`
 	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
 	Authority      AuthorityConfig   `yaml:"authority,omitempty"`
 	Rules          []Rule            `yaml:"rules"`
+}
+
+// DriverIdentity declares one driver lane the kernel approves for dispatch.
+// ID is the dispatcher-facing key (e.g. the agent-card id); the remaining
+// fields preserve the identity dimensions that describe that lane.
+type DriverIdentity struct {
+	ID        string `yaml:"id" json:"id"`
+	Driver    string `yaml:"driver,omitempty" json:"driver,omitempty"`
+	Model     string `yaml:"model,omitempty" json:"model,omitempty"`
+	Role      string `yaml:"role,omitempty" json:"role,omitempty"`
+	Authority string `yaml:"authority,omitempty" json:"authority,omitempty"`
 }
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
@@ -467,6 +479,20 @@ func (p *Policy) ApplyDefaults() error {
 		}
 		if !grant.hasSelector() {
 			return fmt.Errorf("authority.trusted[%d]: at least one stable identity selector is required", i)
+		}
+	}
+	seenDriverIDs := make(map[string]struct{}, len(p.Drivers))
+	for i := range p.Drivers {
+		driver := &p.Drivers[i]
+		if driver.ID == "" {
+			return fmt.Errorf("drivers[%d]: id is required", i)
+		}
+		if _, dup := seenDriverIDs[driver.ID]; dup {
+			return fmt.Errorf("drivers[%d]: duplicate id=%q", i, driver.ID)
+		}
+		seenDriverIDs[driver.ID] = struct{}{}
+		if driver.Driver == "" {
+			driver.Driver = driver.ID
 		}
 	}
 	for i := range p.Rules {
