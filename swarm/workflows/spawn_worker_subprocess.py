@@ -37,6 +37,7 @@ Outputs JSON:
 
 import json
 import os
+import re
 import subprocess
 import sys
 import hashlib
@@ -217,6 +218,90 @@ def snapshot_event_files(chitin_home: str) -> dict[str, int]:
     return snapshot
 
 
+def changed_files_since_base(cwd: str, config: dict | None = None) -> list[str]:
+    """Return paths the worker touched (committed or staged-or-working) relative
+    to the resolved base ref. Used by the post-spawn path-scope validator."""
+    config = config or {}
+    base_ref = resolve_base_ref(config, cwd)
+    # Prefer merge-base..HEAD to capture only the worker's own commits.
+    merge_base = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if merge_base.returncode == 0 and merge_base.stdout.strip():
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", f"{merge_base.stdout.strip()}..HEAD"],
+            cwd=cwd, capture_output=True, text=True,
+        )
+    else:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_ref}..HEAD"],
+            cwd=cwd, capture_output=True, text=True,
+        )
+    if diff.returncode != 0:
+        return []
+    return [line for line in diff.stdout.splitlines() if line.strip()]
+
+
+def _glob_to_re(pattern: str) -> re.Pattern:
+    """Translate a shell-style glob ('apps/portal/**', 'apps/portal/*.json',
+    'frontend/**') to a regex. ** matches any path including '/', * matches
+    one path segment (no '/'). Anchored at start and end."""
+    out = ""
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "*" and i + 1 < len(pattern) and pattern[i + 1] == "*":
+            # ** — any chars including /
+            out += ".*"
+            i += 2
+            # Eat trailing slash so 'foo/**' matches 'foo' too
+            if i < len(pattern) and pattern[i] == "/":
+                i += 1
+        elif c == "*":
+            # single * — any chars except /
+            out += "[^/]*"
+            i += 1
+        elif c == "?":
+            out += "[^/]"
+            i += 1
+        elif c in ".^$+(){}[]|\\":
+            out += "\\" + c
+            i += 1
+        else:
+            out += c
+            i += 1
+    return re.compile("^" + out + "$")
+
+
+def validate_path_scope(
+    changed_paths: list[str],
+    may_globs: list[str],
+    must_not_globs: list[str],
+) -> tuple[bool, list[str]]:
+    """Return (ok, offending_paths). A path is offending if it matches any
+    MUST-NOT glob, OR it matches no MAY glob (when MAY globs are supplied).
+
+    Empty changed_paths returns (True, []) — no work to enforce against.
+    Empty may_globs + empty must_not_globs returns (True, []) — no scope
+    declared, no enforcement (back-compat for specs missing the section).
+    """
+    if not changed_paths:
+        return True, []
+    if not may_globs and not must_not_globs:
+        return True, []
+    may = [_glob_to_re(g) for g in may_globs]
+    must_not = [_glob_to_re(g) for g in must_not_globs]
+    offending: list[str] = []
+    for path in changed_paths:
+        if any(rx.match(path) for rx in must_not):
+            offending.append(path)
+            continue
+        if may and not any(rx.match(path) for rx in may):
+            offending.append(path)
+    return (not offending, offending)
+
+
 def detect_event_chain(
     chitin_home: str, before: dict[str, int]
 ) -> tuple[str | None, str | None]:
@@ -262,6 +347,49 @@ def summarize_completed_run(
     commit_count_ahead = commits_ahead_of_base(cwd, config)
     driver = config.get("driver", "unknown")
     model = config.get("model", "")
+
+    # Post-spawn path-scope validator (per workspace Constitution §1.1,
+    # added 2026-05-17 after portal MVP day-0 retro). If the spec declares
+    # MAY-write / MUST-NOT-write globs and the worker touched files outside,
+    # mark the run as failed with scope_violation so the lobster wrapper
+    # closes the PR + demotes the ticket. Spec authors pass globs through
+    # spawn config as `file_system_scope: {may: [...], must_not: [...]}`.
+    # If the spec didn't declare scope, this is a no-op (back-compat).
+    scope = config.get("file_system_scope") or {}
+    may_globs = scope.get("may") or []
+    must_not_globs = scope.get("must_not") or []
+    if commit_count_ahead > 0 and (may_globs or must_not_globs):
+        changed = changed_files_since_base(cwd, config)
+        ok, offending = validate_path_scope(changed, may_globs, must_not_globs)
+        if not ok:
+            offending_str = ", ".join(offending[:10])
+            if len(offending) > 10:
+                offending_str += f", … +{len(offending) - 10} more"
+            return {
+                "status": "failed",
+                "returncode": returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+                "error": (
+                    f"scope_violation: worker touched files outside declared "
+                    f"file_system_scope: {offending_str}"
+                ),
+                "exit_reason": "scope_violation",
+                "transcript_tail": transcript_tail,
+                "commit_count_ahead": commit_count_ahead,
+                "driver": driver,
+                "model": model,
+                "event_chain_file": event_chain_file,
+                "event_chain_hash": event_chain_hash,
+                "soul_hash_mismatch": soul_hash_mismatch,
+                "observed_soul_hash": observed_soul_hash,
+                "audit_flags": (
+                    ["scope_violation"]
+                    + (["soul_hash_mismatch"] if soul_hash_mismatch else [])
+                ),
+                "offending_paths": offending,
+            }
+
     if returncode == 0 and commit_count_ahead == 0:
         return {
             "status": "completed_no_commit",
