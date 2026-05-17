@@ -274,31 +274,6 @@ ignore `frontend/**`
         self.assertEqual(result["globs"], ["apps/portal/**"])
         self.assertTrue(str(result["source"]).endswith("005-portal-auth-wiring/spec.md"))
 
-    def test_summarize_completed_run_rejects_spec_missing_file_scope(self):
-        module = load_module()
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(module, "commits_ahead_of_base", return_value=1), \
-             mock.patch.object(module, "validate_file_scope", return_value={
-                 "ok": False,
-                 "enforced": False,
-                 "source": ".specify/specs/005/spec.md",
-                 "globs": [],
-                 "reason": "missing File-system scope section",
-                 "changed_files": ["apps/portal/src/App.tsx"],
-                 "violations": ["<missing File-system scope>"],
-             }):
-            summary = module.summarize_completed_run(
-                {"driver": "codex", "model": "gpt-5.5"},
-                0,
-                "",
-                "",
-                tmp,
-            )
-
-        self.assertEqual(summary["status"], "failed")
-        self.assertEqual(summary["exit_reason"], "path-scope-missing")
-        self.assertIn("missing required File-system scope", summary["error"])
-
     def test_detect_event_chain_returns_latest_hash(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

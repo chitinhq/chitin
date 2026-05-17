@@ -21,7 +21,7 @@ Prevent worker output from reaching GitHub when it violates the spec's declared 
 - Worker dispatch config carries the board spec root/workspace context needed to resolve `.specify/specs/<slug>/spec.md` for both repo-local Chitin specs and workspace-overlay ReadyBench specs.
 - `spawn_worker_subprocess.py` parses a spec's `## File-system scope` section into allow/deny globs.
 - After a successful worker run with commits, the helper compares changed files against the declared scope and returns `status=failed`, `exit_reason=path-scope-violation` when any touched file falls outside scope.
-- A dispatched ticket whose referenced spec lacks `## File-system scope` fails loud with `exit_reason=path-scope-missing`; missing scope is incomplete and must not proceed to PR creation.
+- Existing specs with no scope section are not retroactively broken; enforcement activates when a scope section is present.
 - Structured worker failures still reach `finalize_dispatch`, so Lobster can block/crash the ticket with detail instead of leaving stale `in_progress` runs.
 - Dispatch aborts before spawn if the ticket is no longer `in_progress` after the audit/start step.
 - Finalize refuses to push/open a PR if the ticket was blocked or moved out of `in_progress` while the worker was running.
