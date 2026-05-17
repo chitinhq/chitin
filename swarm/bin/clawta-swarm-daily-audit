@@ -24,12 +24,12 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "- checkout: ${branch:-detached}; dirty entries: $dirty"
 fi
 
-echo "- open swarm/clawta PRs:"
+echo "- open agent/swarm/clawta PRs:"
 if gh pr list --repo "$REPO" --state open --limit 30 --json number,title,headRefName,mergeable,statusCheckRollup,comments >/tmp/clawta-daily-prs.json 2>/tmp/clawta-daily-prs.err; then
   python3 - <<'PY'
 import json, re
 prs=json.load(open('/tmp/clawta-daily-prs.json'))
-interesting=[p for p in prs if p.get('headRefName','').startswith(('swarm/','clawta/'))]
+interesting=[p for p in prs if p.get('headRefName','').startswith(('agent/','swarm/','clawta/'))]
 if not interesting:
     print('  - none')
 for p in interesting[:15]:

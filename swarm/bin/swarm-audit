@@ -281,7 +281,9 @@ def build_prompt(facts: dict[str, Any]) -> str:
 
 Reference specific ticket ids, PR numbers, rule_ids, ticket counts. No prose preamble. No restating the facts. Just the bullets, one per line, starting with the tag.
 
-Hard requirement: if `protected_branch_writes` is non-empty, the FIRST bullet must flag it with [fix-now] — that's the no-commit-to-main rule which chitin gate doesn't catch yet (see kanban t_6e6376b2).
+Hard requirements:
+- If `protected_branch_writes` is non-empty, the FIRST bullet must flag it with [fix-now] — that's the no-commit-to-main rule which chitin gate doesn't catch yet (see kanban t_6e6376b2).
+- Classify current-stack drift explicitly when present: missing spec-kit entry, unmerged spec, stale `agent/*` lifecycle prefix handling, board-watchdog prompt drift, or runtime installer drift.
 
 FACTS:
 {json.dumps(facts, indent=2, default=str)}
