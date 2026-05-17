@@ -27,9 +27,37 @@ The wiki uses `[[Article Name]]` Obsidian-style links; the corresponding file is
 
 ## Specs and plans
 
-- [docs/superpowers/specs/](docs/superpowers/specs/): design docs, one per feature, dated
+- [`.specify/specs/`](.specify/specs/): spec-kit entries (the dispatch gate — no ticket dispatches without one)
+  - Specs 001-010 are shipped (agent-bus through pr-lifecycle-exact-match)
+  - Specs 011-014 are script coverage (Bats smoke tests)
+  - Specs 015-016 are draft (diagnostics separation, watchdog prompt durability)
+  - Each spec has acceptance criteria (Given/When/Then) and ties to a ticket via `ticket: t_XXXX`
+- [docs/superpowers/specs/](docs/superpowers/specs/): pre-spec-kit design docs (superseded by `.specify/specs/`)
 - [docs/superpowers/plans/](docs/superpowers/plans/): execution plans, one per shipped initiative, dated
 - [docs/architecture/layer-contracts.md](docs/architecture/layer-contracts.md): contracts between layers
+
+### Spec-kit gate (constitution §1)
+
+The spec-kit gate is the dispatch trigger. Before a ticket can be dispatched to a worker:
+1. A spec-kit entry must exist at `.specify/specs/NNN-<slug>/spec.md`
+2. It must reference the ticket via `ticket: t_XXXX`
+3. The bridge `has_spec_kit_entry()` checks this at dispatch time
+
+The poller also checks in reverse: tickets with valid spec-kit entries are not demoted from `ready` to `triage`.
+
+### PR lifecycle (close-intent vs ref-intent)
+
+The PR lifecycle (`clawta-pr-lifecycle`) distinguishes between:
+- **Close-intent**: `Closes`, `Fixes`, `Resolves` + ticket ID → marks ticket `done`
+- **Ref-intent**: `Refs`, `References`, `ticket`, `task`, `kanban` + ticket ID → comments only, no status change
+
+Branch-name matches (e.g., `agent/codex-t_XXXX`) default to close-intent for backward compatibility.
+
+### Worker PR pattern
+
+Workers push branches named `agent/<driver>-<ticket-hash>` and open PRs with auto-generated
+bodies like `Closes ticket t_XXXX (dispatched via clawta to codex)`. The lifecycle script
+picks these up and marks tickets `done` on merge.
 
 ## Observations and research
 
