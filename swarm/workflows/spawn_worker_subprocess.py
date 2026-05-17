@@ -512,10 +512,34 @@ def summarize_completed_run(
     # mark the run as failed with scope_violation so the lobster wrapper
     # closes the PR + demotes the ticket. Spec authors pass globs through
     # spawn config as `file_system_scope: {may: [...], must_not: [...]}`.
-    # If the spec didn't declare scope, this is a no-op (back-compat).
+    # If a bound spec is missing scope, fail closed before finalize can
+    # push/open a PR. If no scope metadata exists at all, keep legacy no-op
+    # behavior; dispatch readiness is responsible for missing spec binding.
     scope = config.get("file_system_scope") or {}
     may_globs = scope.get("may") or []
     must_not_globs = scope.get("must_not") or []
+    if commit_count_ahead > 0 and scope.get("missing_scope"):
+        return {
+            "status": "failed",
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "error": f"path_scope_missing: spec lacks required File-system scope: {scope.get('source')}",
+            "exit_reason": "path-scope-missing",
+            "transcript_tail": transcript_tail,
+            "commit_count_ahead": commit_count_ahead,
+            "driver": driver,
+            "model": model,
+            "event_chain_file": event_chain_file,
+            "event_chain_hash": event_chain_hash,
+            "soul_hash_mismatch": soul_hash_mismatch,
+            "observed_soul_hash": observed_soul_hash,
+            "file_system_scope": scope,
+            "audit_flags": (
+                ["path_scope_missing"]
+                + (["soul_hash_mismatch"] if soul_hash_mismatch else [])
+            ),
+        }
     if commit_count_ahead > 0 and (may_globs or must_not_globs):
         changed = changed_files_since_base(cwd, config)
         ok, offending = validate_path_scope(changed, may_globs, must_not_globs)
