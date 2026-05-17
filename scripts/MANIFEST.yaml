@@ -9,6 +9,7 @@ exclude_patterns:
   - scripts/hermes/tests/fixtures/**
   - scripts/hermes/tests/stubs/**
   - scripts/hermes/tests/tick.bats
+  - scripts/tests/**
 
 entries:
   - path: scripts/bootstrap-worktree.sh
@@ -22,6 +23,10 @@ entries:
   - path: scripts/check-hermes-clawta-contract.py
     category: ci
     purpose: statically verify the Hermes and Clawta collaboration contract stays wired
+
+  - path: scripts/check-no-chitin-hardcodes.sh
+    category: ci
+    purpose: block repo and workspace literals from creeping back into swarm/bin and script entrypoints after board-config migration
 
   - path: scripts/check-spec-frontmatter.py
     category: ci
@@ -38,6 +43,10 @@ entries:
   - path: scripts/check-swarm-deployed-sync.sh
     category: ci
     purpose: detect drift between repo swarm files and the deployed OpenClaw runtime mirror
+
+  - path: scripts/check-swarm-kanban-isolation.sh
+    category: ci
+    purpose: reject direct swarm-side writes to kanban tables; enforce single mutation choke point per spec 003
 
   - path: scripts/check-worktree-naming.sh
     category: ci
