@@ -403,6 +403,25 @@ steps:
         || echo '{"may":[],"must_not":[],"source":null}')
       echo "spawn_worker: file_system_scope: $FS_SCOPE_JSON" >&2
 
+      # Install the pre-commit scope hook into the worktree so commits
+      # touching out-of-scope files are rejected BEFORE landing locally
+      # (third defense layer alongside prompt-scope injection + post-spawn
+      # validator). Scope JSON lives in the worktree's git dir so the
+      # hook can read it. Per ECC pattern (everything-claude-code) +
+      # chitinhq/workspace#418 day-0 retro.
+      HOOK_SOURCE="$HOME/workspace/chitin/swarm/bin/worker-pre-commit-scope-hook.sh"
+      WORKTREE_GIT_DIR=$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)
+      if [[ -n "$WORKTREE_GIT_DIR" && -f "$HOOK_SOURCE" ]]; then
+        # Resolve git-dir to absolute path (rev-parse can return relative)
+        if [[ "$WORKTREE_GIT_DIR" != /* ]]; then
+          WORKTREE_GIT_DIR="$WORKTREE_DIR/$WORKTREE_GIT_DIR"
+        fi
+        printf '%s' "$FS_SCOPE_JSON" > "$WORKTREE_GIT_DIR/swarm-scope.json"
+        mkdir -p "$WORKTREE_GIT_DIR/hooks"
+        ln -sfn "$HOOK_SOURCE" "$WORKTREE_GIT_DIR/hooks/pre-commit"
+        echo "spawn_worker: pre-commit scope hook installed at $WORKTREE_GIT_DIR/hooks/pre-commit" >&2
+      fi
+
       # Inject the file-system scope INTO the prompt as a hard rule so the
       # worker sees it before writing anything. Without this, workers read
       # only the ticket body + ENV_HEADER and may write to the wrong app
