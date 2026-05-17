@@ -112,6 +112,10 @@ entries:
     category: ci
     purpose: install the local pre-commit hook that signs staged chitin policy files
 
+  - path: scripts/install-pre-push-protected-branch-guard.sh
+    category: operator
+    purpose: install the local pre-push guard that blocks direct pushes to protected branches
+
   - path: scripts/install-hermes-hook.sh
     category: ci
     purpose: install the chitin governance hook into Hermes pre_tool_call settings
@@ -165,6 +169,10 @@ entries:
   - path: scripts/replay-hook-captures.sh
     category: operator
     purpose: replay captured hook payloads through the gate for offline policy analysis
+
+  - path: scripts/pre-push-protected-branch-guard.sh
+    category: operator
+    purpose: reject direct pushes to protected branches from local worktrees
 
   - path: scripts/smoke-hermes-clawta-chain.sh
     category: ci
