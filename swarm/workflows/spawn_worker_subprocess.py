@@ -35,6 +35,7 @@ Outputs JSON:
   }
 """
 
+import fnmatch
 import json
 import os
 import re
@@ -45,6 +46,12 @@ from pathlib import Path
 
 
 TRANSCRIPT_TAIL_LINES = 40
+SPEC_KIT_REF_RE = re.compile(
+    r"`?(?P<path>(?:[A-Za-z0-9_.~/-]*/)?\.specify/specs/"
+    r"(?P<slug>[0-9A-Za-z][0-9A-Za-z_.-]*)/spec\.md)`?"
+)
+FILE_SCOPE_HEADING_RE = re.compile(r"^##\s+File-system scope\s*$", re.IGNORECASE)
+NEXT_H2_RE = re.compile(r"^##\s+")
 
 
 def prepare_worker_command(config: dict) -> tuple[list[str], str | None]:
@@ -203,6 +210,147 @@ def commits_ahead_of_base(cwd: str, config: dict | None = None) -> int:
         detail = (fallback.stderr or merge_base.stderr).strip()
         raise RuntimeError(f"unable to count commits ahead of {base_ref}: {detail}".strip())
     return int(fallback.stdout.strip() or "0")
+
+
+def extract_spec_ref(text: str) -> dict | None:
+    match = SPEC_KIT_REF_RE.search(text or "")
+    if not match:
+        return None
+    return {"path": match.group("path"), "slug": match.group("slug")}
+
+
+def extract_spec_path(text: str) -> str | None:
+    ref = extract_spec_ref(text)
+    return str(ref["path"]) if ref else None
+
+
+def _scope_tokens_from_line(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return []
+    stripped = re.sub(r"^[-*+]\s+", "", stripped)
+    stripped = re.sub(r"^\d+[.)]\s+", "", stripped)
+    code_spans = re.findall(r"`([^`]+)`", stripped)
+    negated_code_span = bool(code_spans and stripped.split("`", 1)[0].strip().endswith("!"))
+    candidates = code_spans or re.split(r"[\s,]+", re.sub(r"^[A-Za-z _-]+:\s*", "", stripped))
+    tokens: list[str] = []
+    for raw in candidates:
+        token = raw.strip().strip("'\"")
+        if negated_code_span and not token.startswith("!"):
+            token = "!" + token
+        if not token:
+            continue
+        negated = token.startswith("!")
+        body = token[1:] if negated else token
+        if "/" not in body and not any(ch in body for ch in "*?[]"):
+            continue
+        if "://" in body:
+            continue
+        tokens.append(("!" if negated else "") + body.lstrip("./"))
+    return tokens
+
+
+def extract_file_scope_globs(spec_text: str) -> list[str]:
+    in_scope = False
+    globs: list[str] = []
+    for line in (spec_text or "").splitlines():
+        if FILE_SCOPE_HEADING_RE.match(line.strip()):
+            in_scope = True
+            continue
+        if in_scope and NEXT_H2_RE.match(line.strip()):
+            break
+        if in_scope:
+            globs.extend(_scope_tokens_from_line(line))
+    return globs
+
+
+def load_file_scope(config: dict | None) -> dict:
+    config = config or {}
+    explicit = config.get("file_scope")
+    if isinstance(explicit, list) and explicit:
+        return {"source": "config", "globs": [str(item) for item in explicit if str(item).strip()]}
+
+    ticket_text = str(config.get("ticket_body") or config.get("prompt") or "")
+    spec_ref = extract_spec_ref(ticket_text)
+    if not spec_ref:
+        return {"source": "none", "globs": [], "reason": "no spec-kit path found"}
+
+    candidates: list[Path] = []
+    spec_root = str(config.get("spec_root") or os.environ.get("CHITIN_SPEC_ROOT") or "").strip()
+    if spec_root:
+        candidates.append(Path(spec_root).expanduser() / str(spec_ref["slug"]) / "spec.md")
+
+    workspace_root = str(config.get("workspace_root") or os.environ.get("WORKSPACE_ROOT") or "").strip()
+    if workspace_root:
+        candidates.append(Path(workspace_root).expanduser() / str(spec_ref["path"]))
+
+    repo_root = Path(str(config.get("repo_root") or os.environ.get("CHITIN_REPO", "") or ".")).expanduser()
+    candidates.append(repo_root / str(spec_ref["path"]))
+
+    candidate = next((path for path in candidates if path.is_file()), candidates[0])
+    if not candidate.is_file():
+        checked = ", ".join(str(path) for path in candidates)
+        return {"source": str(spec_ref["path"]), "globs": [], "reason": f"spec file not found; checked: {checked}"}
+
+    globs = extract_file_scope_globs(candidate.read_text(encoding="utf-8"))
+    if not globs:
+        return {"source": str(candidate), "globs": [], "reason": "missing File-system scope section"}
+    return {"source": str(candidate), "globs": globs}
+
+
+def changed_files_since_base(cwd: str, config: dict | None = None) -> list[str]:
+    base_ref = resolve_base_ref(config, cwd)
+    merge_base = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    base = merge_base.stdout.strip() if merge_base.returncode == 0 else base_ref
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}..HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if diff.returncode != 0:
+        raise RuntimeError((diff.stderr or merge_base.stderr).strip() or f"unable to diff against {base_ref}")
+    return [line.strip() for line in diff.stdout.splitlines() if line.strip()]
+
+
+def _matches_scope(path: str, pattern: str) -> bool:
+    path = path.lstrip("./")
+    pattern = pattern.lstrip("./")
+    if fnmatch.fnmatchcase(path, pattern):
+        return True
+    if pattern.endswith("/**"):
+        prefix = pattern[:-3].rstrip("/") + "/"
+        return path.startswith(prefix)
+    return False
+
+
+def validate_file_scope(cwd: str, config: dict | None = None) -> dict:
+    scope = load_file_scope(config)
+    globs = scope.get("globs") or []
+    if not globs:
+        return {"ok": True, "enforced": False, **scope, "changed_files": [], "violations": []}
+
+    changed = changed_files_since_base(cwd, config)
+    allow = [g for g in globs if not g.startswith("!")]
+    deny = [g[1:] for g in globs if g.startswith("!")]
+    violations: list[str] = []
+    for path in changed:
+        denied = any(_matches_scope(path, pattern) for pattern in deny)
+        allowed = any(_matches_scope(path, pattern) for pattern in allow) if allow else True
+        if denied or not allowed:
+            violations.append(path)
+    return {
+        "ok": not violations,
+        "enforced": True,
+        **scope,
+        "changed_files": changed,
+        "violations": violations,
+    }
 
 
 def snapshot_event_files(chitin_home: str) -> dict[str, int]:
@@ -409,6 +557,28 @@ def summarize_completed_run(
             "audit_flags": ["soul_hash_mismatch"] if soul_hash_mismatch else [],
         }
 
+    path_scope = validate_file_scope(cwd, config) if returncode == 0 and commit_count_ahead > 0 else {"ok": True, "enforced": False}
+    if not path_scope.get("ok", True):
+        violations = ", ".join(path_scope.get("violations", []))
+        return {
+            "status": "failed",
+            "returncode": -1,
+            "stdout": stdout,
+            "stderr": stderr,
+            "error": f"Worker changed files outside declared File-system scope: {violations}",
+            "exit_reason": "path-scope-violation",
+            "transcript_tail": transcript_tail,
+            "commit_count_ahead": commit_count_ahead,
+            "driver": driver,
+            "model": model,
+            "event_chain_file": event_chain_file,
+            "event_chain_hash": event_chain_hash,
+            "soul_hash_mismatch": soul_hash_mismatch,
+            "observed_soul_hash": observed_soul_hash,
+            "path_scope": path_scope,
+            "audit_flags": ["soul_hash_mismatch"] if soul_hash_mismatch else [],
+        }
+
     status = "completed" if returncode == 0 else "failed"
     return {
         "status": status,
@@ -425,6 +595,7 @@ def summarize_completed_run(
         "event_chain_hash": event_chain_hash,
         "soul_hash_mismatch": soul_hash_mismatch,
         "observed_soul_hash": observed_soul_hash,
+        "path_scope": path_scope,
         "audit_flags": ["soul_hash_mismatch"] if soul_hash_mismatch else [],
     }
 

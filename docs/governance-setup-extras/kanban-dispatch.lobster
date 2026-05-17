@@ -217,10 +217,23 @@ steps:
     run: |
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
       # Slice D: lifecycle discipline. Flip to in_progress so the board
-      # reflects reality. kanban-flow is idempotent when the ticket is
-      # already in_progress (e.g. clawta-poller flipped it before this
-      # workflow ran), so failure here is benign.
-      kanban-flow start ${ticket_id} --author clawta 2>/dev/null || true
+      # reflects reality. If a human/operator blocks the ticket while the
+      # dispatch is still classifying/routing, do NOT ignore that race and
+      # continue spawning: blocked must be a hard stop. Poller may have
+      # already claimed the ticket, so an in_progress status after a start
+      # failure is acceptable; any other status aborts dispatch.
+      if ! kanban-flow start ${ticket_id} --author clawta 2>/dev/null; then
+        STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json | jq -r '.task.status // .status // empty')
+        if [[ "$STATUS" != "in_progress" ]]; then
+          echo "dispatch aborted: ${ticket_id} status is $STATUS after start attempt" >&2
+          exit 1
+        fi
+      fi
+      STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json | jq -r '.task.status // .status // empty')
+      if [[ "$STATUS" != "in_progress" ]]; then
+        echo "dispatch aborted: ${ticket_id} status is $STATUS before spawn" >&2
+        exit 1
+      fi
       env \
         CHITIN_DISPATCH_MODEL="$pick_driver.json.model" \
         CHITIN_DISPATCH_SOUL_ID="$pick_driver.json.soul_id" \
@@ -397,7 +410,10 @@ steps:
         --arg soul_hash "$pick_driver.json.soul_hash" \
         --arg agent_fingerprint "$pick_driver.json.agent_fingerprint" \
         --arg repo_root "$CHITIN_REPO" \
+        --arg workspace_root "$(python3 "$CHITIN_REPO/swarm/bin/board_resolver.py" --board "$BOARD_SLUG" workspace 2>/dev/null || echo "")" \
+        --arg spec_root "$(python3 "$CHITIN_REPO/swarm/bin/board_resolver.py" --board "$BOARD_SLUG" spec-dir 2>/dev/null || echo "")" \
         --arg default_branch "$DEFAULT_BRANCH" \
+        --arg ticket_body "$TICKET_BODY" \
         --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
         '{
@@ -412,7 +428,10 @@ steps:
           soul_hash: $soul_hash,
           agent_fingerprint: $agent_fingerprint,
           repo_root: $repo_root,
+          workspace_root: $workspace_root,
+          spec_root: $spec_root,
           default_branch: $default_branch,
+          ticket_body: $ticket_body,
           args: $args,
           env: {
             "CHITIN_DRIVER": "clawta",
@@ -445,14 +464,18 @@ steps:
       RESULT_FILE="/tmp/dispatch-worker-result-${TICKET_ID}.json"
       printf '%s' "$WORKER_RESULT" > "$RESULT_FILE"
 
-      # Return appropriate exit code based on worker result
+      # Do not fail this workflow step for structured worker failures.
+      # finalize_dispatch consumes RESULT_FILE and is responsible for
+      # crashing/blocking the ticket with the detailed reason. Exiting
+      # non-zero here stops Lobster before finalize runs, leaving stale
+      # in_progress runs after spawn failures.
       if [[ "$WORKER_STATUS" != "completed" && "$WORKER_STATUS" != "completed_no_commit" ]]; then
-        echo "spawn_worker: worker failed with status=$WORKER_STATUS" >&2
-        exit 1
+        echo "spawn_worker: worker failed with status=$WORKER_STATUS; deferring to finalize_dispatch" >&2
+        exit 0
       fi
       if [[ "$WORKER_RETURNCODE" -ne 0 ]]; then
-        echo "spawn_worker: worker returned non-zero exit code: $WORKER_RETURNCODE" >&2
-        exit 1
+        echo "spawn_worker: worker returned non-zero exit code: $WORKER_RETURNCODE; deferring to finalize_dispatch" >&2
+        exit 0
       fi
       BASH_SCRIPT
       )"
@@ -476,6 +499,14 @@ steps:
       DRIVER='$pick_driver.json.driver'
       BOARD_SLUG='$resolve_board.json.board'
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
+
+      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+      if [[ "$CURRENT_STATUS" == "blocked" ]]; then
+        MSG="🦞 ${ticket_id}: finalize skipped because ticket is blocked. Refusing to reopen or push worker output from a stale active run."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
 
       # Check worker result from spawn_worker step
       RESULT_FILE="/tmp/dispatch-worker-result-${ticket_id}.json"
@@ -586,6 +617,17 @@ steps:
           --outcome failure \
           --failure-kind empty_branch >/dev/null 2>&1 || true
         kanban-flow crash ${ticket_id} "worker produced 0 commits on branch $BRANCH ahead of $DEFAULT_BRANCH (worktree=$WORKTREE, worker_status=$WORKER_STATUS)" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      # If an operator blocked the ticket while the worker was running,
+      # do not let finalize resurrect it by pushing/opening a PR. The
+      # blocked lane is the stronger signal; leave the worktree for manual
+      # inspection and keep the ticket blocked.
+      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.task.status // .status // empty' 2>/dev/null || true)
+      if [[ "$CURRENT_STATUS" != "in_progress" ]]; then
+        MSG="🦞 ${ticket_id}: worker completed on $BRANCH, but ticket status is $CURRENT_STATUS; not pushing/opening PR. Worktree=$WORKTREE."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi
