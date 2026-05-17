@@ -333,6 +333,16 @@ def validate_file_scope(cwd: str, config: dict | None = None) -> dict:
     scope = load_file_scope(config)
     globs = scope.get("globs") or []
     if not globs:
+        reason = str(scope.get("reason") or "")
+        has_spec_ref = scope.get("source") not in {None, "none"}
+        if has_spec_ref and "missing File-system scope" in reason:
+            return {
+                "ok": False,
+                "enforced": False,
+                **scope,
+                "changed_files": changed_files_since_base(cwd, config),
+                "violations": ["<missing File-system scope>"],
+            }
         return {"ok": True, "enforced": False, **scope, "changed_files": [], "violations": []}
 
     changed = changed_files_since_base(cwd, config)
@@ -560,13 +570,20 @@ def summarize_completed_run(
     path_scope = validate_file_scope(cwd, config) if returncode == 0 and commit_count_ahead > 0 else {"ok": True, "enforced": False}
     if not path_scope.get("ok", True):
         violations = ", ".join(path_scope.get("violations", []))
+        reason = str(path_scope.get("reason") or "")
+        missing_scope = "missing File-system scope" in reason
+        error = (
+            f"Spec is missing required File-system scope section: {path_scope.get('source')}"
+            if missing_scope
+            else f"Worker changed files outside declared File-system scope: {violations}"
+        )
         return {
             "status": "failed",
             "returncode": -1,
             "stdout": stdout,
             "stderr": stderr,
-            "error": f"Worker changed files outside declared File-system scope: {violations}",
-            "exit_reason": "path-scope-violation",
+            "error": error,
+            "exit_reason": "path-scope-missing" if missing_scope else "path-scope-violation",
             "transcript_tail": transcript_tail,
             "commit_count_ahead": commit_count_ahead,
             "driver": driver,
