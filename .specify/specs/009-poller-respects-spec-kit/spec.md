@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-16
 
-**Status**: Draft
+**Status**: shipped (a0302d6, #696)
 
 **Refs**: Bug 2 from validation run; affected tickets included `t_25cd184e`, `t_12568dca`, `t_77f5b407`, and `t_75c8c8c1`.
 

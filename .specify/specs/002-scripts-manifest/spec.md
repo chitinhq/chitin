@@ -1,5 +1,7 @@
 # Scripts Classification: MANIFEST + Runtime-Critical Audit
 
+
+**Status**: shipped (1eb735a, #688)
 > Spec-kit entry for ticket `t_75c8c8c1`
 > Source spec: `docs/superpowers/specs/2026-05-13-scripts-classification.md` (merged via #580)
 

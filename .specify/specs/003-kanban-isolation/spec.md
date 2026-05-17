@@ -1,5 +1,7 @@
 # Kanban Mutation Isolation: Single Sanctioned Channel
 
+
+**Status**: shipped (40e1356, #691)
 > Spec-kit entry for ticket `t_77f5b407`
 > Source spec: `docs/superpowers/specs/2026-05-13-isolate-swarm-kanban-mutations.md` (merged via #580)
 

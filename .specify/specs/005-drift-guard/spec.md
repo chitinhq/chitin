@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-16
 
-**Status**: Draft
+**Status**: shipped (ff32594, #687)
 
 **Refs**: t_12568dca
 
