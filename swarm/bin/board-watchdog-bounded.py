@@ -19,14 +19,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+# Paths are parameterized via env vars with sensible defaults so the script
+# works on any operator box without source edits (Constitution §6).
+KANBAN_BOARDS_DIR = Path(os.environ.get(
+    "KANBAN_BOARDS_DIR",
+    str(Path.home() / ".hermes" / "kanban" / "boards"),
+))
+WORKSPACE_ROOT = Path(os.environ.get(
+    "WORKSPACE_ROOT",
+    str(Path.home() / "workspace"),
+))
+CHITIN_REPO = Path(os.environ.get(
+    "CHITIN_REPO",
+    str(WORKSPACE_ROOT / "chitin"),
+))
+
 BOARDS = {
     "chitin": {
-        "db": Path("/home/red/.hermes/kanban/boards/chitin/kanban.db"),
-        "spec_root": Path("/home/red/workspace/chitin/.specify/specs"),
+        "db": KANBAN_BOARDS_DIR / "chitin" / "kanban.db",
+        "spec_root": CHITIN_REPO / ".specify" / "specs",
     },
     "readybench": {
-        "db": Path("/home/red/.hermes/kanban/boards/readybench/kanban.db"),
-        "spec_root": Path("/home/red/workspace/.specify/specs"),
+        "db": KANBAN_BOARDS_DIR / "readybench" / "kanban.db",
+        "spec_root": WORKSPACE_ROOT / ".specify" / "specs",
     },
 }
 
@@ -151,7 +166,7 @@ def reviewed_readybench_spec(t: Task, specs: list[Path]) -> bool:
 def command_available_check() -> str:
     try:
         proc = subprocess.run(
-            ["/home/red/workspace/chitin/bin/chitin-kernel", "drivers", "list", "--json"],
+            [str(CHITIN_REPO / "bin" / "chitin-kernel"), "drivers", "list", "--json"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -212,8 +227,8 @@ def maybe_update_dependency_block(board: str, t: Task, classification: str, reas
     env["KANBAN_BOARD"] = board
     try:
         subprocess.run(
-            ["/home/red/workspace/chitin/scripts/kanban-flow", "block", t.id, new_reason, "--author", AUTHOR],
-            cwd="/home/red/workspace/chitin",
+            [str(CHITIN_REPO / "scripts" / "kanban-flow"), "block", t.id, new_reason, "--author", AUTHOR],
+            cwd=str(CHITIN_REPO),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
