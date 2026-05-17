@@ -51,6 +51,21 @@
 #   kanban-flow status <id>
 #       Print current status + last 5 transition comments.
 #
+#   kanban-flow comment <id> [--author NAME] <body...>
+#       Record a task_comments row through the sanctioned write path.
+#
+#   kanban-flow assign <id> <assignee>
+#       Update tasks.assignee through the sanctioned write path.
+#
+#   kanban-flow reassign <id> <assignee> [--author NAME] [--reason TEXT]
+#       Update tasks.assignee and optionally leave an audit comment.
+#
+#   kanban-flow set-block-reason <id> <reason>
+#       Update tasks.block_reason when the board schema exposes it.
+#
+#   kanban-flow record-failure <id> <failure-class> <reason...>
+#       Increment tasks.consecutive_failures and stamp last_failure_error.
+#
 # Audit invariant: every status change emits both a task_comment AND a
 # task_events row. Read either to reconstruct the lifecycle.
 
@@ -66,6 +81,7 @@ fi
 AUTHOR_DEFAULT="${HERMES_PROFILE:-${USER:-user}}"
 CHITIN_HOME_DIR="${CHITIN_HOME:-$HOME/.chitin}"
 DEFAULT_LEASE_SECONDS="${KANBAN_FLOW_LEASE_SECONDS:-3600}"
+KANBAN_FLOW_APPLICATION_ID="${KANBAN_FLOW_APPLICATION_ID:-1262894167}"
 
 is_terminal_lane() {
   local assignee="$1"
@@ -82,6 +98,149 @@ require_id() {
   [[ "${1:-}" =~ ^t_[a-f0-9]+$ ]] || die "expected ticket id (t_XXXXXXXX), got: ${1:-<empty>}"
 }
 
+sql_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"
+}
+
+write_sql() {
+  local script="$1"
+  shift || true
+  sqlite3 "$DB" "$@" <<SQL
+PRAGMA application_id = $KANBAN_FLOW_APPLICATION_ID;
+CREATE TABLE IF NOT EXISTS kanban_mutations_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  table_name TEXT NOT NULL,
+  op TEXT NOT NULL,
+  task_id TEXT,
+  application_id INTEGER,
+  pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS kanban_mutation_context (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  pid INTEGER NOT NULL,
+  application_id INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS audit_tasks_insert
+AFTER INSERT ON tasks
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'tasks',
+    'INSERT',
+    NEW.id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_tasks_update
+AFTER UPDATE ON tasks
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'tasks',
+    'UPDATE',
+    COALESCE(NEW.id, OLD.id),
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_tasks_delete
+AFTER DELETE ON tasks
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'tasks',
+    'DELETE',
+    OLD.id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_comments_insert
+AFTER INSERT ON task_comments
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_comments',
+    'INSERT',
+    NEW.task_id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_comments_update
+AFTER UPDATE ON task_comments
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_comments',
+    'UPDATE',
+    COALESCE(NEW.task_id, OLD.task_id),
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_comments_delete
+AFTER DELETE ON task_comments
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_comments',
+    'DELETE',
+    OLD.task_id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_events_insert
+AFTER INSERT ON task_events
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_events',
+    'INSERT',
+    NEW.task_id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_events_update
+AFTER UPDATE ON task_events
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_events',
+    'UPDATE',
+    COALESCE(NEW.task_id, OLD.task_id),
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS audit_task_events_delete
+AFTER DELETE ON task_events
+BEGIN
+  INSERT INTO kanban_mutations_log(table_name, op, task_id, application_id, pid)
+  VALUES (
+    'task_events',
+    'DELETE',
+    OLD.task_id,
+    (SELECT application_id FROM kanban_mutation_context WHERE singleton = 1),
+    (SELECT pid FROM kanban_mutation_context WHERE singleton = 1)
+  );
+END;
+BEGIN IMMEDIATE;
+INSERT INTO kanban_mutation_context(singleton, pid, application_id)
+VALUES (1, $$, $KANBAN_FLOW_APPLICATION_ID)
+ON CONFLICT(singleton) DO UPDATE
+SET pid = excluded.pid,
+    application_id = excluded.application_id;
+$script
+;
+COMMIT;
+SQL
+}
+
 ticket_status() {
   local id="$1"
   sqlite3 "$DB" "SELECT status FROM tasks WHERE id='$id'"
@@ -93,7 +252,7 @@ has_column() {
 }
 
 ensure_task_runs_schema() {
-  sqlite3 "$DB" "
+  write_sql "
     CREATE TABLE IF NOT EXISTS task_runs (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
       task_id             TEXT NOT NULL,
@@ -119,15 +278,15 @@ ensure_task_runs_schema() {
     CREATE INDEX IF NOT EXISTS idx_runs_task   ON task_runs(task_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_runs_status ON task_runs(status);
   "
-  has_column task_runs driver_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN driver_id TEXT"
-  has_column task_runs repo_sha || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN repo_sha TEXT"
-  has_column task_runs lease_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN lease_id TEXT"
-  has_column task_runs event_chain_hash || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN event_chain_hash TEXT"
-  has_column task_runs idempotency_key || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN idempotency_key TEXT"
-  has_column task_runs model || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN model TEXT NOT NULL DEFAULT ''"
-  has_column task_runs soul_id || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN soul_id TEXT NOT NULL DEFAULT ''"
-  has_column task_runs soul_hash || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN soul_hash TEXT NOT NULL DEFAULT ''"
-  has_column task_runs agent_fingerprint || sqlite3 "$DB" "ALTER TABLE task_runs ADD COLUMN agent_fingerprint TEXT NOT NULL DEFAULT ''"
+  has_column task_runs driver_id || write_sql "ALTER TABLE task_runs ADD COLUMN driver_id TEXT"
+  has_column task_runs repo_sha || write_sql "ALTER TABLE task_runs ADD COLUMN repo_sha TEXT"
+  has_column task_runs lease_id || write_sql "ALTER TABLE task_runs ADD COLUMN lease_id TEXT"
+  has_column task_runs event_chain_hash || write_sql "ALTER TABLE task_runs ADD COLUMN event_chain_hash TEXT"
+  has_column task_runs idempotency_key || write_sql "ALTER TABLE task_runs ADD COLUMN idempotency_key TEXT"
+  has_column task_runs model || write_sql "ALTER TABLE task_runs ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+  has_column task_runs soul_id || write_sql "ALTER TABLE task_runs ADD COLUMN soul_id TEXT NOT NULL DEFAULT ''"
+  has_column task_runs soul_hash || write_sql "ALTER TABLE task_runs ADD COLUMN soul_hash TEXT NOT NULL DEFAULT ''"
+  has_column task_runs agent_fingerprint || write_sql "ALTER TABLE task_runs ADD COLUMN agent_fingerprint TEXT NOT NULL DEFAULT ''"
 }
 
 resolve_worktree() {
@@ -236,6 +395,45 @@ maybe_sql_null() {
   fi
 }
 
+task_has_column() {
+  has_column tasks "$1"
+}
+
+add_comment() {
+  local id="$1" comment_author="$2" comment_body="$3"
+  local now
+  now="$(date +%s)"
+  write_sql \
+    "INSERT INTO task_comments (task_id, author, body, created_at)
+     VALUES (:id, :author, :body, :now);" \
+    -cmd ".parameter set :id '$id'" \
+    -cmd ".parameter set :author '$comment_author'" \
+    -cmd ".parameter set :body '$comment_body'" \
+    -cmd ".parameter set :now $now"
+}
+
+set_assignee() {
+  local id="$1" assignee_value="$2"
+  write_sql "UPDATE tasks SET assignee=$(sql_quote "$assignee_value") WHERE id=$(sql_quote "$id")"
+}
+
+set_block_reason() {
+  local id="$1" block_reason_value="$2"
+  task_has_column block_reason || return 0
+  write_sql "UPDATE tasks SET block_reason=$(sql_quote "$block_reason_value") WHERE id=$(sql_quote "$id")"
+}
+
+record_failure_metadata() {
+  local id="$1" failure_class="$2" reason_text="$3"
+  local assignments=()
+  task_has_column consecutive_failures && assignments+=("consecutive_failures=COALESCE(consecutive_failures, 0) + 1")
+  task_has_column last_failure_error && assignments+=("last_failure_error=$(sql_quote "[$failure_class] $reason_text")")
+  [[ "${#assignments[@]}" -gt 0 ]] || return 0
+  local set_clause
+  set_clause="$(IFS=,; printf '%s' "${assignments[*]}")"
+  write_sql "UPDATE tasks SET $set_clause WHERE id=$(sql_quote "$id")"
+}
+
 infer_event_chain_hash() {
   local explicit="${1:-}"
   if [[ -n "$explicit" ]]; then
@@ -293,7 +491,16 @@ create_task_run() {
   worktree_path="$(resolve_worktree "$id")"
   repo_sha="$(repo_sha_for_worktree "$worktree_path")"
 
-  sqlite3 "$DB" \
+  write_sql \
+    "INSERT INTO task_runs (
+       task_id, profile, step_key, status, claim_lock, claim_expires,
+       max_runtime_seconds, last_heartbeat_at, started_at, lease_id,
+       driver_id, repo_sha, model, soul_id, soul_hash, agent_fingerprint, idempotency_key
+     ) VALUES (
+       :task_id, NULLIF(:profile,''), NULLIF(:step_key,''), 'running', :lease_id, :claim_expires,
+       :max_runtime, :now, :now, :lease_id,
+       NULLIF(:driver_id,''), NULLIF(:repo_sha,''), :model, :soul_id, :soul_hash, :agent_fingerprint, NULLIF(:idempotency,'')
+     );" \
     -cmd ".parameter set :task_id '$id'" \
     -cmd ".parameter set :profile '$profile'" \
     -cmd ".parameter set :step_key '$step_key'" \
@@ -307,20 +514,11 @@ create_task_run() {
     -cmd ".parameter set :idempotency '$task_idempotency'" \
     -cmd ".parameter set :now $now" \
     -cmd ".parameter set :claim_expires $claim_expires" \
-    -cmd ".parameter set :max_runtime $max_runtime" \
-    "INSERT INTO task_runs (
-       task_id, profile, step_key, status, claim_lock, claim_expires,
-       max_runtime_seconds, last_heartbeat_at, started_at, lease_id,
-       driver_id, repo_sha, model, soul_id, soul_hash, agent_fingerprint, idempotency_key
-     ) VALUES (
-       :task_id, NULLIF(:profile,''), NULLIF(:step_key,''), 'running', :lease_id, :claim_expires,
-       :max_runtime, :now, :now, :lease_id,
-       NULLIF(:driver_id,''), NULLIF(:repo_sha,''), :model, :soul_id, :soul_hash, :agent_fingerprint, NULLIF(:idempotency,'')
-     );"
+    -cmd ".parameter set :max_runtime $max_runtime"
 
   local run_id
   run_id="$(sqlite3 "$DB" "SELECT id FROM task_runs WHERE task_id='$id' AND lease_id='$(printf '%s' "$lease_id" | sed "s/'/''/g")' ORDER BY id DESC LIMIT 1")"
-  sqlite3 "$DB" "
+  write_sql "
     UPDATE tasks
        SET claim_lock='$(printf '%s' "$lease_id" | sed "s/'/''/g")',
            claim_expires=$claim_expires,
@@ -340,7 +538,7 @@ finalize_task_run() {
   now="$(date +%s)"
   event_hash="$(infer_event_chain_hash "$event_chain_hash" "$chain_file")"
 
-  sqlite3 "$DB" "
+  write_sql "
     UPDATE task_runs
        SET status='$run_status',
            ended_at=$now,
@@ -350,7 +548,7 @@ finalize_task_run() {
            event_chain_hash=COALESCE($(maybe_sql_null "$event_hash"), event_chain_hash)
      WHERE id=$run_id
   "
-  sqlite3 "$DB" "
+  write_sql "
     UPDATE tasks
        SET current_run_id=NULL,
            claim_lock=NULL,
@@ -366,7 +564,7 @@ update_active_run_event_chain_hash() {
   local run_id
   run_id="$(active_run_id "$id")"
   [[ -n "$run_id" ]] || return 0
-  sqlite3 "$DB" "UPDATE task_runs SET event_chain_hash='$(printf '%s' "$hash_value" | sed "s/'/''/g")' WHERE id=$run_id"
+  write_sql "UPDATE task_runs SET event_chain_hash='$(printf '%s' "$hash_value" | sed "s/'/''/g")' WHERE id=$run_id"
 }
 
 stamp_active_run_identity() {
@@ -381,20 +579,20 @@ stamp_active_run_identity() {
   soul_hash="${CHITIN_DISPATCH_SOUL_HASH:-}"
   agent_fingerprint="${CHITIN_DISPATCH_AGENT_FINGERPRINT:-${CHITIN_AGENT_FINGERPRINT:-${CHITIN_FINGERPRINT:-}}}"
 
-  sqlite3 "$DB" \
-    -cmd ".parameter set :run_id $run_id" \
-    -cmd ".parameter set :driver_id '$driver_json'" \
-    -cmd ".parameter set :model '$model'" \
-    -cmd ".parameter set :soul_id '$soul_id'" \
-    -cmd ".parameter set :soul_hash '$soul_hash'" \
-    -cmd ".parameter set :agent_fingerprint '$agent_fingerprint'" \
+  write_sql \
     "UPDATE task_runs
         SET driver_id = COALESCE(NULLIF(:driver_id,''), driver_id),
             model = CASE WHEN :model != '' THEN :model ELSE model END,
             soul_id = CASE WHEN :soul_id != '' THEN :soul_id ELSE soul_id END,
             soul_hash = CASE WHEN :soul_hash != '' THEN :soul_hash ELSE soul_hash END,
             agent_fingerprint = CASE WHEN :agent_fingerprint != '' THEN :agent_fingerprint ELSE agent_fingerprint END
-      WHERE id = :run_id"
+      WHERE id = :run_id" \
+    -cmd ".parameter set :run_id $run_id" \
+    -cmd ".parameter set :driver_id '$driver_json'" \
+    -cmd ".parameter set :model '$model'" \
+    -cmd ".parameter set :soul_id '$soul_id'" \
+    -cmd ".parameter set :soul_hash '$soul_hash'" \
+    -cmd ".parameter set :agent_fingerprint '$agent_fingerprint'"
 }
 
 assert_status() {
@@ -412,17 +610,17 @@ emit_transition() {
   # quoting issues with the JSON extra payload.
   local id="$1" from="$2" to="$3" author="$4" payload_extra="${5:-{\}}"
   local now; now="$(date +%s)"
-  sqlite3 "$DB" \
+  write_sql \
+    "INSERT INTO task_events (task_id, kind, payload, created_at)
+     VALUES (:id, 'status_transition',
+             json_object('from', :from, 'to', :to, 'by', :by, 'extra', json(:extra)),
+             :now);" \
     -cmd ".parameter set :id '$id'" \
     -cmd ".parameter set :from '$from'" \
     -cmd ".parameter set :to '$to'" \
     -cmd ".parameter set :by '$author'" \
     -cmd ".parameter set :extra '$payload_extra'" \
-    -cmd ".parameter set :now $now" \
-    "INSERT INTO task_events (task_id, kind, payload, created_at) \
-     VALUES (:id, 'status_transition', \
-             json_object('from', :from, 'to', :to, 'by', :by, 'extra', json(:extra)), \
-             :now);"
+    -cmd ".parameter set :now $now"
 }
 
 flip_status() {
@@ -431,7 +629,7 @@ flip_status() {
   local fields="status='$to'"
   [[ "$set_started" -eq 1 ]] && fields="$fields, started_at=COALESCE(started_at, $now)"
   [[ "$set_completed" -eq 1 ]] && fields="$fields, completed_at=$now"
-  sqlite3 "$DB" "UPDATE tasks SET $fields WHERE id='$id'"
+  write_sql "UPDATE tasks SET $fields WHERE id='$id'"
 }
 
 cmd=${1:-}; shift || die "missing command (see kanban-flow --help)"
@@ -448,7 +646,9 @@ event_chain_hash=""
 chain_file=""
 run_status_override=""
 outcome_override=""
+reason_override=""
 force_flag=0
+reclaim_flag=0
 parse_flags() {
   local rest=()
   while [[ $# -gt 0 ]]; do
@@ -462,6 +662,8 @@ parse_flags() {
       --chain-file) chain_file="$2"; shift 2 ;;
       --run-status) run_status_override="$2"; shift 2 ;;
       --outcome) outcome_override="$2"; shift 2 ;;
+      --reason) reason_override="$2"; shift 2 ;;
+      --reclaim) reclaim_flag=1; shift ;;
       --force) force_flag=1; shift ;;
       *) rest+=("$1"); shift ;;
     esac
@@ -513,7 +715,7 @@ print(
     "{success_pct:.1f}% success"
   ).format(success_pct=d["success_rate"]*100, **d)
 )')" || return 0
-  hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null || true
+  add_comment "$id" "$author" "$body"
 }
 
 case "$cmd" in
@@ -524,7 +726,7 @@ case "$cmd" in
     from="$(ticket_status "$id")"
     body="Picking up at $(date -Iseconds)"
     [[ -n "$worktree" ]] && body="$body — worktree: $worktree"
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "$body" >/dev/null
+    add_comment "$id" "$author" "$body"
     # create_task_run before flip_status: it die()s if an incomplete run
     # already exists, and we must not leave the ticket flipped to
     # in_progress with no run when that happens.
@@ -538,20 +740,20 @@ case "$cmd" in
     id="${REST[0]:-}"; url="${REST[1]:-}"; require_id "$id"
     [[ -n "$url" ]] || die "missing PR url"
     assert_status "$id" in_progress
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "PR opened: $url" >/dev/null
+    add_comment "$id" "$author" "PR opened: $url"
     # No status flip — Hermes UI has no code_review column, so we keep
     # the ticket in in_progress and let the PR's GitHub state be the
     # review-phase truth. Audit still records the PR via a pr_opened
     # event for downstream tooling.
     update_active_run_event_chain_hash "$id"
     pr_now="$(date +%s)"
-    sqlite3 "$DB" \
+    write_sql \
+      "INSERT INTO task_events (task_id, kind, payload, created_at)
+       VALUES (:id, 'pr_opened', json_object('pr_url', :url, 'by', :by), :now);" \
       -cmd ".parameter set :id '$id'" \
       -cmd ".parameter set :by '$author'" \
       -cmd ".parameter set :url '$url'" \
-      -cmd ".parameter set :now $pr_now" \
-      "INSERT INTO task_events (task_id, kind, payload, created_at) \
-       VALUES (:id, 'pr_opened', json_object('pr_url', :url, 'by', :by), :now);"
+      -cmd ".parameter set :now $pr_now"
     echo "$id: in_progress (PR opened: $url)"
     ;;
   block)
@@ -560,7 +762,7 @@ case "$cmd" in
     reason="${REST[*]:1}"
     [[ -n "$reason" ]] || die "missing reason"
     from="$(ticket_status "$id")"
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Blocked: $reason" >/dev/null
+    add_comment "$id" "$author" "Blocked: $reason"
     flip_status "$id" blocked 0 0
     emit_transition "$id" "$from" blocked "$author"
     echo "$id: $from → blocked ($reason)"
@@ -571,7 +773,7 @@ case "$cmd" in
     reason="${REST[*]:1}"
     [[ -n "$reason" ]] || die "missing reason"
     from="$(ticket_status "$id")"
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Crashed: $reason" >/dev/null
+    add_comment "$id" "$author" "Crashed: $reason"
     flip_status "$id" blocked 0 0
     final_status="${run_status_override:-crashed}"
     case "$final_status" in
@@ -587,17 +789,17 @@ case "$cmd" in
     parse_flags "$@"
     id="${REST[0]:-}"; require_id "$id"
     assert_status "$id" blocked
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Unblocked at $(date -Iseconds)" >/dev/null
+    add_comment "$id" "$author" "Unblocked at $(date -Iseconds)"
     flip_status "$id" ready 0 0
 
     # Reset consecutive_failures — ticket was blocked and is now being re-dispatched
-    sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+    task_has_column consecutive_failures && write_sql "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
 
     # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
-      sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+      set_assignee "$id" clawta
     elif [[ -n "$assignee_override" ]]; then
-      sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
+      set_assignee "$id" "$assignee_override"
     fi
 
     emit_transition "$id" blocked ready "$author"
@@ -610,10 +812,10 @@ case "$cmd" in
     [[ -n "$reason" ]] || die "missing reason"
     assert_status "$id" ready todo
     from="$(ticket_status "$id")"
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Demoted ${from}→triage: $reason" >/dev/null
+    add_comment "$id" "$author" "Demoted ${from}→triage: $reason"
     flip_status "$id" triage 0 0
     # Reset assignee to routing lane on demotion so re-promotion routes through clawta
-    sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+    set_assignee "$id" clawta
     emit_transition "$id" "$from" triage "$author"
     echo "$id: $from → triage ($reason)"
     ;;
@@ -629,20 +831,20 @@ case "$cmd" in
     if (( force_flag == 0 )) && is_tracking_epic_id "$id"; then
       die "$id is marked 'Tracking-epic: true' — auto-promotion blocked. Pass --force to override (operator-explicit promotion)."
     fi
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Marked ready by $author at $(date -Iseconds)" >/dev/null
+    add_comment "$id" "$author" "Marked ready by $author at $(date -Iseconds)"
     flip_status "$id" ready 0 0
 
     # Reset consecutive_failures when re-dispatching a previously-blocked ticket —
     # mirrors the `unblock` path so the watchdog doesn't escalate prematurely.
     if [[ "$from" == blocked ]]; then
-      sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+      task_has_column consecutive_failures && write_sql "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
     fi
 
     # Handle assignee: always reset to routing lane on promotion so poller re-routes
     if [[ -z "$assignee_override" ]]; then
-      sqlite3 "$DB" "UPDATE tasks SET assignee='clawta' WHERE id='$id'"
+      set_assignee "$id" clawta
     elif [[ -n "$assignee_override" ]]; then
-      sqlite3 "$DB" "UPDATE tasks SET assignee='$assignee_override' WHERE id='$id'"
+      set_assignee "$id" "$assignee_override"
     fi
 
     emit_transition "$id" "$from" ready "$author"
@@ -653,11 +855,11 @@ case "$cmd" in
     id="${REST[0]:-}"; require_id "$id"
     [[ -n "${result:-}" ]] || die "missing --result"
     from="$(ticket_status "$id")"
-    hermes kanban --board "$BOARD" comment "$id" --author "$author" "Done: $result" >/dev/null
+    add_comment "$id" "$author" "Done: $result"
     flip_status "$id" done 0 1
-    sqlite3 "$DB" "UPDATE tasks SET result='$(echo "$result" | sed "s/'/''/g")' WHERE id='$id'"
+    write_sql "UPDATE tasks SET result='$(echo "$result" | sed "s/'/''/g")' WHERE id='$id'"
     # Reset consecutive_failures — task completed successfully
-    sqlite3 "$DB" "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
+    task_has_column consecutive_failures && write_sql "UPDATE tasks SET consecutive_failures=0 WHERE id='$id'" 2>/dev/null || true
     finalize_task_run "$id" done "${outcome_override:-completed}" "$result" ""
     emit_transition "$id" "$from" done "$author"
     resolved_session="$session_id"
@@ -683,6 +885,48 @@ case "$cmd" in
     id="${REST[0]:-}"; require_id "$id"
     stamp_active_run_identity "$id"
     echo "$id: stamped run identity"
+    ;;
+  comment)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    body="${REST[*]:1}"
+    [[ -n "$body" ]] || die "missing comment body"
+    add_comment "$id" "$author" "$body"
+    echo "$id: comment added"
+    ;;
+  assign)
+    parse_flags "$@"
+    id="${REST[0]:-}"; assignee="${REST[1]:-}"; require_id "$id"
+    [[ -n "$assignee" ]] || die "missing assignee"
+    set_assignee "$id" "$assignee"
+    echo "$id: assignee -> $assignee"
+    ;;
+  reassign)
+    parse_flags "$@"
+    id="${REST[0]:-}"; assignee="${REST[1]:-}"; require_id "$id"
+    [[ -n "$assignee" ]] || die "missing assignee"
+    set_assignee "$id" "$assignee"
+    if [[ -n "$reason_override" ]]; then
+      add_comment "$id" "$author" "Reassigned to $assignee: $reason_override"
+    fi
+    echo "$id: reassigned -> $assignee"
+    ;;
+  set-block-reason)
+    parse_flags "$@"
+    id="${REST[0]:-}"; require_id "$id"
+    block_reason="${REST[*]:1}"
+    [[ -n "$block_reason" ]] || die "missing block reason"
+    set_block_reason "$id" "$block_reason"
+    echo "$id: block_reason -> $block_reason"
+    ;;
+  record-failure)
+    parse_flags "$@"
+    id="${REST[0]:-}"; failure_class="${REST[1]:-}"; require_id "$id"
+    reason="${REST[*]:2}"
+    [[ -n "$failure_class" ]] || die "missing failure class"
+    [[ -n "$reason" ]] || die "missing failure reason"
+    record_failure_metadata "$id" "$failure_class" "$reason"
+    echo "$id: failure recorded ($failure_class)"
     ;;
   *)
     die "unknown command: $cmd (try kanban-flow --help)"

@@ -255,7 +255,7 @@ def claim_priority_tickets(conn):
             print(f"  ⏭️  Skipping {tid}: missing spec-kit entry")
             if not DRY_RUN:
                 run_cmd([
-                    "hermes", "kanban", "--board", BOARD, "comment", tid,
+                    KANBAN_FLOW, "comment", tid,
                     "--author", "hermes",
                     "⏭️ Hermes did not claim: missing spec-kit entry. "
                     "Add .specify/specs/NNN-<slug>/spec.md before dispatch.",
@@ -269,9 +269,9 @@ def claim_priority_tickets(conn):
             stdout, rc = run_cmd([KANBAN_FLOW, "start", tid, "--author", "hermes"])
             if rc == 0:
                 # Assign to hermes explicitly
-                run_cmd(["hermes", "kanban", "--board", BOARD, "assign", tid, "hermes"])
+                run_cmd([KANBAN_FLOW, "assign", tid, "hermes"])
                 run_cmd([
-                    "hermes", "kanban", "--board", BOARD, "comment", tid,
+                    KANBAN_FLOW, "comment", tid,
                     "--author", "hermes",
                     f"🎯 Hermes claimed (P{pri} priority). Clawta dispatch will skip this ticket.",
                 ])
@@ -360,18 +360,16 @@ def escalate_failures(conn):
         # Guard 3: Never unblock tickets without a board-appropriate spec-kit entry
         if not has_spec_kit_entry(conn, tid):
             print(f"      ⏭️  Skipping auto-unblock: no spec-kit entry for board {BOARD}")
-            conn.execute("UPDATE tasks SET block_reason = ? WHERE id = ?", (fclass, tid))
-            conn.commit()
+            run_cmd([KANBAN_FLOW, "set-block-reason", tid, fclass])
             stats["operator_blocked"] += 1
             continue
 
         # For no_pr failures, auto-unblock (invariants + operator checks passed)
         if fclass == "no_pr":
             run_cmd([KANBAN_FLOW, "unblock", tid, "--author", "hermes", "--assignee", "hermes"])
-            conn.execute("UPDATE tasks SET block_reason = ? WHERE id = ?", (fclass, tid))
-            conn.commit()
+            run_cmd([KANBAN_FLOW, "set-block-reason", tid, fclass])
             run_cmd([
-                "hermes", "kanban", "--board", BOARD, "comment", tid,
+                KANBAN_FLOW, "comment", tid,
                 "--author", "hermes",
                 f"🔄 Auto-unblocked: block_reason={fclass}. {action}.",
             ])
@@ -380,10 +378,9 @@ def escalate_failures(conn):
 
         # For other failures, escalate to hermes with the failure packet
         run_cmd([KANBAN_FLOW, "unblock", tid, "--author", "hermes", "--assignee", "hermes"])
-        conn.execute("UPDATE tasks SET block_reason = ? WHERE id = ?", (fclass, tid))
-        conn.commit()
+        run_cmd([KANBAN_FLOW, "set-block-reason", tid, fclass])
         run_cmd([
-            "hermes", "kanban", "--board", BOARD, "comment", tid,
+            KANBAN_FLOW, "comment", tid,
             "--author", "hermes",
             f"🔄 Escalated to Hermes: worker={packet['worker']}, model={packet['model']}, "
             f"failure={fclass}. Recommended action: {action}.",
