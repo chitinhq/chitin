@@ -151,15 +151,16 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
     def test_summarize_completed_run_detects_zero_commit_session(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(module, "commits_ahead_of_base", return_value=0):
+             mock.patch.object(module, "commits_ahead_of_base", return_value=0) as ahead:
             summary = module.summarize_completed_run(
-                {"driver": "copilot", "model": "gpt-4.1"},
+                {"driver": "copilot", "model": "gpt-4.1", "default_branch": "swarm"},
                 0,
                 "nothing to do\n",
                 "worker exited cleanly\n",
                 tmp,
             )
 
+        ahead.assert_called_once_with(tmp, {"driver": "copilot", "model": "gpt-4.1", "default_branch": "swarm"})
         self.assertEqual(summary["status"], "completed_no_commit")
         self.assertEqual(summary["exit_reason"], "model-concluded-nothing")
         self.assertEqual(summary["commit_count_ahead"], 0)
@@ -179,6 +180,28 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "failed")
         self.assertEqual(summary["exit_reason"], "session-error")
+
+    def test_resolve_base_ref_prefers_config_default_branch(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                module.resolve_base_ref({"default_branch": "swarm"}, tmp),
+                "origin/swarm",
+            )
+
+    def test_resolve_base_ref_accepts_full_origin_ref(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                module.resolve_base_ref({"default_branch": "origin/develop"}, tmp),
+                "origin/develop",
+            )
+
+    def test_commits_ahead_uses_resolved_base_ref_in_error(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "origin/swarm"):
+                module.commits_ahead_of_base(tmp, {"default_branch": "swarm"})
 
     def test_detect_event_chain_returns_latest_hash(self):
         module = load_module()
