@@ -6,6 +6,8 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
@@ -920,6 +922,50 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
 
 
 class ClawtaPollerRoutingTests(unittest.TestCase):
+    def test_pick_driver_timeout_empty_boundary_uses_default(self) -> None:
+        with mock.patch.dict(os.environ, {"CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS": ""}, clear=False):
+            module = load_module()
+
+        self.assertEqual(module.PICK_DRIVER_TIMEOUT_SECONDS, 75)
+
+    def test_pick_driver_timeout_max_boundary_passes_large_configured_value(self) -> None:
+        with mock.patch.dict(os.environ, {"CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS": "300"}, clear=False):
+            module = load_module()
+
+        ticket = {
+            "id": "t_timeoutmax",
+            "title": "router timeout ticket",
+            "body": "body",
+            "assignee": "clawta",
+            "priority": 50,
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertEqual(kwargs["timeout"], 300)
+            return mock.Mock(
+                returncode=0,
+                stdout='{"driver":"codex","reasoning":"configured timeout"}',
+                stderr="",
+            )
+
+        with mock.patch.object(
+            module, "classify_ticket_for_routing", return_value='{"complexity":"low"}'
+        ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+            driver = module.route_ticket(ticket, dry_run=True)
+
+        self.assertEqual(driver, "codex")
+
+    def test_pick_driver_timeout_error_boundary_malformed_env_falls_back(self) -> None:
+        stderr = StringIO()
+        with mock.patch.dict(
+            os.environ, {"CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS": "seventy-five"}, clear=False
+        ), redirect_stderr(stderr):
+            module = load_module()
+
+        self.assertEqual(module.PICK_DRIVER_TIMEOUT_SECONDS, 75)
+        self.assertIn("CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS", stderr.getvalue())
+        self.assertIn("using 75", stderr.getvalue())
+
     def test_route_ticket_propagates_router_circuit_breaker_env(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -938,7 +984,7 @@ class ClawtaPollerRoutingTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             self.assertEqual(cmd, [sys.executable, str(module.PICK_DRIVER)])
-            self.assertEqual(kwargs["timeout"], 60)
+            self.assertEqual(kwargs["timeout"], module.PICK_DRIVER_TIMEOUT_SECONDS)
             self.assertEqual(kwargs["env"]["ROUTER_MODE"], "deterministic")
             self.assertEqual(kwargs["env"]["FORCE_DRIVER"], "codex")
             self.assertEqual(kwargs["input"], '{"complexity":"low"}')
