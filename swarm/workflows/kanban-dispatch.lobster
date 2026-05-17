@@ -378,6 +378,18 @@ steps:
       PROMPT_BYTES=$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')
       echo "spawn_worker: spawning driver=$DRIVER model=$MODEL cmd=$CMD prompt_bytes=$PROMPT_BYTES envelope=$NEW_ENV" >&2
 
+      # Resolve the file-system scope from the bound spec (Constitution §1.1,
+      # added 2026-05-17 after portal MVP day-0 retro). Emits JSON like
+      # {"may": ["apps/portal/**"], "must_not": ["frontend/**"], "source": "..."}.
+      # If the spec has no `## File-system scope` section (legacy spec), arrays
+      # are empty and the validator in spawn_worker_subprocess.py treats it
+      # as no-enforcement (back-compat). Helper script never errors — always
+      # emits valid JSON on stdout.
+      FS_SCOPE_JSON=$(python3 "$HOME/.openclaw/workflows/resolve-file-system-scope.py" \
+        --board "$BOARD_SLUG" --ticket-id "${TICKET_ID}" 2>/dev/null \
+        || echo '{"may":[],"must_not":[],"source":null}')
+      echo "spawn_worker: file_system_scope: $FS_SCOPE_JSON" >&2
+
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
       # session tracking via parent_chain_id in chain ledger.
@@ -400,6 +412,7 @@ steps:
         --arg default_branch "$DEFAULT_BRANCH" \
         --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
+        --argjson file_system_scope "$FS_SCOPE_JSON" \
         '{
           driver: $driver,
           model: $model,
@@ -414,6 +427,7 @@ steps:
           repo_root: $repo_root,
           default_branch: $default_branch,
           args: $args,
+          file_system_scope: $file_system_scope,
           env: {
             "CHITIN_DRIVER": "clawta",
             "CHITIN_BUDGET_ENVELOPE": $NEW_ENV,

@@ -32,3 +32,7 @@ link_file "$REPO_ROOT/swarm/workflows/spawn_worker_subprocess.py" "$TARGET_DIR/s
 link_file "$REPO_ROOT/swarm/workflows/worker_failure_report.py" "$TARGET_DIR/worker_failure_report.py"
 link_file "$REPO_ROOT/swarm/workflows/pr_failure_report.py" "$TARGET_DIR/pr_failure_report.py"
 link_file "$REPO_ROOT/swarm/workflows/judge.py" "$TARGET_DIR/judge.py"
+# resolve-file-system-scope.py lives under swarm/bin/ (operator-tool shape)
+# but the dispatcher invokes it from ~/.openclaw/workflows/ alongside the
+# other helpers. Symlink it in so runtime resolution works.
+link_file "$REPO_ROOT/swarm/bin/resolve-file-system-scope.py" "$TARGET_DIR/resolve-file-system-scope.py"
