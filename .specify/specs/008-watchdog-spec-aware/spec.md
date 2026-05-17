@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-16
 
-**Status**: Draft
+**Status**: shipped (fec965e, #695)
 
 **Refs**: t_75c8c8c1 (watchdog bug), architecture audit #580
 

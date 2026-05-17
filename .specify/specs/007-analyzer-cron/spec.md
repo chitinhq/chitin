@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-16
 
-**Status**: Draft
+**Status**: shipped (879e10c, #699)
 
 **Refs**: t_3e13b0d5, docs/superpowers/specs/2026-05-12-chitin-dashboard.md § Slice 5
 

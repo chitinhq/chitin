@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-16
 
-**Status**: Draft
+**Status**: shipped (fec965e, #695)
 
 **Refs**: t_3e13b0d5 (false-close bug)
 
