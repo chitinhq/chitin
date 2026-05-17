@@ -397,6 +397,7 @@ steps:
         --arg soul_hash "$pick_driver.json.soul_hash" \
         --arg agent_fingerprint "$pick_driver.json.agent_fingerprint" \
         --arg repo_root "$CHITIN_REPO" \
+        --arg default_branch "$DEFAULT_BRANCH" \
         --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
         '{
@@ -411,6 +412,7 @@ steps:
           soul_hash: $soul_hash,
           agent_fingerprint: $agent_fingerprint,
           repo_root: $repo_root,
+          default_branch: $default_branch,
           args: $args,
           env: {
             "CHITIN_DRIVER": "clawta",
@@ -421,7 +423,8 @@ steps:
             "CHITIN_DISPATCH_SOUL_HASH": $soul_hash,
             "CHITIN_DISPATCH_AGENT_FINGERPRINT": $agent_fingerprint,
             "CHITIN_ACTIVE_SOUL": $soul_id,
-            "CHITIN_AGENT_FINGERPRINT": $agent_fingerprint
+            "CHITIN_AGENT_FINGERPRINT": $agent_fingerprint,
+            "CHITIN_DEFAULT_BRANCH": $default_branch
           }
         }')
 
