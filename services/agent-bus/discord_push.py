@@ -83,7 +83,12 @@ def _post_via_webhook(webhook_url: str, *, author: str, body: str) -> bool:
         webhook_url,
         data=payload,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Discord rejects Python's default urllib User-Agent with 403;
+            # send a real UA so the webhook accepts the POST.
+            "User-Agent": "agent-bus-mcp-push/0.1 (chitinhq)",
+        },
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return 200 <= resp.status < 300
