@@ -140,9 +140,44 @@ def build_transcript_tail(stdout: str, stderr: str, max_lines: int = TRANSCRIPT_
     return "\n".join(sections[-max_lines:])
 
 
-def commits_ahead_of_base(cwd: str) -> int:
+def resolve_base_ref(config: dict | None, cwd: str) -> str:
+    """Resolve the remote base ref used to count worker commits.
+
+    Board dispatches are not always based on origin/main: readybench uses
+    origin/swarm, and other boards may use origin/develop. Prefer the
+    explicit board default passed by the workflow, then env override, then
+    origin/HEAD, then the legacy origin/main fallback.
+    """
+    config = config or {}
+    raw = str(
+        config.get("default_branch")
+        or os.environ.get("CHITIN_DEFAULT_BRANCH")
+        or os.environ.get("CHITIN_BASE_BRANCH")
+        or ""
+    ).strip()
+    if raw:
+        if raw.startswith("origin/") or raw.startswith("refs/"):
+            return raw
+        return f"origin/{raw}"
+
+    origin_head = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if origin_head.returncode == 0:
+        ref = origin_head.stdout.strip()
+        if ref:
+            return ref
+
+    return "origin/main"
+
+
+def commits_ahead_of_base(cwd: str, config: dict | None = None) -> int:
+    base_ref = resolve_base_ref(config, cwd)
     merge_base = subprocess.run(
-        ["git", "merge-base", "origin/main", "HEAD"],
+        ["git", "merge-base", base_ref, "HEAD"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -158,13 +193,14 @@ def commits_ahead_of_base(cwd: str) -> int:
             return int(result.stdout.strip() or "0")
 
     fallback = subprocess.run(
-        ["git", "rev-list", "--count", "origin/main..HEAD"],
+        ["git", "rev-list", "--count", f"{base_ref}..HEAD"],
         cwd=cwd,
         capture_output=True,
         text=True,
     )
     if fallback.returncode != 0:
-        raise RuntimeError((fallback.stderr or merge_base.stderr).strip() or "unable to count commits ahead of origin/main")
+        detail = (fallback.stderr or merge_base.stderr).strip()
+        raise RuntimeError(f"unable to count commits ahead of {base_ref}: {detail}".strip())
     return int(fallback.stdout.strip() or "0")
 
 
@@ -223,7 +259,7 @@ def summarize_completed_run(
     observed_soul_hash: str | None = None,
 ) -> dict:
     transcript_tail = build_transcript_tail(stdout, stderr)
-    commit_count_ahead = commits_ahead_of_base(cwd)
+    commit_count_ahead = commits_ahead_of_base(cwd, config)
     driver = config.get("driver", "unknown")
     model = config.get("model", "")
     if returncode == 0 and commit_count_ahead == 0:
