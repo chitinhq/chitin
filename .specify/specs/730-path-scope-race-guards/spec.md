@@ -13,6 +13,7 @@ Prevent worker output from reaching GitHub when it violates the spec's declared 
 - `swarm/workflows/kanban-dispatch.lobster`
 - `docs/governance-setup-extras/kanban-dispatch.lobster`
 - `scripts/kanban-flow`
+- `scripts/check-no-chitin-hardcodes.sh`
 - `swarm/tests/**`
 - `.specify/specs/730-path-scope-race-guards/**`
 
@@ -27,6 +28,7 @@ Prevent worker output from reaching GitHub when it violates the spec's declared 
 - Dispatch aborts before spawn if the ticket is no longer `in_progress` after the audit/start step.
 - Finalize refuses to push/open a PR if the ticket was blocked or moved out of `in_progress` while the worker was running.
 - `kanban-flow block` finalizes the active run when blocking an `in_progress` ticket.
+- CI hardcode drift guard remains green after rebasing onto the protected-branch hook installer.
 
 ## Boundaries
 
