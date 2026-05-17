@@ -256,6 +256,56 @@ ignore `frontend/**`
         self.assertTrue(result["ok"])
         self.assertTrue(result["enforced"])
 
+    def test_validate_file_scope_rejects_missing_referenced_spec(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = module.validate_file_scope(tmp, {
+                "repo_root": tmp,
+                "ticket_body": "Spec-kit entry: `.specify/specs/005-missing/spec.md`",
+            })
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["enforced"])
+        self.assertEqual(result["failure_kind"], "path-scope-spec-not-found")
+        self.assertEqual(result["changed_files"], [])
+        self.assertEqual(result["violations"], [])
+
+    def test_summarize_completed_run_rejects_missing_referenced_spec(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=1):
+            summary = module.summarize_completed_run(
+                {
+                    "driver": "codex",
+                    "model": "gpt-5.5",
+                    "repo_root": tmp,
+                    "ticket_body": "Spec-kit entry: `.specify/specs/005-missing/spec.md`",
+                },
+                0,
+                "",
+                "",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "path-scope-spec-not-found")
+        self.assertIn("spec file not found", summary["error"])
+
+    def test_validate_file_scope_allows_referenced_spec_without_scope_section(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / ".specify" / "specs" / "005-legacy-spec"
+            spec_dir.mkdir(parents=True)
+            (spec_dir / "spec.md").write_text("# Legacy spec\n\nNo scope yet.\n", encoding="utf-8")
+            result = module.validate_file_scope(tmp, {
+                "repo_root": tmp,
+                "ticket_body": "Spec-kit entry: `.specify/specs/005-legacy-spec/spec.md`",
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["enforced"])
+        self.assertEqual(result["violations"], [])
+
     def test_load_file_scope_resolves_workspace_spec_root_by_slug(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

@@ -333,6 +333,16 @@ def validate_file_scope(cwd: str, config: dict | None = None) -> dict:
     scope = load_file_scope(config)
     globs = scope.get("globs") or []
     if not globs:
+        reason = str(scope.get("reason") or "")
+        if scope.get("source") != "none" and "spec file not found" in reason:
+            return {
+                "ok": False,
+                "enforced": False,
+                **scope,
+                "changed_files": [],
+                "violations": [],
+                "failure_kind": "path-scope-spec-not-found",
+            }
         return {"ok": True, "enforced": False, **scope, "changed_files": [], "violations": []}
 
     changed = changed_files_since_base(cwd, config)
@@ -560,13 +570,19 @@ def summarize_completed_run(
     path_scope = validate_file_scope(cwd, config) if returncode == 0 and commit_count_ahead > 0 else {"ok": True, "enforced": False}
     if not path_scope.get("ok", True):
         violations = ", ".join(path_scope.get("violations", []))
+        failure_kind = str(path_scope.get("failure_kind") or "path-scope-violation")
+        if failure_kind == "path-scope-violation":
+            error = f"Worker changed files outside declared File-system scope: {violations}"
+        else:
+            reason = str(path_scope.get("reason") or "File-system scope could not be loaded")
+            error = f"Worker File-system scope unavailable: {reason}"
         return {
             "status": "failed",
             "returncode": -1,
             "stdout": stdout,
             "stderr": stderr,
-            "error": f"Worker changed files outside declared File-system scope: {violations}",
-            "exit_reason": "path-scope-violation",
+            "error": error,
+            "exit_reason": failure_kind,
             "transcript_tail": transcript_tail,
             "commit_count_ahead": commit_count_ahead,
             "driver": driver,
