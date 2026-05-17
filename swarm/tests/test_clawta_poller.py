@@ -771,6 +771,119 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(seen[1][0:4], [module.KANBAN_FLOW_BIN, "unblock", "t_unblock", "--author"])
         self.assertIn("Dependency gate cleared: PR #99999", seen[2][-1])
 
+
+    def test_auto_unblock_respects_spec_blocked_until_capability(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = make_db(root)
+            spec_dir = root / ".specify" / "specs" / "004-driver-allowlist"
+            spec_dir.mkdir(parents=True)
+            (spec_dir / "spec.md").write_text(
+                "# Driver allowlist\n\n"
+                "Ticket: t_7cb9cf49\n\n"
+                "Blocked until: chitin-kernel drivers list --json\n",
+            )
+            conn = sqlite3.connect(db_path)
+            conn.execute("ALTER TABLE tasks ADD COLUMN block_reason TEXT")
+            conn.executemany(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at, block_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "t_7cb9cf49",
+                        "driver gate",
+                        "Depends on t_7c9d02b7.",
+                        "blocked",
+                        "red",
+                        50,
+                        1,
+                        "dependency gate: waiting on t_7c9d02b7",
+                    ),
+                    ("t_7c9d02b7", "kernel dependency", "", "in_progress", "codex", 40, 2, None),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "t_7cb9cf49",
+                    "clawta-poller",
+                    "Blocked: dependency gate: waiting on t_7c9d02b7",
+                    10,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[:4] == ["chitin-kernel", "drivers", "list", "--json"]:
+                    return mock.Mock(returncode=2, stdout='{"error":"unknown_subcommand","message":"drivers"}', stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "spec_dir_for_board", return_value=root / ".specify" / "specs"
+            ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                unblocked = module.auto_unblock_dependency_tickets(dry_run=False)
+
+        self.assertEqual(unblocked, [])
+        self.assertEqual(seen[0][:4], ["chitin-kernel", "drivers", "list", "--json"])
+
+    def test_auto_unblock_respects_unresolved_dependency_gate_block_reason(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.execute("ALTER TABLE tasks ADD COLUMN block_reason TEXT")
+            conn.executemany(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, priority, created_at, block_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "t_7cb9cf49",
+                        "driver gate",
+                        "Depends on t_7c9d02b7.",
+                        "blocked",
+                        "red",
+                        50,
+                        1,
+                        "dependency gate: waiting on t_7c9d02b7 / chitin-kernel drivers list --json (currently unknown_subcommand)",
+                    ),
+                    ("t_7c9d02b7", "kernel dependency", "", "in_progress", "codex", 40, 2, None),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "t_7cb9cf49",
+                    "clawta-poller",
+                    "Blocked: dependency gate: waiting on t_7c9d02b7",
+                    10,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module.subprocess, "run"
+            ) as fake_run:
+                unblocked = module.auto_unblock_dependency_tickets(dry_run=False)
+
+        self.assertEqual(unblocked, [])
+        fake_run.assert_not_called()
+
     def test_auto_unblock_skips_loop_detected_ticket(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
