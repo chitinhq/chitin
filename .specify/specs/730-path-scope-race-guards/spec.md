@@ -22,6 +22,7 @@ Prevent worker output from reaching GitHub when it violates the spec's declared 
 - `spawn_worker_subprocess.py` parses a spec's `## File-system scope` section into allow/deny globs.
 - After a successful worker run with commits, the helper compares changed files against the declared scope and returns `status=failed`, `exit_reason=path-scope-violation` when any touched file falls outside scope.
 - Existing specs with no scope section are not retroactively broken; enforcement activates when a scope section is present.
+- Tickets that reference a spec path that cannot be resolved fail loud before PR creation with `exit_reason=path-scope-spec-not-found`.
 - Structured worker failures still reach `finalize_dispatch`, so Lobster can block/crash the ticket with detail instead of leaving stale `in_progress` runs.
 - Dispatch aborts before spawn if the ticket is no longer `in_progress` after the audit/start step.
 - Finalize refuses to push/open a PR if the ticket was blocked or moved out of `in_progress` while the worker was running.
