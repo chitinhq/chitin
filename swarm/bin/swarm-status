@@ -32,14 +32,45 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import board_config
+
 BOARDS = ("chitin", "readybench")
 KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
 DISPATCH_LOG_DIR = Path.home() / ".openclaw" / "logs"
-REPOS = (
-    ("chitinhq/chitin", "main"),
-    ("chitinhq/workspace", "master"),
-    ("wjcmurphy/bench-devs-platform", "swarm"),
-)
+
+
+def configured_repos(boards: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Return unique repo/base pairs from board config.
+
+    Keeps swarm-status aligned with board configuration instead of embedding
+    canonical repo literals that drift when boards are renamed or added. Extra
+    operator-local repos can be supplied as
+    ``SWARM_STATUS_EXTRA_REPOS=owner/repo:branch,owner2/repo2:branch``.
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(repo: str | None, base: str | None) -> None:
+        if not repo:
+            return
+        pair = (repo, base or "main")
+        if pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+
+    for board in boards:
+        cfg = board_config(board)
+        add(cfg.get("repo"), cfg.get("default_branch"))
+
+    for item in os.environ.get("SWARM_STATUS_EXTRA_REPOS", "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        repo, sep, base = item.partition(":")
+        add(repo.strip(), base.strip() if sep else "main")
+
+    return pairs
 
 
 def fetch_board_counts(board: str) -> dict[str, int]:
@@ -239,7 +270,7 @@ def main() -> int:
 
     if not args.tickets_only:
         data["prs"] = {}
-        for repo, base in REPOS:
+        for repo, base in configured_repos(boards):
             data["prs"][repo] = fetch_open_prs(repo, base)
 
     if not args.tickets_only and not args.pr_only:
