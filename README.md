@@ -56,6 +56,20 @@ Asymmetric strengths nothing else in the ecosystem provides:
 
 Hermes is the kanban substrate; OpenClaw is the agent-runtime substrate (Lobster workflows + acpx gateway). Chitin gates every tool call against one policy and owns the four-hop dispatch pipeline (`hermes → clawta → openclaw/Lobster → frontier-coder CLI`) that composes those substrates. The chain is the unifying contract; `gov.Gate` is the unifying enforcement point.
 
+## Constitution + spec-kit (the swarm's operating rules)
+
+The kernel above gates each tool call. The **constitution + spec-kit layer** governs how the swarm dispatches and coordinates around the kernel:
+
+- **`.specify/constitution.md`** — repo-level overlay; extends the workspace constitution at `~/workspace/.specify/constitution.md`. Both ratified via agent-bus standup threads.
+- **`.specify/specs/NNN-<slug>/spec.md`** — every ticket promoted `triage → ready` MUST have a matching spec-kit entry. Enforced by `has_spec_kit_entry()` in `swarm/bin/clawta-poller` and `swarm/workflows/hermes-clawta-bridge.py`. Forward binding (ticket body references spec path) and reverse binding (spec mentions ticket id) are both accepted.
+- **Empty-branch gate** — `swarm/workflows/kanban-dispatch.lobster` refuses to push if `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`. Prevents zombie branches when workers exit without committing.
+- **PR lifecycle close-intent** — `swarm/bin/clawta-pr-lifecycle` closes a ticket on PR merge when either (a) the branch name carries a trusted `agent/<driver>-<ticket-suffix>` mapping or (b) the body contains an explicit `Closes/Fixes/Resolves t_xxx`. `Refs t_xxx` is traceability only — it never closes.
+- **Loop-detected auto-unblock skip** — `swarm/bin/clawta-poller` will not auto-unblock tickets carrying `loop_detected=true`; the watchdog owns them until manual repair.
+- **Tracked source over local patches** — shared swarm runtime scripts (bridge, poller, lifecycle, dispatch workflow, watchdog prompt) ship with tracked sources + idempotent installers at `swarm/bin/install-*.sh`. Drift between repo source and deployed runtime is a bug.
+- **Worktree discipline** — `~/workspace/chitin/` is the primary checkout and is read-only for branch work; sibling worktrees (`~/workspace/chitin-*`) are the dispatch targets.
+
+Specs 001-019 (see [`.specify/specs/`](./.specify/specs/)) cover: agent-bus (001), scripts manifest (002), kanban mutation isolation (003), driver allowlist (004), drift-guard (005), wiki pipeline (006), analyzer cron (007), watchdog spec-aware (008), poller respects spec-kit (009), pr-lifecycle exact match (010), per-script Go-port coverage (011-014), diagnostics separation (015-016).
+
 ## Quick start
 
 ```bash
@@ -101,17 +115,32 @@ install paths, the policy schema, kill switches, and the escalation ladder.
 │   └── adapters/                # operator-installed driver-side adapters
 ├── go/run-sdk/                  # standalone Go run-event SDK (no kernel dependency)
 ├── apps/
-│   ├── cli/                     # operator CLI (`chitin` — events, replay, health, ledger)
+│   ├── cli/                     # operator CLI (`chitin` — events, replay, health, ledger,
+│   │                            #   wiki ingest/compile/ask/lint per spec 006)
+│   ├── chitin-console/          # operator-facing Angular UI (mobile-first; tailscale-served)
+│   ├── chitin-console-api/      # Node API for chitin-console (kanban + bus + suggestions)
 │   └── openclaw-plugin-governance/ # openclaw before_tool_call plugin
-├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect)
+├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect,
+│                                #   analyzer cron per spec 007)
+├── swarm/                       # swarm tooling — kept here until 3+ active dispatch repos
+│   ├── workflows/               #   kanban-dispatch.lobster, hermes-clawta-bridge.py,
+│   │                            #   _pick_driver.py, analyzer-cron.lobster
+│   ├── bin/                     #   clawta-poller, clawta-pr-lifecycle, install-*.sh,
+│   │                            #   board_resolver, board-aware audit scripts
+│   ├── prompts/                 #   board-watchdog.md (tracked cron prompt source)
+│   └── tests/                   #   regression tests for poller/bridge/lifecycle gates
+├── .specify/                    # spec-kit layer (per Constitution §5)
+│   ├── constitution.md          #   chitin repo overlay; extends workspace constitution
+│   └── specs/NNN-<slug>/spec.md #   spec-kit entries (the dispatch gate)
 ├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,
 │                                # envelope-rotate, codex-chain-ingest, codex-usage-feed)
 ├── examples/                    # copyable examples: policy packs and router plugins
 ├── docs/decisions/              # durable boundary docs (positioning, scope, culls)
-├── docs/runbooks/               # operator runbooks (health, router, spec lifecycle…)
+├── docs/runbooks/               # operator runbooks (health, router, dispatch-pipeline…)
 ├── docs/superpowers/specs/      # active spec set + auto-generated INDEX.md
-├── chitin.yaml                  # policy
-├── scripts/                     # installers, regen-spec-index, lint helpers
+├── chitin.yaml                  # policy (signed)
+├── scripts/                     # installers, MANIFEST.yaml + check-scripts-manifest.sh
+│                                #   (per spec 002), regen-spec-index, lint helpers
 └── bin/chitin-router-hook       # PreToolUse shim
 ```
 
