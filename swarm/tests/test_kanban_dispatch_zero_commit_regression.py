@@ -68,6 +68,36 @@ class KanbanDispatchZeroCommitRegressionTests(unittest.TestCase):
         self.assertIn("printf '%s\\n' \"$BLOCK_REASON\"", workflow)
         self.assertIn('kanban-flow crash ${ticket_id} "$BLOCK_REASON"', workflow)
 
+    def test_structured_worker_failure_reaches_finalize_dispatch(self):
+        workflow = CANONICAL.read_text()
+
+        self.assertIn('deferring to finalize_dispatch', workflow)
+        spawn_tail = workflow.split('WORKER_STATUS=$(echo "$WORKER_RESULT"', 1)[1].split('BASH_SCRIPT', 1)[0]
+        self.assertIn('exit 0', spawn_tail)
+        self.assertNotIn('worker failed with status=$WORKER_STATUS" >&2\n        exit 1', spawn_tail)
+
+    def test_blocked_ticket_aborts_before_spawn(self):
+        workflow = CANONICAL.read_text()
+
+        self.assertIn('dispatch aborted: ${ticket_id} status is $STATUS before spawn', workflow)
+        start_idx = workflow.find('kanban-flow start ${ticket_id}')
+        spawn_idx = workflow.find('SPAWN_CONFIG=$(printf')
+        guard_idx = workflow.find('status is $STATUS before spawn')
+        self.assertGreater(start_idx, 0)
+        self.assertGreater(guard_idx, start_idx)
+        self.assertLess(guard_idx, spawn_idx)
+
+    def test_finalize_does_not_push_when_ticket_was_blocked_mid_run(self):
+        workflow = CANONICAL.read_text()
+
+        guard_idx = workflow.find('CURRENT_STATUS=$(hermes kanban')
+        push_idx = workflow.find('git push -u origin "$BRANCH"')
+        self.assertGreater(guard_idx, 0)
+        self.assertGreater(push_idx, guard_idx)
+        between = workflow[guard_idx:push_idx]
+        self.assertIn('not pushing/opening PR', between)
+        self.assertIn('exit 0', between)
+
 
 if __name__ == "__main__":
     unittest.main()

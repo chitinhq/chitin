@@ -203,6 +203,137 @@ class SpawnWorkerSubprocessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "origin/swarm"):
                 module.commits_ahead_of_base(tmp, {"default_branch": "swarm"})
 
+    def test_extract_file_scope_globs_from_spec_section(self):
+        module = load_module()
+        spec = """
+## Overview
+ignore `frontend/**`
+
+## File-system scope
+- `apps/portal/**`
+- `packages/ui/**`
+- !`frontend/**`
+
+## Invariants and Boundaries
+- invariant: done
+"""
+        self.assertEqual(
+            module.extract_file_scope_globs(spec),
+            ["apps/portal/**", "packages/ui/**", "!frontend/**"],
+        )
+
+    def test_summarize_completed_run_rejects_path_scope_violation(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=1), \
+             mock.patch.object(module, "validate_file_scope", return_value={
+                 "ok": False,
+                 "enforced": True,
+                 "source": ".specify/specs/005/spec.md",
+                 "globs": ["apps/portal/**"],
+                 "changed_files": ["frontend/src/App.tsx"],
+                 "violations": ["frontend/src/App.tsx"],
+             }):
+            summary = module.summarize_completed_run(
+                {"driver": "codex", "model": "gpt-5.5"},
+                0,
+                "",
+                "",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "path-scope-violation")
+        self.assertIn("frontend/src/App.tsx", summary["error"])
+
+    def test_validate_file_scope_allows_matching_changed_paths(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "load_file_scope", return_value={"source": "config", "globs": ["apps/portal/**"]}), \
+             mock.patch.object(module, "changed_files_since_base", return_value=["apps/portal/src/App.tsx"]):
+            result = module.validate_file_scope(tmp, {})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["enforced"])
+
+    def test_validate_file_scope_rejects_missing_referenced_spec(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = module.validate_file_scope(tmp, {
+                "repo_root": tmp,
+                "ticket_body": "Spec-kit entry: `.specify/specs/005-missing/spec.md`",
+            })
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["enforced"])
+        self.assertEqual(result["failure_kind"], "path-scope-spec-not-found")
+        self.assertEqual(result["changed_files"], [])
+        self.assertEqual(result["violations"], [])
+
+    def test_summarize_completed_run_rejects_missing_referenced_spec(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=1):
+            summary = module.summarize_completed_run(
+                {
+                    "driver": "codex",
+                    "model": "gpt-5.5",
+                    "repo_root": tmp,
+                    "ticket_body": "Spec-kit entry: `.specify/specs/005-missing/spec.md`",
+                },
+                0,
+                "",
+                "",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "path-scope-spec-not-found")
+        self.assertIn("spec file not found", summary["error"])
+
+    def test_summarize_completed_run_rejects_configured_missing_file_scope(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module, "commits_ahead_of_base", return_value=1):
+            summary = module.summarize_completed_run(
+                {
+                    "driver": "codex",
+                    "model": "gpt-5.5",
+                    "file_system_scope": {
+                        "may": [],
+                        "must_not": [],
+                        "source": "/tmp/spec.md",
+                        "missing_scope": True,
+                    },
+                },
+                0,
+                "",
+                "",
+                tmp,
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_reason"], "path-scope-missing")
+        self.assertIn("path_scope_missing", summary["audit_flags"])
+
+    def test_load_file_scope_resolves_workspace_spec_root_by_slug(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_root = Path(tmp) / ".specify" / "specs"
+            spec_dir = spec_root / "005-portal-auth-wiring"
+            spec_dir.mkdir(parents=True)
+            (spec_dir / "spec.md").write_text(
+                "## File-system scope\n- `apps/portal/**`\n",
+                encoding="utf-8",
+            )
+            result = module.load_file_scope({
+                "spec_root": str(spec_root),
+                "ticket_body": "Spec-kit entry: `.specify/specs/005-portal-auth-wiring/spec.md`",
+            })
+
+        self.assertEqual(result["globs"], ["apps/portal/**"])
+        self.assertTrue(str(result["source"]).endswith("005-portal-auth-wiring/spec.md"))
+
     def test_detect_event_chain_returns_latest_hash(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

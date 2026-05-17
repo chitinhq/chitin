@@ -764,6 +764,9 @@ case "$cmd" in
     from="$(ticket_status "$id")"
     add_comment "$id" "$author" "Blocked: $reason"
     flip_status "$id" blocked 0 0
+    if [[ "$from" == in_progress ]]; then
+      finalize_task_run "$id" blocked blocked "" "$reason"
+    fi
     emit_transition "$id" "$from" blocked "$author"
     echo "$id: $from → blocked ($reason)"
     ;;

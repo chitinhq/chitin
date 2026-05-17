@@ -4,6 +4,8 @@
 #
 # Allowlist rationale:
 # - scripts/install-swarm.sh seeds the canonical chitin board config on first run.
+# - scripts/install-pre-push-protected-branch-guard.sh documents operator-local
+#   default checkout paths for hook installation; REPOS still overrides.
 # - this script contains the forbidden literals in the pattern itself.
 set -euo pipefail
 
@@ -14,13 +16,14 @@ PATTERN='chitinhq/chitin|/workspace/chitin'
 
 ALLOWLIST=(
   'scripts/install-swarm.sh: seed config for the canonical chitin board'
+  'scripts/install-pre-push-protected-branch-guard.sh: operator-local hook install defaults'
   'scripts/check-no-chitin-hardcodes.sh: the drift guard pattern and self-doc'
 )
 
 skip_allowed() {
   local path="$1"
   case "$path" in
-    scripts/install-swarm.sh|scripts/check-no-chitin-hardcodes.sh) return 0 ;;
+    scripts/install-swarm.sh|scripts/install-pre-push-protected-branch-guard.sh|scripts/check-no-chitin-hardcodes.sh) return 0 ;;
     *) return 1 ;;
   esac
 }
