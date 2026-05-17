@@ -1053,11 +1053,49 @@ def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
 # Dispatch + demote actions
 # ---------------------------------------------------------------------------
 
+def fetch_current_status(ticket_id: str) -> str | None:
+    """Fresh-read the ticket status from the kanban DB. Returns None if
+    the ticket doesn't exist or the read fails.
+
+    Used as a pre-dispatch race guard: between the poller's snapshot fetch
+    and the moment it tries to flip ready → in_progress, an operator or
+    Ares/Clawta may have blocked the ticket. Without this guard, the
+    poller would race past the block, flip status, and spawn a worker
+    against a ticket the operator already pulled offline. See
+    chitinhq/workspace#418 day-0 retro tiger-team task C3.
+    """
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (ticket_id,)
+            ).fetchone()
+    except sqlite3.Error as e:
+        log(f"fetch_current_status({ticket_id}): {e}")
+        return None
+    return row[0] if row else None
+
+
 def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
-    """Flip ready→in_progress, then spawn clawta dispatch in background."""
+    """Flip ready→in_progress, then spawn clawta dispatch in background.
+
+    Pre-flight: fresh-read the ticket status. If it has slipped out of a
+    dispatchable status (blocked, demoted to triage, claimed by another
+    process, etc.), abort. Without this guard the poller can race past
+    an operator block (chitinhq/workspace#418 day-0 retro, tiger C3).
+    """
     if dry_run:
         log(f"[dry-run] would dispatch {ticket_id} to {assignee}: {reason[:80]}")
         return True
+
+    current_status = fetch_current_status(ticket_id)
+    if current_status not in DISPATCHABLE_STATUSES:
+        log(
+            f"dispatch_ticket({ticket_id}): aborting — status flipped to "
+            f"{current_status!r} between fetch and dispatch (was expected "
+            f"to be one of {DISPATCHABLE_STATUSES}). Likely operator/agent "
+            f"blocked or demoted in the dispatcher window. Not racing."
+        )
+        return False
 
     comment = f"clawta-poller dispatching to {assignee}. Sequence reason: {reason}"
     try:
