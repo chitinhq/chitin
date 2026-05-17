@@ -47,12 +47,24 @@ Important: historical loop comments are audit history. They are not enough to re
    kanban-flow block <id> "needs spec: <one-line reason>" --author board-watchdog
    hermes kanban --board <board> assign <id> red
 
-**Escalation**: After processing all triage/loop tickets, post a Discord summary ONLY for tickets that still need specs. Do not include `spec-satisfied` tickets in the spec queue.
+**Escalation**: After processing all triage/loop tickets, post **exactly one Discord message** summarizing tickets that still need specs. Do not include `spec-satisfied` tickets in the spec queue.
 
-Format:
+**Hard output budget**: The entire escalation post MUST be a single Discord message — fewer than 1500 characters, NOT split into parts. The cron transport splits long output into multi-part `(N/N)` messages which floods agent inboxes and buries operator messages (see ticket `t_74c2cab6`). Length discipline is the fix.
+
+Format (single message, ≤1500 chars):
 
 🔔 **Spec queue — <board>**: N tickets need specs
-  • t_xxxx: Title — reason blocked
-  • t_yyyy: Title — reason blocked
 
-Post this ONLY when there are blocked tickets still missing specs. Do not post when there's nothing to escalate. Do not raise an error merely because the report contains findings; complete normally after reporting.
+Top 3 by priority:
+  • t_xxxx: Title — reason
+  • t_yyyy: Title — reason
+  • t_zzzz: Title — reason
+
+Full list: run `hermes kanban --board <board> ls --status blocked --assignee red` for all N tickets and their block reasons.
+
+Rules:
+- List at most 3 tickets inline. The full set is available via the command above; don't enumerate it.
+- One ticket per line. No multi-line descriptions.
+- Truncate each title to ~50 chars if needed.
+- Skip the post entirely when there's nothing to escalate.
+- Do not raise an error merely because the report contains findings; complete normally after reporting.
