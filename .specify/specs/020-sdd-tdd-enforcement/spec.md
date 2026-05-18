@@ -14,20 +14,29 @@
 
 ## File-system scope
 
-- `swarm/bin/worker-pre-commit-no-code-without-test.sh` (new)
-- `swarm/bin/worker-pre-commit-no-code-without-test.py` (new helper)
-- `swarm/bin/worker-pre-commit-spec-has-test-coverage.sh` (new)
-- `swarm/bin/worker-pre-commit-spec-has-test-coverage.py` (new helper)
-- `swarm/workflows/kanban-dispatch.lobster` (extend hook installer)
-- `docs/governance-setup-extras/kanban-dispatch.lobster` (mirror sync)
-- `swarm/tests/test_sdd_tdd_enforcement.py` (new)
+Worker MAY write under:
+- `swarm/bin/worker-pre-commit-no-code-without-test.sh`
+- `swarm/bin/worker-pre-commit-no-code-without-test.py`
+- `swarm/bin/worker-pre-commit-spec-has-test-coverage.sh`
+- `swarm/bin/worker-pre-commit-spec-has-test-coverage.py`
+- `swarm/workflows/kanban-dispatch.lobster`
+- `docs/governance-setup-extras/kanban-dispatch.lobster`
+- `swarm/tests/test_sdd_tdd_enforcement.py`
 - `swarm/tests/test_kanban_dispatch_zero_commit_regression.py`
-  (extend mirror-match assertion)
-- `chitin.yaml` (declare two new gate actions; operator re-signs after)
+- `chitin.yaml`
 - `.specify/specs/020-sdd-tdd-enforcement/**`
 
-Worker MUST NOT touch any other path under `chitin/`. No edits to
-`swarm/bin/worker-pre-commit-scope-*` (existing, separate concern).
+Worker MUST NOT write under:
+- `swarm/bin/worker-pre-commit-scope-*`
+- `src/**`
+- `routes/**`
+- `services/**`
+- `lib/**`
+- `controllers/**`
+- `models/**`
+- `go/**`
+
+Any other path under `chitin/` requires a spec amendment before dispatch.
 
 ## Goal
 
