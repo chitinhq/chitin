@@ -41,7 +41,15 @@ BOARDS = {
     },
     "readybench": {
         "db": KANBAN_BOARDS_DIR / "readybench" / "kanban.db",
-        "spec_root": WORKSPACE_ROOT / ".specify" / "specs",
+        # bench-devs-platform/.specify/specs is the source of truth. The
+        # earlier workspace-overlay path treated wjcmurphy/bench-devs-platform
+        # as a team repo, so the watchdog couldn't find readybench specs and
+        # demoted every ready ticket back to triage. Per board-config
+        # owned_orgs=wjcmurphy this is an owned repo; the poller (via
+        # board_resolver.spec_dir_for_board) already resolves correctly.
+        # Follow-up: unify both code paths through board_resolver (filed as
+        # a separate spec) so this hardcoded BOARDS dict stops drifting.
+        "spec_root": WORKSPACE_ROOT / "bench-devs-platform" / ".specify" / "specs",
     },
 }
 
