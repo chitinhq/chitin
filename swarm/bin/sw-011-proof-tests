@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 
 # ── Config ──────────────────────────────────────────────────────────
 
-# Repo-relative paths (not hardcoded ~/workspace/chitin)
+# Repo-relative paths — resolved from script location, no absolute paths
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent  # swarm/bin/ → repo root
 
