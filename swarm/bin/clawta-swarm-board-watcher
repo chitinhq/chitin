@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Watch the swarm kanban board for ready tickets assigned to Clawta.
+# Intended for an OpenClaw cron every 60s; emits one #swarm receipt per new
+# ready ticket with assignee `clawta` or `*`.
+set -euo pipefail
+
+BOARD="${KANBAN_BOARD:-swarm}"
+KANBAN_DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$BOARD/kanban.db}"
+STATE_FILE="${CLAWTA_SWARM_WATCHER_STATE:-$HOME/.openclaw/state/clawta-swarm-board-watcher-$BOARD.seen}"
+OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.vite-plus/bin/openclaw}"
+SWARM_TARGET="${SWARM_TARGET:-channel:1505613628286701588}"
+DRY_RUN="${DRY_RUN:-0}"
+
+if [[ ! -f "$KANBAN_DB" ]]; then
+  echo "clawta-swarm-board-watcher: kanban db not found: $KANBAN_DB" >&2
+  exit 2
+fi
+if [[ ! -x "$OPENCLAW_BIN" ]]; then
+  OPENCLAW_BIN="$(command -v openclaw || true)"
+fi
+if [[ -z "$OPENCLAW_BIN" || ! -x "$OPENCLAW_BIN" ]]; then
+  echo "clawta-swarm-board-watcher: openclaw binary not found" >&2
+  exit 2
+fi
+
+mkdir -p "$(dirname "$STATE_FILE")"
+touch "$STATE_FILE"
+LOCK_FILE="${CLAWTA_SWARM_WATCHER_LOCK:-$STATE_FILE.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "clawta-swarm-board-watcher: another watcher run is active for board $BOARD" >&2
+  printf '{"board":"%s","posted":0}\n' "$BOARD"
+  exit 0
+fi
+
+query_ready() {
+  sqlite3 -tabs "$KANBAN_DB" <<'SQL'
+SELECT id, replace(replace(title, char(10), ' '), char(13), ' ')
+FROM tasks
+WHERE status = 'ready'
+  AND COALESCE(assignee, '') IN ('clawta', '*')
+ORDER BY priority ASC, created_at ASC, id ASC;
+SQL
+}
+
+posted=0
+while IFS=$'\t' read -r id title; do
+  [[ -n "${id:-}" ]] || continue
+  if grep -Fxq "$id" "$STATE_FILE"; then
+    continue
+  fi
+  msg="🔔 clawta detected swarm board ticket: $id $title"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN %s\n' "$msg"
+  else
+    "$OPENCLAW_BIN" message send \
+      --channel discord \
+      --account default \
+      --target "$SWARM_TARGET" \
+      -m "$msg" >/dev/null
+  fi
+  printf '%s\n' "$id" >>"$STATE_FILE"
+  posted=$((posted + 1))
+done < <(query_ready)
+
+printf '{"board":"%s","posted":%d}\n' "$BOARD" "$posted"
