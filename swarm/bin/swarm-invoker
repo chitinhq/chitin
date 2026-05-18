@@ -58,11 +58,12 @@ def load_invocation_log() -> dict:
 
 def save_invocation_log(log: dict) -> None:
     DEDUP_DIR.mkdir(parents=True, exist_ok=True)
-    # Prune entries older than 7 days to keep log small
+    # Prune entries older than 7 days to keep log small.
+    # Keys are composite (tid:status:assignee:latest_ts) per Clawta gate 4.
     now = datetime.now(timezone.utc)
     cutoff = (now.timestamp() - 7 * 86400)
     pruned = {
-        tid: entry for tid, entry in log.items()
+        key: entry for key, entry in log.items()
         if datetime.fromisoformat(entry["invoked_at"]).timestamp() > cutoff
     }
     DEDUP_FILE.write_text(json.dumps(pruned, indent=2, sort_keys=True))
@@ -71,7 +72,11 @@ def save_invocation_log(log: dict) -> None:
 # ── Board queries ──────────────────────────────────────────────────
 
 def find_actionable_tickets(board: str) -> list[dict]:
-    """Find ready/triage tickets assigned to this agent on the board."""
+    """Find ready/triage tickets assigned to this agent on the board.
+
+    Joins on kanban_mutations_log to surface the latest mutation timestamp
+    per task — used by the composite dedup key so that a ticket cycling
+    back to 'ready' after work re-invokes (per Clawta sw-009 gate 4)."""
     db_path = KANBAN_ROOT / board / "kanban.db"
     if not db_path.exists():
         print(f"[swarm-invoker] board DB not found: {db_path}", file=sys.stderr)
@@ -80,13 +85,20 @@ def find_actionable_tickets(board: str) -> list[dict]:
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
 
-    # Query: ready or triage, assigned to hermes or wildcard
+    # Query: ready or triage, assigned to hermes or wildcard,
+    # with the latest mutation ts from the audit log as a proxy
+    # for tasks.updated_at (the tasks table has no updated_at column).
     cur = con.execute("""
-        SELECT id, title, status, assignee, priority, body
-        FROM tasks
-        WHERE status IN ('ready', 'triage')
-          AND assignee IN (?, '*')
-        ORDER BY priority DESC, rowid ASC
+        SELECT t.id, t.title, t.status, t.assignee, t.priority, t.body,
+               COALESCE(
+                 (SELECT MAX(ts) FROM kanban_mutations_log m
+                   WHERE m.table_name='tasks' AND m.task_id=t.id),
+                 t.created_at
+               ) AS latest_ts
+        FROM tasks t
+        WHERE t.status IN ('ready', 'triage')
+          AND t.assignee IN (?, '*')
+        ORDER BY t.priority DESC, t.rowid ASC
     """, (AGENT_NAME,))
 
     tickets = []
@@ -98,10 +110,54 @@ def find_actionable_tickets(board: str) -> list[dict]:
             "assignee": row["assignee"],
             "priority": row["priority"] or 0,
             "body": row["body"] or "",
+            "latest_ts": row["latest_ts"],
         })
 
     con.close()
     return tickets
+
+
+def dedup_key(ticket: dict) -> str:
+    """Composite dedup key per Clawta sw-009 gate 4: not just ticket id.
+
+    Includes status + assignee + latest mutation ts so that a ticket
+    going ready -> in_progress -> ready (e.g. retry after failure) gets
+    re-invoked rather than silently swallowed by stale id-only lookup."""
+    return f"{ticket['id']}:{ticket['status']}:{ticket['assignee']}:{ticket['latest_ts']}"
+
+
+def post_swarm_receipt(ticket: dict, board: str) -> None:
+    """Best-effort post of a short invocation receipt to #swarm (thread 9).
+
+    Per Clawta sw-009 gate 5: receipt on invocation, but no body leak.
+    Receipt contains only ticket id + title (already public on the board).
+    Failure to post is non-fatal (logged to stderr) so dispatch isn't
+    blocked on agent-bus availability."""
+    try:
+        import importlib.util
+        bus_server_path = (
+            Path(__file__).resolve().parents[2]
+            / "services" / "agent-bus" / "server.py"
+        )
+        if not bus_server_path.is_file():
+            return  # Bus not available in this checkout; silent skip.
+        spec = importlib.util.spec_from_file_location("agent_bus_server", bus_server_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        from db import get_conn  # noqa: E402 — local to services/agent-bus
+        conn = get_conn()
+        mod.bus_reply(
+            conn,
+            author=AGENT_NAME,
+            thread_id=9,  # #swarm thread
+            body=f"[swarm-invoker] invoked {ticket['id']} — {ticket['title']} ({board})",
+            kind="system",
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block dispatch
+        print(f"[swarm-invoker] receipt-post failed (non-fatal): {exc}", file=sys.stderr)
 
 
 # ── Invocation ──────────────────────────────────────────────────────
@@ -138,29 +194,35 @@ def main():
             continue
 
         for ticket in tickets:
-            tid = ticket["id"]
+            key = dedup_key(ticket)
 
-            # Skip already-invoked tickets
-            if tid in inv_log:
+            # Skip if this exact (id, status, assignee, latest_ts) tuple
+            # has already been invoked. Composite key per Clawta gate 4 —
+            # a ticket cycling back to 'ready' produces a new key and
+            # re-invokes, which is the desired behavior.
+            if key in inv_log:
                 continue
 
             prompt = format_invocation(ticket, board)
 
             if args.dry_run:
-                print(f"[DRY-RUN] would invoke: {tid} — {ticket['title']}")
+                print(f"[DRY-RUN] would invoke: {ticket['id']} — {ticket['title']}")
                 print(prompt)
                 print()
             else:
-                # Record invocation
-                inv_log[tid] = {
+                # Record invocation with composite key
+                inv_log[key] = {
                     "invoked_at": datetime.now(timezone.utc).isoformat(),
                     "board": board,
+                    "ticket_id": ticket["id"],
                     "title": ticket["title"],
                 }
                 # Output the prompt (agent will see this via --script injection)
                 print(prompt)
                 print()
-                print(f"[swarm-invoker] invoked {tid} on {board}", file=sys.stderr)
+                print(f"[swarm-invoker] invoked {ticket['id']} on {board}", file=sys.stderr)
+                # Receipt to #swarm (gate 5) — best-effort, non-blocking.
+                post_swarm_receipt(ticket, board)
                 invoked_any = True
 
     if not args.dry_run and invoked_any:
