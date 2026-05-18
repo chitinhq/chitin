@@ -16,8 +16,8 @@
 
 - `swarm/bin/worker-pre-commit-no-code-without-test.sh` (new)
 - `swarm/bin/worker-pre-commit-no-code-without-test.py` (new helper)
-- `swarm/bin/worker-pre-commit-spec-has-e2e-section.sh` (new)
-- `swarm/bin/worker-pre-commit-spec-has-e2e-section.py` (new helper)
+- `swarm/bin/worker-pre-commit-spec-has-test-coverage.sh` (new)
+- `swarm/bin/worker-pre-commit-spec-has-test-coverage.py` (new helper)
 - `swarm/workflows/kanban-dispatch.lobster` (extend hook installer)
 - `docs/governance-setup-extras/kanban-dispatch.lobster` (mirror sync)
 - `swarm/tests/test_sdd_tdd_enforcement.py` (new)
@@ -52,17 +52,46 @@ OR a commit-message line `no-test-change-justified: <reason>`.
 - **Bypass**: `SWARM_SKIP_TEST_CHECK=1` for the operator's manual
   use (mirrors `SWARM_SKIP_SCOPE_CHECK=1`).
 
-### Layer 2 — `spec-has-e2e-section` (pre-commit hook on spec files)
+### Layer 2 — `spec-has-test-coverage` (pre-commit hook on spec files)
 
 When any file under `.specify/specs/**/spec.md` is staged, the hook
-requires the new contents to contain an `## E2E coverage` section
+requires the new contents to contain a `## Test coverage` section
 with at least one table row binding an AC to a named test case.
 
-- Also requires every staged test file under `**/e2e/**` to contain
-  a `// spec: NNN-<slug>` (or `# spec:` for Python) comment in the
-  first 20 lines.
+The section is **test-runtime-agnostic** — the column reads "Test
+case" not "Playwright case." A spec for a UI flow binds to
+playwright cases (e.g. spec 019's C1-C5); a spec for a backend
+route binds to integration tests (e.g. `backend/tests/integration/api/
+shortlist.test.js::it("returns empty list for nonexistent request")`);
+a spec for a Go subsystem binds to `go test` functions (e.g.
+`internal/health/gather_test.go::TestGather_WindowedCount`); a spec
+for a chitin lobster change binds to static-analysis regression
+tests (e.g. `swarm/tests/test_dispatch_base_freshness_regression.py::
+test_fetch_runs_before_worktree_setup`). Hook validates the section
+exists + has rows; it does NOT enforce a specific test framework.
+
+- Also requires every staged test file under recognized test
+  directories (`**/__tests__/**`, `**/tests/**`, `**/e2e/**`,
+  `**/*.test.*`, `**/*.spec.*`, `**/*_test.go`, `**/test_*.py`)
+  to contain a `// spec: NNN-<slug>` (or `# spec:` / `/* spec:`)
+  reference comment in the first 20 lines.
 - **Why both halves**: spec without coverage = unverifiable; test
   without spec = unattributed.
+
+#### Test-type guidance by repo (informational, not enforced)
+
+| Repo | Primary test layer for §1.2 binding |
+|------|--------------------------------------|
+| `bench-devs-platform/apps/portal`, future UI repos | Playwright e2e |
+| `bench-devs-platform/frontend` | Playwright e2e + vitest unit |
+| `bench-devs-platform/backend`, other Node API | Jest/vitest integration (real DB) |
+| `chitin` (lobster + python) | Static-analysis regression tests + unittest |
+| `chitin/go/**`, future Go subsystems | `go test` (unit + integration) |
+| `chitin/swarm/**` python | unittest + invariant assertions |
+
+The L2 hook accepts any of these. The spec author picks the layer
+that proves the spec — that is the author's contract with the
+reader, not a chitin-imposed framework choice.
 
 ### Layer 3 — `no-pr-without-spec` (chitin gate action `before-gh-pr-create`)
 
@@ -91,7 +120,10 @@ either:
 - **AC2**: The same commit, with a test file staged or with the
   escape clause in the message, passes.
 - **AC3**: Editing `.specify/specs/099-foo/spec.md` to remove the
-  `## E2E coverage` section fails the pre-commit hook.
+  `## Test coverage` section fails the pre-commit hook (regardless
+  of whether the spec's test layer is playwright, integration,
+  go-test, or unittest — the hook only checks the section exists
+  with at least one binding row).
 - **AC4**: A new file `apps/portal/e2e/something.spec.ts` that
   lacks a `// spec: NNN-<slug>` comment fails the pre-commit hook.
 - **AC5**: `gh pr create` against an integration branch from a
@@ -101,7 +133,7 @@ either:
 - **AC6**: The same `gh pr create` with `Spec: 020-sdd-tdd-enforcement`
   in the body (and that spec existing on origin/main) succeeds.
 
-## E2E coverage
+## Test coverage
 
 | Spec AC | Test case (in `swarm/tests/test_sdd_tdd_enforcement.py`) | What breaks if removed |
 |---------|----------------------------------------------------------|------------------------|
@@ -148,11 +180,16 @@ base_freshness_regression.py`.
 Add to `.specify/constitution.md` after §1.1:
 
 > **§1.2 Spec→test contract.** Every spec under
-> `.specify/specs/NNN-<slug>/spec.md` MUST contain an `## E2E
+> `.specify/specs/NNN-<slug>/spec.md` MUST contain a `## Test
 > coverage` section binding each acceptance criterion to a named
-> test case. Every test file MUST reference its spec via
-> `// spec: NNN-<slug>` (or `# spec:` for Python) in the first 20
-> lines. Chitin enforces both halves at commit time (spec 020).
+> test case. The test layer is **author's choice per repo +
+> subsystem** — playwright for UI flows, integration tests for
+> backend APIs, `go test` for Go subsystems, unittest/regression
+> tests for chitin python+lobster, etc. Chitin enforces only the
+> shape (section exists, rows bind ACs to named cases). Every test
+> file MUST reference its spec via `// spec: NNN-<slug>`
+> (or `# spec:` / `/* spec:`) in the first 20 lines. Both halves
+> enforced at commit time by spec 020.
 
 ## Why this spec exists (the retro)
 
