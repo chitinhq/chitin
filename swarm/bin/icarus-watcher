@@ -289,6 +289,45 @@ Return the corrected file contents now, raw text only.
 """
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Strip ```lang ... ``` markdown code fences from LLM output.
+
+    Discovered during ic-005 proof-of-life: qwen3-coder:30b-32k wraps
+    its output in ``` fences even when the prompt says "raw text only,
+    no markdown." Sometimes only the TRAILING ``` is present (no
+    opening fence) — observed Ares msg 4588-4589 lookup. Post-check
+    then fails because the fence chars aren't valid Python syntax.
+
+    Defensive — runs against ANY model output. No-op on raw text.
+
+    Handles three patterns:
+    1. ```lang\\ncode\\n``` (both fences present)
+    2. ```\\ncode\\n``` (fences without lang tag)
+    3. code\\n``` (trailing fence only — qwen3-coder pattern)
+    """
+    s = text.strip()
+    # Pattern 1+2: both fences present
+    if s.startswith("```"):
+        nl = s.find("\n")
+        if nl >= 0:
+            body = s[nl + 1:]
+            end = body.rfind("```")
+            if end >= 0:
+                return body[:end].rstrip()
+    # Pattern 3: trailing fence only (no opening) — strip the last line
+    # if it's just ``` (with optional trailing whitespace)
+    lines = s.split("\n")
+    while lines and lines[-1].strip() == "```":
+        lines.pop()
+    # Also strip leading fence-only lines (defensive)
+    while lines and lines[0].strip() == "```":
+        lines.pop(0)
+    # And strip leading ```lang lines without paired closer
+    if lines and lines[0].startswith("```"):
+        lines.pop(0)
+    return "\n".join(lines).rstrip()
+
+
 def _validate_lint_command(lint_cmd: str) -> list[str]:
     """Per Ares review (msg 4563): guard shell injection by enforcing
     that lint_cmd starts with an allowlisted linter binary. Returns
@@ -360,7 +399,7 @@ def lane_lint_fix(ticket: dict, model: str) -> dict:
         contents=original[:4000],
     )
     response = ollama_generate(model, prompt)
-    fixed = response.strip()
+    fixed = _strip_markdown_fences(response.strip())
 
     # Write proposed fix to a tmp file for diff
     tmp_dir = DEDUP_DIR / "fixes"
@@ -434,10 +473,16 @@ def post_worker_receipt(ticket: dict, *, lane: str, prompt_class: str,
     # Best-effort agent-bus posts
     try:
         import importlib.util
-        bus_server_path = (Path(__file__).resolve().parents[2]
-                           / "services" / "agent-bus" / "server.py")
+        bus_dir = (Path(__file__).resolve().parents[2]
+                   / "services" / "agent-bus")
+        bus_server_path = bus_dir / "server.py"
         if not bus_server_path.is_file():
             return
+        # Per Ares review item #6: ensure bus_dir is on sys.path BEFORE
+        # importing `db` so the dynamic spec-load can resolve sibling
+        # modules. Was: ModuleNotFoundError: No module named 'db' at runtime.
+        if str(bus_dir) not in sys.path:
+            sys.path.insert(0, str(bus_dir))
         spec = importlib.util.spec_from_file_location(
             "agent_bus_server", bus_server_path)
         mod = importlib.util.module_from_spec(spec)
