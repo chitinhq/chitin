@@ -27,25 +27,55 @@ Heartbeat + 5 proof tests = "the swarm proves itself alive every N seconds, and 
 
 Each agent (red, Ares, Clawta, Icarus) calls `swarm/bin/heartbeat-emit <agent_id>` periodically (60s interval) to record its liveness.
 
-Heartbeat record fields:
-- `agent` (e.g. "red", "ares", "clawta", "icarus")
-- `ts` (unix epoch, UTC)
-- `hostname` (machine identifier)
-- `pid` (current process)
-- `last_event` (optional short string — e.g. "swarm-invoker tick", "dispatch.ic-005", "manual")
+**Storage v1 (LOCKED per Ares msg 4769 + Clawta msg 4778 blocker #1):**
+Per-agent JSON file at `~/.chitin/heartbeat/<agent>.json`, atomic write via `os.replace()`. Matches the chitin/argus precedent (argus uses `~/.argus/heartbeat.json` with identical pattern). DB-table option deferred to follow-up if v1 proves insufficient.
 
-Storage options (Clawta to pick; see §Open questions):
-- (A) `~/.chitin/heartbeat/<agent>.json` (file per agent, atomic write)
-- (B) New `heartbeat` table in `~/.chitin/agent-bus/bus.db`
+Heartbeat record format (aligned with argus shape per Ares):
+
+```json
+{
+  "agent": "ares",
+  "ts": 1779141647,
+  "pid": 393329,
+  "hostname": "chimera-ant",
+  "tick_interval_s": 60,
+  "status": "idle",
+  "last_event": "swarm-invoker tick"
+}
+```
+
+Fields:
+- `agent` (string): agent id ("red", "ares", "clawta", "icarus")
+- `ts` (int): unix epoch UTC of this emit
+- `pid` (int): current process id
+- `hostname` (string): machine identifier
+- `tick_interval_s` (int): emit cadence in seconds — heartbeat-check uses this to compute stale threshold without hardcoding
+- `status` (string): `idle` | `dispatching` | `blocked` | `down` — gives heartbeat-check more signal than just timestamp presence
+- `last_event` (string, optional): short identifier of the last work unit, e.g. "swarm-invoker tick", "dispatch.ic-005", "manual"
 
 ### 2. Stale detection + escalation
 
 `swarm/bin/heartbeat-check` runs every 60s via hermes cron. For each registered agent:
-- Read latest heartbeat ts
-- If `now - ts > STALE_THRESHOLD_SECONDS` (default 180s = 3 × 60s tick interval per Clawta msg 4567):
+- Read latest heartbeat from `~/.chitin/heartbeat/<agent>.json`
+- Compute stale threshold per record's own `tick_interval_s`:
+
+  ```
+  threshold_s = (3 * tick_interval_s) + JITTER_S
+  stale = (now - ts) > threshold_s
+  ```
+
+  - `JITTER_S` default = **30s** (configurable via env `HEARTBEAT_JITTER_S`)
+  - At default 60s tick → threshold = 3×60 + 30 = **210s**
+  - Per Clawta msg 4778 blocker #3 + Ares msg 4770: wall-clock with jitter survives cron scheduler drift
+
+- If stale:
   - **First escalation:** post visible message to `#swarm` thread 9 + PushNotification operator
-  - **Rate-limit:** suppress further "stale" alerts for that agent for 1 hour OR until agent recovers (heartbeat refreshed)
-  - **Recovery:** when agent emits a fresh heartbeat after being stale, post visible "agent X recovered" message
+  - **Rate-limit window:** suppress further "stale" alerts for that `(agent, stale_state)` tuple for **`HEARTBEAT_STALE_TTL_S` seconds** (default **900s = 15min** per Clawta msg 4771; configurable via env). Visible in `heartbeat-status` output so operator can see the window
+  - **State-transition exceptions** (escalate again even mid-rate-limit window):
+    - Recovery: agent goes stale → not-stale → stale again
+    - Reason change: lock reason differs
+    - Stale duration crosses next-tier threshold (15min, 30min, 1hr)
+  - **Recovery:** when agent emits a fresh heartbeat after being stale, post ONE visible "agent X recovered" message + reset the rate-limit window
 
 ### 3. Self-salvage rule (formalized)
 
@@ -53,25 +83,50 @@ After any agent's dispatch hits a deny/lock/non-zero in a MUTATING tool path:
 - Stop immediately. Do not retry alternate command shapes.
 - Emit WORKER_RECEIPT (or equivalent) with `block_reason=self_salvage_denied`
 - Escalate to operator (not Clawta — this is a system-level issue)
-- Allowed AFTER stop: NON-mutating diagnosis (`grep`, `find`, `cat`, `git log/diff`, `systemctl status`, `ollama ps`) to add context to the receipt
+- Allowed AFTER stop: NON-mutating diagnosis to add context to the receipt
 
-Forbidden:
-- Reset locks (gov.db direct UPDATE)
-- Bypass governance
-- Mutate gov.db (any UPDATE/INSERT/DELETE)
-- Retry alternate command shapes (e.g. if `rm -rf` denied, do NOT try `find -delete`)
+**Non-mutating allowlist (Clawta msg 4778 blocker #5: `env` REMOVED — leaks secrets):**
 
-### 4. The 5 proof tests
+- File reads/search: `cat`, `head`, `tail`, `less`, `wc`, `grep`, `rg`, `find`, `ls`, `stat`, `file`, `jq`
+- Process/status reads: `ps`, `pgrep`, `systemctl status`, `journalctl` (read-only flags)
+- Git reads: `git status`, `git log`, `git diff`, `git show`
+- Service status reads: `openclaw status`, `hermes cron list`, `gh pr view`, `gh run list`
+- DB reads ONLY: `sqlite3 ... SELECT ...` and `pragma` introspection. NEVER `UPDATE/INSERT/DELETE/REPLACE`
+- Targeted env-var reads OK (e.g. `echo "$KANBAN_BOARD"`) — broad dumps like `env` or `printenv` are FORBIDDEN (leak secrets)
 
-Each proof test is a runnable script under `swarm/tests/proofs/`. CI runs them; operator can also invoke manually.
+**Forbidden — full stop on any of these:**
+- Service lifecycle: `systemctl restart/start/stop`, gateway restarts, `pkill`, `kill`
+- Lock resets / `gov.db` mutation of any kind
+- `git reset`, `git checkout`, `git clean`, `git stash`, `git apply` that changes working tree
+- Kanban mutations (status moves, assignments, comments) unless the ticket explicitly authorizes the tool path
+- Retries with alternate mutating command shapes after a deny (e.g. if `rm -rf` denied, do NOT try `find -delete`)
+- Broad environment dumps (`env`, `printenv` without explicit var name)
 
-| # | Test | Verifies | Pass condition |
+### 4. The 5 proof tests — SPLIT into CI-safe vs live-operator
+
+Per Clawta msg 4778 blocker #2: tests that touch live Discord/gateway/gov.db cannot run in CI without mutating production state, but invariant 6 says proof tests must not mutate production. Resolved by splitting:
+
+#### 4a. CI-safe sandbox proofs (`swarm/tests/proofs/ci/*.py`)
+
+Run on every PR in GitHub Actions. Use temp directories, copied gov.db, mock bus/gateway clients, isolated test boards. Zero production impact.
+
+| # | Test | Verifies | Sandbox |
 |---|---|---|---|
-| 1 | `test_haiku.py` | Wake-up loop works for all 3 frontier agents | 3 haikus posted to #swarm thread 9 within 5min of sw-006 going ready (re-uses existing Round-4 mechanism) |
-| 2 | `test_ghost.py` | Stale agent is detected | Kill heartbeat-emit for agent X, wait STALE_THRESHOLD + 30s, verify heartbeat-check posted stale escalation to #swarm |
-| 3 | `test_lock.py` | Locked agent is skipped, loud receipt | Inject lock into gov.db for agent X, dispatch a ticket to X, verify dispatch skipped + receipt emitted with block_reason=locked |
-| 4 | `test_dedup.py` | One ready ticket → exactly one prompt | File ticket, wait 2 cron ticks, verify only 1 invocation logged (composite key + ic-007 fix prevents re-fire) |
-| 5 | `test_misroute.py` | Posts don't leak to wrong channels; un-mentioned posts wake right agent | Post to #icarus, verify icarus woke + Ares/Clawta did NOT respond. Post to #clawta without @-mention, verify Clawta woke. Etc. |
+| 2-ci | `test_ghost_sandbox.py` | Stale detection logic + rate-limit | Mock heartbeat dir under `tempfile.TemporaryDirectory()`; write stale file; verify heartbeat-check.py emits escalation event |
+| 3-ci | `test_lock_sandbox.py` | Locked-agent skip + receipt format | Copy gov.db to tmp path, inject lock via SQL, run dispatcher against tmp DB, assert receipt emitted with block_reason=locked |
+| 4-ci | `test_dedup_sandbox.py` | Composite key + ic-007 terminal suppression | Mock invocation log + kanban_mutations_log; verify 2 ticks → 1 dispatch |
+
+#### 4b. Live operator-triggered proofs (`swarm/tests/proofs/live/*.py`)
+
+Operator-invoked only (NOT in CI). Posts real messages, queries real gateway logs, exercises real cron. Output is structured + observable so operator can ratify.
+
+| # | Test | Verifies | Live |
+|---|---|---|---|
+| 1-live | `test_haiku.py` | Wake-up loop end-to-end | Re-uses Round-4 mechanism: promote sw-006 ready, expect 3 haikus in #swarm thread 9 within 5min |
+| 2-live | `test_ghost_live.py` | Real heartbeat-check escalation reaches Discord | Pause one agent's heartbeat-emit cron, wait threshold + 30s, verify #swarm escalation arrived |
+| 5-live | `test_misroute_live.py` | Channel routing end-to-end | Post to #icarus → verify icarus woke + Ares/Clawta did NOT respond. Post to #clawta no @mention → Clawta woke. Post to #swarm → all 3 received. Asserts via gateway log inspection. |
+
+**Pass condition for ratification:** all CI-safe proofs green in PR + all live-operator proofs run by operator + signed off in #swarm before any agent gets "autonomous" status.
 
 ### 5. Operator CLI
 
@@ -89,7 +144,7 @@ Each proof test is a runnable script under `swarm/tests/proofs/`. CI runs them; 
 1. **Heartbeat is quiet.** No `#swarm` post on each emit. Storage is file or DB row, NOT chat message. Per Clawta msg 4567: "heartbeat ≠ spam."
 2. **Visible escalation only on state change.** Stale → loud. Recovered → loud. Routine "still alive" → silent. Per Clawta msg 4567 + Ares acknowledgement.
 3. **Self-salvage rule:** non-mutating tool calls (grep / find / cat / git status / systemctl status / ollama ps) OK for post-failure diagnosis. Mutating tools (rm / mv / git commit / sqlite UPDATE / curl POST / pkill / kill / systemctl start|stop|restart) are FORBIDDEN after deny/lock. Stop, receipt, escalate.
-4. **Rate-limit stale escalations.** Same agent stale = 1 visible escalation per hour. Recovery resets the rate-limit window.
+4. **Rate-limit stale escalations** (Clawta msg 4778 blocker #4). Default TTL = `HEARTBEAT_STALE_TTL_S = 900s (15min)`. Configurable via env. **Visible in `heartbeat-status` output** so operator can see active rate-limit windows. State-transition exceptions (lock reason change, threshold crossing 15/30/60min, recovery) bypass the window.
 5. **Proof tests are runnable both manually and in CI.** Each test must work as `python3 swarm/tests/proofs/test_<name>.py` AND as a pytest unit.
 6. **No proof test mutates production state.** Tests use temp boards / dispatched-by-test-only tickets / mock gov.db where mutation needed.
 7. **Heartbeat-check runs even if some agents missing.** Don't fail if an agent has never emitted; treat as "unknown" not "stale."
@@ -118,15 +173,18 @@ Each proof test is a runnable script under `swarm/tests/proofs/`. CI runs them; 
 
 ## Acceptance Criteria
 
-- [ ] All 4 agents (red, Ares, Clawta, Icarus) emit heartbeat every 60s
-- [ ] heartbeat-check cron runs every 60s; stale detection works at 180s threshold
-- [ ] Stale escalation posts ONE visible #swarm message + PushNotification; subsequent ticks silent
-- [ ] Recovery posts ONE visible message ("agent X recovered")
-- [ ] Self-salvage rule enforced in icarus-watcher (and any other future driver)
-- [ ] 5 proof tests all pass; haiku is the easiest, misroute requires gateway intake working (sw-010 fixed ✅)
-- [ ] heartbeat-status CLI prints clean operator-readable table
+- [ ] All 4 agents (red, Ares, Clawta, Icarus) emit heartbeat every 60s to `~/.chitin/heartbeat/<agent>.json`
+- [ ] heartbeat-check cron runs every 60s; stale detection uses `(3 * tick_interval_s + JITTER_S)` formula with 30s default jitter (= 210s at 60s tick)
+- [ ] Stale escalation posts ONE visible #swarm message + PushNotification within the rate-limit window
+- [ ] Rate-limit window default 15min via `HEARTBEAT_STALE_TTL_S` env, **visible in heartbeat-status output**
+- [ ] State-transition exceptions bypass rate limit: recovery, lock-reason change, threshold-crossing
+- [ ] Recovery posts ONE visible message ("agent X recovered") + resets rate-limit window
+- [ ] **Self-salvage rule enforced in TOUCHED drivers** (icarus-watcher updated as part of this PR) **AND documented as mandatory for future drivers via shared helper to be added in follow-up** (Clawta msg 4778 blocker #6)
+- [ ] CI-safe proofs (ghost-sandbox + lock-sandbox + dedup-sandbox) green on every PR
+- [ ] Live proofs (haiku + ghost-live + misroute-live) documented as operator-triggered + signed off in #swarm before any "autonomous" ratification
+- [ ] heartbeat-status CLI prints operator-readable table with agent / last-seen / status / rate-limit-window
 - [ ] Constitution §6: tracked source + idempotent installer for heartbeat-check cron
-- [ ] All 8 unit tests + 5 proof tests green
+- [ ] All unit tests + 3 CI-safe proof tests green; 3 live proof tests runnable
 
 ## Migration plan
 
@@ -136,13 +194,13 @@ Each proof test is a runnable script under `swarm/tests/proofs/`. CI runs them; 
 4. **Day 4:** Run for 24h baseline. Verify no false-positive stale escalations.
 5. **Week 2:** Ratify any agent as "autonomous" only after all 5 proof tests green + 7-day clean heartbeat.
 
-## Open questions for operator (or Ares/Clawta to answer)
+## Open questions — ALL RESOLVED by Ares (msgs 4769-4770) + Clawta (msgs 4771, 4778)
 
-1. **Storage:** heartbeat in `~/.chitin/heartbeat/<agent>.json` (file) or new `heartbeat` table in `bus.db`? Trade-off: file = simpler, no schema migration. DB = atomic-with-message-writes, single source of truth for both bus + heartbeat. **Red recommends file (A) — simpler, no schema work.**
-2. **Tick interval:** 60s or faster? Faster catches death sooner; slower reduces noise. **Red recommends 60s** matching swarm-invoker cadence.
-3. **Stale threshold:** 3 ticks (180s) or wall-clock (e.g. 5min)? **Red recommends 3-tick (180s)** per Clawta msg 4567 wording.
-4. **Rate-limit window:** 1h between stale escalations of same agent? Configurable? **Red recommends 1h flat.**
-5. **Self-salvage allowlist:** which tools count as "non-mutating"? Red proposes: `grep, find, cat, less, head, tail, git log/diff/status/show, systemctl status, ollama ps, ls, pwd, env, hostname`. Forbidden: anything that writes/transmits.
+1. ✅ **Storage:** `~/.chitin/heartbeat/<agent>.json` (file per agent, atomic write). DB-table deferred to follow-up if v1 insufficient.
+2. ✅ **Tick interval:** 60s matching swarm-invoker cadence.
+3. ✅ **Stale threshold:** `(3 * tick_interval_s) + JITTER_S` with 30s default jitter = 210s at 60s tick. Survives cron scheduler drift.
+4. ✅ **Rate-limit window:** 15min default via `HEARTBEAT_STALE_TTL_S` env. Configurable + visible in `heartbeat-status` output. State-transition exceptions bypass window.
+5. ✅ **Self-salvage allowlist:** explicit list in §3 above. `env` REMOVED per Clawta blocker #5 (leaks secrets). Targeted env-var reads OK.
 
 ## Constitution alignment
 
