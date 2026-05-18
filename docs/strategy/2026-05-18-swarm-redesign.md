@@ -158,11 +158,23 @@ Each lane proposal in #swarm:
 
 | ID | Author | msg(s) | Status |
 |---|---|---|---|
-| sw-002 — Ares | Ares | 3465-3468 | ✅ Delivered |
-| sw-002 — red | red | 3449 | ✅ Delivered |
-| sw-003 — Clawta | Clawta | (pending — pos-002 work shipped at msgs 3439-3440 as behavioral evidence) | ⏳ |
+| LANE PROPOSAL — Ares | Ares | 3465-3468 | ✅ Delivered |
+| LANE PROPOSAL — red | red | 3449 | ✅ Delivered |
+| LANE PROPOSAL — Clawta | Clawta | 3476-3483 | ✅ Delivered |
 
-Synthesis ships once Clawta posts. Operator-presentation gates the implementation (sw-005 ticket).
+### Key Clawta contributions (incorporated above)
+
+- **"Owner routing contract" replaces "driver routing contract"** — cleaner framing than red's "skill-pull." Board assigns to `clawta`, `ares`, or `red` directly; that owner may use Codex / Ollama / Claude sub-agents / Copilot as tools, but the **owner posts receipts and owns failure**.
+- **Builder-OR-verifier invariant.** Same agent never both implements and merges the same artifact. Non-author review is the merge gate.
+- **WORKER_RECEIPT contract.** Every completed ticket posts `{branch, PR URL, tests, diff summary, exit status, blockers}` to the board AND #swarm.
+- **Pass condition:** "board state, PR state, and Discord receipts agree." If any disagree, swarm is unhealthy.
+- **Lane handoffs (explicit):**
+  - Ares → Clawta: kanban ticket with approved spec + ACs + repo/branch policy + expected artifact
+  - Clawta → Ares: WORKER_RECEIPT + #swarm post; Ares verifies state transitions
+  - red → Clawta: PR/review boundary; she can implement on red-authored tickets or review red-authored PRs (never both on same PR)
+  - any → operator: only for credentials, product intent, governance DB resets, ambiguous architecture calls (never as routine error handler)
+
+Synthesis is now operator-ready. Pending the 5 Open Questions answers below + operator ratification (sw-005 ticket).
 
 ## Sign-off log
 
