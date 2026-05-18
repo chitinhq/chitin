@@ -49,6 +49,9 @@ OR a commit-message line `no-test-change-justified: <reason>`.
   the message escape hatch is for legitimate refactors that move
   code without behavior change. The escape hatch must be a typed
   reason so the audit log can review them.
+- **Audit**: operator can run `git log --grep='no-test-change-
+  justified'` per sprint to review every use of the escape clause
+  + the typed reason. (Per Ares observation, accepted 2026-05-17.)
 - **Bypass**: `SWARM_SKIP_TEST_CHECK=1` for the operator's manual
   use (mirrors `SWARM_SKIP_SCOPE_CHECK=1`).
 
@@ -94,6 +97,14 @@ read the prose. The exception-justification is a code-review
 contract, not a machine check — chitin enforces shape, reviewers
 enforce intent.
 
+**Enforcement-surface boundary** (load-bearing — do not "fix" the
+hook into trying to semantically judge justifications): chitin's
+L2 hook is a structural check on markdown. The constitution §1.2
+requires the prose. A future contributor who finds the hook
+"missing" justification validation should NOT add it — the right
+defense is review, not regex. Per Ares + Clawta agreed vote
+2026-05-17.
+
 #### Test-type guidance by repo + spec kind
 
 | Spec kind | Primary test layer | Example |
@@ -120,11 +131,25 @@ worker (or operator) invokes `gh pr create`, the gate inspects the
 diff between the PR branch and its base. The PR is allowed iff
 either:
 
-1. The diff contains a file under `.specify/specs/NNN-*/spec.md`, OR
+1. The diff **adds, modifies, or removes** a file under
+   `.specify/specs/NNN-*/spec.md`. (Removal counts because the file
+   still appears in the diff — rolling back a feature removes both
+   the spec and the code in the same PR; case 1 passes cleanly.)
 2. The PR body (passed to the gate via stdin or env) contains a
    line matching `Spec: NNN-<slug>` referencing an existing spec on
-   `origin/<default_branch>`.
+   `origin/<default_branch>`. **Canonical form**:
+   `Spec: 005-portal-auth-wiring, 007-portal-pipeline-view` (one
+   line, comma-separated for multi-spec PRs). Multiple `Spec:`
+   lines are tolerated for compat but the canonical single-line
+   form is recommended.
 
+- **L3 fires at `gh pr create` only — not `gh pr edit`.** Once-at-
+  create is the boundary. Bad-faith body edits after create are
+  cosmetic vandalism, not a governance escape: the spec was
+  validated at create time, the PR was reviewed against it, the CI
+  bound to the spec's test contract already ran. Adding L3 to
+  `gh pr edit` adds friction for typo fixes for zero security gain.
+  (Per Ares + Clawta agreed vote 2026-05-17.)
 - **Bypass**: `--allow-no-spec` flag is NOT supported in MVP. The
   only legitimate "spec-less" PR is one that adds a spec (case 1).
   Discussion-only / docs-only PRs use case 2 by referencing a
@@ -183,6 +208,19 @@ base_freshness_regression.py`.
   worker (zero round-trip cost). L3 runs at PR-create, which is the
   latest moment the worker can still self-correct. None of the
   layers wait for CI.
+
+## Amendment debt (lands BEFORE this spec's L1/L2/L3 are installed)
+
+Existing bench-devs-platform specs 005-010 do not yet carry
+`## Test coverage` sections. Per the Clawta vote 2026-05-17, those
+specs are amendment debt: Clawta will not dispatch or promote
+tickets bound to those specs under the new rule until the sections
+are added. Operator can ratify a one-PR sweep that amends 005-010
+in a single commit, OR amend each as its ticket comes up. Either
+way, the L1/L2/L3 hooks should NOT be installed until at least the
+ready-to-dispatch subset (005, 007, 008, 009, 010 — portal MVP
+lane) is amended. Otherwise next-dispatch fails the L2 hook on
+spec edits, halting the swarm.
 
 ## Out of scope
 
