@@ -58,17 +58,51 @@ When any file under `.specify/specs/**/spec.md` is staged, the hook
 requires the new contents to contain a `## Test coverage` section
 with at least one table row binding an AC to a named test case.
 
-The section is **test-runtime-agnostic** — the column reads "Test
-case" not "Playwright case." A spec for a UI flow binds to
-playwright cases (e.g. spec 019's C1-C5); a spec for a backend
-route binds to integration tests (e.g. `backend/tests/integration/api/
-shortlist.test.js::it("returns empty list for nonexistent request")`);
-a spec for a Go subsystem binds to `go test` functions (e.g.
-`internal/health/gather_test.go::TestGather_WindowedCount`); a spec
-for a chitin lobster change binds to static-analysis regression
-tests (e.g. `swarm/tests/test_dispatch_base_freshness_regression.py::
-test_fetch_runs_before_worktree_setup`). Hook validates the section
-exists + has rows; it does NOT enforce a specific test framework.
+#### E2E is the default; exceptions must justify
+
+Spec-driven development means the spec describes a **behavior
+contract** — a boundary the system promises to honor. The only test
+that actually crosses that boundary is end-to-end against the real
+stack. Day-1 of readybench MVP made this concrete: every one of
+four shipped-and-broken sign-in iterations passed its unit tests;
+all four failed at a layer the unit tests couldn't see (CSS not
+compiled, wrong API prefix, missing CORS, orphan process).
+
+So the rule:
+
+- **Default (the 90% case): bind ACs to e2e tests.** UI flow →
+  playwright. HTTP API → integration test against a real (ephemeral
+  docker) DB. CLI tool → black-box subprocess test.
+
+- **Exception: internal-invariant specs may bind to non-e2e tests,
+  but the spec MUST name the surface + justify the layer.** Add a
+  one-paragraph subsection under `## Test coverage` titled
+  `### Why <layer> not e2e for this spec` and explain. Acceptable
+  reasons:
+  - the artifact IS the test surface (e.g. spec 018 is about the
+    lobster text; the lobster IS what's tested; a "running" lobster
+    spawning a worker is not a more authentic surface than reading
+    the file);
+  - the behavior has no observable boundary (e.g. a pure-function
+    refactor with no caller-facing change);
+  - the e2e cost is prohibitive AND a lower-layer test plus an
+    integration smoke is collectively sufficient (rare; must be
+    operator-ratified).
+
+The hook validates the section exists with rows; it does NOT
+read the prose. The exception-justification is a code-review
+contract, not a machine check — chitin enforces shape, reviewers
+enforce intent.
+
+#### Test-type guidance by repo + spec kind
+
+| Spec kind | Primary test layer | Example |
+|-----------|--------------------|---------|
+| UI flow / user journey | Playwright e2e | spec 019 sign-in C1-C5 |
+| HTTP API endpoint | Integration test against ephemeral docker DB | `backend/tests/integration/api/shortlist.test.js` |
+| Library / SDK contract | Black-box integration test against the published surface | TBD |
+| Background job / cron | Subprocess test that triggers the job + asserts side-effects | TBD |
+| **Internal-invariant** (exception) | Static-analysis / unit / regression — with justification subsection | spec 018 base-freshness, spec 019 C1 PostCSS check |
 
 - Also requires every staged test file under recognized test
   directories (`**/__tests__/**`, `**/tests/**`, `**/e2e/**`,
@@ -78,20 +112,6 @@ exists + has rows; it does NOT enforce a specific test framework.
 - **Why both halves**: spec without coverage = unverifiable; test
   without spec = unattributed.
 
-#### Test-type guidance by repo (informational, not enforced)
-
-| Repo | Primary test layer for §1.2 binding |
-|------|--------------------------------------|
-| `bench-devs-platform/apps/portal`, future UI repos | Playwright e2e |
-| `bench-devs-platform/frontend` | Playwright e2e + vitest unit |
-| `bench-devs-platform/backend`, other Node API | Jest/vitest integration (real DB) |
-| `chitin` (lobster + python) | Static-analysis regression tests + unittest |
-| `chitin/go/**`, future Go subsystems | `go test` (unit + integration) |
-| `chitin/swarm/**` python | unittest + invariant assertions |
-
-The L2 hook accepts any of these. The spec author picks the layer
-that proves the spec — that is the author's contract with the
-reader, not a chitin-imposed framework choice.
 
 ### Layer 3 — `no-pr-without-spec` (chitin gate action `before-gh-pr-create`)
 
@@ -182,14 +202,17 @@ Add to `.specify/constitution.md` after §1.1:
 > **§1.2 Spec→test contract.** Every spec under
 > `.specify/specs/NNN-<slug>/spec.md` MUST contain a `## Test
 > coverage` section binding each acceptance criterion to a named
-> test case. The test layer is **author's choice per repo +
-> subsystem** — playwright for UI flows, integration tests for
-> backend APIs, `go test` for Go subsystems, unittest/regression
-> tests for chitin python+lobster, etc. Chitin enforces only the
-> shape (section exists, rows bind ACs to named cases). Every test
-> file MUST reference its spec via `// spec: NNN-<slug>`
-> (or `# spec:` / `/* spec:`) in the first 20 lines. Both halves
-> enforced at commit time by spec 020.
+> test case. **The default test layer is e2e** — playwright for UI
+> flows, real-stack integration tests for HTTP APIs / CLIs / jobs.
+> A non-e2e binding (unit, static-analysis, regression) is allowed
+> ONLY when the spec adds a `### Why <layer> not e2e for this spec`
+> subsection justifying the exception (the artifact IS the surface,
+> the behavior has no observable boundary, or the e2e cost is
+> prohibitive with operator ratification). Every test file MUST
+> reference its spec via `// spec: NNN-<slug>` (or `# spec:` /
+> `/* spec:`) in the first 20 lines. Chitin enforces shape at
+> commit time (spec 020); reviewers enforce that the exception
+> justification is honest.
 
 ## Why this spec exists (the retro)
 
