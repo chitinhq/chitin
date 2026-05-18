@@ -1,0 +1,237 @@
+"""swarm-kanban-mcp — MCP stdio server exposing kanban state to Claude Code sessions.
+
+Per docs/strategy/2026-05-18-swarm-redesign.md §Week 1: red's lane work.
+Lets a Claude Code session interact with any kanban board (chitin /
+readybench / personal-os / swarm) without subprocess-calling
+`hermes kanban` over and over.
+
+JSON-RPC 2.0 over stdio, zero external deps (matches the
+agent-bus/server.py pattern).
+
+Tools exposed:
+  - list_boards()
+  - list_tickets(board, status?)
+  - get_ticket(board, ticket_id)
+  - claim_ticket(board, ticket_id, owner)
+  - update_status(board, ticket_id, new_status, author, comment?)
+  - create_ticket(board, title, body, assignee, priority?, triage?)
+  - post_swarm_message(body) — convenience wrapper that posts to #swarm thread 9
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
+BUS_DB = Path.home() / ".chitin" / "agent-bus" / "bus.db"
+SWARM_THREAD_ID = 9
+
+
+def _board_db(board: str) -> Path:
+    db = KANBAN_ROOT / board / "kanban.db"
+    if not db.exists():
+        raise ValueError(f"unknown board: {board}")
+    return db
+
+
+def list_boards() -> dict:
+    boards = sorted(p.name for p in KANBAN_ROOT.iterdir()
+                    if p.is_dir() and (p / "kanban.db").exists())
+    return {"boards": boards}
+
+
+def list_tickets(board: str, status: str | None = None) -> dict:
+    db = _board_db(board)
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        query = "SELECT id, title, status, assignee, priority FROM tasks"
+        params: list = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY priority, id"
+        rows = conn.execute(query, params).fetchall()
+    return {"tickets": [dict(r) for r in rows]}
+
+
+def get_ticket(board: str, ticket_id: str) -> dict:
+    db = _board_db(board)
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"ticket not found on {board}: {ticket_id}")
+        comments = conn.execute(
+            "SELECT id, author, body, created_at FROM task_comments "
+            "WHERE task_id = ? ORDER BY id",
+            (ticket_id,),
+        ).fetchall()
+    return {"ticket": dict(row), "comments": [dict(c) for c in comments]}
+
+
+def claim_ticket(board: str, ticket_id: str, owner: str) -> dict:
+    """Assigns + transitions ticket. Uses kanban-flow CLI for the audit comment."""
+    return _kanban_flow(board, "start", ticket_id, "--author", owner)
+
+
+def update_status(board: str, ticket_id: str, new_status: str,
+                  author: str, comment: str | None = None) -> dict:
+    """Map common statuses to kanban-flow subcommands."""
+    cmd_map = {"in_progress": "start", "blocked": "block", "ready": "unblock",
+               "done": "done"}
+    sub = cmd_map.get(new_status)
+    if not sub:
+        raise ValueError(f"unsupported status transition: {new_status}")
+    args = [sub, ticket_id, "--author", author]
+    if comment:
+        args.extend(["--result", comment] if sub == "done" else ["--reason", comment])
+    return _kanban_flow(board, *args)
+
+
+def create_ticket(board: str, title: str, body: str, assignee: str,
+                  priority: int = 1, triage: bool = True) -> dict:
+    """Wrap `hermes kanban create`."""
+    cmd = [
+        "hermes", "kanban", "--board", board, "create", title,
+        "--body", body, "--assignee", assignee, "--priority", str(priority),
+    ]
+    if triage:
+        cmd.append("--triage")
+    return _run(cmd)
+
+
+def post_swarm_message(body: str, author: str = "red",
+                       audience: str | None = None,
+                       ack_required: bool = False) -> dict:
+    """Convenience wrapper that posts to #swarm thread 9 via agent-bus."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent-bus"))
+    from db import connect  # type: ignore
+    from server import bus_reply  # type: ignore
+    conn = connect()
+    out = bus_reply(conn, author=author, thread_id=SWARM_THREAD_ID,
+                    body=body, audience=audience, ack_required=ack_required)
+    conn.close()
+    return out
+
+
+def _kanban_flow(board: str, *args: str) -> dict:
+    cmd = ["env", f"KANBAN_BOARD={board}", "kanban-flow", *args]
+    return _run(cmd)
+
+
+def _run(cmd: list[str]) -> dict:
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return {"returncode": r.returncode, "stdout": r.stdout.strip(),
+            "stderr": r.stderr.strip(), "cmd": cmd}
+
+
+TOOLS = {
+    "list_boards": list_boards,
+    "list_tickets": list_tickets,
+    "get_ticket": get_ticket,
+    "claim_ticket": claim_ticket,
+    "update_status": update_status,
+    "create_ticket": create_ticket,
+    "post_swarm_message": post_swarm_message,
+}
+
+TOOL_SCHEMAS = [
+    {"name": "list_boards", "description": "List all kanban boards.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "list_tickets", "description": "List tickets on a board, optionally filtered by status.",
+     "inputSchema": {"type": "object", "required": ["board"],
+                     "properties": {"board": {"type": "string"},
+                                    "status": {"type": "string"}}}},
+    {"name": "get_ticket", "description": "Full detail for a ticket including comments.",
+     "inputSchema": {"type": "object", "required": ["board", "ticket_id"],
+                     "properties": {"board": {"type": "string"},
+                                    "ticket_id": {"type": "string"}}}},
+    {"name": "claim_ticket", "description": "Claim a ticket (transitions to in_progress).",
+     "inputSchema": {"type": "object", "required": ["board", "ticket_id", "owner"],
+                     "properties": {"board": {"type": "string"},
+                                    "ticket_id": {"type": "string"},
+                                    "owner": {"type": "string"}}}},
+    {"name": "update_status", "description": "Transition ticket status.",
+     "inputSchema": {"type": "object",
+                     "required": ["board", "ticket_id", "new_status", "author"],
+                     "properties": {"board": {"type": "string"},
+                                    "ticket_id": {"type": "string"},
+                                    "new_status": {"type": "string",
+                                                   "enum": ["in_progress", "blocked", "ready", "done"]},
+                                    "author": {"type": "string"},
+                                    "comment": {"type": "string"}}}},
+    {"name": "create_ticket", "description": "File a new ticket on a board.",
+     "inputSchema": {"type": "object",
+                     "required": ["board", "title", "body", "assignee"],
+                     "properties": {"board": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "assignee": {"type": "string"},
+                                    "priority": {"type": "integer", "default": 1},
+                                    "triage": {"type": "boolean", "default": True}}}},
+    {"name": "post_swarm_message",
+     "description": "Post a message to #swarm thread 9 (the 3-agent coordination channel).",
+     "inputSchema": {"type": "object", "required": ["body"],
+                     "properties": {"body": {"type": "string"},
+                                    "author": {"type": "string", "default": "red"},
+                                    "audience": {"type": "string"},
+                                    "ack_required": {"type": "boolean", "default": False}}}},
+]
+
+
+def handle_request(req: dict) -> dict | None:
+    method = req.get("method")
+    if method == "initialize":
+        return {"jsonrpc": "2.0", "id": req.get("id"),
+                "result": {"protocolVersion": "2024-11-05",
+                           "capabilities": {"tools": {}},
+                           "serverInfo": {"name": "swarm-kanban-mcp",
+                                          "version": "0.1.0"}}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req.get("id"),
+                "result": {"tools": TOOL_SCHEMAS}}
+    if method == "tools/call":
+        params = req.get("params") or {}
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        if name not in TOOLS:
+            return {"jsonrpc": "2.0", "id": req.get("id"),
+                    "error": {"code": -32601, "message": f"unknown tool: {name}"}}
+        try:
+            result = TOOLS[name](**args)
+            return {"jsonrpc": "2.0", "id": req.get("id"),
+                    "result": {"content": [{"type": "text",
+                                            "text": json.dumps(result, default=str)}]}}
+        except Exception as exc:
+            return {"jsonrpc": "2.0", "id": req.get("id"),
+                    "error": {"code": -32000,
+                              "message": f"{type(exc).__name__}: {exc}"}}
+    if method in {"notifications/initialized", "notifications/cancelled"}:
+        return None  # one-way
+    return {"jsonrpc": "2.0", "id": req.get("id"),
+            "error": {"code": -32601, "message": f"unknown method: {method}"}}
+
+
+def serve_stdio() -> None:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError as exc:
+            sys.stderr.write(f"[swarm-kanban-mcp] bad json: {exc}\n")
+            continue
+        resp = handle_request(req)
+        if resp is not None:
+            print(json.dumps(resp), flush=True)
+
+
+if __name__ == "__main__":
+    serve_stdio()
