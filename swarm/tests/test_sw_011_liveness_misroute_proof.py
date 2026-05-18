@@ -27,16 +27,22 @@ from pathlib import Path
 
 import pytest
 
-# ── hermes_cli: imported at test level via importorskip ──────────────
-# Tests that exercise kanban_db functions directly mark themselves
-# with @requires_kanban_db and skip cleanly when the module is absent.
-# All other tests use the self-contained KANBAN_SCHEMA_FALLBACK below
-# and never touch hermes_cli.
+# ── hermes_cli: imported ONLY inside individual test methods ────────
+# No module-level import of hermes_cli. Tests that need kanban_db call
+# kb = _kb() inside the method body. The skipif decorator is evaluated
+# per-test at collection time and uses safe importlib detection.
 
 requires_kanban_db = pytest.mark.skipif(
-    not __import__("importlib").util.find_spec("hermes_cli.kanban_db"),
-    reason="hermes_cli.kanban_db not available"
+    not __import__("importlib").util.find_spec("hermes_cli"),
+    reason="hermes_cli not available"
 )
+
+
+def _kb():
+    """Lazy import of hermes_cli.kanban_db — call only inside test methods
+    that are already guarded by @requires_kanban_db."""
+    import hermes_cli.kanban_db as kb
+    return kb
 
 # ── Self-contained fallback schema ────────────────────────────────
 # This is the COMPLETE schema required by every exercised function
@@ -140,13 +146,23 @@ CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
-# Prefer canonical schema when hermes_cli is available, but never
-# depend on it for fixture correctness — the fallback must work.
-try:
-    import hermes_cli.kanban_db as _kb
-    KANBAN_SCHEMA = _kb.SCHEMA_SQL  # exact match to production
-except ImportError:
-    KANBAN_SCHEMA = KANBAN_SCHEMA_FALLBACK
+# Prefer canonical schema when hermes_cli is available, but never depend on
+# it for fixture correctness. Lazy import — no module-level hermes_cli ref.
+KANBAN_SCHEMA = KANBAN_SCHEMA_FALLBACK  # always resolves; upgraded lazily
+
+
+def _maybe_upgrade_schema():
+    """Try to upgrade KANBAN_SCHEMA to the canonical version from hermes_cli.
+    Called once at test collection time; never raises ImportError."""
+    global KANBAN_SCHEMA
+    try:
+        import hermes_cli.kanban_db as _mod
+        KANBAN_SCHEMA = _mod.SCHEMA_SQL
+    except ImportError:
+        pass  # fallback is self-contained and correct
+
+
+_maybe_upgrade_schema()
 
 
 AGENT_BUS_SCHEMA = """
@@ -313,7 +329,7 @@ class TestGhostHeartbeat:
         """release_stale_claims reclaims tasks with expired claims whose
         worker PID is dead. We use claim_lock from a foreign host prefix
         so _pid_alive returns False for the stale PID."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
 
         # Create a running task, claim it, then expire the claim
@@ -337,7 +353,7 @@ class TestGhostHeartbeat:
         """heartbeat_worker() updates last_heartbeat_at on a running task
         and creates a 'heartbeat' event. Routine heartbeats touch the
         DB column, which is the quiet machine-readable storage format."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
 
         tid = kb.create_task(conn, title="heartbeat-test", assignee="codex")
@@ -360,7 +376,7 @@ class TestGhostHeartbeat:
         """Routine heartbeats store data in DB columns (task.last_heartbeat_at)
         and task_events with kind='heartbeat'. The column value proves quiet
         storage; the event is a machine-readable receipt, not chat spam."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
 
         tid = kb.create_task(conn, title="quiet-heartbeat", assignee="codex")
@@ -380,7 +396,7 @@ class TestGhostHeartbeat:
     def test_stale_above_threshold_triggers_escalation(self, tmp_path):
         """After 3 consecutive stale ticks, the task should be escalated
         (blocked), not retried forever."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
 
         tid = kb.create_task(conn, title="stale-3x", assignee="codex")
@@ -504,7 +520,7 @@ class TestLockGovernance:
     @requires_kanban_db
     def test_lock_receipt_emitted(self, tmp_path):
         """Lock denial must create a documented event (not silently swallowed)."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         now = int(time.time())
         tid = kb.create_task(conn, title="lock-receipt-test", assignee="codex")
@@ -559,7 +575,7 @@ class TestDedupDispatch:
     @requires_kanban_db
     def test_idempotency_key_prevents_duplicate_task(self, tmp_path):
         """Same idempotency_key → same task ID (no duplicate dispatch)."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid1 = kb.create_task(
             conn, title="Dedup test task", assignee="codex",
@@ -581,7 +597,7 @@ class TestDedupDispatch:
     def test_claim_task_is_atomic_only_one_claimant(self, tmp_path):
         """claim_task atomically transitions ready→running;
         second claim returns None."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid = kb.create_task(conn, title="Contended task", assignee="codex")
 
@@ -598,7 +614,7 @@ class TestDedupDispatch:
     def test_dispatch_once_dedup_at_claim_level(self, tmp_path):
         """Once claimed, a second claim returns None. Dedup composes:
         idempotency_key + claim_task → at most one prompt per ticket."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid = kb.create_task(conn, title="Dedup-at-claim", assignee="codex")
 
@@ -623,7 +639,7 @@ class TestDedupDispatch:
     @requires_kanban_db
     def test_idempotency_key_different_means_different_tasks(self, tmp_path):
         """Different idempotency keys create distinct tasks."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid1 = kb.create_task(
             conn, title="Task A", assignee="codex",
@@ -781,7 +797,7 @@ class TestSelfSalvageBoundary:
     def test_deny_path_stops_with_receipt(self, tmp_path):
         """On deny/lock, the agent stops, emits receipt, escalates.
         No retry with alternate command shapes."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         now = int(time.time())
         tid = kb.create_task(conn, title="salvage-test", assignee="codex")
@@ -821,7 +837,7 @@ class TestHeartbeatQuietEscalation:
         """heartbeat_worker updates last_heartbeat_at AND creates a
         heartbeat event. The column update is the quiet machine-readable
         signal; the event is a receipt, not chat spam."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid = kb.create_task(conn, title="hb-quiet-test", assignee="codex")
         kb.claim_task(conn, tid, claimer="quiet-worker:1")
@@ -838,7 +854,7 @@ class TestHeartbeatQuietEscalation:
     @requires_kanban_db
     def test_state_change_creates_event(self, tmp_path):
         """Non-routine state changes (claim) must create task_events."""
-        import hermes_cli.kanban_db as kb
+        kb = _kb()
         conn = _fresh_db(tmp_path)
         tid = kb.create_task(conn, title="event-test", assignee="codex")
 
