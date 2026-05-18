@@ -130,34 +130,56 @@ for j in jobs:
             exit 0
         fi
 
+        # Per Clawta sw-009 round 2: hermes is REQUIRED. There is no
+        # system-crontab fallback because system crontab only runs the
+        # script — it does NOT inject stdout into the hermes agent
+        # prompt, so the agent never gets the invocation. A silent
+        # no-op install is worse than a loud install failure.
+        # (Loud failure > silent recovery — swarm redesign bright line 1.)
+        if ! command -v hermes &>/dev/null; then
+            cat >&2 <<HERMES_MISSING
+FATAL: hermes CLI not on PATH.
+
+The swarm-invoker requires hermes cron to inject the script's stdout
+into the agent's prompt context. A system-crontab fallback would
+silently no-op (script runs but agent is never invoked), so this
+installer hard-fails instead.
+
+Fix: install hermes-agent (see chitin docs) then re-run:
+  $0
+HERMES_MISSING
+            exit 2
+        fi
+
         generate_wrapper
 
         # Key: this is --script WITHOUT --no-agent.
         # The invoker's stdout (ticket prompts) gets injected into the
         # agent's context. Empty stdout = no invocation = silent.
-        if command -v hermes &>/dev/null; then
-            echo "[install] registering hermes cron job: $JOB_NAME"
-            if hermes cron create \
-                --name "$JOB_NAME" \
-                --script "$WRAPPER_FILENAME" \
-                --deliver discord:#swarm \
-                "every 1m" \
-                "swarm-invoker: check swarm board for actionable tickets assigned to hermes and action them" \
-                ; then
-                echo "[install] hermes cron job registered: $JOB_NAME (every 1m, board=$BOARD)"
-                echo "[install] mode: agent-invocation (script stdout → agent prompt)"
-                echo "[install] verify with: $0 --verify"
-                exit 0
-            else
-                echo "[install] hermes cron create failed, falling back to system crontab"
-            fi
-        fi
+        echo "[install] registering hermes cron job: $JOB_NAME"
+        if hermes cron create \
+            --name "$JOB_NAME" \
+            --script "$WRAPPER_FILENAME" \
+            --deliver discord:#swarm \
+            "every 1m" \
+            "swarm-invoker: check swarm board for actionable tickets assigned to hermes and action them" \
+            ; then
+            echo "[install] hermes cron job registered: $JOB_NAME (every 1m, board=$BOARD)"
+            echo "[install] mode: agent-invocation (script stdout → agent prompt)"
+            echo "[install] verify with: $0 --verify"
+            exit 0
+        else
+            cat >&2 <<HERMES_CREATE_FAILED
+FATAL: hermes cron create failed for $JOB_NAME.
 
-        # Fallback: system crontab
-        cron_entry="* * * * * KANBAN_BOARD=$BOARD $INVOKER --board $BOARD >> $HOME/.openclaw/logs/swarm-invoker-cron.log 2>&1 $MARKER"
-        (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
-        echo "[install] system crontab entry added (every 1 min, board=$BOARD)"
-        exit 0
+Install aborted. The wrapper was generated at $WRAPPER but no cron
+entry was added. Inspect the hermes-cron error above, fix the
+underlying issue, then re-run this installer.
+HERMES_CREATE_FAILED
+            # Clean up the orphaned wrapper to leave a clean state.
+            rm -f "$WRAPPER" 2>/dev/null || true
+            exit 3
+        fi
         ;;
 
     *)

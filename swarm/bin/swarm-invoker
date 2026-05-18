@@ -85,8 +85,13 @@ def find_actionable_tickets(board: str) -> list[dict]:
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
 
-    # Query: ready or triage, assigned to hermes or wildcard,
-    # with the latest mutation ts from the audit log as a proxy
+    # Query: READY-only, assigned to hermes or wildcard.
+    # Per Clawta sw-009 round 2: triage tickets do NOT have specs yet and
+    # must not trigger agent invocation (would violate spec-kit promotion
+    # gate). Only 'ready' tickets — i.e. tickets that have passed the
+    # invariants_and_boundaries gate — are actionable for the agent.
+    #
+    # latest_ts derives from MAX(ts) on kanban_mutations_log as a proxy
     # for tasks.updated_at (the tasks table has no updated_at column).
     cur = con.execute("""
         SELECT t.id, t.title, t.status, t.assignee, t.priority, t.body,
@@ -96,7 +101,7 @@ def find_actionable_tickets(board: str) -> list[dict]:
                  t.created_at
                ) AS latest_ts
         FROM tasks t
-        WHERE t.status IN ('ready', 'triage')
+        WHERE t.status = 'ready'
           AND t.assignee IN (?, '*')
         ORDER BY t.priority DESC, t.rowid ASC
     """, (AGENT_NAME,))
