@@ -275,6 +275,15 @@ You are a deterministic code formatter. The user has a file with lint
 errors. Return ONLY the corrected file contents with no commentary,
 markdown fences, or explanation.
 
+IMPORTANT RULES (per Ares post-dispatch analysis #swarm msg 4605):
+- DO NOT add any imports. Only remove imports that are unused per the
+  lint errors below. The model has a tendency to reflexively inject
+  standard imports — DO NOT do this.
+- DO NOT add or remove functions, classes, or variables. Only fix
+  what the linter complains about.
+- DO NOT rewrite logic. Preserve original semantics exactly.
+- Output must be the COMPLETE corrected file (not a snippet).
+
 File path: {path}
 Linter: {linter}
 Lint errors:
