@@ -102,6 +102,38 @@ OPENCLAW_BIN = os.environ.get(
 AUTHOR = "swarm-controller"
 
 
+# ── Board-aware command helpers (sw-008 Bug 1 fix) ───────────────────
+# Every kanban-flow / hermes kanban call MUST receive the board name
+# via KANBAN_BOARD env var. Previously --board was only used for
+# connect() but NOT propagated to state-transition commands — so
+# running against the swarm board would silently mutate chitin (DANGEROUS).
+
+def _env_with_board(board: str) -> dict[str, str]:
+    """Return os.environ copy with KANBAN_BOARD set for subprocess calls."""
+    env = dict(os.environ)
+    env["KANBAN_BOARD"] = board
+    return env
+
+
+def _kanban_flow(args: list[str], board: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run kanban-flow with KANBAN_BOARD set."""
+    kwargs.setdefault("timeout", 15)
+    return subprocess.run(
+        [KANBAN_FLOW_BIN] + args,
+        env=_env_with_board(board),
+        **kwargs,
+    )
+
+
+def _hermes_kanban(subcmd: str, args: list[str], board: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run hermes kanban with --board flag."""
+    kwargs.setdefault("timeout", 15)
+    return subprocess.run(
+        ["hermes", "kanban", "--board", board, subcmd] + args,
+        **kwargs,
+    )
+
+
 # ── Logging ─────────────────────────────────────────────────────────
 
 def log(msg: str) -> None:
@@ -174,7 +206,7 @@ class Task:
     priority: int = 50
     block_reason: str | None = None
     dispatch_failure_count: int = 0
-    body: str = ""
+    body: str | None = None   # sw-008 Bug 5: body can be NULL from DB
 
 
 # ── Board reads ──────────────────────────────────────────────────────
@@ -226,6 +258,11 @@ def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
         except sqlite3.OperationalError:
             pass  # task_runs may not have the right schema yet
 
+        body_val = row["body"]
+        # sw-008 Bug 5: body can be None from DB — never slice None
+        if body_val is None:
+            body_val = ""
+
         tasks.append(Task(
             id=row["id"],
             title=row["title"],
@@ -234,7 +271,7 @@ def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
             priority=row["priority"],
             block_reason=row["block_reason"] or None,
             dispatch_failure_count=failure_count,
-            body=row["body"],
+            body=body_val,
         ))
     return tasks
 
@@ -271,30 +308,48 @@ def classify(task: Task) -> str:
 
 # ── Driver selection ─────────────────────────────────────────────────
 
-def pick_driver(board: str, ticket_id: str, title: str, body: str) -> str | None:
-    """Route a dispatchable ticket to a terminal driver via _pick_driver."""
+def pick_driver(board: str, ticket_id: str, title: str, body: str | None) -> str | None:
+    """Route a dispatchable ticket to a terminal driver via _pick_driver.
+
+    sw-008 Bug 4: _pick_driver.py reads JSON classification from STDIN,
+    not CLI args. Previously passed --board/--ticket-id/--title/--body
+    flags which the script ignores — always fell through to copilot.
+    Now pipes a classify JSON object on stdin, matching poller contract.
+    """
     if not PICK_DRIVER_SCRIPT.exists():
         log(f"_pick_driver not found at {PICK_DRIVER_SCRIPT}, defaulting to copilot")
         return "copilot"
 
+    # Build the classify JSON that _pick_driver.py expects on stdin
+    classify_input = json.dumps({
+        "title": title[:200],
+        "body": (body or "")[:500],
+        "capabilities": [],
+    })
+
     try:
         proc = subprocess.run(
-            [sys.executable, str(PICK_DRIVER_SCRIPT),
-             "--board", board,
-             "--ticket-id", ticket_id,
-             "--title", title[:200],
-             "--body", body[:500]],
-            capture_output=True, text=True, timeout=PICK_DRIVER_TIMEOUT_SECONDS,
+            [sys.executable, str(PICK_DRIVER_SCRIPT)],
+            input=classify_input,
+            capture_output=True,
+            text=True,
+            timeout=PICK_DRIVER_TIMEOUT_SECONDS,
+            env=_env_with_board(board),
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            driver = proc.stdout.strip().split("\n")[-1].strip()
+            # _pick_driver outputs JSON: {"driver": "...", "reasoning": "..."}
+            try:
+                pick = json.loads(proc.stdout.strip())
+                driver = pick.get("driver")
+            except json.JSONDecodeError:
+                # Fallback: last non-empty line as raw driver name
+                driver = proc.stdout.strip().split("\n")[-1].strip()
             if driver in TERMINAL_LANES:
                 return driver
-        log(f"_pick_driver returned {proc.returncode}: {proc.stderr[:200]}")
+        log(f"_pick_driver rc={proc.returncode}: {(proc.stderr or '')[:200]}")
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log(f"_pick_driver error: {e}")
 
-    # Fallback: round-robin or default
     return "copilot"
 
 
@@ -316,22 +371,22 @@ def dispatch_ticket(con: sqlite3.Connection, board: str,
         log(f"dispatch {ticket.id}: status flipped to {current!r}, aborting")
         return False
 
-    # Transition: ready → in_progress
+    # sw-008 Bug 1: pass board via _kanban_flow helper (sets KANBAN_BOARD env)
     try:
-        subprocess.run(
-            [KANBAN_FLOW_BIN, "start", ticket.id, "--author", AUTHOR],
-            check=True, capture_output=True, timeout=15,
+        _kanban_flow(
+            ["start", ticket.id, "--author", AUTHOR],
+            board=board, check=True, capture_output=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         log(f"dispatch {ticket.id}: kanban-flow start failed: {e}")
         return False
 
-    # Comment
+    # sw-008 Bug 3: hermes kanban comment uses --author; assign does not
     comment = f"{AUTHOR} dispatching to {driver}"
-    subprocess.run(
-        ["hermes", "kanban", "--board", board, "comment",
-         ticket.id, "--author", AUTHOR, comment],
-        capture_output=True, timeout=15,
+    _hermes_kanban(
+        "comment",
+        [ticket.id, "--author", AUTHOR, comment],
+        board=board, capture_output=True,
     )
 
     # Spawn dispatcher in background
@@ -343,6 +398,7 @@ def dispatch_ticket(con: sqlite3.Connection, board: str,
                 [CLAWTA_BIN, f"dispatch ticket {ticket.id} to {driver}"],
                 stdout=out, stderr=out,
                 start_new_session=True,
+                env=_env_with_board(board),
             )
     except FileNotFoundError as e:
         log(f"dispatch {ticket.id}: {CLAWTA_BIN} not found: {e}")
@@ -357,7 +413,14 @@ def dispatch_ticket(con: sqlite3.Connection, board: str,
 
 def retry_ticket(con: sqlite3.Connection, board: str,
                  ticket: Task, dry_run: bool) -> bool:
-    """Auto-retry a blocked ticket by demoting back to ready."""
+    """Auto-retry a blocked ticket: unblock then ready.
+
+    sw-008 Bug 2: previously used kanban-flow demote which goes
+    down one status level (in_progress->ready, ready->triage). For
+    blocked tickets the correct path is unblock (blocked->ready).
+    Using demote on a blocked ticket is wrong — blocked isn't on
+    the promote/demote ladder.
+    """
     if dry_run:
         log(f"[dry-run] would retry {ticket.id} (failures: {ticket.dispatch_failure_count})")
         return True
@@ -365,17 +428,24 @@ def retry_ticket(con: sqlite3.Connection, board: str,
     # Pick a different driver
     driver = pick_driver(board, ticket.id, ticket.title, ticket.body)
 
-    # Unblock → demote to ready → reassign
+    # sw-008 Bug 2: unblock (not demote) for blocked->ready
     try:
-        subprocess.run(
-            [KANBAN_FLOW_BIN, "demote", ticket.id,
-             f"auto-retry {ticket.dispatch_failure_count + 1}/{SWARM_MAX_RETRIES}",
-             "--author", AUTHOR],
-            check=True, capture_output=True, timeout=15,
+        _kanban_flow(
+            ["unblock", ticket.id, "--author", AUTHOR, "--assignee", ROUTING_LANE],
+            board=board, check=True, capture_output=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        log(f"retry {ticket.id}: demote failed: {e}")
-        return False
+        # If unblock fails (ticket might not be in blocked state after race),
+        # try ready as fallback
+        log(f"retry {ticket.id}: unblock failed: {e}, trying ready")
+        try:
+            _kanban_flow(
+                ["ready", ticket.id, "--author", AUTHOR, "--assignee", ROUTING_LANE],
+                board=board, check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
+            log(f"retry {ticket.id}: ready also failed: {e2}")
+            return False
 
     receipt_state_change(board, ticket.id, ticket.title,
                          "blocked", "ready",
@@ -392,12 +462,13 @@ def escalate_ticket(con: sqlite3.Connection, board: str,
         log(f"[dry-run] would escalate {ticket.id} to red")
         return True
 
-    # Assign to red and comment with dispatch history
+    # sw-008 Bug 3: hermes kanban assign takes positional args (task_id profile),
+    # no --author flag. --author is only for hermes kanban comment.
     try:
-        subprocess.run(
-            ["hermes", "kanban", "--board", board, "assign",
-             ticket.id, "red", "--author", AUTHOR],
-            capture_output=True, timeout=15,
+        _hermes_kanban(
+            "assign",
+            [ticket.id, "red"],
+            board=board, capture_output=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pass  # assign failure is non-fatal
@@ -405,10 +476,10 @@ def escalate_ticket(con: sqlite3.Connection, board: str,
     comment = (f"🚨 ESCALATED to operator: {SWARM_MAX_RETRIES} dispatch failures. "
                f"Block reason: {ticket.block_reason or 'unknown'}. "
                f"Requires human decision.")
-    subprocess.run(
-        ["hermes", "kanban", "--board", board, "comment",
-         ticket.id, "--author", AUTHOR, comment],
-        capture_output=True, timeout=15,
+    _hermes_kanban(
+        "comment",
+        [ticket.id, "--author", AUTHOR, comment],
+        board=board, capture_output=True,
     )
 
     receipt_escalate(ticket.id, ticket.title, ticket.dispatch_failure_count,
@@ -424,11 +495,12 @@ def fix_misassigned(con: sqlite3.Connection, board: str,
         log(f"[dry-run] would reassign {ticket.id} from {ticket.assignee} to {ROUTING_LANE}")
         return True
 
+    # sw-008 Bug 3: hermes kanban assign positional args (task_id profile), no --author
     try:
-        subprocess.run(
-            ["hermes", "kanban", "--board", board, "assign",
-             ticket.id, ROUTING_LANE, "--author", AUTHOR],
-            capture_output=True, timeout=15,
+        _hermes_kanban(
+            "assign",
+            [ticket.id, ROUTING_LANE],
+            board=board, capture_output=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         log(f"fix_misassigned {ticket.id}: assign failed: {e}")

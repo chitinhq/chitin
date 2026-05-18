@@ -4,6 +4,8 @@
 #
 # spec: 023-agent-bus-bidirectional-liveness
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 set -euo pipefail
 
 JOBS_FILE="${HOME}/.hermes/cron/jobs.json"
@@ -68,15 +70,15 @@ PY
 # Install the wrapper script that the cron entry calls.
 WRAPPER="${HOME}/.hermes/scripts/agent-bus-inbound-poll.sh"
 mkdir -p "$(dirname "$WRAPPER")"
-cat > "$WRAPPER" <<'WRAPPER_EOF'
+cat > "$WRAPPER" <<WRAPPER_EOF
 #!/usr/bin/env bash
 # Cron entry point for the agent-bus inbound poll.
 # Spec 023 R2: read every Discord-mirrored thread.
 set -eo pipefail
 set -a
-. "${HOME}/.hermes/.env"
+. "\${HOME}/.hermes/.env"
 set +a
-exec python3 "${HOME}/workspace/chitin/services/agent-bus/discord_mirror.py" poll-all
+exec python3 "${SCRIPT_DIR}/../services/agent-bus/discord_mirror.py" poll-all
 WRAPPER_EOF
 chmod +x "$WRAPPER"
 
