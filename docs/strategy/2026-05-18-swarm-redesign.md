@@ -144,13 +144,15 @@ If this fails, nothing else will work. If it passes, we have the substrate and c
 - `clawta-poller` / readybench-poller subprocess polling (replaced by Ares's deterministic controller per skill route)
 - 45-min stale-worker watchdog (replaced by 5-min push-notify-operator invariant)
 
-## Open questions for operator
+## Operator decisions (ratified ~08:50 EDT)
 
-1. **Copilot peer-review depth.** Auto-review on every PR (cost) vs only cross-lane PRs (governance only)?
-2. **Cooling status for repeatedly-failed tickets.** Ares proposed 4-hour cooldown after N=3 failures. Acceptable, or always-escalate-on-fail?
-3. **Operator-tickets workflow.** Red tickets stay sacred (don't auto-promote). But do operator tickets need a separate `operator-attended` skill that ONLY surfaces to operator at next interactive turn?
-4. **Hermes Ollama Cloud model selection.** Ares can use any. Does operator want default model per skill (e.g. `governance` → llama 4 405B for cost; `frontier-reasoning` → never gets Hermes lane, always Clawta)?
-5. **Migration risk: cut over fully or run parallel for safety?** Plan above is parallel-for-3-weeks. Operator may prefer faster.
+All 5 open questions resolved inline with the operator. The merge gate, migration pace, and lane defaults are now locked.
+
+1. **Copilot peer-review depth: AUTO-REVIEW EVERY PR on chitinhq/*.** Copilot reviews every PR. Plus one peer-agent review required for merge. Two-vote merge gate.
+2. **Cooling status: YES, 4-hour cooldown after N=3 fails.** Per Ares's proposal. Prevents promote-demote loops. Tickets in `cooling` get an operator-visible badge; operator can override the cooldown.
+3. **Operator-tickets workflow: KEEP "red tickets are sacred" rule.** Tickets assigned to red don't auto-promote, don't auto-claim, don't auto-anything. They show up at the next interactive turn. (Constitution §4 explicit.)
+4. **Hermes Ollama Cloud model defaults: ARES PICKS PER SKILL.** Ares is trusted to optimize cost/quality per `skill` field. Operator does not pre-specify.
+5. **Migration pace: PARALLEL 3 WEEKS.** Week 1 `swarm` board only (Haiku Test must pass). Week 2 `swarm` + `personal-os` parallel. Week 3 `personal-os` exclusive. Week 4 `chitin` + `readybench` cut after MVP cutover (Friday 2026-05-23 + post-MVP stabilization).
 
 ## Verification
 
