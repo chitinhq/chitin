@@ -3,7 +3,7 @@
 > **Tier:** spec (operator-ratified via "Let's take sw-011" dispatch 2026-05-18 EOD)
 > **Authored:** 2026-05-18, red lane
 > **Status:** draft — awaits Ares (lane owner) + Clawta (guardrail author) review
-> **Companion docs:** [`2026-05-18-swarm-redesign.md`](../../docs/strategy/2026-05-18-swarm-redesign.md), Clawta msgs 4567-4568
+> **Cross-refs:** Clawta msgs 4567-4568, Ares msgs 4769-4770, swarm board ticket `t_216b911c`
 > **Ticket:** `t_216b911c` on swarm board (ready)
 
 ## Goal
@@ -20,6 +20,23 @@ Three real failures already happened during this week's swarm bring-up that this
 - **ic-007 dedup re-spam** — only caught after Clawta noticed receipt flood (would have been caught by Dedup test)
 
 Heartbeat + 5 proof tests = "the swarm proves itself alive every N seconds, and any of the 5 ways it can silently break is caught within bounded time."
+
+## File-system scope
+
+New files added by this spec:
+- `swarm/bin/heartbeat-emit` — per-agent heartbeat writer (shell + Python)
+- `swarm/bin/heartbeat-check` — stale detection cron (Python)
+- `swarm/bin/heartbeat-status` — operator CLI status table (Python)
+- `swarm/bin/sw-011-proof-tests` — proof test harness (Python)
+- `~/.chitin/heartbeat/<agent>.json` — per-agent heartbeat records (runtime)
+- `swarm/tests/test_sw_011_liveness_misroute_proof.py` — 22 unit + sandbox proof tests
+- `swarm/tests/proofs/ci/` — CI-safe sandbox proof tests (future)
+- `swarm/tests/proofs/live/` — operator-triggered live proof tests (future)
+- `.specify/specs/037-sw-011-heartbeat-proof-tests/spec.md` — this spec
+
+Modified files:
+- Existing heartbeat / stale-worker code in `hermes_cli/kanban_db.py` (heartbeat_claim, release_stale_claims)
+- Discord gateway `gateway/platforms/discord.py` (channel filtering)
 
 ## Scope (what ships in v1)
 
@@ -158,7 +175,7 @@ Operator-invoked only (NOT in CI). Posts real messages, queries real gateway log
 - **Operator manually pauses an agent:** mark agent as "paused" in a separate file/table; heartbeat-check honors pause + doesn't escalate.
 - **Test_lock requires gov.db mutation:** test uses a copy of gov.db, never production.
 
-## E2E coverage (per spec 020 §1.2)
+## Test coverage (per spec 020 §1.2)
 
 | Surface | Test layer | File |
 |---|---|---|
