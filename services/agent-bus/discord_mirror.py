@@ -244,6 +244,73 @@ def cmd_poll(args) -> int:
     return 0
 
 
+def cmd_poll_all(args) -> int:
+    """Spec 023 R2: iterate every threads row with a discord_thread_id
+    and poll each. Cron-friendly entry point; replaces per-channel
+    invocations for the inbound-poll job.
+
+    Concurrency safety (R6): a single in-flight lock file at
+    ~/.hermes/.cache/discord-poll-all.lock prevents the next cron tick
+    from starting a second poll while this one is still running. Lock
+    is auto-released on normal exit + on process death (PID check).
+    """
+    # spec: 023-agent-bus-bidirectional-liveness
+    import fcntl
+    import errno
+
+    token = os.environ.get("DISCORD_BOT_TOKEN", "")
+    if not token:
+        print("error: DISCORD_BOT_TOKEN required", file=sys.stderr)
+        return 2
+
+    lock_path = Path.home() / ".hermes" / ".cache" / "discord-poll-all.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fp = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            print(json.dumps({"skipped": "previous-poll-still-running"}))
+            return 0
+        raise
+    lock_fp.write(str(os.getpid()))
+    lock_fp.flush()
+
+    try:
+        conn = sqlite3.connect(str(db_path()))
+        conn.row_factory = sqlite3.Row
+        ensure_cursor_table(conn)
+        rows = conn.execute(
+            "SELECT id, title, discord_thread_id FROM threads "
+            "WHERE discord_thread_id IS NOT NULL AND discord_thread_id != ''"
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            try:
+                r = poll_once(
+                    conn,
+                    channel_id=row["discord_thread_id"],
+                    token=token,
+                    thread_title=row["title"],
+                )
+                results.append({"thread_id": row["id"], **r})
+            except Exception as exc:
+                results.append({
+                    "thread_id": row["id"],
+                    "channel_id": row["discord_thread_id"],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        print(json.dumps({"threads": len(rows), "results": results}))
+        return 0
+    finally:
+        try:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_fp.close()
+
+
 def cmd_push(args) -> int:
     webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
     if not webhook:
@@ -273,6 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     p_poll.add_argument("--channel", help="Channel id (else env)")
     p_poll.add_argument("--title", help="Bus mirror thread title")
     p_poll.set_defaults(func=cmd_poll)
+
+    # spec: 023-agent-bus-bidirectional-liveness
+    p_poll_all = sub.add_parser(
+        "poll-all",
+        help="Poll every threads row with a discord_thread_id (spec 023 R2)",
+    )
+    p_poll_all.set_defaults(func=cmd_poll_all)
 
     p_push = sub.add_parser("push", help="Post bus messages to Discord webhook")
     p_push.add_argument("thread_id", type=int)
