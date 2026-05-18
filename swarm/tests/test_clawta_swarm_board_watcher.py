@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -52,6 +53,7 @@ def test_watcher_posts_once_for_ready_clawta_or_wildcard(tmp_path: Path) -> None
 
     env = {
         **os.environ,
+        "KANBAN_BOARD": "swarm",
         "KANBAN_DB": str(db),
         "CLAWTA_SWARM_WATCHER_STATE": str(state),
         "OPENCLAW_BIN": str(fake_openclaw),
@@ -67,3 +69,46 @@ def test_watcher_posts_once_for_ready_clawta_or_wildcard(tmp_path: Path) -> None
     assert "sw-002 Wildcard direct" in log
     assert "sw-003" not in log
     assert "sw-004" not in log
+
+
+def test_watcher_skips_overlapping_run_while_lock_is_held(tmp_path: Path) -> None:
+    db = tmp_path / "kanban.db"
+    state = tmp_path / "seen.txt"
+    send_log = tmp_path / "sends.log"
+    started = tmp_path / "started"
+    fake_openclaw = tmp_path / "openclaw"
+    make_db(db)
+    fake_openclaw.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'started\\n' >>{started}\n"
+        "sleep 1\n"
+        f"printf '%s\\n' \"$*\" >>{send_log}\n"
+    )
+    fake_openclaw.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "KANBAN_BOARD": "swarm",
+        "KANBAN_DB": str(db),
+        "CLAWTA_SWARM_WATCHER_STATE": str(state),
+        "OPENCLAW_BIN": str(fake_openclaw),
+    }
+    first = subprocess.Popen([str(SCRIPT)], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started.exists(), "first watcher did not reach send path"
+
+        second = subprocess.run([str(SCRIPT)], env=env, text=True, capture_output=True, check=True)
+        assert json.loads(second.stdout) == {"board": "swarm", "posted": 0}
+
+        first_stdout, first_stderr = first.communicate(timeout=5)
+        assert first.returncode == 0, first_stderr
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.communicate()
+
+    assert json.loads(first_stdout) == {"board": "swarm", "posted": 2}
+    assert send_log.read_text().count("clawta detected swarm board ticket") == 2

@@ -25,6 +25,13 @@ fi
 
 mkdir -p "$(dirname "$STATE_FILE")"
 touch "$STATE_FILE"
+LOCK_FILE="${CLAWTA_SWARM_WATCHER_LOCK:-$STATE_FILE.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "clawta-swarm-board-watcher: another watcher run is active for board $BOARD" >&2
+  printf '{"board":"%s","posted":0}\n' "$BOARD"
+  exit 0
+fi
 
 query_ready() {
   sqlite3 -tabs "$KANBAN_DB" <<'SQL'
