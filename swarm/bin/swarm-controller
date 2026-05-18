@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""swarm-controller — deterministic dispatch controller for the swarm.
+
+Replaces the single-lane clawta-poller with a two-tier event router:
+
+  Tier 1 — Dispatch Controller (this script, no LLM):
+    - Owns the board state machine (triage → ready → in_progress → done/blocked)
+    - Promotes triage tickets meeting 3 gates (AC, no blockers, spec-kit entry)
+    - Claims ready→in_progress atomically
+    - Routes to driver lanes via _pick_driver (with ELO consultation)
+    - Auto-retries up to SWARM_MAX_RETRIES before escalating to red
+    - Posts receipts to #swarm on every state change
+
+  Tier 2 — Workers (dispatched worktrees):
+    - Receive dispatched tickets, work in isolated branches
+    - MUST post WORKER_RECEIPT on exit (success: PR URL, failure: error summary)
+    - Silent death detected by heartbeat timeout (controller reclaims after STALE_SECONDS)
+
+This skeleton reads the board and logs current state. Dispatch, retry, and
+receipt logic will be added incrementally per the ratified synthesis (PR #752).
+
+Usage:
+  swarm-controller --once              Print board state and exit
+  swarm-controller --dry-run           Print proposed actions, no side effects
+  swarm-controller --loop              Run continuously every TICK_SECONDS
+  swarm-controller --board chitin      Target a specific board
+
+Env:
+  KANBAN_BOARDS_DIR   default: ~/.hermes/kanban/boards
+  KANBAN_BOARD        default: chitin
+  SWARM_MAX_RETRIES   default: 3
+  STALE_SECONDS       default: 1200 (20 min)
+  COOLING_HOURS       default: 4
+  HERMES_CHANNEL_ID   Discord channel for #hermes (forbidden target)
+  SWARM_CHANNEL_ID    Discord channel for #swarm (coordination)
+  CLAWTA_CHANNEL_ID   Discord channel for #clawta (ops)
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sqlite3
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# ── Paths ────────────────────────────────────────────────────────────
+
+BOARDS_DIR = Path(os.environ.get(
+    "KANBAN_BOARDS_DIR",
+    str(Path.home() / ".hermes" / "kanban" / "boards"),
+))
+
+# ── Lane contract ───────────────────────────────────────────────────
+
+ROUTING_LANE = "clawta"
+TERMINAL_LANES = frozenset(os.environ.get(
+    "TERMINAL_LANES", "copilot,codex,claude-code,gemini"
+).split(","))
+OBSERVER_LANES = frozenset(["hermes", "red"])
+VALID_ASSIGNEES = TERMINAL_LANES | OBSERVER_LANES | {ROUTING_LANE}
+
+# ── Retry / cooling ─────────────────────────────────────────────────
+
+SWARM_MAX_RETRIES = int(os.environ.get("SWARM_MAX_RETRIES", "3"))
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "1200"))
+COOLING_HOURS = int(os.environ.get("COOLING_HOURS", "4"))
+
+# ── Discord channel IDs (pos-002 routing contract) ─────────────────
+
+HERMES_CHANNEL_ID = os.environ.get("HERMES_CHANNEL_ID", "1503438297597350062")  # FORBIDDEN target
+SWARM_CHANNEL_ID = os.environ.get("SWARM_CHANNEL_ID", "1505613628286701588")
+CLAWTA_CHANNEL_ID = os.environ.get("CLAWTA_CHANNEL_ID", "1503439202719760405")
+
+AUTHOR = "swarm-controller"
+NOW = dt.datetime.now(dt.timezone.utc)
+
+
+# ── Data ────────────────────────────────────────────────────────────
+
+@dataclass
+class Task:
+    """Minimal task representation from kanban.db."""
+    id: str
+    title: str
+    status: str
+    assignee: str | None
+    priority: int = 50
+    block_reason: str | None = None
+    dispatch_failure_count: int = 0
+    body: str = ""
+
+
+# ── Board reads ──────────────────────────────────────────────────────
+
+def connect(board: str) -> sqlite3.Connection:
+    """Open a read connection to the kanban board."""
+    db_path = BOARDS_DIR / board / "kanban.db"
+    if not db_path.exists():
+        print(f"[{AUTHOR}] FATAL: board db not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
+    """Load all non-terminal tasks (everything except done/archived)."""
+    cur = con.execute(
+        "SELECT id, title, status, priority, assignee, block_reason, body "
+        "FROM tasks "
+        "WHERE status NOT IN ('done', 'archived') "
+        "ORDER BY priority ASC, id ASC"
+    )
+    tasks = []
+    for row in cur.fetchall():
+        # Count dispatch failures from task_runs
+        failure_count = 0
+        try:
+            fc = con.execute(
+                "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'failed'",
+                (row["id"],)
+            ).fetchone()
+            failure_count = fc[0] if fc else 0
+        except sqlite3.OperationalError:
+            pass  # task_runs table may not exist yet
+
+        tasks.append(Task(
+            id=row["id"],
+            title=row["title"],
+            status=row["status"],
+            assignee=row["assignee"],
+            priority=row["priority"],
+            block_reason=row["block_reason"],
+            dispatch_failure_count=failure_count,
+            body=row["body"] or "",
+        ))
+    return tasks
+
+
+def classify(task: Task) -> str:
+    """Classify a task's lane health."""
+    if task.assignee and task.assignee not in VALID_ASSIGNEES:
+        return "misassigned"  # terminal lane in triage/ready = demote loop risk
+    if task.status == "blocked" and task.dispatch_failure_count >= SWARM_MAX_RETRIES:
+        return "escalate"     # exhausted retries → operator
+    if task.status == "blocked" and task.dispatch_failure_count < SWARM_MAX_RETRIES:
+        return "retry"       # auto-retry eligible
+    if task.status in ("ready", "todo") and task.assignee == ROUTING_LANE:
+        return "dispatchable"  # ready for driver selection
+    if task.status == "triage":
+        return "triage"      # needs grooming
+    if task.status == "in_progress" and task.assignee in TERMINAL_LANES:
+        return "in_flight"   # worker is running
+    return "other"
+
+
+# ── State report ────────────────────────────────────────────────────
+
+def report(board: str, tasks: list[Task]) -> dict:
+    """Print board state to stderr and return a summary dict."""
+    by_class: dict[str, list[Task]] = {}
+    for t in tasks:
+        cls = classify(t)
+        by_class.setdefault(cls, []).append(t)
+
+    summary = {
+        "board": board,
+        "timestamp": NOW.isoformat(),
+        "total_active": len(tasks),
+        "by_class": {k: len(v) for k, v in by_class.items()},
+        "escalate": [
+            {"id": t.id, "title": t.title, "failures": t.dispatch_failure_count}
+            for t in by_class.get("escalate", [])
+        ],
+        "retry": [
+            {"id": t.id, "title": t.title, "failures": t.dispatch_failure_count}
+            for t in by_class.get("retry", [])
+        ],
+        "dispatchable": [
+            {"id": t.id, "title": t.title, "assignee": t.assignee}
+            for t in by_class.get("dispatchable", [])
+        ],
+    }
+
+    # Log to stderr (receipt-visible)
+    print(f"[{AUTHOR}] Board: {board} | Active: {len(tasks)}", file=sys.stderr)
+    for cls, items in by_class.items():
+        print(f"  {cls}: {len(items)}", file=sys.stderr)
+        for t in items[:5]:
+            print(f"    - {t.id} [{t.priority}] {t.title[:60]}", file=sys.stderr)
+
+    if summary["escalate"]:
+        print(f"  ⚠ ESCALATE: {len(summary['escalate'])} tickets need operator", file=sys.stderr)
+
+    return summary
+
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="swarm-controller: deterministic dispatch")
+    parser.add_argument("--once", action="store_true", help="Single tick, print state, exit")
+    parser.add_argument("--dry-run", action="store_true", help="Print proposed actions, no side effects")
+    parser.add_argument("--loop", action="store_true", help="Run continuously")
+    parser.add_argument("--board", default=os.environ.get("KANBAN_BOARD", "chitin"))
+    parser.add_argument("--max-dispatch", type=int, default=5)
+    parser.add_argument("--tick-seconds", type=int, default=int(os.environ.get("TICK_SECONDS", "120")))
+    args = parser.parse_args()
+
+    if not args.once and not args.loop and not args.dry_run:
+        args.once = True  # default: single tick
+
+    board = args.board
+    con = connect(board)
+
+    try:
+        tasks = load_active_tasks(con)
+        summary = report(board, tasks)
+
+        if args.dry_run:
+            print(json.dumps({"dry_run": True, "proposed": summary}, indent=2))
+            return 0
+
+        if args.once:
+            print(json.dumps(summary, indent=2))
+            return 0
+
+        # args.loop — continuous operation
+        import time
+        while True:
+            tasks = load_active_tasks(con)
+            summary = report(board, tasks)
+            # TODO (Wk-1): dispatch, retry, receipt posting
+            print(json.dumps(summary), file=sys.stderr)
+            time.sleep(args.tick_seconds)
+    finally:
+        con.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
