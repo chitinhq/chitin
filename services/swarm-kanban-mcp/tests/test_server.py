@@ -7,8 +7,6 @@ kanban DBs (read-only path). Mutating tests use a tempdir-backed fake.
 """
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
 import sys
 import tempfile
@@ -101,7 +99,7 @@ class FakeBoardTests(unittest.TestCase):
 
     def test_list_tickets_raises_on_unknown_board(self):
         with self.assertRaises(ValueError):
-            server.list_tickets("notabaord")
+            server.list_tickets("notaboard")
 
 
 if __name__ == "__main__":

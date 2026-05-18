@@ -23,7 +23,6 @@ import json
 import sqlite3
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
@@ -76,21 +75,54 @@ def get_ticket(board: str, ticket_id: str) -> dict:
 
 
 def claim_ticket(board: str, ticket_id: str, owner: str) -> dict:
-    """Assigns + transitions ticket. Uses kanban-flow CLI for the audit comment."""
-    return _kanban_flow(board, "start", ticket_id, "--author", owner)
+    """Reassign + transition ticket to in_progress.
+
+    `hermes kanban assign` sets the assignee, then `kanban-flow start` flips
+    triage/todo/ready → in_progress and writes the audit comment authored by
+    `owner`. Per Copilot review on PR #753 L80: --author tags the audit
+    comment author, not the assignee, so the assign step is required for
+    the owner field to actually move.
+    """
+    reassign = _run(["hermes", "kanban", "--board", board, "assign",
+                     ticket_id, owner])
+    start = _kanban_flow(board, "start", ticket_id, "--author", owner)
+    return {"assign": reassign, "start": start}
 
 
 def update_status(board: str, ticket_id: str, new_status: str,
                   author: str, comment: str | None = None) -> dict:
-    """Map common statuses to kanban-flow subcommands."""
-    cmd_map = {"in_progress": "start", "blocked": "block", "ready": "unblock",
-               "done": "done"}
-    sub = cmd_map.get(new_status)
-    if not sub:
+    """Map common statuses to kanban-flow subcommands.
+
+    Per Copilot review on PR #753 L94: the previous version assumed `ready`
+    transitions always come from `blocked` (and ran `unblock`). A ready
+    ticket coming from `triage` would error. We now read current status
+    and route appropriately.
+    """
+    ticket = get_ticket(board, ticket_id)["ticket"]
+    current = ticket.get("status")
+
+    if new_status == "in_progress":
+        args = ["start", ticket_id, "--author", author]
+    elif new_status == "blocked":
+        args = ["block", ticket_id, "--author", author]
+        if comment:
+            args.extend(["--reason", comment])
+    elif new_status == "ready":
+        # Route by current status: unblock from blocked, otherwise default
+        # to `kanban-flow start --status ready` if supported, else assign+comment.
+        if current == "blocked":
+            args = ["unblock", ticket_id, "--author", author]
+        else:
+            raise ValueError(
+                f"ready transition from {current!r} not supported via CLI; "
+                "promote via the board state machine instead",
+            )
+    elif new_status == "done":
+        args = ["done", ticket_id, "--author", author]
+        if comment:
+            args.extend(["--result", comment])
+    else:
         raise ValueError(f"unsupported status transition: {new_status}")
-    args = [sub, ticket_id, "--author", author]
-    if comment:
-        args.extend(["--result", comment] if sub == "done" else ["--reason", comment])
     return _kanban_flow(board, *args)
 
 
@@ -109,15 +141,37 @@ def create_ticket(board: str, title: str, body: str, assignee: str,
 def post_swarm_message(body: str, author: str = "red",
                        audience: str | None = None,
                        ack_required: bool = False) -> dict:
-    """Convenience wrapper that posts to #swarm thread 9 via agent-bus."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent-bus"))
-    from db import connect  # type: ignore
-    from server import bus_reply  # type: ignore
-    conn = connect()
-    out = bus_reply(conn, author=author, thread_id=SWARM_THREAD_ID,
-                    body=body, audience=audience, ack_required=ack_required)
-    conn.close()
-    return out
+    """Convenience wrapper that posts to #swarm thread 9 via agent-bus.
+
+    Per Copilot review on PR #753 L115: importing via `from server import
+    bus_reply` collides with this very module's name when it's loaded as
+    `server` in tests. Load via importlib so the other server.py is bound
+    under a distinct module name.
+    """
+    import importlib.util
+    bus_path = Path(__file__).resolve().parents[1] / "agent-bus"
+    db_spec = importlib.util.spec_from_file_location("agent_bus_db",
+                                                     bus_path / "db.py")
+    db_mod = importlib.util.module_from_spec(db_spec)
+    db_spec.loader.exec_module(db_mod)
+    # agent-bus server.py imports from `db` and `discord_push` as bare
+    # names — ensure those are resolvable while loading it.
+    sys.path.insert(0, str(bus_path))
+    try:
+        srv_spec = importlib.util.spec_from_file_location("agent_bus_server",
+                                                          bus_path / "server.py")
+        srv_mod = importlib.util.module_from_spec(srv_spec)
+        srv_spec.loader.exec_module(srv_mod)
+    finally:
+        if str(bus_path) in sys.path:
+            sys.path.remove(str(bus_path))
+    conn = db_mod.connect()
+    try:
+        return srv_mod.bus_reply(conn, author=author, thread_id=SWARM_THREAD_ID,
+                                 body=body, audience=audience,
+                                 ack_required=ack_required)
+    finally:
+        conn.close()
 
 
 def _kanban_flow(board: str, *args: str) -> dict:
