@@ -16,9 +16,6 @@ Replaces the single-lane clawta-poller with a two-tier event router:
     - MUST post WORKER_RECEIPT on exit (success: PR URL, failure: error summary)
     - Silent death detected by heartbeat timeout (controller reclaims after STALE_SECONDS)
 
-This skeleton reads the board and logs current state. Dispatch, retry, and
-receipt logic will be added incrementally per the ratified synthesis (PR #752).
-
 Usage:
   swarm-controller --once              Print board state and exit
   swarm-controller --dry-run           Print proposed actions, no side effects
@@ -42,10 +39,17 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
 
 # ── Paths ────────────────────────────────────────────────────────────
 
@@ -53,6 +57,12 @@ BOARDS_DIR = Path(os.environ.get(
     "KANBAN_BOARDS_DIR",
     str(Path.home() / ".hermes" / "kanban" / "boards"),
 ))
+CHITIN_REPO = Path(os.environ.get(
+    "CHITIN_REPO",
+    str(Path.home() / "workspace" / "chitin"),
+))
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "swarm-controller.log"
 
 # ── Lane contract ───────────────────────────────────────────────────
 
@@ -68,15 +78,88 @@ VALID_ASSIGNEES = TERMINAL_LANES | OBSERVER_LANES | {ROUTING_LANE}
 SWARM_MAX_RETRIES = int(os.environ.get("SWARM_MAX_RETRIES", "3"))
 STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "1200"))
 COOLING_HOURS = int(os.environ.get("COOLING_HOURS", "4"))
+DISPATCH_TIMEOUT = int(os.environ.get("DISPATCH_TIMEOUT", "300"))
 
 # ── Discord channel IDs (pos-002 routing contract) ─────────────────
 
-HERMES_CHANNEL_ID = os.environ.get("HERMES_CHANNEL_ID", "1503438297597350062")  # FORBIDDEN target
+HERMES_CHANNEL_ID = os.environ.get("HERMES_CHANNEL_ID", "1503438297597350062")  # FORBIDDEN
 SWARM_CHANNEL_ID = os.environ.get("SWARM_CHANNEL_ID", "1505613628286701588")
 CLAWTA_CHANNEL_ID = os.environ.get("CLAWTA_CHANNEL_ID", "1503439202719760405")
 
+# ── External tools ──────────────────────────────────────────────────
+
+KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
+PICK_DRIVER_SCRIPT = Path(os.environ.get(
+    "PICK_DRIVER_SCRIPT",
+    str(Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"),
+))
+CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN",
+    str(Path.home() / ".vite-plus" / "bin" / "openclaw"),
+)
+
 AUTHOR = "swarm-controller"
-NOW = dt.datetime.now(dt.timezone.utc)
+
+
+# ── Logging ─────────────────────────────────────────────────────────
+
+def log(msg: str) -> None:
+    """Timestamped log to stderr + logfile."""
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    line = f"[{AUTHOR}] {ts} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+# ── Receipt posting (pos-002 compliant) ──────────────────────────────
+
+def post_receipt(channel_id: str, text: str) -> bool:
+    """Post a receipt to Discord via openclaw. Always uses --target (pos-002)."""
+    # pos-002 invariant: NEVER post to #hermes from swarm automation
+    if channel_id == HERMES_CHANNEL_ID:
+        log(f"POS-002 VIOLATION: attempted receipt to forbidden #hermes channel. Redirecting to #swarm.")
+        channel_id = SWARM_CHANNEL_ID
+
+    try:
+        subprocess.run(
+            [
+                OPENCLAW_BIN, "message", "send",
+                "--channel", "discord",
+                "--account", "default",
+                "--target", f"channel:{channel_id}",
+                "--message", text,
+            ],
+            timeout=15,
+            capture_output=True,
+            check=False,  # receipt is best-effort, don't fail the tick
+        )
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"receipt failed: {e}")
+        return False
+
+
+def receipt_state_change(board: str, task_id: str, title: str,
+                         old_status: str, new_status: str,
+                         assignee: str | None = None,
+                         reason: str = "") -> None:
+    """Post a state-change receipt to #swarm."""
+    assignee_str = f" → {assignee}" if assignee else ""
+    reason_str = f" ({reason})" if reason else ""
+    text = f"📋 {task_id} {old_status}→{new_status}{assignee_str}{reason_str}: {title[:80]}"
+    post_receipt(SWARM_CHANNEL_ID, text)
+
+
+def receipt_escalate(task_id: str, title: str, failures: int, reason: str) -> None:
+    """Post an escalation receipt to #swarm (operator-visible)."""
+    text = f"🚨 ESCALATE {task_id} ({failures} failures): {title[:60]} — {reason[:100]}"
+    post_receipt(SWARM_CHANNEL_ID, text)
 
 
 # ── Data ────────────────────────────────────────────────────────────
@@ -97,10 +180,10 @@ class Task:
 # ── Board reads ──────────────────────────────────────────────────────
 
 def connect(board: str) -> sqlite3.Connection:
-    """Open a read connection to the kanban board."""
-    db_path = BOARDS_DIR / board / "kanban.db"
+    """Open a read-write connection to the kanban board."""
+    db_path = resolve_db(board)
     if not db_path.exists():
-        print(f"[{AUTHOR}] FATAL: board db not found: {db_path}", file=sys.stderr)
+        log(f"FATAL: board db not found: {db_path}")
         sys.exit(1)
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
@@ -108,9 +191,23 @@ def connect(board: str) -> sqlite3.Connection:
 
 
 def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
-    """Load all non-terminal tasks (everything except done/archived)."""
+    """Load all non-terminal tasks from the kanban board.
+
+    Handles both chitin and swarm board schemas — swarm lacks
+    block_reason, so we COALESCE it to NULL.
+    """
+    # Detect which columns exist
+    cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+
+    block_col = "block_reason" if "block_reason" in cols else "NULL AS block_reason"
+    body_col = "body" if "body" in cols else "NULL AS body"
+    
+    # When column exists, sqlite3.Row already names it correctly.
+    # When it doesn't, the alias gives us a consistent key.
+
     cur = con.execute(
-        "SELECT id, title, status, priority, assignee, block_reason, body "
+        "SELECT id, title, status, priority, assignee, "
+        f"{block_col}, {body_col} "
         "FROM tasks "
         "WHERE status NOT IN ('done', 'archived') "
         "ORDER BY priority ASC, id ASC"
@@ -121,12 +218,13 @@ def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
         failure_count = 0
         try:
             fc = con.execute(
-                "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'failed'",
+                "SELECT COUNT(*) FROM task_runs "
+                "WHERE task_id = ? AND status = 'failed'",
                 (row["id"],)
             ).fetchone()
             failure_count = fc[0] if fc else 0
         except sqlite3.OperationalError:
-            pass  # task_runs table may not exist yet
+            pass  # task_runs may not have the right schema yet
 
         tasks.append(Task(
             id=row["id"],
@@ -134,31 +232,298 @@ def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
             status=row["status"],
             assignee=row["assignee"],
             priority=row["priority"],
-            block_reason=row["block_reason"],
+            block_reason=row["block_reason"] or None,
             dispatch_failure_count=failure_count,
-            body=row["body"] or "",
+            body=row["body"],
         ))
     return tasks
 
 
+def fetch_current_status(con: sqlite3.Connection, ticket_id: str) -> str | None:
+    """Fresh-read ticket status to prevent race conditions."""
+    row = con.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (ticket_id,)
+    ).fetchone()
+    return row["status"] if row else None
+
+
+# ── Classification ────────────────────────────────────────────────────
+
 def classify(task: Task) -> str:
     """Classify a task's lane health."""
     if task.assignee and task.assignee not in VALID_ASSIGNEES:
-        return "misassigned"  # terminal lane in triage/ready = demote loop risk
+        return "misassigned"
     if task.status == "blocked" and task.dispatch_failure_count >= SWARM_MAX_RETRIES:
-        return "escalate"     # exhausted retries → operator
+        return "escalate"
     if task.status == "blocked" and task.dispatch_failure_count < SWARM_MAX_RETRIES:
-        return "retry"       # auto-retry eligible
+        return "retry"
     if task.status in ("ready", "todo") and task.assignee == ROUTING_LANE:
-        return "dispatchable"  # ready for driver selection
+        return "dispatchable"
     if task.status == "triage":
-        return "triage"      # needs grooming
+        return "triage"
     if task.status == "in_progress" and task.assignee in TERMINAL_LANES:
-        return "in_flight"   # worker is running
+        return "in_flight"
+    if task.status == "in_progress" and task.assignee == ROUTING_LANE:
+        return "stale_dispatch"  # routing lane but in_progress = stuck
     return "other"
 
 
-# ── State report ────────────────────────────────────────────────────
+# ── Driver selection ─────────────────────────────────────────────────
+
+def pick_driver(board: str, ticket_id: str, title: str, body: str) -> str | None:
+    """Route a dispatchable ticket to a terminal driver via _pick_driver."""
+    if not PICK_DRIVER_SCRIPT.exists():
+        log(f"_pick_driver not found at {PICK_DRIVER_SCRIPT}, defaulting to copilot")
+        return "copilot"
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(PICK_DRIVER_SCRIPT),
+             "--board", board,
+             "--ticket-id", ticket_id,
+             "--title", title[:200],
+             "--body", body[:500]],
+            capture_output=True, text=True, timeout=PICK_DRIVER_TIMEOUT_SECONDS,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            driver = proc.stdout.strip().split("\n")[-1].strip()
+            if driver in TERMINAL_LANES:
+                return driver
+        log(f"_pick_driver returned {proc.returncode}: {proc.stderr[:200]}")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"_pick_driver error: {e}")
+
+    # Fallback: round-robin or default
+    return "copilot"
+
+
+PICK_DRIVER_TIMEOUT_SECONDS = int(os.environ.get("PICK_DRIVER_TIMEOUT_SECONDS", "75"))
+
+
+# ── State transitions ────────────────────────────────────────────────
+
+def dispatch_ticket(con: sqlite3.Connection, board: str,
+                    ticket: Task, driver: str, dry_run: bool) -> bool:
+    """Transition ready→in_progress and spawn dispatch."""
+    if dry_run:
+        log(f"[dry-run] would dispatch {ticket.id} to {driver}")
+        return True
+
+    # Pre-flight: fresh read to prevent races
+    current = fetch_current_status(con, ticket.id)
+    if current not in ("ready", "todo"):
+        log(f"dispatch {ticket.id}: status flipped to {current!r}, aborting")
+        return False
+
+    # Transition: ready → in_progress
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "start", ticket.id, "--author", AUTHOR],
+            check=True, capture_output=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"dispatch {ticket.id}: kanban-flow start failed: {e}")
+        return False
+
+    # Comment
+    comment = f"{AUTHOR} dispatching to {driver}"
+    subprocess.run(
+        ["hermes", "kanban", "--board", board, "comment",
+         ticket.id, "--author", AUTHOR, comment],
+        capture_output=True, timeout=15,
+    )
+
+    # Spawn dispatcher in background
+    log_path = LOG_DIR / f"dispatch-{ticket.id}.log"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a") as out:
+            subprocess.Popen(
+                [CLAWTA_BIN, f"dispatch ticket {ticket.id} to {driver}"],
+                stdout=out, stderr=out,
+                start_new_session=True,
+            )
+    except FileNotFoundError as e:
+        log(f"dispatch {ticket.id}: {CLAWTA_BIN} not found: {e}")
+        return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         "ready", "in_progress", assignee=driver,
+                         reason="dispatch")
+    log(f"dispatched {ticket.id} → {driver} (log: {log_path})")
+    return True
+
+
+def retry_ticket(con: sqlite3.Connection, board: str,
+                 ticket: Task, dry_run: bool) -> bool:
+    """Auto-retry a blocked ticket by demoting back to ready."""
+    if dry_run:
+        log(f"[dry-run] would retry {ticket.id} (failures: {ticket.dispatch_failure_count})")
+        return True
+
+    # Pick a different driver
+    driver = pick_driver(board, ticket.id, ticket.title, ticket.body)
+
+    # Unblock → demote to ready → reassign
+    try:
+        subprocess.run(
+            [KANBAN_FLOW_BIN, "demote", ticket.id,
+             f"auto-retry {ticket.dispatch_failure_count + 1}/{SWARM_MAX_RETRIES}",
+             "--author", AUTHOR],
+            check=True, capture_output=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"retry {ticket.id}: demote failed: {e}")
+        return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         "blocked", "ready",
+                         assignee=ROUTING_LANE,
+                         reason=f"auto-retry {ticket.dispatch_failure_count + 1}/{SWARM_MAX_RETRIES}")
+    log(f"retrying {ticket.id} → ready (attempt {ticket.dispatch_failure_count + 1})")
+    return True
+
+
+def escalate_ticket(con: sqlite3.Connection, board: str,
+                    ticket: Task, dry_run: bool) -> bool:
+    """Escalate exhausted-retry ticket to operator (red lane)."""
+    if dry_run:
+        log(f"[dry-run] would escalate {ticket.id} to red")
+        return True
+
+    # Assign to red and comment with dispatch history
+    try:
+        subprocess.run(
+            ["hermes", "kanban", "--board", board, "assign",
+             ticket.id, "red", "--author", AUTHOR],
+            capture_output=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass  # assign failure is non-fatal
+
+    comment = (f"🚨 ESCALATED to operator: {SWARM_MAX_RETRIES} dispatch failures. "
+               f"Block reason: {ticket.block_reason or 'unknown'}. "
+               f"Requires human decision.")
+    subprocess.run(
+        ["hermes", "kanban", "--board", board, "comment",
+         ticket.id, "--author", AUTHOR, comment],
+        capture_output=True, timeout=15,
+    )
+
+    receipt_escalate(ticket.id, ticket.title, ticket.dispatch_failure_count,
+                     ticket.block_reason or "exhausted retries")
+    log(f"escalated {ticket.id} → red ({ticket.dispatch_failure_count} failures)")
+    return True
+
+
+def fix_misassigned(con: sqlite3.Connection, board: str,
+                    ticket: Task, dry_run: bool) -> bool:
+    """Reassign misassigned tickets back to routing lane."""
+    if dry_run:
+        log(f"[dry-run] would reassign {ticket.id} from {ticket.assignee} to {ROUTING_LANE}")
+        return True
+
+    try:
+        subprocess.run(
+            ["hermes", "kanban", "--board", board, "assign",
+             ticket.id, ROUTING_LANE, "--author", AUTHOR],
+            capture_output=True, timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"fix_misassigned {ticket.id}: assign failed: {e}")
+        return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         ticket.status, ticket.status,
+                         assignee=ROUTING_LANE,
+                         reason=f"fixed misassignment from {ticket.assignee}")
+    log(f"fixed misassignment: {ticket.id} {ticket.assignee} → {ROUTING_LANE}")
+    return True
+
+
+# ── Tick ──────────────────────────────────────────────────────────────
+
+def tick(board: str, max_dispatch: int, dry_run: bool) -> dict:
+    """One controller tick: classify, act, report."""
+    con = connect(board)
+    try:
+        tasks = load_active_tasks(con)
+
+        by_class: dict[str, list[Task]] = {}
+        for t in tasks:
+            cls = classify(t)
+            by_class.setdefault(cls, []).append(t)
+
+        actions = {"dispatched": [], "retried": [], "escalated": [], "fixed": [], "skipped": []}
+
+        # 1. Fix misassigned
+        for t in by_class.get("misassigned", []):
+            if fix_misassigned(con, board, t, dry_run):
+                actions["fixed"].append(t.id)
+            else:
+                actions["skipped"].append(f"fix:{t.id}")
+
+        # 2. Escalate exhausted retries
+        for t in by_class.get("escalate", []):
+            if escalate_ticket(con, board, t, dry_run):
+                actions["escalated"].append(t.id)
+            else:
+                actions["skipped"].append(f"escalate:{t.id}")
+
+        # 3. Retry blocked tickets (up to max)
+        for t in by_class.get("retry", []):
+            if retry_ticket(con, board, t, dry_run):
+                actions["retried"].append(t.id)
+            else:
+                actions["skipped"].append(f"retry:{t.id}")
+
+        # 4. Dispatch ready tickets (up to max_dispatch)
+        dispatched = 0
+        for t in by_class.get("dispatchable", []):
+            if dispatched >= max_dispatch:
+                actions["skipped"].append(f"dispatch:{t.id} (max_dispatch)")
+                continue
+            driver = pick_driver(board, t.id, t.title, t.body)
+            if dispatch_ticket(con, board, t, driver, dry_run):
+                actions["dispatched"].append(f"{t.id}→{driver}")
+                dispatched += 1
+            else:
+                actions["skipped"].append(f"dispatch:{t.id}")
+
+        # 5. Log in-flight and triage counts
+        in_flight = by_class.get("in_flight", [])
+        stale_dispatch = by_class.get("stale_dispatch", [])
+        triage = by_class.get("triage", [])
+
+        if stale_dispatch:
+            for t in stale_dispatch:
+                log(f"stale_dispatch: {t.id} in_progress but still on {ROUTING_LANE}")
+
+        summary = {
+            "board": board,
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "active": len(tasks),
+            "by_class": {k: len(v) for k, v in by_class.items()},
+            "actions": actions,
+            "in_flight": [t.id for t in in_flight],
+        }
+
+        # Log receipt
+        log(f"Board: {board} | Active: {len(tasks)}")
+        for cls, items in by_class.items():
+            log(f"  {cls}: {len(items)}")
+        if actions["dispatched"] or actions["retried"] or actions["escalated"]:
+            log(f"  Actions: dispatched={len(actions['dispatched'])} "
+                f"retried={len(actions['retried'])} escalated={len(actions['escalated'])}")
+
+        return summary
+
+    finally:
+        con.close()
+
+
+# ── State report (for --once / --dry-run) ────────────────────────────
 
 def report(board: str, tasks: list[Task]) -> dict:
     """Print board state to stderr and return a summary dict."""
@@ -169,7 +534,7 @@ def report(board: str, tasks: list[Task]) -> dict:
 
     summary = {
         "board": board,
-        "timestamp": NOW.isoformat(),
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
         "total_active": len(tasks),
         "by_class": {k: len(v) for k, v in by_class.items()},
         "escalate": [
@@ -186,15 +551,14 @@ def report(board: str, tasks: list[Task]) -> dict:
         ],
     }
 
-    # Log to stderr (receipt-visible)
-    print(f"[{AUTHOR}] Board: {board} | Active: {len(tasks)}", file=sys.stderr)
+    log(f"Board: {board} | Active: {len(tasks)}")
     for cls, items in by_class.items():
-        print(f"  {cls}: {len(items)}", file=sys.stderr)
+        log(f"  {cls}: {len(items)}")
         for t in items[:5]:
-            print(f"    - {t.id} [{t.priority}] {t.title[:60]}", file=sys.stderr)
+            log(f"    - {t.id} [{t.priority}] {t.title[:60]}")
 
     if summary["escalate"]:
-        print(f"  ⚠ ESCALATE: {len(summary['escalate'])} tickets need operator", file=sys.stderr)
+        log(f"⚠ ESCALATE: {len(summary['escalate'])} tickets need operator")
 
     return summary
 
@@ -202,43 +566,71 @@ def report(board: str, tasks: list[Task]) -> dict:
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="swarm-controller: deterministic dispatch")
-    parser.add_argument("--once", action="store_true", help="Single tick, print state, exit")
-    parser.add_argument("--dry-run", action="store_true", help="Print proposed actions, no side effects")
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
-    parser.add_argument("--board", default=os.environ.get("KANBAN_BOARD", "chitin"))
-    parser.add_argument("--max-dispatch", type=int, default=5)
-    parser.add_argument("--tick-seconds", type=int, default=int(os.environ.get("TICK_SECONDS", "120")))
+    parser = argparse.ArgumentParser(
+        description="swarm-controller: deterministic dispatch controller"
+    )
+    parser.add_argument("--once", action="store_true",
+                        help="Single tick, print state, exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print proposed actions, no side effects")
+    parser.add_argument("--loop", action="store_true",
+                        help="Run continuously every TICK_SECONDS")
+    parser.add_argument("--board", default=os.environ.get("KANBAN_BOARD", "chitin"),
+                        help="Target board (default: chitin)")
+    parser.add_argument("--max-dispatch", type=int, default=5,
+                        help="Max tickets to dispatch per tick (default: 5)")
+    parser.add_argument("--tick-seconds", type=int,
+                        default=int(os.environ.get("TICK_SECONDS", "60")),
+                        help="Seconds between ticks in --loop mode (default: 60)")
     args = parser.parse_args()
 
     if not args.once and not args.loop and not args.dry_run:
         args.once = True  # default: single tick
 
     board = args.board
-    con = connect(board)
 
-    try:
-        tasks = load_active_tasks(con)
-        summary = report(board, tasks)
-
-        if args.dry_run:
-            print(json.dumps({"dry_run": True, "proposed": summary}, indent=2))
-            return 0
-
-        if args.once:
-            print(json.dumps(summary, indent=2))
-            return 0
-
-        # args.loop — continuous operation
-        import time
-        while True:
+    if args.dry_run:
+        con = connect(board)
+        try:
             tasks = load_active_tasks(con)
             summary = report(board, tasks)
-            # TODO (Wk-1): dispatch, retry, receipt posting
-            print(json.dumps(summary), file=sys.stderr)
-            time.sleep(args.tick_seconds)
-    finally:
-        con.close()
+            print(json.dumps({"dry_run": True, "proposed": summary}, indent=2))
+        finally:
+            con.close()
+        return 0
+
+    if args.once:
+        con = connect(board)
+        try:
+            tasks = load_active_tasks(con)
+            summary = report(board, tasks)
+            print(json.dumps(summary, indent=2))
+        finally:
+            con.close()
+        return 0
+
+    # ── Continuous loop ───────────────────────────────────────────
+    log(f"Starting continuous loop: board={board}, tick={args.tick_seconds}s, max_dispatch={args.max_dispatch}")
+    tick_num = 0
+    while True:
+        tick_num += 1
+        try:
+            summary = tick(board, args.max_dispatch, dry_run=False)
+
+            # Periodic heartbeat receipt to #swarm (every 5 ticks)
+            if tick_num % 5 == 0:
+                text = (f"💓 swarm-controller tick #{tick_num}: board={board} "
+                        f"active={summary['active']} "
+                        f"dispatched={len(summary['actions']['dispatched'])} "
+                        f"retried={len(summary['actions']['retried'])} "
+                        f"escalated={len(summary['actions']['escalated'])}")
+                post_receipt(SWARM_CHANNEL_ID, text)
+
+        except Exception as e:
+            log(f"tick error: {e}")
+            post_receipt(SWARM_CHANNEL_ID, f"⚠ swarm-controller tick error: {e}")
+
+        time.sleep(args.tick_seconds)
 
     return 0
 
