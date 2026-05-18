@@ -14,14 +14,20 @@
 
 ## File-system scope
 
+Worker MAY write under:
 - `services/agent-bus/discord_push.py`
-- `services/agent-bus/tests/test_discord_mirror.py` (extend)
-- `services/agent-bus/tests/test_discord_push_env_refresh.py` (new)
+- `services/agent-bus/tests/test_discord_mirror.py`
+- `services/agent-bus/tests/test_discord_push_env_refresh.py`
 - `.specify/specs/021-bus-discord-mirror-stale-env/**`
 
-Worker MUST NOT touch `server.py`, `inbox.py`, `db.py`,
-`schema.sql`, or any other file under `services/agent-bus/` — the
-bug surface is confined to `discord_push.py` and its tests.
+Worker MUST NOT write under:
+- `services/agent-bus/server.py`
+- `services/agent-bus/inbox.py`
+- `services/agent-bus/db.py`
+- `services/agent-bus/schema.sql`
+- `services/agent-bus/**/*.db`
+
+Any other path under `services/agent-bus/` requires a spec amendment before dispatch; the bug surface is confined to `discord_push.py` and its tests.
 
 ## Goal
 
