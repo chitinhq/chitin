@@ -336,13 +336,17 @@ function parsePapers(htmlSlice) {
 }
 
 function stripTags(s) {
+  // CodeQL js/double-escaping fix (Clawta msg 5136): decode &amp; LAST.
+  // If &amp; is decoded first, then &amp;lt; becomes &lt; then <, which
+  // means a double-encoded "&lt;" string injects a literal "<". Decoding
+  // &amp; last makes &amp;lt; become &lt; (the safe literal string).
   return String(s)
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ');
 }
 
