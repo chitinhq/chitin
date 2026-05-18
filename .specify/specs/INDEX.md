@@ -40,6 +40,32 @@
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
 
+## Spec stubs from 2026-05-18 chitin spec-kit audit
+
+> Filed during the overnight goal's Ares-lane audit. Cross-lane
+> authored by red because Ares is hermes-agent-locked at the time;
+> Ares ratifies post-hoc. Each stub is draft-grade and doesn't
+> promote its bound ticket to ready until ratification.
+
+| Spec | Title | Bound ticket | Status |
+|------|-------|--------------|--------|
+| 026 | agent-work-contract-pr-template | t_04f498eb | draft (stub) |
+| 027 | kernel-modify-event-block | t_1ba34650 | draft (stub) |
+| 028 | clawta-poller-phased-rollout | t_26dc166c | draft (stub) |
+| 029 | e2e-multi-board-test | t_3a0d06be | draft (stub) |
+| 030 | multi-repo-board-support | t_657f9952 | draft (stub) |
+| 031 | hermes-adversarial-pr-review | t_6c53f7ff | draft (stub) |
+| 032 | review-burden-metrics | t_99cbcc0f | draft (stub) |
+| 033 | typed-egress-mcp-trust-policy | t_c7bb6c64 | draft (stub) |
+| 034 | argus-standup-fold | t_da209102 | draft (stub) |
+| 035 | copilot-driver-chitin-policy-env | t_6bfe83b7 | draft (stub) |
+
+10 other chitin tickets recommended for **archive** (operator-
+attended; tracking epics, research deferred, operator-audit planning
+docs, or work superseded by GitHub-archived upstreams). See
+`.specify/specs/audit-2026-05-18/INDEX.md` for the per-ticket
+triage rationale.
+
 ## Workspace-overlay & retro specs
 
 | Spec | Title | Status | Notes |
