@@ -71,61 +71,100 @@ try:
     import hermes_cli.kanban_db as _kb
     KANBAN_SCHEMA = _kb.SCHEMA_SQL
 except ImportError:
+    # Self-contained fallback — must include every table/index that the
+    # exercised functions require.  Last synced from
+    # hermes_cli.kanban_db.SCHEMA_SQL (2026-05-18).
     KANBAN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    body TEXT,
-    status TEXT NOT NULL DEFAULT 'ready',
-    assignee TEXT,
-    created_by TEXT,
-    workspace_kind TEXT NOT NULL DEFAULT 'scratch',
-    workspace_path TEXT,
-    tenant TEXT,
-    priority INTEGER NOT NULL DEFAULT 0,
-    parents TEXT NOT NULL DEFAULT '',
-    triage INTEGER NOT NULL DEFAULT 0,
-    idempotency_key TEXT UNIQUE,
-    max_runtime_seconds INTEGER,
-    max_retries INTEGER,
-    skills TEXT,
-    claim_lock TEXT,
-    claim_expires INTEGER,
-    worker_pid INTEGER,
+    id                   TEXT PRIMARY KEY,
+    title                TEXT NOT NULL,
+    body                 TEXT,
+    assignee             TEXT,
+    status               TEXT NOT NULL,
+    priority             INTEGER DEFAULT 0,
+    created_by           TEXT,
+    created_at           INTEGER NOT NULL,
+    started_at           INTEGER,
+    completed_at         INTEGER,
+    workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
+    workspace_path       TEXT,
+    claim_lock           TEXT,
+    claim_expires        INTEGER,
+    tenant               TEXT,
+    result               TEXT,
+    idempotency_key      TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    last_failure_error TEXT,
-    last_heartbeat_at INTEGER,
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+    worker_pid           INTEGER,
+    last_failure_error   TEXT,
+    max_runtime_seconds  INTEGER,
+    last_heartbeat_at    INTEGER,
+    current_run_id       INTEGER,
+    workflow_template_id TEXT,
+    current_step_key     TEXT,
+    skills               TEXT,
+    max_retries          INTEGER
 );
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'running',
-    claim_lock TEXT,
-    claim_expires INTEGER,
-    worker_pid INTEGER,
-    started_at REAL NOT NULL,
-    finished_at REAL,
-    exit_code INTEGER,
-    stdout_preview TEXT,
-    stderr_preview TEXT
+CREATE TABLE IF NOT EXISTS task_links (
+    parent_id  TEXT NOT NULL,
+    child_id   TEXT NOT NULL,
+    PRIMARY KEY (parent_id, child_id)
+);
+CREATE TABLE IF NOT EXISTS task_comments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    TEXT NOT NULL,
+    author     TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS task_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    run_id INTEGER,
-    kind TEXT NOT NULL,
-    payload TEXT,
-    created_at REAL NOT NULL
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    TEXT NOT NULL,
+    run_id     INTEGER,
+    kind       TEXT NOT NULL,
+    payload    TEXT,
+    created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    author TEXT NOT NULL,
-    body TEXT NOT NULL,
-    created_at REAL NOT NULL
+CREATE TABLE IF NOT EXISTS task_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id             TEXT NOT NULL,
+    profile             TEXT,
+    step_key            TEXT,
+    status              TEXT NOT NULL,
+    claim_lock          TEXT,
+    claim_expires       INTEGER,
+    worker_pid          INTEGER,
+    max_runtime_seconds INTEGER,
+    last_heartbeat_at   INTEGER,
+    started_at          INTEGER NOT NULL,
+    ended_at            INTEGER,
+    outcome             TEXT,
+    summary             TEXT,
+    metadata            TEXT,
+    error               TEXT
 );
+CREATE TABLE IF NOT EXISTS kanban_notify_subs (
+    task_id       TEXT NOT NULL,
+    platform      TEXT NOT NULL,
+    chat_id       TEXT NOT NULL,
+    thread_id     TEXT NOT NULL DEFAULT '',
+    user_id       TEXT,
+    notifier_profile TEXT,
+    created_at    INTEGER NOT NULL,
+    last_event_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
+CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
+CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
 AGENT_BUS_SCHEMA = """
@@ -154,8 +193,19 @@ CREATE TABLE IF NOT EXISTS agent_state (
 
 
 def _make_fixture_db(schema: str, tmp_dir: str, name: str) -> sqlite3.Connection:
-    """Create a temp DB with the given schema."""
+    """Create a temp DB with the given schema.
+
+    Safety: asserts the DB path is under a temp directory and never
+    resolves to ~/.chitin or ~/.hermes.
+    """
     db_path = Path(tmp_dir) / name
+    resolved = str(db_path.resolve())
+    for frag in (os.path.expanduser("~/.chitin"), os.path.expanduser("~/.hermes"),
+                 "/.chitin/", "/.hermes/"):
+        assert frag not in resolved, (
+            f"Safety: fixture DB path {resolved} contains forbidden "
+            f"segment {frag!r} — refusing to risk live-state mutation"
+        )
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(schema)
