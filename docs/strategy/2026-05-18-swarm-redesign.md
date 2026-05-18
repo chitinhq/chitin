@@ -19,6 +19,12 @@
 | **Copilot** | GitHub-native PR review on chitinhq | (their model) | Async PR reviewer. Auxiliary, not a peer. Zero integration cost. |
 | **operator** | This terminal · Discord · push notifications | (human) | Ratification, ground truth, ambiguity resolver, HITL constraint we design AROUND |
 
+## Operator confirmation (~08:44 EDT, this turn)
+
+> yeah unless i nailed my architecture the first time.. it seems we can drastically simplify this by just having three agents that work together, and we can build the swarm out to handle more as we go or as we see fit within our own ecosystems. we have the power of hermes agent, openclaw and claude code.. all getting better with their own ecosystems every day.
+
+**Settled:** three agents, no workers, build out from there. The reframe below is operator-ratified, not a strawman.
+
 ## The reframe: discard the driver-proxy layer
 
 The thing operator is asking us to discard is **"dispatch a ticket → spawn a worker driver subprocess → proxy results back."** That whole layer caused:
