@@ -119,6 +119,8 @@ If this fails, nothing else will work. If it passes, we have the substrate and c
 
 ## Migration plan (no rip-out until replacement proven)
 
+> **Week-1 ratification gate (operator-ratified 2026-05-18 EOD):** Week-1 success is explicitly defined as **(a) sw-009 PR #760 (agent-invocation-on-ticket-event) lands AND (b) Haiku Test Round 4 passes after sw-009 lands**. Round 3 (2026-05-18 ~14:40 EDT) failed because the hermes invocation primitive was unwired; sw-009 closes that gap. Without both (a) and (b), the migration does not proceed to Week 2.
+
 1. **Week 1 (now):** Run NEW architecture on `swarm` board only. Old architecture stays running on chitin / readybench / personal-os. The Haiku Test must pass. Then increase ticket complexity (small refactor → spec authoring → cross-lane work) on `swarm` board.
 2. **Week 2:** Run new architecture in parallel with old on `personal-os` board. Compare: dispatch latency, silent-death incidents, operator-escalations. If new dominates on every metric, proceed.
 3. **Week 3:** Cut over `personal-os` to new architecture exclusively. Keep `chitin` + `readybench` on old.
