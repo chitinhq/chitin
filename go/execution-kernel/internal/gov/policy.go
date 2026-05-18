@@ -17,11 +17,20 @@ type Policy struct {
 	Name           string            `yaml:"name,omitempty"`
 	Mode           string            `yaml:"mode,omitempty"` // monitor | enforce | guide; default guide
 	Pack           string            `yaml:"pack,omitempty"`
+	Drivers        []DriverConfig    `yaml:"drivers,omitempty"`
 	InvariantModes map[string]string `yaml:"invariantModes,omitempty"` // ruleID → mode
 	Bounds         Bounds            `yaml:"bounds,omitempty"`
 	Escalation     EscalationConfig  `yaml:"escalation,omitempty"`
 	Authority      AuthorityConfig   `yaml:"authority,omitempty"`
 	Rules          []Rule            `yaml:"rules"`
+}
+
+// DriverConfig declares a kernel-approved dispatch lane. The registry is read
+// by upstream dispatchers so they can choose within the kernel's approved set
+// instead of maintaining a parallel Python allowlist.
+type DriverConfig struct {
+	ID         string   `yaml:"id" json:"id"`
+	Identities []string `yaml:"identities,omitempty" json:"identities,omitempty"`
 }
 
 // Rule is one entry in the policy. Evaluated top-to-bottom; first match wins.
@@ -467,6 +476,21 @@ func (p *Policy) ApplyDefaults() error {
 		}
 		if !grant.hasSelector() {
 			return fmt.Errorf("authority.trusted[%d]: at least one stable identity selector is required", i)
+		}
+	}
+	driverIDs := make(map[string]struct{}, len(p.Drivers))
+	for i := range p.Drivers {
+		if p.Drivers[i].ID == "" {
+			return fmt.Errorf("drivers[%d]: id is required", i)
+		}
+		if _, exists := driverIDs[p.Drivers[i].ID]; exists {
+			return fmt.Errorf("drivers[%d]: duplicate id=%q", i, p.Drivers[i].ID)
+		}
+		driverIDs[p.Drivers[i].ID] = struct{}{}
+		for j, identity := range p.Drivers[i].Identities {
+			if identity == "" {
+				return fmt.Errorf("drivers[%d]: identities[%d] is empty; remove the entry or fill it in", i, j)
+			}
 		}
 	}
 	for i := range p.Rules {
