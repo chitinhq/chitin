@@ -791,6 +791,18 @@ case "$cmd" in
   unblock)
     parse_flags "$@"
     id="${REST[0]:-}"; require_id "$id"
+    # Spec 025 atomicity invariant: take per-ticket flock before mutating.
+    # If finalize_dispatch is in flight for this id, fail fast (exit 75);
+    # cron retries on next tick. Lock auto-releases on this shell's exit.
+    # spec: 025-dispatch-atomicity-invariant
+    LOCKFILE="${HOME}/.chitin/locks/dispatch-${id}.lock"
+    mkdir -p "$(dirname "$LOCKFILE")"
+    exec {ATOMICITY_LOCKFD}>"$LOCKFILE"
+    if ! flock -nE 75 "$ATOMICITY_LOCKFD"; then
+        echo "kanban-flow unblock: $id lock held by concurrent finalize/unblock — retry next cron tick" >&2
+        exit 75
+    fi
+    echo "$$" >&"$ATOMICITY_LOCKFD"
     assert_status "$id" blocked
     add_comment "$id" "$author" "Unblocked at $(date -Iseconds)"
     flip_status "$id" ready 0 0
