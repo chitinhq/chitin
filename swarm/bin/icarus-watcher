@@ -406,8 +406,12 @@ def post_worker_receipt(ticket: dict, *, lane: str, prompt_class: str,
                         post_check_output: str, diff_path: str | None,
                         retry_count: int, model_used: str,
                         success: bool, block_reason: str | None = None) -> None:
-    """Post the 6-field WORKER_RECEIPT to swarm board (board log) +
-    #swarm thread 9 via agent-bus.
+    """Post the 6-field WORKER_RECEIPT.
+
+    Channel routing per operator goal + Clawta amendment msg 4567:
+    - Every receipt -> #icarus (thread 10): the agent's home channel
+    - Failures only -> #swarm (thread 9): cross-agent escalation visibility
+      ("visible #swarm escalation only when stale/failure/proof test")
 
     Best-effort: failure to post is logged but doesn't fail the
     ticket (operator surface is the board status update, not the bus
@@ -427,7 +431,7 @@ def post_worker_receipt(ticket: dict, *, lane: str, prompt_class: str,
     }
     # Print to stdout for cron log capture
     print(f"[icarus-watcher] WORKER_RECEIPT: {json.dumps(receipt)}")
-    # Best-effort agent-bus post to #swarm
+    # Best-effort agent-bus posts
     try:
         import importlib.util
         bus_server_path = (Path(__file__).resolve().parents[2]
@@ -439,14 +443,34 @@ def post_worker_receipt(ticket: dict, *, lane: str, prompt_class: str,
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         from db import connect  # noqa: E402
-        conn = connect()
+
         summary = (
             f"[icarus] {ticket['id']} — {ticket['title'][:60]}\n"
             f"lane={lane} model={model_used} retries={retry_count} "
             f"success={success} block={block_reason or '-'}"
         )
-        mod.bus_reply(conn, author="icarus", thread_id=9,
-                      body=summary, kind="system")
+
+        conn = connect()
+        # Primary: every receipt -> #icarus (thread 10)
+        try:
+            mod.bus_reply(conn, author="icarus", thread_id=10,
+                          body=summary, kind="system")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[icarus-watcher] #icarus post failed: {exc}", file=sys.stderr)
+
+        # Escalation: failures only -> #swarm (thread 9)
+        if not success:
+            escalation = (
+                f"⚠️ icarus escalation: {ticket['id']} "
+                f"block={block_reason} (see #icarus for full receipt)"
+            )
+            try:
+                mod.bus_reply(conn, author="icarus", thread_id=9,
+                              body=escalation, kind="system")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[icarus-watcher] #swarm escalation post failed: {exc}",
+                      file=sys.stderr)
+
         conn.commit()
         conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
