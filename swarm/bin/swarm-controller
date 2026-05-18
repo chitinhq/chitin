@@ -191,11 +191,23 @@ def connect(board: str) -> sqlite3.Connection:
 
 
 def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
-    """Load all non-terminal tasks (everything except done/archived)."""
+    """Load all non-terminal tasks from the kanban board.
+
+    Handles both chitin and swarm board schemas — swarm lacks
+    block_reason, so we COALESCE it to NULL.
+    """
+    # Detect which columns exist
+    cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+
+    block_col = "block_reason" if "block_reason" in cols else "NULL AS block_reason"
+    body_col = "body" if "body" in cols else "NULL AS body"
+    
+    # When column exists, sqlite3.Row already names it correctly.
+    # When it doesn't, the alias gives us a consistent key.
+
     cur = con.execute(
         "SELECT id, title, status, priority, assignee, "
-        "COALESCE(block_reason, '') AS block_reason, "
-        "COALESCE(body, '') AS body "
+        f"{block_col}, {body_col} "
         "FROM tasks "
         "WHERE status NOT IN ('done', 'archived') "
         "ORDER BY priority ASC, id ASC"
