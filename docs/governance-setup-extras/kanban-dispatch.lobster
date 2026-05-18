@@ -576,6 +576,21 @@ steps:
       BOARD_SLUG='$resolve_board.json.board'
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
 
+      # Spec 025 atomicity invariant: hold per-ticket flock across the
+      # entire block-or-close decision so concurrent kanban-flow unblock
+      # cannot race between the status check and the push.
+      # spec: 025-dispatch-atomicity-invariant
+      LOCKFILE="${HOME}/.chitin/locks/dispatch-${ticket_id}.lock"
+      mkdir -p "$(dirname "$LOCKFILE")"
+      exec {ATOMICITY_LOCKFD}>"$LOCKFILE"
+      if ! flock -nE 75 "$ATOMICITY_LOCKFD"; then
+        MSG="🦞 ${ticket_id}: finalize skipped; lock held by concurrent finalize/unblock — retry next cron tick"
+        echo "$MSG" >&2
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      echo "$$" >&"$ATOMICITY_LOCKFD"
+
       CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.task.status // .status // empty' 2>/dev/null || true)
       if [[ "$CURRENT_STATUS" == "blocked" ]]; then
         MSG="🦞 ${ticket_id}: finalize skipped because ticket is blocked. Refusing to reopen or push worker output from a stale active run."
