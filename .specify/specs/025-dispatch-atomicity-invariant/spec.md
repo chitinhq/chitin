@@ -22,13 +22,26 @@
 
 ## File-system scope
 
-- `swarm/bin/dispatch-finalize-lock.sh` (new — fcntl-based helper)
-- `swarm/workflows/kanban-dispatch.lobster` (extend finalize_dispatch with lock)
-- `docs/governance-setup-extras/kanban-dispatch.lobster` (mirror)
-- `scripts/kanban-flow` (extend unblock with lock)
-- `swarm/tests/test_dispatch_atomicity_invariant.py` (new)
-- `swarm/tests/test_kanban_dispatch_zero_commit_regression.py` (extend canonical-mirror assertion)
+Worker MAY write under:
+- `swarm/bin/dispatch-finalize-lock.sh`
+- `swarm/workflows/kanban-dispatch.lobster`
+- `docs/governance-setup-extras/kanban-dispatch.lobster`
+- `scripts/kanban-flow`
+- `swarm/tests/test_dispatch_atomicity_invariant.py`
+- `swarm/tests/test_kanban_dispatch_zero_commit_regression.py`
 - `.specify/specs/025-dispatch-atomicity-invariant/**`
+- `.specify/specs/INDEX.md`
+
+Worker MUST NOT write under:
+- `src/**`
+- `routes/**`
+- `services/**`
+- `lib/**`
+- `controllers/**`
+- `models/**`
+- `go/**`
+
+Any other path under `chitin/` requires a spec amendment before dispatch.
 
 ## Goal
 
