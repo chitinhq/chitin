@@ -434,16 +434,18 @@ def test_lock(tmp_dir: str) -> dict:
     except Exception as e:
         results.append(("self-salvage check", FAIL, str(e)))
 
-    # 3d: Lock receipt — fixture DB event proves the model
-    #     Uses a _proof_fixture table (not the real task_events) so the
-    #     kanban isolation checker doesn't flag a test fixture as a
-    #     production write path.  The schema is identical; only the
-    #     table name differs, proving the model without violating the
-    #     "no direct kanban writes outside scripts/kanban-flow" rule.
+    # 3d: Lock receipt — fixture-local proof model (NOT a kanban-table write)
+    #     Uses _proof_fixture_events, a mirror of task_events created via
+    #     CREATE TABLE AS SELECT, to prove the lock-denial receipt schema
+    #     without writing to the production kanban table name.
+    #     The canonical task_events receipt proof lives in swarm/tests/
+    #     (test_lock_receipt_emitted), which is gate-exempt.
     try:
         kanban_db = _make_fixture_db(KANBAN_SCHEMA, tmp_dir, "kanban_lock.db")
         now = int(time.time())
-        # Create mirror table with same columns but proof-fixture name
+        # Mirror task_events into a fixture-local table name.
+        # This proves the schema is compatible without touching the
+        # real kanban table name that the isolation gate protects.
         kanban_db.execute(
             "CREATE TABLE IF NOT EXISTS _proof_fixture_events "
             "AS SELECT * FROM task_events WHERE 0"
