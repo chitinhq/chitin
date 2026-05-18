@@ -57,7 +57,7 @@ check_existing() {
 import json, sys
 jobs = json.load(open('$JOBS_FILE')).get('jobs', [])
 for j in jobs:
-    if j.get('name') == '$JOB_NAME' and j.get('enabled', True):
+    if j.get('name') == '$JOB_NAME' and j.get('enabled', True) and j.get('state') != 'paused':
         sys.exit(0)
 sys.exit(1)
 " 2>/dev/null; then
@@ -118,23 +118,30 @@ case "${1:-install}" in
     --remove)
         backend=$(check_existing)
         if [[ "$backend" == "hermes-cron" ]]; then
-            # Find job ID from jobs.json directly (Blocker A)
+            # Find all job IDs from jobs.json (may have stale paused entries)
             if [[ -f "$JOBS_FILE" ]]; then
                 job_ids=$(python3 -c "
-import json, sys
+import json
 jobs = json.load(open('$JOBS_FILE')).get('jobs', [])
 for j in jobs:
     if j.get('name') == '$JOB_NAME':
         print(j.get('id', ''))
 " 2>/dev/null)
-                if [[ -n "$job_ids" ]]; then
-                    hermes cron remove "$job_ids" 2>/dev/null || true
-                    echo "[remove] removed hermes cron job $JOB_NAME ($job_ids)"
-                fi
+                for job_id in $job_ids; do
+                    hermes cron remove "$job_id" 2>/dev/null || true
+                done
+                echo "[remove] removed hermes cron job(s) $JOB_NAME"
             fi
         elif [[ "$backend" == "system-crontab" ]]; then
-            # Blocker B: grep for marker, not --loop
-            crontab -l 2>/dev/null | grep -v "$MARKER" | crontab -
+            # Blocker B: grep for marker. Handle empty-remaining case
+            # under set -euo pipefail: grep -v exits 1 when no lines remain,
+            # which aborts the pipeline before crontab - runs.
+            remaining=$(crontab -l 2>/dev/null | grep -v "$MARKER" || true)
+            if [[ -z "$remaining" ]]; then
+                crontab -r 2>/dev/null || true
+            else
+                echo "$remaining" | crontab -
+            fi
             echo "[remove] removed system crontab entry"
         else
             echo "[remove] nothing to remove"
@@ -176,8 +183,9 @@ for j in jobs:
             fi
         fi
 
-        # Fallback: system crontab — embed marker for idempotent detection
-        cron_entry="* * * * * KANBAN_BOARD=$BOARD $CONTROLLER --once --board $BOARD $MARKER >> $HOME/.openclaw/logs/swarm-controller-cron.log 2>&1"
+        # Fallback: system crontab — embed marker for idempotency detection.
+        # Marker goes AFTER log redirection so # doesn't comment out >> 2>&1.
+        cron_entry="* * * * * KANBAN_BOARD=$BOARD $CONTROLLER --once --board $BOARD >> $HOME/.openclaw/logs/swarm-controller-cron.log 2>&1 $MARKER"
         (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
         echo "[install] system crontab entry added (every 1 min, board=$BOARD)"
         exit 0
