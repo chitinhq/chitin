@@ -124,8 +124,31 @@ def bus_reply(conn, *, author: str, thread_id: int, body: str,
     ).fetchone()
     conn.commit()
     channel_id = channel_row["discord_thread_id"] if channel_row else None
-    discord_push.try_push(channel_id=channel_id, author=author, body=body)
-    return {"message_id": message_id, "created_at": now}
+    # Per pos-002 AC5: stamp the returned Discord snowflake back onto
+    # the bus row BEFORE the next inbound mirror poll runs. Without
+    # this stamp, the inbound poll re-imports the message as a
+    # duplicate (canonical 3419→3420 echo bug).
+    snowflake = discord_push.try_push(
+        channel_id=channel_id, author=author, body=body
+    )
+    if snowflake:
+        try:
+            conn.execute(
+                "UPDATE messages SET discord_message_id=? WHERE id=?",
+                (snowflake, message_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            # Stamp failure is non-fatal — the message is already on
+            # both Discord and the bus; it'll just produce a duplicate
+            # on the next inbound poll. Log loudly so this surfaces.
+            print(
+                f"[bus_reply] WARN: failed to stamp snowflake "
+                f"{snowflake} onto bus msg {message_id}: {exc}",
+                file=__import__("sys").stderr,
+            )
+    return {"message_id": message_id, "created_at": now,
+            "discord_message_id": snowflake}
 
 
 def bus_list_threads(conn, *, board: str | None = None, status: str | None = None,

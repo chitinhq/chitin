@@ -129,13 +129,23 @@ def _log_failure(*, channel_id: str | None, path: str, error: str, body_len: int
         pass
 
 
-def _post_via_webhook(webhook_url: str, *, author: str, body: str) -> bool:
+def _post_via_webhook(webhook_url: str, *, author: str, body: str) -> str | None:
+    """POST to a Discord webhook. Returns the created message snowflake on
+    success, or None on failure / non-2xx. Per pos-002 AC5: returning
+    the id lets `try_push` stamp it back onto the source bus row so the
+    inbound mirror doesn't re-ingest the message as a duplicate.
+
+    We use `?wait=true` so Discord returns the message object instead
+    of 204 No Content (default).
+    """
     payload = json.dumps({
         "username": author[:32],  # Discord limit
         "content": _truncate(body),
     }).encode("utf-8")
+    sep = "&" if "?" in webhook_url else "?"
+    url = f"{webhook_url}{sep}wait=true"
     req = urllib.request.Request(
-        webhook_url,
+        url,
         data=payload,
         method="POST",
         headers={
@@ -146,10 +156,21 @@ def _post_via_webhook(webhook_url: str, *, author: str, body: str) -> bool:
         },
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return 200 <= resp.status < 300
+        if not (200 <= resp.status < 300):
+            return None
+        try:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("id")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
 
-def _post_via_bot(channel_id: str, *, author: str, body: str) -> bool:
+def _post_via_bot(channel_id: str, *, author: str, body: str) -> str | None:
+    """POST via bot token. Returns the message snowflake on success.
+
+    Per pos-002 AC5: returning the id is required for self-echo dedupe.
+    Bot endpoint returns the full message object by default.
+    """
     content = _truncate(f"**{author}**: {body}", limit=1980)
     payload = json.dumps({"content": content}).encode("utf-8")
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -164,26 +185,38 @@ def _post_via_bot(channel_id: str, *, author: str, body: str) -> bool:
         },
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return 200 <= resp.status < 300
+        if not (200 <= resp.status < 300):
+            return None
+        try:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("id")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
 
-def try_push(*, channel_id: str | None, author: str, body: str) -> None:
+def try_push(*, channel_id: str | None, author: str, body: str) -> str | None:
     """Best-effort push of a bus message to its mirrored Discord channel.
+
+    Returns the created Discord message snowflake on success, or None
+    on no-channel / failure. Per pos-002 AC5: callers (bus_reply,
+    bus_post_thread) MUST stamp the returned id back onto the source
+    `messages` row's `discord_message_id` BEFORE the next inbound poll
+    can run — otherwise the mirror re-imports the message as a
+    duplicate bus row (the canonical 3419→3420 echo bug).
 
     Never raises. Logs to stderr AND to the spec-023 failure JSONL on
     failure. The bus write has already happened by the time this runs;
     Discord is a downstream projection.
     """
     if not channel_id:
-        return
+        return None
     _load_env_if_changed()
     body_len = len(body)
 
     webhook = _WEBHOOKS_BY_ID.get(channel_id)
     if webhook:
         try:
-            _post_via_webhook(webhook, author=author, body=body)
-            return
+            return _post_via_webhook(webhook, author=author, body=body)
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             print(f"[discord_push] webhook POST failed for channel {channel_id}: {err}",
@@ -192,8 +225,7 @@ def try_push(*, channel_id: str | None, author: str, body: str) -> None:
 
     if _BOT_TOKEN:
         try:
-            _post_via_bot(channel_id, author=author, body=body)
-            return
+            return _post_via_bot(channel_id, author=author, body=body)
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             print(f"[discord_push] bot POST failed for channel {channel_id}: {err}",
@@ -203,3 +235,5 @@ def try_push(*, channel_id: str | None, author: str, body: str) -> None:
         msg = "no DISCORD_BOT_TOKEN; no webhook for channel"
         print(f"[discord_push] {msg} {channel_id}", file=sys.stderr)
         _log_failure(channel_id=channel_id, path="no-auth", error=msg, body_len=body_len)
+
+    return None
