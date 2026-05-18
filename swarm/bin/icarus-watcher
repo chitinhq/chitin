@@ -67,6 +67,27 @@ LEASE_LOCK = DEDUP_DIR / "model-lease.lock"
 VRAM_WAIT_SECONDS = 60
 MAX_RETRIES = 2  # N=2 retry cap per spec invariant 3
 
+# Per Ares review (#swarm msg 4563): argus uses qwen3.6:27b as its
+# hot model. When that's loaded in ollama, argus is mid-compute on it
+# and icarus should YIELD-IMMEDIATELY rather than wait 60s for a lock
+# argus never tries to acquire. The wait was wasteful; yielding lets
+# us retry on the next cron tick when argus is likely cold.
+ARGUS_MODEL_NAME = os.environ.get("ARGUS_MODEL", "qwen3.6")
+
+# Per Ares review: shell-injection guard on lint_command. Only commands
+# starting with one of these allowlisted linter binaries (after shlex
+# split) will be accepted. Anything else loud-fails before the LLM
+# is even invoked, preventing a malicious board entry from running
+# arbitrary shell.
+LINT_CMD_ALLOWLIST = frozenset({
+    "ruff", "flake8", "pylint", "mypy",            # python
+    "eslint", "biome", "prettier", "tsc",          # js/ts
+    "shellcheck", "shfmt",                          # shell
+    "rustfmt", "cargo",                             # rust
+    "gofmt", "golangci-lint",                       # go
+    "black", "isort",                               # python formatters
+})
+
 # ── Skill parsing ─────────────────────────────────────────────────
 
 SKILL_RE = re.compile(r"^\s*skill\s*:\s*(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
@@ -210,6 +231,23 @@ def ollama_ps_inspect() -> list[dict]:
     return loaded
 
 
+def yield_if_argus_active() -> None:
+    """Pre-dispatch check: if argus's hot model is loaded in ollama,
+    icarus yields immediately rather than waiting on the lease lock.
+
+    Per Ares review (#swarm msg 4563): argus uses nvidia-smi + skips
+    (doesn't lock). Lock-based coordination only prevents icarus-vs-
+    icarus stacking. To coordinate icarus-vs-argus we check `ollama ps`
+    for argus's model and yield if present."""
+    loaded = ollama_ps_inspect()
+    for model in loaded:
+        if ARGUS_MODEL_NAME.lower() in model.get("name", "").lower():
+            raise IcarusArgusActive(
+                f"argus model {model['name']!r} is hot — yielding "
+                f"(retry next cron tick when argus is cold)"
+            )
+
+
 # ── Ollama call ───────────────────────────────────────────────────
 
 def ollama_generate(model: str, prompt: str, *, timeout_s: int = 120) -> str:
@@ -251,13 +289,40 @@ Return the corrected file contents now, raw text only.
 """
 
 
+def _validate_lint_command(lint_cmd: str) -> list[str]:
+    """Per Ares review (msg 4563): guard shell injection by enforcing
+    that lint_cmd starts with an allowlisted linter binary. Returns
+    the shlex-split argv list ready for subprocess.run(shell=False).
+
+    Raises IcarusTicketMalformed if first token isn't in LINT_CMD_ALLOWLIST.
+    """
+    import shlex
+    try:
+        argv = shlex.split(lint_cmd)
+    except ValueError as exc:
+        raise IcarusTicketMalformed(
+            f"lint_command failed shlex parse: {exc}"
+        ) from exc
+    if not argv:
+        raise IcarusTicketMalformed("lint_command is empty")
+    binary = Path(argv[0]).name  # strip any path prefix
+    if binary not in LINT_CMD_ALLOWLIST:
+        raise IcarusTicketMalformed(
+            f"lint_command binary {binary!r} not in allowlist "
+            f"{sorted(LINT_CMD_ALLOWLIST)}; refusing to execute. "
+            f"This prevents arbitrary shell from a malicious ticket body."
+        )
+    return argv
+
+
 def lane_lint_fix(ticket: dict, model: str) -> dict:
     """Lint-fix lane v1.
 
     Ticket body MUST include:
       path: <relative path to file>
       linter: <linter name (e.g., ruff, eslint)>
-      lint_command: <command that produces lint output>
+      lint_command: <command that produces lint output; first token
+                     must be in LINT_CMD_ALLOWLIST>
     Returns post-check result + diff path."""
     body = ticket["body"]
     path_m = re.search(r"^\s*path\s*:\s*(\S+)\s*$", body, re.M | re.I)
@@ -274,9 +339,12 @@ def lane_lint_fix(ticket: dict, model: str) -> dict:
     if not target_path.is_file():
         raise IcarusTicketMalformed(f"path not found: {target_path}")
 
+    # Per Ares review: validate the command before shell execution.
+    pre_argv = _validate_lint_command(lint_cmd)
+
     original = target_path.read_text()
     pre_lint = subprocess.run(
-        lint_cmd, shell=True, capture_output=True, text=True, check=False,
+        pre_argv, capture_output=True, text=True, check=False,
     )
     if pre_lint.returncode == 0:
         return {
@@ -300,16 +368,22 @@ def lane_lint_fix(ticket: dict, model: str) -> dict:
     diff_path = tmp_dir / f"{ticket['id']}.fixed"
     diff_path.write_text(fixed)
 
-    # Post-check: write to a tmp copy of the file, run linter against it
+    # Post-check: write to a tmp copy of the file, run linter against it.
+    # Per Ares review: avoid the fragile str.replace path substitution
+    # by re-shlex-splitting the command and swapping the EXACT target
+    # path token (not all occurrences) for the tmp path.
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=target_path.suffix, delete=False,
     ) as tf:
         tf.write(fixed)
         tmp_path = Path(tf.name)
     try:
+        # Swap only the exact target-path occurrence, keep other args intact
+        post_argv = [
+            str(tmp_path) if a == str(target_path) else a for a in pre_argv
+        ]
         post_lint = subprocess.run(
-            lint_cmd.replace(str(target_path), str(tmp_path)),
-            shell=True, capture_output=True, text=True, check=False,
+            post_argv, capture_output=True, text=True, check=False,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -391,6 +465,13 @@ class IcarusVramContention(IcarusInfraFailure):
     """VRAM lease timeout. Special case of infra failure."""
 
 
+class IcarusArgusActive(IcarusInfraFailure):
+    """Argus is mid-compute on its hot model. Yield-immediately per
+    Ares review (#swarm msg 4563) — don't wait 60s for a lock argus
+    never tries to acquire. Routes to operator-visible infra_failure
+    since it's a resource-contention signal, not a capability ceiling."""
+
+
 class IcarusTicketMalformed(Exception):
     """Ticket body missing required fields. Routes to operator/red."""
 
@@ -426,6 +507,9 @@ def process_ticket(ticket: dict, model: str) -> dict:
 
     while retry_count <= MAX_RETRIES:
         try:
+            # Per Ares review: yield-immediately if argus model is hot
+            # (don't wait 60s for a lock argus never acquires).
+            yield_if_argus_active()
             with vram_lease():
                 ollama_ps_inspect()  # preflight (raises on infra failure)
                 result = handler(ticket, model)

@@ -295,19 +295,25 @@ class TestLintFixPostCheck(unittest.TestCase):
     """Per spec §Lane spec: lint-fix post-check = `lint` exit 0 on fixed file."""
 
     def test_noop_when_file_already_lints_clean(self):
-        """If pre-check passes, lane returns noop without invoking the model."""
+        """If pre-check passes, lane returns noop without invoking the model.
+
+        Per Ares review: uses allowlisted `ruff` command + mocks
+        subprocess.run so test doesn't depend on ruff being installed."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False,
         ) as tf:
             tf.write("x = 1\n")
             path = tf.name
         try:
-            body = (f"skill: lint-fix\npath: {path}\nlinter: true\n"
-                    "lint_command: true")  # `true` always exits 0
+            body = (f"skill: lint-fix\npath: {path}\nlinter: ruff\n"
+                    f"lint_command: ruff check {path}")
             ticket = {"id": "t_lf", "title": "noop test", "body": body,
                       "skill": "lint-fix", "status": "ready",
                       "assignee": "icarus", "priority": 0, "latest_ts": 0}
-            with mock.patch.object(watcher, "ollama_generate") as mock_gen:
+            fake_pass = mock.MagicMock(returncode=0, stdout="", stderr="")
+            with mock.patch.object(watcher.subprocess, "run",
+                                   return_value=fake_pass), \
+                 mock.patch.object(watcher, "ollama_generate") as mock_gen:
                 result = watcher.lane_lint_fix(ticket, "qwen3-coder:30b-32k")
             self.assertEqual(result["status"], "noop")
             mock_gen.assert_not_called()
@@ -317,45 +323,52 @@ class TestLintFixPostCheck(unittest.TestCase):
     def test_pass_when_model_output_lints_clean(self):
         """Pre-fail + model output lints clean → status=pass.
 
-        Uses a `lint_command` that returns 1 for the target path
-        (forcing pre-check fail) and 0 for any other path (post-check
-        pass on the tmp file with model output)."""
+        Mocks subprocess.run with side_effect list: first call (pre-lint)
+        returns 1, second call (post-lint on tmp file) returns 0."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False,
         ) as tf:
             tf.write("bad\n")
             path = tf.name
         try:
-            # Use grep on the literal path: matches original (exit 0 from grep)
-            # is INVERTED with !, so original path → exit 1, tmp path → exit 0
-            body = (
-                f"skill: lint-fix\npath: {path}\nlinter: pylike\n"
-                f"lint_command: ! echo {path} | grep -q "
-                + r'"\$"$path' + '"'
-            )
-            # Simpler — use a script file
-            script = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".sh", delete=False,
-            )
-            script.write(f"#!/usr/bin/env bash\n"
-                         f"# exit 1 if argument == original path, 0 otherwise\n"
-                         f'[ "$1" = "{path}" ] && exit 1 || exit 0\n')
-            script.close()
-            os.chmod(script.name, 0o755)
-            body = (f"skill: lint-fix\npath: {path}\nlinter: pylike\n"
-                    f"lint_command: {script.name} {path}")
+            body = (f"skill: lint-fix\npath: {path}\nlinter: ruff\n"
+                    f"lint_command: ruff check {path}")
             ticket = {"id": "t_lf2", "title": "pass test", "body": body,
                       "skill": "lint-fix", "status": "ready",
                       "assignee": "icarus", "priority": 0, "latest_ts": 0}
-            with mock.patch.object(watcher, "ollama_generate",
+            fake_fail = mock.MagicMock(returncode=1, stdout="lint errors", stderr="")
+            fake_pass = mock.MagicMock(returncode=0, stdout="", stderr="")
+            with mock.patch.object(watcher.subprocess, "run",
+                                   side_effect=[fake_fail, fake_pass]), \
+                 mock.patch.object(watcher, "ollama_generate",
                                    return_value="fixed_content"), \
                  tempfile.TemporaryDirectory() as fixes_td, \
                  mock.patch.object(watcher, "DEDUP_DIR", Path(fixes_td)):
                 result = watcher.lane_lint_fix(ticket, "qwen3-coder:30b-32k")
-            self.assertIn(result["status"], {"pass", "fail"})
+            self.assertEqual(result["status"], "pass")
             self.assertIn("post_check_output", result)
             self.assertIn("diff_path", result)
-            os.unlink(script.name)
+        finally:
+            os.unlink(path)
+
+    def test_shell_injection_blocked_by_allowlist(self):
+        """Per Ares review (msg 4563): lint_command starting with
+        non-allowlisted binary must loud-fail before any subprocess.run
+        call. Prevents arbitrary shell from a malicious ticket body."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False,
+        ) as tf:
+            tf.write("x = 1\n")
+            path = tf.name
+        try:
+            body = (f"skill: lint-fix\npath: {path}\nlinter: ruff\n"
+                    f"lint_command: bash -c 'rm -rf /'")  # malicious
+            ticket = {"id": "t_lf_evil", "title": "shell injection",
+                      "body": body, "skill": "lint-fix", "status": "ready",
+                      "assignee": "icarus", "priority": 0, "latest_ts": 0}
+            with self.assertRaises(watcher.IcarusTicketMalformed) as ctx:
+                watcher.lane_lint_fix(ticket, "qwen3-coder:30b-32k")
+            self.assertIn("not in allowlist", str(ctx.exception))
         finally:
             os.unlink(path)
 
