@@ -157,6 +157,35 @@ class AddressedToMiniTests(unittest.TestCase):
     def test_no_match_without_mention(self) -> None:
         self.assertFalse(listener._addressed_to_mini(_row("just a comment")))
 
+    # ----- Over-match guards (slice 1.3 regression) -------------------------
+    # The original `^\s*Mini\b[\s,:\-—]` pattern caught any narrative
+    # sentence starting with "Mini" because `\s` was in the trailing char
+    # class. Ares replying "Mini is installed and ready" hit it in prod
+    # and got routed as inbound @mini. The pattern now requires explicit
+    # addressing punctuation after the token.
+
+    def test_narrative_sentence_about_mini_does_not_match(self) -> None:
+        """Ares-style: 'Mini is installed and ready ...' is narrative, not address."""
+        self.assertFalse(
+            listener._addressed_to_mini(_row("Mini is installed and ready — no active sessions.")),
+        )
+
+    def test_narrative_mini_has_does_not_match(self) -> None:
+        self.assertFalse(listener._addressed_to_mini(_row("Mini has finished the task.")))
+
+    def test_narrative_mini_was_does_not_match(self) -> None:
+        self.assertFalse(listener._addressed_to_mini(_row("Mini was working on PR #788.")))
+
+    def test_bare_mini_at_start_of_line_does_not_match(self) -> None:
+        """No trailing punctuation → not an addressing form."""
+        self.assertFalse(listener._addressed_to_mini(_row("Mini")))
+
+    def test_leading_colon_address_matches(self) -> None:
+        self.assertTrue(listener._addressed_to_mini(_row("Mini: status please")))
+
+    def test_leading_hyphen_address_matches(self) -> None:
+        self.assertTrue(listener._addressed_to_mini(_row("Mini - status please")))
+
 
 # ----- End-to-end tick tests with sqlite + fakes ----------------------------
 
@@ -418,6 +447,53 @@ class ListenerImportBoundary(unittest.TestCase):
             result.stdout.strip(), "",
             f"AC5 violation — listener imports swarm.octi:\n{result.stdout}",
         )
+
+
+class CatchupModeTests(unittest.TestCase):
+    """`--catchup` snaps the read marker to the head of the bus so a fresh
+    install (or post-outage listener) doesn't serialize through accumulated
+    backlog. Idempotent: INSERT OR IGNORE makes re-runs a no-op."""
+
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        _init_bus_schema(self.conn)
+        _ensure_thread(self.conn, thread_id=9)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_catchup_marks_all_unread_as_read(self) -> None:
+        for i in range(50):
+            _post_msg(self.conn, thread_id=9, body=f"noise {i}", author="ares")
+        result = listener.catchup(conn=self.conn)
+        self.assertEqual(result["marked"], 50)
+        self.assertEqual(result["now_unread"], 0)
+
+    def test_catchup_is_idempotent(self) -> None:
+        for i in range(10):
+            _post_msg(self.conn, thread_id=9, body=f"x{i}", author="ares")
+        first = listener.catchup(conn=self.conn)
+        second = listener.catchup(conn=self.conn)
+        self.assertEqual(first["marked"], 10)
+        self.assertEqual(second["marked"], 0)  # nothing new to mark
+        self.assertEqual(second["now_unread"], 0)
+
+    def test_catchup_skips_mini_authored_messages(self) -> None:
+        """Mini's own posts don't need to be self-read."""
+        _post_msg(self.conn, thread_id=9, body="ares chatter", author="ares")
+        _post_msg(self.conn, thread_id=9, body="mini reply", author="Mini")
+        result = listener.catchup(conn=self.conn)
+        self.assertEqual(result["marked"], 1)  # only the ares one
+
+    def test_catchup_does_not_swallow_later_messages(self) -> None:
+        """Messages posted AFTER catchup must still appear unread."""
+        for i in range(5):
+            _post_msg(self.conn, thread_id=9, body=f"old {i}", author="ares")
+        listener.catchup(conn=self.conn)
+        new_id = _post_msg(self.conn, thread_id=9, body="@mini ping", author="red")
+        unread = listener._unread_messages(self.conn)
+        self.assertEqual([r["id"] for r in unread], [new_id])
 
 
 class InstallerRewritesChitinRepo(unittest.TestCase):

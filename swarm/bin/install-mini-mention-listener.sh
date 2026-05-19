@@ -93,6 +93,20 @@ if [[ ! -f "$BUS_DB" ]]; then
   echo "  bridge writes the first row. No action needed if Hermes is running."
 else
   echo "bus DB: $BUS_DB"
+  # First-run catchup: snap the read marker to the head of the bus so the
+  # listener doesn't serialize through pre-existing backlog before reaching
+  # real @mini messages. Idempotent — also safe to re-run after a long
+  # listener outage to skip accumulated noise.
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dry-run] would: $DST --catchup  (skip pre-existing bus backlog)"
+  else
+    if catchup_out=$("$DST" --catchup 2>&1); then
+      echo "catchup: $(echo "$catchup_out" | tr -d '\n ')"
+    else
+      echo "WARN: --catchup failed; listener will drain backlog serially"
+      echo "$catchup_out" | sed 's/^/  /'
+    fi
+  fi
 fi
 
 # Mini state root sanity. Listener resolves goal_ids by scanning here.
