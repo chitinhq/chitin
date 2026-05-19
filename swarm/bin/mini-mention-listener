@@ -54,9 +54,16 @@ POLL_SECONDS = int(os.environ.get("MINI_LISTENER_POLL_SECONDS", "60"))
 # Address-detection patterns. Mirrors clawta's shape; the Discord native
 # mention ID is left as None until an operator wires up a Mini Discord
 # identity. Text `@mini` and leading "Mini, ..." both work today.
+#
+# The second pattern requires addressing punctuation (comma, colon, hyphen,
+# em-dash) after the "Mini" token — optionally separated by whitespace.
+# An earlier version included `\s` in the trailing char class, which
+# greedily matched any narrative sentence beginning with "Mini" (e.g.
+# Ares replying "Mini is installed and ready"). The current shape only
+# fires on operator-style addressing: "Mini, …", "Mini: …", "Mini — …".
 _MENTION_PATTERNS = [
     re.compile(r"(?<![A-Za-z0-9_])@mini(?![A-Za-z0-9_-])", re.IGNORECASE),
-    re.compile(r"^\s*Mini\b[\s,:\-—]", re.MULTILINE),
+    re.compile(r"^\s*Mini\b\s*[,:\-—]", re.MULTILINE),
 ]
 
 
@@ -277,13 +284,76 @@ def tick(
             conn.close()
 
 
+def catchup(conn: sqlite3.Connection | None = None) -> dict:
+    """Mark every currently-unread bus message as read by Mini.
+
+    For a fresh listener install: the bus has thousands of accumulated
+    messages from before the listener existed. Without catchup the
+    tick window (LIMIT_PER_TICK*4) drains the backlog at ~40/min,
+    delaying real @mini messages by hours. Catchup snaps the read
+    marker to the head of the bus so the first real tick sees only
+    new traffic.
+
+    Idempotent: INSERT OR IGNORE on the reads table. Safe to re-run
+    when the listener has been offline and accumulated backlog again.
+    Returns {"marked": N, "now_unread": M}.
+    """
+    own_conn = False
+    if conn is None:
+        if not BUS_DB.is_file():
+            return {"marked": 0, "now_unread": 0, "note": f"bus_db_missing: {BUS_DB}"}
+        conn = _connect()
+        own_conn = True
+    try:
+        now = int(time.time())
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO reads(message_id, agent_id, read_at)
+            SELECT m.id, ?, ?
+            FROM messages m
+            WHERE m.author != ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM reads r
+                  WHERE r.message_id = m.id AND r.agent_id = ?
+              )
+            """,
+            (AGENT, now, SELF_AUTHOR, AGENT),
+        )
+        marked = cur.rowcount
+        conn.commit()
+        now_unread = conn.execute(
+            """
+            SELECT COUNT(*) FROM messages m
+            WHERE m.author != ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM reads r
+                  WHERE r.message_id = m.id AND r.agent_id = ?
+              )
+            """,
+            (SELF_AUTHOR, AGENT),
+        ).fetchone()[0]
+        return {"marked": marked, "now_unread": now_unread}
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="mini-mention-listener")
     ap.add_argument("--once", action="store_true",
                     help="Run one tick and exit (default: daemon loop)")
     ap.add_argument("--dry-run", action="store_true",
                     help="List addressed messages without nudging or marking read")
+    ap.add_argument("--catchup", action="store_true",
+                    help="Mark all currently-unread bus messages as read by mini "
+                         "and exit. Used at install time to skip pre-existing backlog. "
+                         "Idempotent.")
     args = ap.parse_args()
+
+    if args.catchup:
+        result = catchup()
+        print(json.dumps(result, indent=2))
+        return 0
 
     if args.dry_run:
         if not BUS_DB.is_file():
