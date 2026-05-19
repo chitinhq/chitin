@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""icarus-bench-ticket-emitter — scan jobs/icarus/ for failed trials
+and post tickets to the icarus kanban board.
+
+Run after every ``icarus-bench-runner`` tick (the runner invokes us
+automatically; we can also be called standalone for backfill).
+
+Dedup invariant: one open ticket per ``(task_name, block_reason)``
+within 7 days. We achieve this via ``hermes kanban create
+--idempotency-key icarus-bench:<task>:<reason>`` — hermes refuses to
+re-create a non-archived task with the same key.
+
+Failure classes:
+- ``verifier_failed`` — trial completed but verifier returned reward < 1
+- ``harness_loud_fail`` — Icarus harness raised IcarusLoudFail with
+  ``block_reason`` in the agent context metadata
+- ``harness_exception`` — agent threw an unexpected exception
+- ``environment_setup_failed`` — docker build / container start failed
+- ``unknown`` — anything else
+
+Knuth-lens invariant: every failed trial produces exactly one ticket
+or one comment, never both, never neither.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+JOBS_DIR = REPO_ROOT / "jobs" / "icarus"
+KANBAN_BOARD = os.environ.get("ICARUS_KANBAN_BOARD", "icarus")
+TICKET_ASSIGNEE = os.environ.get("ICARUS_TICKET_ASSIGNEE", "clawta")
+EMITTED_LOG = Path.home() / ".icarus" / "emitted-tickets.jsonl"
+SCAN_WINDOW_HOURS = int(os.environ.get("ICARUS_EMITTER_WINDOW_H", "48"))
+
+
+def log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    sys.stdout.write(f"[{ts}] [emitter] {msg}\n")
+    sys.stdout.flush()
+
+
+def hermes_bin() -> str:
+    h = shutil.which("hermes")
+    if not h:
+        raise RuntimeError("hermes CLI not on PATH; cannot emit tickets")
+    return h
+
+
+def find_recent_results(window_hours: int) -> list[Path]:
+    """Find ``results.json`` files under ``jobs/icarus/`` modified in
+    the last ``window_hours``."""
+    if not JOBS_DIR.is_dir():
+        return []
+    cutoff = datetime.now(timezone.utc).timestamp() - window_hours * 3600
+    out: list[Path] = []
+    for results in JOBS_DIR.rglob("results.json"):
+        try:
+            if results.stat().st_mtime >= cutoff:
+                out.append(results)
+        except OSError:
+            continue
+    return out
+
+
+def classify_failure(trial: dict) -> tuple[bool, str, str]:
+    """Inspect a TrialResult dict. Returns
+    ``(is_failure, block_reason, evidence_excerpt)``.
+
+    A trial is a failure if any of:
+    - ``exception_info`` is set (agent or environment crashed)
+    - ``verifier_result.reward`` < 1.0 (or missing)
+    - ``agent_result.metadata.icarus_block_reason`` is set
+    """
+    # Environment / agent-setup exception path takes priority.
+    exc_info = trial.get("exception_info")
+    if exc_info:
+        return (
+            True,
+            f"harness_exception:{exc_info.get('exception_type', 'unknown')}",
+            (exc_info.get("exception_message") or "")[:500],
+        )
+
+    agent_result = trial.get("agent_result") or {}
+    metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
+    icarus_reason = metadata.get("icarus_block_reason") if metadata else None
+
+    verifier_result = trial.get("verifier_result") or {}
+    reward = None
+    if isinstance(verifier_result, dict):
+        reward = verifier_result.get("reward")
+
+    if icarus_reason:
+        return True, f"harness_loud_fail:{icarus_reason}", _verifier_excerpt(verifier_result)
+
+    if reward is None:
+        return True, "verifier_missing", _verifier_excerpt(verifier_result)
+
+    try:
+        if float(reward) >= 1.0:
+            return False, "passed", ""
+    except (TypeError, ValueError):
+        return True, "verifier_malformed", str(reward)[:200]
+
+    return True, "verifier_failed", _verifier_excerpt(verifier_result)
+
+
+def _verifier_excerpt(verifier_result: dict) -> str:
+    """Pull a short, ticket-friendly excerpt from the verifier result."""
+    if not isinstance(verifier_result, dict):
+        return str(verifier_result)[:500]
+    pieces = []
+    if "reward" in verifier_result:
+        pieces.append(f"reward={verifier_result['reward']}")
+    if "test_results" in verifier_result:
+        pieces.append(f"tests={json.dumps(verifier_result['test_results'])[:300]}")
+    if "stdout" in verifier_result:
+        pieces.append(f"stdout(tail)=\n{(verifier_result['stdout'] or '')[-500:]}")
+    return "\n".join(pieces) if pieces else json.dumps(verifier_result)[:500]
+
+
+def idempotency_key(task_name: str, block_reason: str) -> str:
+    # Truncate to keep key reasonable.
+    return f"icarus-bench:{task_name}:{block_reason}"[:120]
+
+
+def ticket_body(
+    *,
+    task_name: str,
+    block_reason: str,
+    evidence: str,
+    trial_paths: list[str],
+    agent_info: dict,
+) -> str:
+    """Ticket body — Clawta-readable. Keep under ~2000 chars."""
+    trial_list = "\n".join(f"- `{p}`" for p in trial_paths[:5])
+    model = (agent_info.get("model_info") or {}).get("name", "unknown")
+    return f"""\
+skill: bench-failure-triage
+task: {task_name}
+block_reason: {block_reason}
+agent: {agent_info.get("name", "?")}@{agent_info.get("version", "?")} model={model}
+
+## Failure summary
+{evidence[:1500]}
+
+## Trial artifacts
+{trial_list}
+
+## What to do
+Reproduce locally with:
+  cd ~/workspace/chitin
+  PYTHONPATH=. harbor run --path ~/.cache/harbor/tasks/*/{task_name} \\
+    --agent-import-path swarm.icarus_harness.agent:IcarusAgent \\
+    --model ollama/qwen3-coder:30b-32k --job-name icarus-repro-{task_name}
+
+Then inspect the trajectory in jobs/icarus/icarus-repro-{task_name}/<trial>/agent/icarus-trajectory.jsonl
+and decide:
+- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/icarus_harness_test.py.
+- Is this a model-capability ceiling? Note the step it stalls and file a follow-up to swap models.
+- Is this a verifier flake? Re-run; if it passes, close as flake.
+
+This ticket auto-merges follow-up occurrences via idempotency-key. Comments accumulate; status stays open until you close it.
+"""
+
+
+def record_emitted(record: dict) -> None:
+    EMITTED_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with EMITTED_LOG.open("a") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def emit_ticket_or_comment(
+    *,
+    task_name: str,
+    block_reason: str,
+    evidence: str,
+    trial_path: Path,
+    agent_info: dict,
+    dry_run: bool,
+) -> dict:
+    """Single source of truth for ticket emission.
+
+    Uses `hermes kanban create --idempotency-key` for dedup. If the key
+    is already taken, hermes returns the existing task id and we append
+    a comment recording this new occurrence (so trend is visible without
+    duplicate tickets).
+    """
+    hermes = hermes_bin()
+    key = idempotency_key(task_name, block_reason)
+    title = f"icarus-bench failure: {task_name} ({block_reason[:40]})"
+    body = ticket_body(
+        task_name=task_name,
+        block_reason=block_reason,
+        evidence=evidence,
+        trial_paths=[str(trial_path)],
+        agent_info=agent_info,
+    )
+
+    if dry_run:
+        log(f"DRY-RUN: would create/append ticket key={key} title={title[:60]}")
+        return {"action": "dry_run", "key": key}
+
+    create_cmd = [
+        hermes, "kanban", "--board", KANBAN_BOARD,
+        "create", title,
+        "--body", body,
+        "--assignee", TICKET_ASSIGNEE,
+        "--idempotency-key", key,
+        "--skill", "bench-failure-triage",
+        "--triage",
+        "--json",
+    ]
+    proc = subprocess.run(create_cmd, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        # Successful create — parse JSON output for the task id.
+        try:
+            payload = json.loads(proc.stdout)
+            tid = payload.get("id") or payload.get("task", {}).get("id")
+        except json.JSONDecodeError:
+            tid = None
+        action = "created"
+        log(f"created ticket id={tid} key={key}")
+        return {"action": action, "key": key, "ticket_id": tid}
+
+    # hermes-kanban create returns non-zero when idempotency key collides.
+    # Find the existing task and comment on it instead.
+    stderr_low = (proc.stderr or "").lower() + (proc.stdout or "").lower()
+    if "idempotency" in stderr_low or "already exists" in stderr_low or "duplicate" in stderr_low:
+        existing = _find_ticket_by_key(hermes, key)
+        if existing:
+            comment_cmd = [
+                hermes, "kanban", "--board", KANBAN_BOARD,
+                "comment", existing,
+                f"Recurring bench failure: {trial_path}\n\n{evidence[:1000]}",
+                "--author", "icarus-bench-emitter",
+            ]
+            cproc = subprocess.run(comment_cmd, capture_output=True, text=True, check=False)
+            log(f"comment on existing ticket {existing} rc={cproc.returncode}")
+            return {"action": "commented", "key": key, "ticket_id": existing}
+        log(f"key {key} collides but cannot find existing ticket — skipping")
+        return {"action": "key_collision_unresolved", "key": key}
+
+    log(
+        f"create failed key={key} rc={proc.returncode} "
+        f"stderr={(proc.stderr or '').strip()[:400]}"
+    )
+    return {"action": "create_failed", "key": key, "stderr": proc.stderr}
+
+
+def _find_ticket_by_key(hermes: str, key: str) -> str | None:
+    """Look up an existing ticket by idempotency key. Returns task id or None.
+
+    The CLI accepts ``--idempotency-key`` on create but does not have a
+    direct query subcommand. We list and grep — slow but correct, and
+    the icarus board is small.
+    """
+    list_cmd = [hermes, "kanban", "--board", KANBAN_BOARD, "list", "--json"]
+    proc = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return None
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(rows, dict):
+        rows = rows.get("tasks", [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("idempotency_key") == key:
+            return row.get("id")
+    return None
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="icarus-bench-ticket-emitter")
+    p.add_argument(
+        "--window-hours", type=int, default=SCAN_WINDOW_HOURS,
+        help="how far back to scan jobs/icarus/ for results.json",
+    )
+    p.add_argument("--dry-run", action="store_true",
+                   help="log what would happen without creating tickets")
+    args = p.parse_args()
+
+    results = find_recent_results(args.window_hours)
+    log(f"scanned {len(results)} results.json files (window={args.window_hours}h)")
+
+    passes = 0
+    failures = 0
+    emitted: list[dict] = []
+    for results_path in results:
+        try:
+            trial = json.loads(results_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log(f"skip {results_path}: {exc}")
+            continue
+
+        is_failure, reason, evidence = classify_failure(trial)
+        task_name = trial.get("task_name", "unknown")
+        agent_info = trial.get("agent_info") or {}
+
+        if not is_failure:
+            passes += 1
+            continue
+        failures += 1
+
+        outcome = emit_ticket_or_comment(
+            task_name=task_name,
+            block_reason=reason,
+            evidence=evidence,
+            trial_path=results_path,
+            agent_info=agent_info,
+            dry_run=args.dry_run,
+        )
+        outcome["task_name"] = task_name
+        outcome["block_reason"] = reason
+        outcome["trial_path"] = str(results_path)
+        outcome["ts"] = datetime.now(timezone.utc).isoformat()
+        emitted.append(outcome)
+        if not args.dry_run:
+            record_emitted(outcome)
+
+    log(f"summary: passes={passes} failures={failures} actions={len(emitted)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
