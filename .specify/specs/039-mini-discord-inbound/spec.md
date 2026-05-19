@@ -63,8 +63,10 @@ status.json updates → webhook → back to Discord channel
 
 - `swarm/bin/mini-mention-listener` — Python daemon, 60s poll loop.
   Same shape as `clawta-mention-listener`.
-- `swarm/bin/install-mini-mention-listener.sh` — systemd-timer
-  installer, sibling to `install-clawta-mention-listener.sh`.
+- `swarm/bin/install-mini-mention-listener.sh` — cron installer,
+  sibling to `install-clawta-mention-listener.sh`. The box deploys via
+  user crontab, not systemd; the listener runs in `--once` mode each
+  minute so cron owns the cadence and no daemon process lingers.
 - `swarm/mini/_internal/routing.py` — new module. Single responsibility:
   given a bus message, return the `goal_id` it targets (or None).
 - `.swarm/octi/<goal_id>/thread_id` — new file in state dir. Single
@@ -133,8 +135,11 @@ Worker MAY write under:
 - `swarm/tests/test_mini_routing.py`
 - `swarm/docs/mini.md` (operator docs — append, not rewrite)
 - `.specify/specs/039-mini-discord-inbound/**`
-- `infra/systemd/mini-mention-listener.service`
-- `infra/systemd/mini-mention-listener.timer`
+
+(Slice 1.1: `infra/systemd/mini-mention-listener.{service,timer}` were
+in the original scope but retired — the box uses cron via crontab,
+matching `install-clawta-mention-listener.sh`. The systemd path can be
+restored if the box ever migrates.)
 
 Worker MUST NOT write under:
 - `swarm/octi/**` — controller is downstream of this slice
