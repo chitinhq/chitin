@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# octi-worker — slice-4 placeholder for spec 038.
+#
+# This entrypoint reserves the file path for the future Temporal-backed
+# worker (slice 4). It is intentionally non-functional in slice 1, where
+# Minnie is invoked directly from `swarm/bin/minnie`.
+#
+# See: .specify/specs/038-octi-persistent-claude-session/spec.md AC12.
+
+import sys
+
+
+def main() -> int:
+    sys.stderr.write(
+        "octi-worker: slice-4 placeholder; not yet implemented.\n"
+        "Use `minnie open` for slice-1 sessions.\n"
+        "See .specify/specs/038-octi-persistent-claude-session/spec.md\n"
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

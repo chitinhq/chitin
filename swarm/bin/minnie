@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+# minnie — slice-1 CLI for spec 038 (Octi).
+#
+# Persistent kitty + Claude Code session per goal-id, with status.json
+# contract, input lease, filtered Discord tailer, recovery mode.
+#
+# Subcommands: open / status / nudge / watch / stop
+#
+# See: .specify/specs/038-octi-persistent-claude-session/spec.md
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import signal
+import sys
+import time
+from pathlib import Path
+
+# Make the swarm.minnie package importable when minnie is invoked as a
+# symlink from ~/.local/bin/.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from swarm.minnie import MiniSession  # noqa: E402
+from swarm.minnie.session import (  # noqa: E402
+    GoalIdCollisionError,
+    RecoveryStateMissingError,
+    StatusMissingError,
+)
+from swarm.minnie._internal import (  # noqa: E402
+    kitty as _kitty,
+    lease as _lease,
+    statedir as _statedir,
+    transcript as _transcript,
+    webhook as _webhook,
+)
+
+
+# -------- exit codes (mirror plan §16) --------
+EXIT_USAGE = 2
+EXIT_KITTY_RC_OFF = 3
+EXIT_WEBHOOK_MISSING = 4
+EXIT_STATUS_BAD = 5
+EXIT_STATUS_NOT_YET = 6
+EXIT_LOCK_HELD = 7
+EXIT_WORKTREE_COLLISION = 8
+EXIT_GOAL_COLLISION = 9
+
+
+# -------- helpers --------
+
+
+def _resolve_goal_id(args: argparse.Namespace) -> str:
+    """For status/nudge/stop/watch: resolve goal-id from --goal-id, or from
+    a `goal_id` file in cwd (typical when operator is inside the worktree)."""
+    if getattr(args, "goal_id", None):
+        return args.goal_id
+    # Look upward for .swarm/octi/<id>/goal_id from cwd
+    here = Path.cwd().resolve()
+    for parent in [here] + list(here.parents):
+        candidate = parent / ".swarm" / "octi"
+        if candidate.is_dir():
+            # If only one goal-id dir is present, use it; otherwise require --goal-id.
+            ids = [d.name for d in candidate.iterdir() if d.is_dir() and (d / "goal_id").is_file()]
+            if len(ids) == 1:
+                return ids[0]
+            if len(ids) > 1:
+                sys.stderr.write(
+                    f"multiple goal-ids in {candidate}; pass --goal-id <id>:\n"
+                    f"  " + "\n  ".join(ids) + "\n"
+                )
+                sys.exit(EXIT_USAGE)
+    sys.stderr.write("no goal-id given and none discoverable from cwd\n")
+    sys.exit(EXIT_USAGE)
+
+
+# -------- subcommand handlers --------
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    try:
+        if args.recovery:
+            session = MiniSession.open(goal="", recovery=args.recovery)
+        else:
+            if not args.goal:
+                sys.stderr.write("--goal is required (or use --recovery <id>)\n")
+                return EXIT_USAGE
+            session = MiniSession.open(
+                goal=args.goal,
+                ticket=args.ticket,
+                cwd_is_worktree=args.cwd_is_worktree,
+            )
+    except GoalIdCollisionError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_GOAL_COLLISION
+    except RecoveryStateMissingError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_USAGE
+    except FileExistsError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_WORKTREE_COLLISION
+    print(json.dumps({
+        "goal_id": session.goal_id,
+        "state_dir": str(session.state_dir),
+        "worktree": str(session.worktree),
+        "branch": session.branch,
+    }, indent=2))
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    _statedir.cleanup_stale_temp_files(goal_id)
+    session = MiniSession.attach(goal_id)
+    try:
+        st = session.status()
+    except StatusMissingError as e:
+        # AC line: print state=unknown, warn, exit code per plan §16
+        print(json.dumps({
+            "goal_id": goal_id,
+            "state": "unknown",
+            "summary": "no status.json yet",
+            "note": str(e),
+        }, indent=2))
+        return EXIT_STATUS_NOT_YET
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"status.json malformed: {e}\n")
+        return EXIT_STATUS_BAD
+    print(json.dumps({"goal_id": goal_id, **st}, indent=2))
+    return 0
+
+
+def cmd_nudge(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    if not args.message:
+        sys.stderr.write("--message is required\n")
+        return EXIT_USAGE
+    session = MiniSession.attach(goal_id)
+    try:
+        session.nudge(
+            args.message,
+            holder=args.holder,
+            lease_seconds=args.lease_seconds,
+        )
+    except _lease.LockHeldError as e:
+        sys.stderr.write(f"{e} (wait or override); slice-1 has no --steal\n")
+        return EXIT_LOCK_HELD
+    print("ok")
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    sd = _statedir.state_dir(goal_id)
+    primary_url = _webhook.resolve_webhook_url(sd)
+    swarm_url = _webhook.resolve_swarm_webhook_url()
+    if not primary_url:
+        sys.stderr.write(
+            f"OCTI_DISCORD_WEBHOOK_URL unset and no {sd}/webhook.url; "
+            "watch needs a webhook\n"
+        )
+        return EXIT_WEBHOOK_MISSING
+
+    pid_file = sd / "watch.pid"
+    pid_file.write_text(f"{os.getpid()}\n")
+
+    transcript_path = sd / "transcript.log"
+    poll_sec = float(os.environ.get("MINNIE_TRANSCRIPT_POLL_SEC", "2"))
+    last_state = None
+    err_re = re.compile(r"^(Error:|Traceback \(most recent call last\)|FATAL:)")
+
+    _webhook.post(swarm_url, f"🐙 session.opened `{goal_id}` (watch attached)")
+
+    stopping = {"flag": False}
+
+    def _handle_term(_sig, _frame):
+        stopping["flag"] = True
+
+    signal.signal(signal.SIGTERM, _handle_term)
+    signal.signal(signal.SIGINT, _handle_term)
+
+    try:
+        while not stopping["flag"]:
+            # transcript poll
+            try:
+                screen = _kitty.get_screen_text(goal_id)
+                appended = _transcript.append_new_tail(transcript_path, screen)
+                if appended > 0 and args.debug_tail:
+                    _webhook.post(primary_url, f"```\n{screen[-1800:]}\n```")
+                if appended > 0:
+                    # Scan newly appended bytes for error lines
+                    with transcript_path.open("rb") as f:
+                        f.seek(max(0, transcript_path.stat().st_size - appended))
+                        new_chunk = f.read().decode("utf-8", "replace")
+                    for line in new_chunk.splitlines():
+                        if err_re.search(line):
+                            _webhook.post(primary_url, f"⚠️ transcript.error `{goal_id}` `{line[:200]}`")
+            except RuntimeError:
+                # kitty call failed; report once and back off.
+                _webhook.post(primary_url, f"⚠️ kitty unreachable for `{goal_id}`; retrying")
+
+            # status transition
+            try:
+                st = json.loads((sd / "status.json").read_text())
+                cur = st.get("state")
+                if cur and cur != last_state:
+                    _webhook.post(
+                        primary_url,
+                        f"🔁 state.transition `{goal_id}` {last_state or '∅'} → {cur} — {st.get('summary','')[:140]}",
+                    )
+                    last_state = cur
+                    if cur in ("done", "needs_review", "failed"):
+                        break
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+
+            time.sleep(poll_sec)
+    finally:
+        pid_file.unlink(missing_ok=True)
+        _webhook.post(swarm_url, f"🛑 session.stopped `{goal_id}` (watch detached, final={last_state})")
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    session = MiniSession.attach(goal_id)
+    session.stop(reason=args.reason)
+    print("stopped")
+    return 0
+
+
+# -------- argparse --------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="minnie", description="Persistent kitty + Claude Code + Discord bridge (spec 038 slice 1)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    o = sub.add_parser("open", help="open a new session or recover an existing one")
+    o.add_argument("--goal", help="goal text (required unless --recovery)")
+    o.add_argument("--recovery", metavar="GOAL_ID", help="resume an existing goal")
+    o.add_argument("--ticket", help="bind to kanban ticket id (uses agent/octi-<ticket> branch)")
+    o.add_argument("--cwd-is-worktree", action="store_true", help="treat current dir as worktree (skip auto-create)")
+    o.set_defaults(func=cmd_open)
+
+    s = sub.add_parser("status", help="read status.json for a goal")
+    s.add_argument("--goal-id", help="goal id (auto-discovered from cwd if omitted)")
+    s.set_defaults(func=cmd_status)
+
+    n = sub.add_parser("nudge", help="send a message to the session (lease-locked)")
+    n.add_argument("--goal-id")
+    n.add_argument("--message", required=False, help="nudge text")
+    n.add_argument("--holder", help="operator identity (defaults to $OCTI_OPERATOR or current user)")
+    n.add_argument("--lease-seconds", type=int, default=_lease.DEFAULT_LEASE_SECONDS)
+    n.set_defaults(func=cmd_nudge)
+
+    w = sub.add_parser("watch", help="long-running Discord event tailer")
+    w.add_argument("--goal-id")
+    w.add_argument("--debug-tail", action="store_true", help="post raw transcript to webhook")
+    w.set_defaults(func=cmd_watch)
+
+    st = sub.add_parser("stop", help="terminate kitty window, mark status=failed")
+    st.add_argument("--goal-id")
+    st.add_argument("--reason", default="operator-stop")
+    st.set_defaults(func=cmd_stop)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
