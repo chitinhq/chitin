@@ -7,6 +7,17 @@
 // At policy load time the kernel calls VerifyPolicySignatureFile (or
 // VerifyPolicySignatureBytes) before parsing the YAML, refusing to
 // continue if a pinned operator public key fails verification.
+//
+// Operator-presence bypass: when CHITIN_GOV_OPERATOR_AUTHORIZED=1 is
+// set in the calling process env, signature verification is skipped.
+// Same env-var contract the rule-eval bypass in gate.go honors (see
+// Gate.Evaluate § 4.6) — the operator is sitting in the loop and their
+// presence is the trust signal, so each worktree no longer needs its
+// own copy of the sidecar to be usable interactively. Autonomous
+// workers (clawta-poller, kanban-dispatch.lobster, mini watch) MUST
+// scrub this env var before spawn so they fall back to sig-required
+// mode; see swarm/workflows/spawn_worker_subprocess.py and its
+// regression test.
 
 package gov
 
@@ -89,13 +100,22 @@ func (o PolicyLoadOptions) trustDir() string {
 	return filepath.Join(home, ".chitin", "trust")
 }
 
+// operatorPresenceBypass reports whether CHITIN_GOV_OPERATOR_AUTHORIZED=1
+// is set in the env. When true, signature verification short-circuits
+// to success — operator presence is the trust signal. Autonomous
+// worker spawns MUST scrub this env var; see package doc comment.
+func operatorPresenceBypass() bool {
+	return os.Getenv("CHITIN_GOV_OPERATOR_AUTHORIZED") == "1"
+}
+
 // VerifyPolicySignatureFile reads the policy file at path and
 // verifies the sidecar `<path>.sig` against the resolved trust key.
 // It returns nil when verification succeeds, when no signature is
-// required, or when opts.BypassSignature is true; otherwise it
-// returns a *PolicySignatureError describing the failure.
+// required, when opts.BypassSignature is true, or when the operator
+// presence env var is set; otherwise it returns a
+// *PolicySignatureError describing the failure.
 func VerifyPolicySignatureFile(path string, opts PolicyLoadOptions) error {
-	if opts.BypassSignature {
+	if opts.BypassSignature || operatorPresenceBypass() {
 		return nil
 	}
 
@@ -111,7 +131,7 @@ func VerifyPolicySignatureFile(path string, opts PolicyLoadOptions) error {
 // from disk so callers can verify a policy that came from a non-file
 // source (e.g. inheritance) without re-reading it.
 func VerifyPolicySignatureBytes(path string, data []byte, opts PolicyLoadOptions) error {
-	if opts.BypassSignature {
+	if opts.BypassSignature || operatorPresenceBypass() {
 		return nil
 	}
 
