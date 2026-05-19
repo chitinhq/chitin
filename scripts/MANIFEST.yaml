@@ -180,6 +180,10 @@ entries:
     category: ci
     purpose: exercise the hermes to clawta to lobster dispatch chain with seeded smoke tickets
 
+  - path: scripts/swarm-bus
+    category: operator
+    purpose: thin CLI over agent-bus MCP tools (bus_reply, bus_post_thread, bus_inbox, etc.) so any agent can post to threads via shell
+
   - path: scripts/swarm-sessionstart-hook/install.sh
     category: operator
     purpose: install the swarm SessionStart hook into the operator claude-code settings
