@@ -49,7 +49,13 @@ def _now() -> int:
 # match the bot's display name with exact case or Discord won't fire the
 # notification. The bus normalizes any case variant to the canonical form
 # before write + push so callers never have to remember (e.g. `@clawta` →
-# `@Clawta`). Operator-confirmed canonicals (2026-05-18):
+# `@Clawta`). Operator-confirmed canonicals (2026-05-18).
+#
+# To add a new agent: append a lowercase → canonical-case entry below,
+# then `claude mcp restart agent-bus` (or kill + let the supervisor
+# respawn) so the running server picks up the new mapping. The regex
+# _MENTION_RE is rebuilt from this dict at module load, so no other
+# edits are required.
 _CANONICAL_MENTIONS: dict[str, str] = {
     "clawta": "Clawta",
     "ares": "ares",
