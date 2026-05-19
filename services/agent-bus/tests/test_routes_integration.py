@@ -106,7 +106,7 @@ class RoutesIntegrationTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["discord_message_id"], "snowflake-C-SWARM")
 
-    def test_audience_route_wins_over_board(self):
+    def test_single_agent_audience_wins_over_board(self):
         _call(self.server, self.conn, "bus_routes_set",
               scope="board", key="chitin", channel_id="C-SWARM")
         _call(self.server, self.conn, "bus_routes_set",
@@ -115,6 +115,21 @@ class RoutesIntegrationTests(unittest.TestCase):
                     author="red", title="t", body="hi",
                     board="chitin", audience="clawta")
         self.assertEqual(out["discord_channel_id"], "C-CLAWTA")
+
+    def test_multi_agent_audience_falls_through_to_board(self):
+        # Regression for the post-PR-789 hotfix: a thread with audience
+        # naming multiple agents should land in the BOARD channel
+        # (coordination), not in any single participant's audience channel.
+        _call(self.server, self.conn, "bus_routes_set",
+              scope="board", key="chitin", channel_id="C-SWARM")
+        _call(self.server, self.conn, "bus_routes_set",
+              scope="audience", key="clawta", channel_id="C-CLAWTA")
+        _call(self.server, self.conn, "bus_routes_set",
+              scope="audience", key="ares", channel_id="C-ARES")
+        out = _call(self.server, self.conn, "bus_post_thread",
+                    author="red", title="coordination",
+                    body="ping both", board="chitin", audience="ares,clawta")
+        self.assertEqual(out["discord_channel_id"], "C-SWARM")
 
     def test_global_default_used_when_board_unmatched(self):
         _call(self.server, self.conn, "bus_routes_set",
