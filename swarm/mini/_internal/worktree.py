@@ -2,16 +2,24 @@
 
 Per spec line 244: auto-create ~/workspace/chitin-octi-<slug> unless
 --cwd-is-worktree. No primary checkout edits (constitution §2).
+
+Also propagates the chitin governance signature (chitin.yaml.sig) from
+the primary checkout to the new worktree, because that file is
+gitignored and so git worktree add does not copy it — without the
+sidecar, every tool call inside the worktree is rejected by the
+governance hook as policy_signature_missing.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 DEFAULT_PRIMARY_NAME = "chitin"
 DEFAULT_WORKSPACE = Path.home() / "workspace"
+GOVERNANCE_SIDECARS = ("chitin.yaml.sig",)
 
 
 def primary_checkout() -> Path:
@@ -75,4 +83,34 @@ def create_worktree(
     if add.returncode != 0:
         raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
 
+    copy_governance_sidecars(primary=primary, worktree=wt)
     return wt, branch
+
+
+def copy_governance_sidecars(
+    *,
+    primary: Path,
+    worktree: Path,
+    sidecars: tuple[str, ...] = GOVERNANCE_SIDECARS,
+) -> list[str]:
+    """Copy gitignored governance sidecars (e.g. chitin.yaml.sig) into the
+    new worktree. Without these, the chitin policy hook rejects every
+    tool call inside the worktree with `policy_signature_missing`.
+
+    Returns the list of relative paths copied. Missing sources are
+    silently skipped — the governance hook will surface a clear error if
+    the sidecar is genuinely required and missing.
+    """
+    if not worktree.is_dir():
+        return []
+    copied: list[str] = []
+    for rel in sidecars:
+        src = primary / rel
+        dst = worktree / rel
+        if not src.is_file():
+            continue
+        if dst.exists():
+            continue
+        shutil.copy2(src, dst)
+        copied.append(rel)
+    return copied

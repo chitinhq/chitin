@@ -82,5 +82,74 @@ class TestCreateWorktree(unittest.TestCase):
         self.assertEqual(branch, "agent/octi-t_123")
 
 
+class TestCopyGovernanceSidecars(unittest.TestCase):
+    """Root cause of policy_signature_missing on every `mini open`:
+    chitin.yaml.sig is gitignored, so `git worktree add` leaves it behind
+    in the primary checkout. Without it, the governance hook rejects
+    every tool call inside the new worktree. The fix copies the sidecar.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.primary = Path(self.tmp.name) / "primary"
+        self.worktree = Path(self.tmp.name) / "worktree"
+        self.primary.mkdir()
+        self.worktree.mkdir()
+
+    def test_copies_chitin_yaml_sig(self):
+        (self.primary / "chitin.yaml").write_text("policy: ...")
+        (self.primary / "chitin.yaml.sig").write_bytes(b"\x00\x01signature")
+        copied = wt_mod.copy_governance_sidecars(
+            primary=self.primary, worktree=self.worktree
+        )
+        self.assertEqual(copied, ["chitin.yaml.sig"])
+        self.assertEqual(
+            (self.worktree / "chitin.yaml.sig").read_bytes(),
+            b"\x00\x01signature",
+        )
+
+    def test_missing_source_is_silent(self):
+        copied = wt_mod.copy_governance_sidecars(
+            primary=self.primary, worktree=self.worktree
+        )
+        self.assertEqual(copied, [])
+
+    def test_does_not_overwrite_existing(self):
+        (self.primary / "chitin.yaml.sig").write_bytes(b"primary")
+        (self.worktree / "chitin.yaml.sig").write_bytes(b"worktree-local")
+        copied = wt_mod.copy_governance_sidecars(
+            primary=self.primary, worktree=self.worktree
+        )
+        self.assertEqual(copied, [])
+        self.assertEqual(
+            (self.worktree / "chitin.yaml.sig").read_bytes(), b"worktree-local"
+        )
+
+    def test_create_worktree_invokes_sidecar_copy(self):
+        """End-to-end: create_worktree must trigger the sidecar copy after
+        git worktree add succeeds."""
+        with mock.patch.object(wt_mod, "primary_checkout", return_value=self.primary):
+            with mock.patch.object(
+                wt_mod, "worktree_path", lambda gid: self.worktree / gid
+            ):
+                # Pre-seed the primary with a signature
+                (self.primary / "chitin.yaml.sig").write_bytes(b"sig-data")
+
+                def fake(args, **kw):
+                    if "worktree" in args and "add" in args:
+                        # Materialize the worktree dir as `git worktree add` would.
+                        for a in args:
+                            if isinstance(a, str) and a.startswith(str(self.worktree)):
+                                Path(a).mkdir(parents=True, exist_ok=True)
+                    return _ok(args, **kw)
+
+                wt, _ = wt_mod.create_worktree(
+                    goal_id="g-sig", ticket=None, runner=fake
+                )
+                self.assertTrue((wt / "chitin.yaml.sig").is_file())
+                self.assertEqual((wt / "chitin.yaml.sig").read_bytes(), b"sig-data")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,11 +22,17 @@ STATE_ROOT_ENV = "MINI_STATE_ROOT"
 
 
 def state_root() -> Path:
-    """Root directory under which all goal-id state dirs live."""
+    """Root directory under which all goal-id state dirs live.
+
+    Default is ``~/.swarm/octi`` — never the operator's primary checkout.
+    Putting state under cwd was a slice-1 bug that caused writes inside
+    ``~/workspace/chitin/`` (constitution §2 violation) whenever the
+    operator ran ``mini open`` from the primary.
+    """
     override = os.environ.get(STATE_ROOT_ENV)
     if override:
         return Path(override).expanduser().resolve()
-    return Path.cwd() / ".swarm" / "octi"
+    return (Path.home() / ".swarm" / "octi").resolve()
 
 
 def state_dir(goal_id: str) -> Path:
