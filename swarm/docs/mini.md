@@ -13,7 +13,8 @@ swarm/bin/install-mini.sh
 ```
 
 What it does:
-- Symlinks `swarm/bin/mini` and `swarm/bin/octi-worker` into `~/.local/bin/`.
+- Symlinks `swarm/bin/mini`, `swarm/bin/octi`, and `swarm/bin/octi-worker`
+  into `~/.local/bin/`.
 - Creates `~/.swarm/octi/` as the default state root.
 - Verifies kitty is installed and remote control is enabled.
 - Warns if `OCTI_DISCORD_WEBHOOK_URL` is unset (`watch` requires one).
@@ -64,7 +65,9 @@ Claude is instructed by the initial prompt to write
 | `blockers` | list[string] | empty list when nothing blocks |
 | `verify` | string | shell command exiting 0 iff goal satisfied |
 
-Slice 2 will run `verify` independently — slice 1 only reports.
+Slice 2 (`octi`) runs `verify` independently and persists the result to
+`controller_verdict.json` — see `swarm/docs/octi.md`. Slice 1 (`mini`)
+only reports.
 
 ## Env vars
 
@@ -116,5 +119,7 @@ Mini is **interface**. It does not own:
 - Retry policy.
 - Temporal workflow state.
 
-These belong to **Octi** (slices 2-4). Octi will import only `MiniSession`
-from this package — no internals. AC10 enforces this by grep.
+These belong to **Octi** (slices 2-4). Octi imports only `MiniSession`
+from this package — no internals. AC10 enforces this by grep. Slice 2
+(controller loop + verifier) ships in `swarm/bin/octi` — see
+`swarm/docs/octi.md`.

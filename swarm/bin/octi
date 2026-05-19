@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+# octi — slice-2 CLI for spec 038.
+#
+# Drives a persistent Mini session with the Octi controller loop:
+#   - opens (or attaches to) a Mini session and runs the controller loop
+#     in the foreground (use `&` for backgrounded use)
+#   - one-shot verifier (`octi verify`) against an existing session
+#   - pause/resume toggles the outer-loop nudge+verify gate (the kitty
+#     session keeps running regardless)
+#   - stop terminates the kitty session (delegates to Mini)
+#
+# Subcommands: open / verify / pause / resume / stop / status
+#
+# See: .specify/specs/038-octi-persistent-claude-session/spec.md slice 2.
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+# Make the swarm.octi package importable when octi is invoked via the
+# ~/.local/bin/ symlink that install-mini.sh wires up.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from swarm.mini import MiniSession  # noqa: E402
+from swarm.mini.session import (  # noqa: E402
+    GoalIdCollisionError,
+    RecoveryStateMissingError,
+    StatusMissingError,
+)
+from swarm.mini._internal import statedir as _statedir  # noqa: E402 — CLI plumbing only.
+
+from swarm.octi import Controller, ControllerConfig  # noqa: E402
+from swarm.octi.controller import (  # noqa: E402
+    paused_flag_path,
+    pid_path,
+    read_verdict,
+)
+from swarm.octi.verifier import Verifier  # noqa: E402
+
+
+# -------- exit codes (extends mini's set) --------
+EXIT_USAGE = 2
+EXIT_VERIFY_FAILED = 10
+EXIT_VERIFY_NO_VERIFIER = 11
+EXIT_STATUS_MISSING = 6
+EXIT_GOAL_COLLISION = 9
+
+
+# -------- helpers --------
+
+
+def _resolve_goal_id(args: argparse.Namespace) -> str:
+    """Same logic as mini's _resolve_goal_id: explicit --goal-id, else
+    auto-discover from cwd / .swarm/octi/<id>/goal_id."""
+    if getattr(args, "goal_id", None):
+        return args.goal_id
+    here = Path.cwd().resolve()
+    for parent in [here] + list(here.parents):
+        candidate = parent / ".swarm" / "octi"
+        if candidate.is_dir():
+            ids = [d.name for d in candidate.iterdir()
+                   if d.is_dir() and (d / "goal_id").is_file()]
+            if len(ids) == 1:
+                return ids[0]
+            if len(ids) > 1:
+                sys.stderr.write(
+                    f"multiple goal-ids in {candidate}; pass --goal-id <id>:\n"
+                    f"  " + "\n  ".join(ids) + "\n"
+                )
+                sys.exit(EXIT_USAGE)
+    sys.stderr.write("no goal-id given and none discoverable from cwd\n")
+    sys.exit(EXIT_USAGE)
+
+
+def _stderr_notifier(prefix: str = ""):
+    def _notify(msg: str) -> None:
+        sys.stderr.write(f"{prefix}{msg}\n")
+        sys.stderr.flush()
+    return _notify
+
+
+# -------- subcommand handlers --------
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    """Open a Mini session and run the controller loop in the foreground.
+
+    For backgrounded use, run with `&` from the shell. The controller
+    writes its PID to ``controller.pid`` so ``octi stop`` can terminate it.
+    """
+    try:
+        if args.recovery:
+            session = MiniSession.open(goal="", recovery=args.recovery)
+        else:
+            if not args.goal:
+                sys.stderr.write("--goal is required (or use --recovery <id>)\n")
+                return EXIT_USAGE
+            session = MiniSession.open(
+                goal=args.goal,
+                ticket=args.ticket,
+                cwd_is_worktree=args.cwd_is_worktree,
+            )
+    except GoalIdCollisionError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_GOAL_COLLISION
+    except RecoveryStateMissingError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_USAGE
+
+    sys.stdout.write(json.dumps({
+        "goal_id": session.goal_id,
+        "state_dir": str(session.state_dir),
+        "worktree": str(session.worktree),
+        "branch": session.branch,
+    }, indent=2) + "\n")
+    sys.stdout.flush()
+
+    return _run_controller(session, args)
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    """Attach the controller loop to an already-open Mini session."""
+    goal_id = _resolve_goal_id(args)
+    session = MiniSession.attach(goal_id)
+    return _run_controller(session, args)
+
+
+def _run_controller(session: MiniSession, args: argparse.Namespace) -> int:
+    config = ControllerConfig.from_env()
+    if args.poll_seconds is not None:
+        config.poll_seconds = args.poll_seconds
+    if args.stall_seconds is not None:
+        config.stall_seconds = args.stall_seconds
+    controller = Controller(
+        session,
+        config=config,
+        notifier=_stderr_notifier("[octi] "),
+    )
+    pid_file = pid_path(session.state_dir)
+    pid_file.write_text(f"{os.getpid()}\n")
+
+    stopping = {"flag": False}
+
+    def _handle_term(_sig, _frame):
+        stopping["flag"] = True
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _handle_term)
+    signal.signal(signal.SIGINT, _handle_term)
+
+    sys.stderr.write(
+        f"[octi] controller attached goal_id={session.goal_id} "
+        f"poll={config.poll_seconds}s stall={config.stall_seconds}s "
+        f"cooldown={config.nudge_cooldown_seconds}s\n"
+    )
+    try:
+        outcome = controller.run(max_ticks=args.max_ticks)
+    finally:
+        pid_file.unlink(missing_ok=True)
+    sys.stderr.write(f"[octi] terminal outcome: {outcome}\n")
+    return 0 if outcome == "terminal_done_passed" else 1
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """One-shot independent verifier for an existing session.
+
+    Reads ``status.json.verify`` and runs it in the worktree. Writes the
+    result to ``controller_verdict.json`` and exits with:
+      0  pass
+      6  status.json missing
+      10 fail / timeout / error
+      11 no verifier configured (needs_review)
+    """
+    goal_id = _resolve_goal_id(args)
+    session = MiniSession.attach(goal_id)
+    try:
+        status = session.status()
+    except StatusMissingError as e:
+        sys.stderr.write(f"{e}\n")
+        return EXIT_STATUS_MISSING
+
+    verifier = Verifier(
+        cwd=session.worktree,
+        timeout_seconds=args.timeout or 600,
+    )
+    result = verifier.run(status.get("verify"))
+
+    from swarm.octi.controller import write_verdict_atomic
+    write_verdict_atomic(session.state_dir, {
+        "verdict": result.verdict,
+        "status_updated_at": status.get("updated_at"),
+        "verified_at": int(__import__("time").time()),
+        "command": result.command,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "duration_seconds": result.duration_seconds,
+        "timed_out": result.timed_out,
+        "via": "octi verify (one-shot)",
+    })
+
+    sys.stdout.write(json.dumps({
+        "goal_id": goal_id,
+        "verdict": result.verdict,
+        "returncode": result.returncode,
+        "duration_seconds": result.duration_seconds,
+        "timed_out": result.timed_out,
+    }, indent=2) + "\n")
+
+    if result.verdict == "passed":
+        return 0
+    if result.verdict == "no_verifier":
+        return EXIT_VERIFY_NO_VERIFIER
+    return EXIT_VERIFY_FAILED
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    sd = _statedir.state_dir(goal_id)
+    if not sd.is_dir():
+        sys.stderr.write(f"no state dir for goal-id {goal_id!r}\n")
+        return EXIT_USAGE
+    flag = paused_flag_path(sd)
+    flag.write_text(f"paused by {args.holder or 'operator'}\n")
+    print(f"paused {goal_id}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    sd = _statedir.state_dir(goal_id)
+    if not sd.is_dir():
+        sys.stderr.write(f"no state dir for goal-id {goal_id!r}\n")
+        return EXIT_USAGE
+    paused_flag_path(sd).unlink(missing_ok=True)
+    print(f"resumed {goal_id}")
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    goal_id = _resolve_goal_id(args)
+    session = MiniSession.attach(goal_id)
+    # First, kill controller.pid if present (so the loop won't fight us).
+    pid_file = pid_path(session.state_dir)
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        pid_file.unlink(missing_ok=True)
+    session.stop(reason=args.reason)
+    print(f"stopped {goal_id}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Read both status.json and controller_verdict.json for full picture."""
+    goal_id = _resolve_goal_id(args)
+    session = MiniSession.attach(goal_id)
+    out = {"goal_id": goal_id}
+    try:
+        out["status"] = session.status()
+    except StatusMissingError as e:
+        out["status"] = {"state": "unknown", "note": str(e)}
+    verdict = read_verdict(session.state_dir)
+    out["controller_verdict"] = verdict
+    out["paused"] = paused_flag_path(session.state_dir).is_file()
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+# -------- argparse --------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="octi",
+        description="Octi — deterministic workflow controller (spec 038 slice 2)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    o = sub.add_parser("open", help="open a Mini session and run the controller loop in foreground")
+    o.add_argument("--goal")
+    o.add_argument("--recovery", metavar="GOAL_ID")
+    o.add_argument("--ticket")
+    o.add_argument("--cwd-is-worktree", action="store_true")
+    o.add_argument("--poll-seconds", type=float, default=None)
+    o.add_argument("--stall-seconds", type=int, default=None)
+    o.add_argument("--max-ticks", type=int, default=None, help="exit after N ticks (testing)")
+    o.set_defaults(func=cmd_open)
+
+    a = sub.add_parser("attach", help="attach the controller loop to an existing session")
+    a.add_argument("--goal-id")
+    a.add_argument("--poll-seconds", type=float, default=None)
+    a.add_argument("--stall-seconds", type=int, default=None)
+    a.add_argument("--max-ticks", type=int, default=None)
+    a.set_defaults(func=cmd_attach)
+
+    v = sub.add_parser("verify", help="run the verify command from status.json once")
+    v.add_argument("--goal-id")
+    v.add_argument("--timeout", type=int, default=600, help="verify timeout seconds")
+    v.set_defaults(func=cmd_verify)
+
+    ps = sub.add_parser("pause", help="pause the outer loop (terminal session keeps running)")
+    ps.add_argument("--goal-id")
+    ps.add_argument("--holder")
+    ps.set_defaults(func=cmd_pause)
+
+    rs = sub.add_parser("resume", help="resume the outer loop")
+    rs.add_argument("--goal-id")
+    rs.set_defaults(func=cmd_resume)
+
+    st = sub.add_parser("stop", help="terminate the kitty session and any running controller")
+    st.add_argument("--goal-id")
+    st.add_argument("--reason", default="operator-stop")
+    st.set_defaults(func=cmd_stop)
+
+    s = sub.add_parser("status", help="show status.json + controller verdict + pause flag")
+    s.add_argument("--goal-id")
+    s.set_defaults(func=cmd_status)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

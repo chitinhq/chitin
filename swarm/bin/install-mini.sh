@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install-mini.sh — wire `mini` and `octi-worker` onto PATH and verify
-# kitty remote control. Idempotent per constitution §6.
+# install-mini.sh — wire `mini`, `octi`, and `octi-worker` onto PATH and
+# verify kitty remote control. Idempotent per constitution §6.
 #
 # What it does:
-#   1. Symlinks swarm/bin/mini and swarm/bin/octi-worker into ~/.local/bin/
+#   1. Symlinks swarm/bin/{mini,octi,octi-worker} into ~/.local/bin/
 #   2. Verifies kitty is installed and remote-control is enabled
 #   3. Warns if OCTI_DISCORD_WEBHOOK_URL is not set (does not fail)
 #   4. Creates ~/.swarm/octi/.gitkeep so the default state root exists
@@ -18,7 +18,7 @@ STATE_ROOT_DEFAULT="$HOME/.swarm/octi"
 
 mkdir -p "$LOCAL_BIN"
 
-for tool in mini octi-worker; do
+for tool in mini octi octi-worker; do
   src="$REPO_ROOT/swarm/bin/$tool"
   if [[ ! -f "$src" ]]; then
     echo "ERROR: missing source: $src" >&2
@@ -59,4 +59,4 @@ if [[ -z "${OCTI_DISCORD_WEBHOOK_URL:-}" ]]; then
   echo "  \`mini watch\` requires a webhook URL."
 fi
 
-echo "install complete. Try: mini --help"
+echo "install complete. Try: mini --help  /  octi --help"
