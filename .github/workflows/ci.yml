@@ -61,7 +61,7 @@ jobs:
           find node_modules -name 'better_sqlite3.node' | head
 
       - name: Tolerant router stdin contract (spec 036 invariant 1)
-        run: python3 -m unittest swarm.tests.test_pick_driver.PickDriverTests.test_pick_driver_tolerates_garbage_stdin
+        run: python3 -m unittest swarm.tests.test_dispatch_fault_tolerance_invariants.Inv1ClassifyRobustnessTests.test_pick_driver_tolerates_garbage_stdin
 
       - name: Lifecycle trace smoke
         run: python3 -m unittest swarm.tests.test_trace_lifecycle
