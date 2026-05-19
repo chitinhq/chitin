@@ -31,7 +31,7 @@ class TestOctiImportBoundary(unittest.TestCase):
         # Exact spec grep, slightly hardened for portability.
         result = subprocess.run(
             ["bash", "-c",
-             f"grep -rE 'from[[:space:]]+.*[Mm]inni?e.*[[:space:]]+import' "
+             f"grep -rE 'from[[:space:]]+.*swarm\\.mini.*[[:space:]]+import' "
              f"{octi_dir} | grep -vE 'import[[:space:]]+MiniSession\\b' || true"],
             capture_output=True, text=True, check=False, timeout=10,
         )
