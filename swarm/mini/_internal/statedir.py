@@ -1,4 +1,4 @@
-"""State directory helpers for Minnie sessions.
+"""State directory helpers for Mini sessions.
 
 Layout: <root>/.swarm/octi/<goal-id>/
   - goal.txt        : raw goal text
@@ -8,7 +8,7 @@ Layout: <root>/.swarm/octi/<goal-id>/
   - status.json     : 6-field state contract (written by Claude)
   - input.lock      : input lease (JSON: holder/acquired_at/expires_at)
   - transcript.log  : append-only kitty get-text capture
-  - watch.pid       : optional PID file for `minnie watch`
+  - watch.pid       : optional PID file for `mini watch`
   - webhook.url     : optional per-session webhook override
 """
 
@@ -18,7 +18,7 @@ import os
 import time
 from pathlib import Path
 
-STATE_ROOT_ENV = "MINNIE_STATE_ROOT"
+STATE_ROOT_ENV = "MINI_STATE_ROOT"
 
 
 def state_root() -> Path:
@@ -50,7 +50,7 @@ def read_state_file(goal_id: str, name: str) -> str:
 def cleanup_stale_temp_files(goal_id: str, *, max_age_seconds: int = 300) -> int:
     """Unlink stale .inject-*.txt files in the goal state dir.
 
-    Called on every `minnie open` and `minnie status` per AC9.
+    Called on every `mini open` and `mini status` per AC9.
     Returns count of files unlinked. FileNotFoundError swallowed.
     """
     sd = state_dir(goal_id)

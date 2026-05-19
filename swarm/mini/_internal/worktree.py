@@ -1,4 +1,4 @@
-"""Worktree management for Minnie sessions.
+"""Worktree management for Mini sessions.
 
 Per spec line 244: auto-create ~/workspace/chitin-octi-<slug> unless
 --cwd-is-worktree. No primary checkout edits (constitution §2).
@@ -17,9 +17,9 @@ DEFAULT_WORKSPACE = Path.home() / "workspace"
 def primary_checkout() -> Path:
     """Heuristic: ~/workspace/chitin per operator convention.
 
-    Operators can override via MINNIE_PRIMARY_CHECKOUT.
+    Operators can override via MINI_PRIMARY_CHECKOUT.
     """
-    override = os.environ.get("MINNIE_PRIMARY_CHECKOUT")
+    override = os.environ.get("MINI_PRIMARY_CHECKOUT")
     if override:
         return Path(override).expanduser().resolve()
     return (DEFAULT_WORKSPACE / DEFAULT_PRIMARY_NAME).resolve()

@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal.lease import (
+from swarm.mini._internal.lease import (
     DEFAULT_LEASE_SECONDS,
     Lease,
     LockHeldError,

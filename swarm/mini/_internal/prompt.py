@@ -1,4 +1,4 @@
-"""Initial prompt rendering for Minnie sessions."""
+"""Initial prompt rendering for Mini sessions."""
 
 from __future__ import annotations
 

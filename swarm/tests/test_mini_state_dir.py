@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal.statedir import (
+from swarm.mini._internal.statedir import (
     STATE_ROOT_ENV,
     cleanup_stale_temp_files,
     create_state_dir,
@@ -40,12 +40,12 @@ class TestStateDir(unittest.TestCase):
     def test_create_state_dir_writes_all_files(self):
         sd = create_state_dir(
             "abc-12345678",
-            goal="Add minnie launcher",
+            goal="Add mini launcher",
             branch="octi/abc-12345678",
             worktree=Path("/tmp/wt"),
         )
         self.assertTrue(sd.is_dir())
-        self.assertEqual((sd / "goal.txt").read_text().strip(), "Add minnie launcher")
+        self.assertEqual((sd / "goal.txt").read_text().strip(), "Add mini launcher")
         self.assertEqual((sd / "goal_id").read_text().strip(), "abc-12345678")
         self.assertEqual((sd / "branch").read_text().strip(), "octi/abc-12345678")
         self.assertEqual((sd / "worktree").read_text().strip(), "/tmp/wt")

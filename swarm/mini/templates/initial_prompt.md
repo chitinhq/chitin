@@ -1,6 +1,6 @@
-# Minnie session — status contract
+# Mini session — status contract
 
-You are running inside a Minnie session managed by `swarm/bin/minnie`.
+You are running inside a Mini session managed by `swarm/bin/mini`.
 
 **Goal**: {goal}
 
@@ -34,7 +34,7 @@ Rules:
   `pytest swarm/tests/test_foo.py` or `make slice1`). Set it as soon as
   you know what success looks like — don't wait until done.
 
-The outer Minnie controller treats `updated_at` as the primary liveness
+The outer Mini controller treats `updated_at` as the primary liveness
 signal — not terminal output. A stale `updated_at` will trigger a nudge.
 
 ## State transitions you should write

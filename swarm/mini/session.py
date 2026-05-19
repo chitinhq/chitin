@@ -36,7 +36,7 @@ class RecoveryStateMissingError(RuntimeError):
     pass
 
 
-CLAUDE_CMD_ENV = "MINNIE_CLAUDE_CMD"
+CLAUDE_CMD_ENV = "MINI_CLAUDE_CMD"
 DEFAULT_CLAUDE_CMD = ["claude", "--dangerously-skip-permissions"]
 
 

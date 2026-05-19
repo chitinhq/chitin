@@ -9,12 +9,12 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal.goalid import mint_goal_id, slugify
+from swarm.mini._internal.goalid import mint_goal_id, slugify
 
 
 class TestSlugify(unittest.TestCase):
     def test_basic(self):
-        self.assertEqual(slugify("Add minnie launcher"), "add-minnie-launcher")
+        self.assertEqual(slugify("Add mini launcher"), "add-mini-launcher")
 
     def test_first_four_words_only(self):
         self.assertEqual(
@@ -36,13 +36,13 @@ class TestSlugify(unittest.TestCase):
 
 class TestMintGoalId(unittest.TestCase):
     def test_format_is_slug_dash_8hex(self):
-        gid = mint_goal_id("Add minnie launcher")
+        gid = mint_goal_id("Add mini launcher")
         self.assertRegex(gid, r"^[a-z0-9-]+-[0-9a-f]{8}$")
 
     def test_deterministic_with_fixed_ts(self):
         ts = datetime.datetime(2026, 5, 19, 5, 0, 0, tzinfo=datetime.timezone.utc)
-        a = mint_goal_id("Add minnie launcher", now=ts)
-        b = mint_goal_id("Add minnie launcher", now=ts)
+        a = mint_goal_id("Add mini launcher", now=ts)
+        b = mint_goal_id("Add mini launcher", now=ts)
         self.assertEqual(a, b)
 
     def test_distinct_for_different_goals(self):

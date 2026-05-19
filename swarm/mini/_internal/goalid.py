@@ -1,4 +1,4 @@
-"""Goal-id generation for Minnie sessions.
+"""Goal-id generation for Mini sessions.
 
 Format: <short-slug>-<8hex>
   - short-slug: first 4 words of goal, lowercased, [^a-z0-9] -> '-', collapsed, max 32 chars
