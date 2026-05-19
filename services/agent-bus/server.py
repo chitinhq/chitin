@@ -45,6 +45,43 @@ def _now() -> int:
     return int(time.time())
 
 
+# Canonical Discord display names per agent. Mentions in #<channel> must
+# match the bot's display name with exact case or Discord won't fire the
+# notification. The bus normalizes any case variant to the canonical form
+# before write + push so callers never have to remember (e.g. `@clawta` →
+# `@Clawta`). Operator-confirmed canonicals (2026-05-18):
+_CANONICAL_MENTIONS: dict[str, str] = {
+    "clawta": "Clawta",
+    "ares": "ares",
+    "hermes": "hermes",
+    "icarus": "icarus",
+    "red": "red",
+    "copilot": "copilot",
+}
+
+# Pre-compile one regex matching any `@<name>` token (case-insensitive)
+# whose suffix is one of the canonical agents. \b at both ends avoids
+# matching `@clawta-poller` or `email@clawta.com`.
+import re as _re  # local alias to keep top-of-file imports terse
+_MENTION_RE = _re.compile(
+    r"(?<![A-Za-z0-9_])@(" + "|".join(_CANONICAL_MENTIONS) + r")(?![A-Za-z0-9_-])",
+    _re.IGNORECASE,
+)
+
+
+def _canonicalize_mentions(body: str) -> str:
+    """Rewrite @<agent> tokens to their canonical case so Discord pings fire.
+
+    Invariant: for every agent in _CANONICAL_MENTIONS, any case variant
+    of @<name> in `body` is rewritten to the canonical case. Other text
+    (URLs, identifiers, partial words) is left untouched per the
+    word-boundary lookarounds in _MENTION_RE.
+    """
+    def _replace(m: _re.Match) -> str:
+        return "@" + _CANONICAL_MENTIONS[m.group(1).lower()]
+    return _MENTION_RE.sub(_replace, body)
+
+
 def _touch_agent(conn, agent_id: str) -> None:
     """Self-register the caller (lazy create + last-seen bump)."""
     now = _now()
@@ -59,6 +96,7 @@ def bus_post_thread(conn, *, author: str, title: str, body: str,
                     board: str | None = None, task_id: str | None = None,
                     audience: str | None = None) -> dict:
     """Create a top-level thread + its first message in one transaction."""
+    body = _canonicalize_mentions(body)
     now = _now()
     cur = conn.cursor()
     _touch_agent(conn, author)
@@ -86,6 +124,7 @@ def bus_reply(conn, *, author: str, thread_id: int, body: str,
               parent_id: int | None = None, audience: str | None = None,
               kind: str = "message", ack_required: bool = False) -> dict:
     """Reply to an existing thread. parent_id must belong to the same thread."""
+    body = _canonicalize_mentions(body)
     now = _now()
     cur = conn.cursor()
     thread = cur.execute(
