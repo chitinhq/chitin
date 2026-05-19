@@ -280,6 +280,52 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// prompt + reply-parse natively; chitin no longer maintains its
 	// own pending_approvals + Wait + bridge POST + grant table.)
 
+	// 4.6 — Operator-authorized bypass (added 2026-05-18).
+	// Replaces the manual vim/sed workflow operator has been using for
+	// chitin.yaml edits. The bypass requires BOTH:
+	//   (a) the deny came from one of the explicitly-bypassable rules
+	//       below (NOT a blanket bypass — only governance-self-mod
+	//       and the protected-branch false-positives that block
+	//       legitimate feature-branch work today)
+	//   (b) CHITIN_GOV_OPERATOR_AUTHORIZED=1 is set in the env at
+	//       Evaluate time — operator sets this in their shell when
+	//       granting authorization
+	//
+	// SCOPE: env-var lifetime is process-scoped (Unix env), not
+	// per-action. To close the bypass window, unset the env var.
+	// Sub-process inheritance is a documented risk — callers spawning
+	// workers (clawta-poller, kanban-dispatch.lobster) MUST scrub
+	// CHITIN_GOV_OPERATOR_AUTHORIZED from the spawned env to prevent
+	// authorization from leaking into ambient sub-worker capability.
+	// See spawn-time invariant + regression test in workflows.
+	//
+	// Logged as RuleID="operator-authorized-bypass" so the audit row
+	// surfaces every fire. Bypass DOES NOT flip Spend cost accounting
+	// (envelope still charged) or skip the OnDecision callback.
+	if !d.Allowed && os.Getenv("CHITIN_GOV_OPERATOR_AUTHORIZED") == "1" {
+		bypassable := map[string]bool{
+			"no-governance-self-modification": true,
+			"no-gov-self-mod-via-shell":       true,
+			"no-force-push":                   true,
+			"no-commit-to-protected":          true,
+			"no-protected-push":               true,
+		}
+		if bypassable[d.RuleID] {
+			origRule := d.RuleID
+			origReason := d.Reason
+			d.Allowed = true
+			d.RuleID = "operator-authorized-bypass"
+			d.Reason = fmt.Sprintf(
+				"OPERATOR-AUTHORIZED BYPASS via CHITIN_GOV_OPERATOR_AUTHORIZED=1; "+
+					"original deny was %q (%s). Bypass window stays open for the "+
+					"lifetime of this process env; unset the env var to close it. "+
+					"Sub-process inheritance is the caller's responsibility — "+
+					"scrub this var before spawning workers.",
+				origRule, origReason,
+			)
+		}
+	}
+
 	// 5. Envelope spend on allow. Compute delta via callbacks even when
 	// the policy denies — so the audit row records what would have been
 	// spent for telemetry. But only call Spend when allowed.
