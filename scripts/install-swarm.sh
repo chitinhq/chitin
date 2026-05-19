@@ -37,8 +37,15 @@ ROLES_SRC="$REPO_ROOT/swarm/roles"
 ROLES_DST="$DEPLOYED_ROOT/roles"
 BOARD_ROOT="$HOME/.hermes/kanban/boards/chitin"
 BOARD_CONFIG="$BOARD_ROOT/config.json"
+LEGACY_KANBAN_DB="$HOME/.hermes/kanban/kanban.db"
 
 mkdir -p "$WORKFLOWS_DST" "$CARDS_DST" "$BIN_DST" "$ROLES_DST"
+
+if [ -f "$LEGACY_KANBAN_DB" ] && [ ! -d "$HOME/.hermes/kanban/boards" ]; then
+    echo "install-swarm: legacy kanban layout detected at $LEGACY_KANBAN_DB" >&2
+    echo "  Migrate Hermes boards to ~/.hermes/kanban/boards/<slug>/ before seeding board config." >&2
+    exit 1
+fi
 
 copied=0
 backed_up=0

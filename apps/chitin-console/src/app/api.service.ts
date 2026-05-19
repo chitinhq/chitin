@@ -68,8 +68,27 @@ export class ApiService {
   policy(): Observable<Policy> {
     return this.http.get<Policy>(`${API_BASE}/policy`);
   }
-  suggestions(): Observable<SuggestionsResponse> {
-    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`);
+  suggestions(opts: { type?: string; target?: string; sort?: string } = {}): Observable<SuggestionsResponse> {
+    let params = new HttpParams();
+    if (opts.type) params = params.set('type', opts.type);
+    if (opts.target) params = params.set('target', opts.target);
+    if (opts.sort) params = params.set('sort', opts.sort);
+    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`, { params });
+  }
+  analyze(body: { window?: string; skip_llm?: boolean } = {}): Observable<{
+    ok: boolean;
+    summary?: Record<string, unknown>;
+    suggestions?: unknown[];
+    error?: string;
+    stderr?: string;
+  }> {
+    return this.http.post<{
+      ok: boolean;
+      summary?: Record<string, unknown>;
+      suggestions?: unknown[];
+      error?: string;
+      stderr?: string;
+    }>(`${API_BASE}/analyze`, body);
   }
   argusInfo(): Observable<ArgusInfo> {
     return this.http.get<ArgusInfo>(`${API_BASE}/argus/info`);
@@ -87,4 +106,23 @@ export class ApiService {
       params: new HttpParams().set('limit', String(limit)),
     });
   }
+
+  /**
+   * Transition a ticket. `status` is the kanban-flow verb
+   * (start | ready | unblock | block | demote | done). `reason` is
+   * required for block, demote, done.
+   */
+  updateTaskStatus(id: string, body: { status: string; author?: string; reason?: string }): Observable<TaskStatusUpdateResponse> {
+    return this.http.post<TaskStatusUpdateResponse>(`${API_BASE}/tasks/${encodeURIComponent(id)}/status`, body);
+  }
+}
+
+export interface TaskStatusUpdateResponse {
+  ok: boolean;
+  task_id: string;
+  status: string;
+  flow_stdout: string;
+  refreshed: boolean;
+  refresh_error: string | null;
+  task: TaskDetail | null;
 }

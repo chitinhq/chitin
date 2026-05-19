@@ -252,6 +252,65 @@ func TestResolveFieldDoesNotExpandTildeForNonPathFields(t *testing.T) {
 	}
 }
 
+func TestResolveFieldChitinDBPathDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("chitin", "chitin_db_path")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := filepath.Join(home, ".chitin", "kanban", "chitin", "kanban.db")
+	if got != want {
+		t.Fatalf("chitin_db_path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveFieldChitinDBPathPerBoardSlug(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "readybench", `{"repo":"chitinhq/readybench","default_branch":"main","workspace_root":"~/workspace/readybench","kernel_bin":"chitin-kernel"}`)
+
+	got, err := ResolveField("readybench", "chitin_db_path")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := filepath.Join(home, ".chitin", "kanban", "readybench", "kanban.db")
+	if got != want {
+		t.Fatalf("chitin_db_path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveFieldChitinDBPathExplicitConfigOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel","chitin_db_path":"/var/run/chitin/kanban-chitin.db"}`)
+
+	got, err := ResolveField("chitin", "chitin_db_path")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	if got != "/var/run/chitin/kanban-chitin.db" {
+		t.Fatalf("chitin_db_path = %q, want explicit override", got)
+	}
+}
+
+func TestResolveFieldChitinDBPathExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeBoardConfig(t, home, "chitin", `{"repo":"chitinhq/chitin","default_branch":"main","workspace_root":"~/workspace/chitin","kernel_bin":"chitin-kernel","chitin_db_path":"~/custom/kanban.db"}`)
+
+	got, err := ResolveField("chitin", "chitin_db_path")
+	if err != nil {
+		t.Fatalf("ResolveField: %v", err)
+	}
+	want := filepath.Join(home, "custom", "kanban.db")
+	if got != want {
+		t.Fatalf("chitin_db_path = %q, want %q", got, want)
+	}
+}
+
 func writeBoardConfig(t *testing.T, home, slug, raw string) {
 	t.Helper()
 	dir := filepath.Join(home, ".hermes", "kanban", "boards", slug)

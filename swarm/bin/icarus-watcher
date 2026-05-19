@@ -1,0 +1,681 @@
+#!/usr/bin/env python3
+"""icarus-watcher — local-LLM driver for the icarus board (ic-001 v1).
+
+Week-1 spec: lint-fix lane ONLY. Other 4 lanes (log-pattern,
+triage-classify, doc-from-code, mechanical) are spec-approved but
+DISABLED in code per Clawta amendment (agent-bus msgs 4475-4476).
+
+Polls the icarus board for ready tickets with skill=lint-fix (parsed
+from ticket body), runs the prompt through local ollama (qwen3-coder
+default), runs the deterministic post-check, posts a 6-field
+WORKER_RECEIPT to the board + #swarm thread 9 on every action.
+
+Routes failures:
+- post-check fails 2x = capability ceiling → escalate to Clawta
+  with block_reason=local_ceiling_exceeded
+- GPU OOM / ollama crash / VRAM contention = infra failure → escalate
+  to operator with block_reason=infra_failure (NOT silently to Clawta)
+
+VRAM lease/lock: before each LLM call, runs `ollama ps` preflight. If
+argus is mid-compute on a different model, waits up to 60s for a free
+window using advisory file-lock at ~/.icarus/model-lease.lock. If 60s
+elapses, loud-fails with vram_contention.
+
+Per spec §Invariants: read-only on argus index DB, chitin-native harness,
+no governance bypass (chitin gate enforces tool calls).
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+
+# ── Config ────────────────────────────────────────────────────────
+
+AGENT_NAME = os.environ.get("ICARUS_AGENT", "icarus")
+KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
+DEFAULT_BOARD = "icarus"
+
+# Per Clawta amendment: Week-1 lint-fix ONLY. Other 4 lanes silent-skip
+# until their kill-gate clears.
+ENABLED_LANES = {"lint-fix"}
+SPEC_APPROVED_LANES = {"lint-fix", "log-pattern", "triage-classify",
+                       "doc-from-code", "mechanical"}
+
+DEFAULT_MODEL = os.environ.get("ICARUS_MODEL", "qwen3-coder:30b-32k")
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+
+DEDUP_DIR = Path.home() / ".icarus"
+DEDUP_FILE = DEDUP_DIR / "invocation-log.json"
+LEASE_LOCK = DEDUP_DIR / "model-lease.lock"
+VRAM_WAIT_SECONDS = 60
+MAX_RETRIES = 2  # N=2 retry cap per spec invariant 3
+
+# Per Ares review (#swarm msg 4563): argus uses qwen3.6:27b as its
+# hot model. When that's loaded in ollama, argus is mid-compute on it
+# and icarus should YIELD-IMMEDIATELY rather than wait 60s for a lock
+# argus never tries to acquire. The wait was wasteful; yielding lets
+# us retry on the next cron tick when argus is likely cold.
+ARGUS_MODEL_NAME = os.environ.get("ARGUS_MODEL", "qwen3.6")
+
+# Per Ares review: shell-injection guard on lint_command. Only commands
+# starting with one of these allowlisted linter binaries (after shlex
+# split) will be accepted. Anything else loud-fails before the LLM
+# is even invoked, preventing a malicious board entry from running
+# arbitrary shell.
+LINT_CMD_ALLOWLIST = frozenset({
+    "ruff", "flake8", "pylint", "mypy",            # python
+    "eslint", "biome", "prettier", "tsc",          # js/ts
+    "shellcheck", "shfmt",                          # shell
+    "rustfmt", "cargo",                             # rust
+    "gofmt", "golangci-lint",                       # go
+    "black", "isort",                               # python formatters
+})
+
+# ── Skill parsing ─────────────────────────────────────────────────
+
+SKILL_RE = re.compile(r"^\s*skill\s*:\s*(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def parse_skill(body: str) -> str | None:
+    """Extract skill from ticket body. Looks for `skill: <name>` line."""
+    if not body:
+        return None
+    m = SKILL_RE.search(body)
+    return m.group(1).lower() if m else None
+
+
+# ── Dedup log (composite key per sw-009 gate 4) ───────────────────
+
+def load_log() -> dict:
+    if DEDUP_FILE.exists():
+        try:
+            return json.loads(DEDUP_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_log(log: dict) -> None:
+    DEDUP_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = datetime.now(timezone.utc).timestamp() - 7 * 86400
+    pruned = {
+        k: e for k, e in log.items()
+        if datetime.fromisoformat(e["ts"]).timestamp() > cutoff
+    }
+    DEDUP_FILE.write_text(json.dumps(pruned, indent=2, sort_keys=True))
+
+
+def dedup_key(ticket: dict) -> str:
+    """Composite key — re-invoke when status/assignee/latest_ts change."""
+    return (f"{ticket['id']}:{ticket['status']}:"
+            f"{ticket['assignee']}:{ticket['latest_ts']}")
+
+
+# ── Board access (read-only) ──────────────────────────────────────
+
+def fetch_ready_tickets(board: str) -> list[dict]:
+    """Return ready tickets assigned to icarus (or wildcard) whose
+    skill field is in SPEC_APPROVED_LANES. Disabled-lane filter
+    happens after fetch."""
+    db_path = KANBAN_ROOT / board / "kanban.db"
+    if not db_path.exists():
+        print(f"[icarus-watcher] board DB not found: {db_path}",
+              file=sys.stderr)
+        return []
+
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    cur = con.execute("""
+        SELECT t.id, t.title, t.status, t.assignee, t.priority, t.body,
+               COALESCE(
+                 (SELECT MAX(ts) FROM kanban_mutations_log m
+                   WHERE m.table_name='tasks' AND m.task_id=t.id),
+                 t.created_at
+               ) AS latest_ts
+        FROM tasks t
+        WHERE t.status = 'ready'
+          AND t.assignee IN (?, '*')
+        ORDER BY t.priority DESC, t.rowid ASC
+    """, (AGENT_NAME,))
+
+    tickets = []
+    for row in cur.fetchall():
+        skill = parse_skill(row["body"] or "")
+        if skill not in SPEC_APPROVED_LANES:
+            continue
+        tickets.append({
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+            "priority": row["priority"] or 0,
+            "body": row["body"] or "",
+            "skill": skill,
+            "latest_ts": row["latest_ts"],
+        })
+    con.close()
+    return tickets
+
+
+# ── VRAM lease (file lock + ollama-ps preflight) ──────────────────
+
+@contextmanager
+def vram_lease(timeout_s: int = VRAM_WAIT_SECONDS):
+    """Acquire the model lease lock. If lock not free within timeout,
+    raise IcarusVramContention. Per spec invariant 4."""
+    DEDUP_DIR.mkdir(parents=True, exist_ok=True)
+    fh = LEASE_LOCK.open("a+")
+    start = time.monotonic()
+    try:
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise
+                if time.monotonic() - start > timeout_s:
+                    raise IcarusVramContention(
+                        f"model lease held by another process >{timeout_s}s"
+                    )
+                time.sleep(1)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
+def ollama_ps_inspect() -> list[dict]:
+    """Preflight: parse `ollama ps` output. Returns list of currently
+    loaded models with {name, size_mb, until_iso}."""
+    ollama = shutil.which("ollama")
+    if not ollama:
+        raise IcarusInfraFailure("ollama CLI not on PATH")
+    try:
+        result = subprocess.run(
+            [ollama, "ps"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise IcarusInfraFailure(f"ollama ps preflight failed: {exc}") from exc
+    if result.returncode != 0:
+        raise IcarusInfraFailure(
+            f"ollama ps exited {result.returncode}: {result.stderr.strip()}"
+        )
+    loaded = []
+    for line in result.stdout.splitlines()[1:]:  # skip header
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        loaded.append({"name": parts[0], "id": parts[1] if len(parts) > 1 else ""})
+    return loaded
+
+
+def yield_if_argus_active() -> None:
+    """Pre-dispatch check: if argus's hot model is loaded in ollama,
+    icarus yields immediately rather than waiting on the lease lock.
+
+    Per Ares review (#swarm msg 4563): argus uses nvidia-smi + skips
+    (doesn't lock). Lock-based coordination only prevents icarus-vs-
+    icarus stacking. To coordinate icarus-vs-argus we check `ollama ps`
+    for argus's model and yield if present."""
+    loaded = ollama_ps_inspect()
+    for model in loaded:
+        if ARGUS_MODEL_NAME.lower() in model.get("name", "").lower():
+            raise IcarusArgusActive(
+                f"argus model {model['name']!r} is hot — yielding "
+                f"(retry next cron tick when argus is cold)"
+            )
+
+
+# ── Ollama call ───────────────────────────────────────────────────
+
+def ollama_generate(model: str, prompt: str, *, timeout_s: int = 120) -> str:
+    """POST to /api/generate. Returns concatenated response. Raises
+    IcarusInfraFailure on connection/daemon error."""
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+    req = urllib_request.Request(
+        f"{OLLAMA_HOST.rstrip('/')}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=timeout_s) as r:
+            data = json.loads(r.read())
+            return data.get("response", "")
+    except (urllib_error.URLError, urllib_error.HTTPError, OSError) as exc:
+        raise IcarusInfraFailure(f"ollama call failed: {exc}") from exc
+
+
+# ── Lane: lint-fix (Week-1 enabled) ───────────────────────────────
+
+LINT_FIX_PROMPT_TEMPLATE = """\
+You are a deterministic code formatter. The user has a file with lint
+errors. Return ONLY the corrected file contents with no commentary,
+markdown fences, or explanation.
+
+IMPORTANT RULES (per Ares post-dispatch analysis #swarm msg 4605):
+- DO NOT add any imports. Only remove imports that are unused per the
+  lint errors below. The model has a tendency to reflexively inject
+  standard imports — DO NOT do this.
+- DO NOT add or remove functions, classes, or variables. Only fix
+  what the linter complains about.
+- DO NOT rewrite logic. Preserve original semantics exactly.
+- Output must be the COMPLETE corrected file (not a snippet).
+
+File path: {path}
+Linter: {linter}
+Lint errors:
+{errors}
+
+Original file contents:
+---
+{contents}
+---
+
+Return the corrected file contents now, raw text only.
+"""
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Strip ```lang ... ``` markdown code fences from LLM output.
+
+    Discovered during ic-005 proof-of-life: qwen3-coder:30b-32k wraps
+    its output in ``` fences even when the prompt says "raw text only,
+    no markdown." Sometimes only the TRAILING ``` is present (no
+    opening fence) — observed Ares msg 4588-4589 lookup. Post-check
+    then fails because the fence chars aren't valid Python syntax.
+
+    Defensive — runs against ANY model output. No-op on raw text.
+
+    Handles three patterns:
+    1. ```lang\\ncode\\n``` (both fences present)
+    2. ```\\ncode\\n``` (fences without lang tag)
+    3. code\\n``` (trailing fence only — qwen3-coder pattern)
+    """
+    s = text.strip()
+    # Pattern 1+2: both fences present
+    if s.startswith("```"):
+        nl = s.find("\n")
+        if nl >= 0:
+            body = s[nl + 1:]
+            end = body.rfind("```")
+            if end >= 0:
+                return body[:end].rstrip()
+    # Pattern 3: trailing fence only (no opening) — strip the last line
+    # if it's just ``` (with optional trailing whitespace)
+    lines = s.split("\n")
+    while lines and lines[-1].strip() == "```":
+        lines.pop()
+    # Also strip leading fence-only lines (defensive)
+    while lines and lines[0].strip() == "```":
+        lines.pop(0)
+    # And strip leading ```lang lines without paired closer
+    if lines and lines[0].startswith("```"):
+        lines.pop(0)
+    return "\n".join(lines).rstrip()
+
+
+def _validate_lint_command(lint_cmd: str) -> list[str]:
+    """Per Ares review (msg 4563): guard shell injection by enforcing
+    that lint_cmd starts with an allowlisted linter binary. Returns
+    the shlex-split argv list ready for subprocess.run(shell=False).
+
+    Raises IcarusTicketMalformed if first token isn't in LINT_CMD_ALLOWLIST.
+    """
+    import shlex
+    try:
+        argv = shlex.split(lint_cmd)
+    except ValueError as exc:
+        raise IcarusTicketMalformed(
+            f"lint_command failed shlex parse: {exc}"
+        ) from exc
+    if not argv:
+        raise IcarusTicketMalformed("lint_command is empty")
+    binary = Path(argv[0]).name  # strip any path prefix
+    if binary not in LINT_CMD_ALLOWLIST:
+        raise IcarusTicketMalformed(
+            f"lint_command binary {binary!r} not in allowlist "
+            f"{sorted(LINT_CMD_ALLOWLIST)}; refusing to execute. "
+            f"This prevents arbitrary shell from a malicious ticket body."
+        )
+    return argv
+
+
+def lane_lint_fix(ticket: dict, model: str) -> dict:
+    """Lint-fix lane v1.
+
+    Ticket body MUST include:
+      path: <relative path to file>
+      linter: <linter name (e.g., ruff, eslint)>
+      lint_command: <command that produces lint output; first token
+                     must be in LINT_CMD_ALLOWLIST>
+    Returns post-check result + diff path."""
+    body = ticket["body"]
+    path_m = re.search(r"^\s*path\s*:\s*(\S+)\s*$", body, re.M | re.I)
+    linter_m = re.search(r"^\s*linter\s*:\s*(\S+)\s*$", body, re.M | re.I)
+    cmd_m = re.search(r"^\s*lint_command\s*:\s*(.+)$", body, re.M | re.I)
+    if not (path_m and linter_m and cmd_m):
+        raise IcarusTicketMalformed(
+            "lint-fix ticket missing required `path:`, `linter:`, or "
+            "`lint_command:` field in body"
+        )
+    target_path = Path(path_m.group(1))
+    linter = linter_m.group(1)
+    lint_cmd = cmd_m.group(1).strip()
+    if not target_path.is_file():
+        raise IcarusTicketMalformed(f"path not found: {target_path}")
+
+    # Per Ares review: validate the command before shell execution.
+    pre_argv = _validate_lint_command(lint_cmd)
+
+    original = target_path.read_text()
+    pre_lint = subprocess.run(
+        pre_argv, capture_output=True, text=True, check=False,
+    )
+    if pre_lint.returncode == 0:
+        return {
+            "status": "noop",
+            "reason": "file already lints clean — no work to do",
+            "diff_path": None,
+        }
+
+    prompt = LINT_FIX_PROMPT_TEMPLATE.format(
+        path=target_path,
+        linter=linter,
+        errors=(pre_lint.stdout + pre_lint.stderr)[:2000],
+        contents=original[:4000],
+    )
+    response = ollama_generate(model, prompt)
+    fixed = _strip_markdown_fences(response.strip())
+
+    # Write proposed fix to a tmp file for diff
+    tmp_dir = DEDUP_DIR / "fixes"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    diff_path = tmp_dir / f"{ticket['id']}.fixed"
+    diff_path.write_text(fixed)
+
+    # Post-check: write to a tmp copy of the file, run linter against it.
+    # Per Ares review: avoid the fragile str.replace path substitution
+    # by re-shlex-splitting the command and swapping the EXACT target
+    # path token (not all occurrences) for the tmp path.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=target_path.suffix, delete=False,
+    ) as tf:
+        tf.write(fixed)
+        tmp_path = Path(tf.name)
+    try:
+        # Swap only the exact target-path occurrence, keep other args intact
+        post_argv = [
+            str(tmp_path) if a == str(target_path) else a for a in pre_argv
+        ]
+        post_lint = subprocess.run(
+            post_argv, capture_output=True, text=True, check=False,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return {
+        "status": "pass" if post_lint.returncode == 0 else "fail",
+        "post_check_output": (post_lint.stdout + post_lint.stderr)[:1000],
+        "diff_path": str(diff_path),
+    }
+
+
+LANE_HANDLERS = {
+    "lint-fix": lane_lint_fix,
+}
+
+
+# ── WORKER_RECEIPT contract (6 fields per Clawta amendment) ───────
+
+def post_worker_receipt(ticket: dict, *, lane: str, prompt_class: str,
+                        post_check_output: str, diff_path: str | None,
+                        retry_count: int, model_used: str,
+                        success: bool, block_reason: str | None = None) -> None:
+    """Post the 6-field WORKER_RECEIPT.
+
+    Channel routing per operator goal + Clawta amendment msg 4567:
+    - Every receipt -> #icarus (thread 10): the agent's home channel
+    - Failures only -> #swarm (thread 9): cross-agent escalation visibility
+      ("visible #swarm escalation only when stale/failure/proof test")
+
+    Best-effort: failure to post is logged but doesn't fail the
+    ticket (operator surface is the board status update, not the bus
+    post).
+    """
+    receipt = {
+        "ticket_id": ticket["id"],
+        "lane": lane,
+        "prompt_class": prompt_class,
+        "post_check_output": post_check_output,
+        "diff_path": diff_path,
+        "retry_count": retry_count,
+        "model_used": model_used,
+        "success": success,
+        "block_reason": block_reason,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    # Print to stdout for cron log capture
+    print(f"[icarus-watcher] WORKER_RECEIPT: {json.dumps(receipt)}")
+    # Best-effort agent-bus posts
+    try:
+        import importlib.util
+        bus_dir = (Path(__file__).resolve().parents[2]
+                   / "services" / "agent-bus")
+        bus_server_path = bus_dir / "server.py"
+        if not bus_server_path.is_file():
+            return
+        # Per Ares review item #6: ensure bus_dir is on sys.path BEFORE
+        # importing `db` so the dynamic spec-load can resolve sibling
+        # modules. Was: ModuleNotFoundError: No module named 'db' at runtime.
+        if str(bus_dir) not in sys.path:
+            sys.path.insert(0, str(bus_dir))
+        spec = importlib.util.spec_from_file_location(
+            "agent_bus_server", bus_server_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        from db import connect  # noqa: E402
+
+        summary = (
+            f"[icarus] {ticket['id']} — {ticket['title'][:60]}\n"
+            f"lane={lane} model={model_used} retries={retry_count} "
+            f"success={success} block={block_reason or '-'}"
+        )
+
+        conn = connect()
+        # Primary: every receipt -> #icarus (thread 10)
+        try:
+            mod.bus_reply(conn, author="icarus", thread_id=10,
+                          body=summary, kind="system")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[icarus-watcher] #icarus post failed: {exc}", file=sys.stderr)
+
+        # Escalation: failures only -> #swarm (thread 9)
+        if not success:
+            escalation = (
+                f"⚠️ icarus escalation: {ticket['id']} "
+                f"block={block_reason} (see #icarus for full receipt)"
+            )
+            try:
+                mod.bus_reply(conn, author="icarus", thread_id=9,
+                              body=escalation, kind="system")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[icarus-watcher] #swarm escalation post failed: {exc}",
+                      file=sys.stderr)
+
+        conn.commit()
+        conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(f"[icarus-watcher] receipt-post failed (non-fatal): {exc}",
+              file=sys.stderr)
+
+
+# ── Exceptions ────────────────────────────────────────────────────
+
+class IcarusInfraFailure(Exception):
+    """Infrastructure failure — GPU OOM, ollama crash, env-lock, etc.
+    Routes to operator-visible escalation (NOT Clawta)."""
+
+
+class IcarusVramContention(IcarusInfraFailure):
+    """VRAM lease timeout. Special case of infra failure."""
+
+
+class IcarusArgusActive(IcarusInfraFailure):
+    """Argus is mid-compute on its hot model. Yield-immediately per
+    Ares review (#swarm msg 4563) — don't wait 60s for a lock argus
+    never tries to acquire. Routes to operator-visible infra_failure
+    since it's a resource-contention signal, not a capability ceiling."""
+
+
+class IcarusTicketMalformed(Exception):
+    """Ticket body missing required fields. Routes to operator/red."""
+
+
+# ── Main loop ─────────────────────────────────────────────────────
+
+def process_ticket(ticket: dict, model: str) -> dict:
+    """Process one ticket end-to-end. Returns receipt dict.
+
+    Per spec invariant 3 (N=2 retry cap with split escalation):
+    - Capability ceiling (post-check fails MAX_RETRIES times) →
+      capability escalation → Clawta with block_reason=local_ceiling_exceeded
+    - Infra failure → operator escalation with block_reason=infra_failure
+    """
+    lane = ticket["skill"]
+    if lane not in ENABLED_LANES:
+        # Disabled-lane silent skip per spec
+        print(f"[icarus-disabled-lane] {ticket['id']} skill={lane} "
+              "(spec-approved but disabled until Week-1 metric clears)",
+              file=sys.stderr)
+        return {"skipped": True}
+
+    handler = LANE_HANDLERS.get(lane)
+    if handler is None:
+        # Shouldn't happen if ENABLED_LANES matches LANE_HANDLERS
+        print(f"[icarus-watcher] no handler for lane={lane}, skipping",
+              file=sys.stderr)
+        return {"skipped": True}
+
+    retry_count = 0
+    last_post_check = ""
+    last_diff = None
+
+    while retry_count <= MAX_RETRIES:
+        try:
+            # Per Ares review: yield-immediately if argus model is hot
+            # (don't wait 60s for a lock argus never acquires).
+            yield_if_argus_active()
+            with vram_lease():
+                ollama_ps_inspect()  # preflight (raises on infra failure)
+                result = handler(ticket, model)
+        except IcarusInfraFailure as exc:
+            # Infra → operator
+            post_worker_receipt(
+                ticket, lane=lane, prompt_class=lane,
+                post_check_output=str(exc), diff_path=None,
+                retry_count=retry_count, model_used=model,
+                success=False, block_reason="infra_failure",
+            )
+            return {"escalated": "operator", "reason": str(exc)}
+        except IcarusTicketMalformed as exc:
+            # Malformed ticket — back to author (red/operator)
+            post_worker_receipt(
+                ticket, lane=lane, prompt_class=lane,
+                post_check_output=f"malformed: {exc}", diff_path=None,
+                retry_count=retry_count, model_used=model,
+                success=False, block_reason="ticket_malformed",
+            )
+            return {"escalated": "author", "reason": str(exc)}
+
+        if result.get("status") == "noop":
+            post_worker_receipt(
+                ticket, lane=lane, prompt_class=lane,
+                post_check_output=result["reason"],
+                diff_path=None, retry_count=retry_count,
+                model_used=model, success=True,
+            )
+            return {"noop": True}
+
+        last_post_check = result.get("post_check_output", "")
+        last_diff = result.get("diff_path")
+
+        if result.get("status") == "pass":
+            post_worker_receipt(
+                ticket, lane=lane, prompt_class=lane,
+                post_check_output=last_post_check,
+                diff_path=last_diff, retry_count=retry_count,
+                model_used=model, success=True,
+            )
+            return {"shipped": True, "diff": last_diff}
+
+        retry_count += 1
+
+    # Capability ceiling → Clawta
+    post_worker_receipt(
+        ticket, lane=lane, prompt_class=lane,
+        post_check_output=last_post_check,
+        diff_path=last_diff, retry_count=MAX_RETRIES,
+        model_used=model, success=False,
+        block_reason="local_ceiling_exceeded",
+    )
+    return {"escalated": "clawta", "diff": last_diff}
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="icarus-watcher")
+    p.add_argument("--board", default=DEFAULT_BOARD, help="kanban board")
+    p.add_argument("--model", default=DEFAULT_MODEL, help="ollama model")
+    p.add_argument("--dry-run", action="store_true",
+                   help="show what would dispatch without invoking model")
+    args = p.parse_args()
+
+    tickets = fetch_ready_tickets(args.board)
+    if not tickets:
+        return 0
+
+    log = load_log()
+    for ticket in tickets:
+        key = dedup_key(ticket)
+        if key in log:
+            continue
+        if args.dry_run:
+            print(f"[DRY-RUN] would dispatch: {ticket['id']} "
+                  f"skill={ticket['skill']} title={ticket['title'][:50]}")
+            continue
+        result = process_ticket(ticket, args.model)
+        log[key] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticket_id": ticket["id"],
+            "lane": ticket["skill"],
+            "result": result,
+        }
+    if not args.dry_run:
+        save_log(log)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

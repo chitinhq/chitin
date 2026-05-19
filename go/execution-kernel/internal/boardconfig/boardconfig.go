@@ -40,6 +40,11 @@ var fieldSpecs = map[string]FieldSpec{
 		EnvVar:       "KANBAN_BOARD_SOUL_MAP",
 		DefaultValue: `{"correctness":"knuth","architecture":"davinci","dispatch":"sun-tzu","research":"socrates","default":"sun-tzu"}`,
 	},
+	"chitin_db_path": {
+		// Default is computed per-slug in ResolveField since it
+		// depends on $HOME and the board slug.
+		EnvVar: "KANBAN_BOARD_CHITIN_DB_PATH",
+	},
 }
 
 var requiredFields = []string{
@@ -136,6 +141,7 @@ func expandHome(value string) (string, error) {
 // time so downstream tools see an absolute path.
 var tildeExpandableFields = map[string]struct{}{
 	"workspace_root": {},
+	"chitin_db_path": {},
 }
 
 func ResolveField(slug, field string) (string, error) {
@@ -161,6 +167,13 @@ func ResolveField(slug, field string) (string, error) {
 		value = spec.DefaultValue
 	}
 	if value == "" {
+		if dynamic, err := dynamicDefault(field, slug); err != nil {
+			return "", err
+		} else if dynamic != "" {
+			value = dynamic
+		}
+	}
+	if value == "" {
 		if spec.Required {
 			return "", MissingFieldError{Field: field}
 		}
@@ -170,6 +183,21 @@ func ResolveField(slug, field string) (string, error) {
 		return expandHome(value)
 	}
 	return value, nil
+}
+
+// dynamicDefault returns the default value for fields whose default
+// depends on the runtime environment (e.g. $HOME) or the board slug.
+// Returns "" for fields without a dynamic default.
+func dynamicDefault(field, slug string) (string, error) {
+	switch field {
+	case "chitin_db_path":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("user home: %w", err)
+		}
+		return filepath.Join(home, ".chitin", "kanban", slug, "kanban.db"), nil
+	}
+	return "", nil
 }
 
 func loadConfig(slug string) (map[string]string, error) {

@@ -26,8 +26,10 @@ export HERMES_TICK_DRY_RUN
 
 # ---- Config (env-overridable for tests) -----------------------------------
 CHITIN_SINK_ROOT="${CHITIN_SINK_ROOT:-$HOME/chitin-sink}"
-REPO_ROOT="${HERMES_TICK_REPO_ROOT:-$HOME/workspace/chitin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_HELPER="$(cd "$SCRIPT_DIR/../.." && pwd)/swarm/bin/board_resolver.py"
+REPO_ROOT="${HERMES_TICK_REPO_ROOT:-$(python3 "$REPO_HELPER" workspace)}"
+REPO_SLUG="${GITHUB_REPOSITORY:-$(python3 "$REPO_HELPER" repo)}"
 PROMPT_PLAN="$SCRIPT_DIR/prompt-plan.md"
 PROMPT_CODE="$SCRIPT_DIR/prompt-code.md"
 PROMPT_ACT="$SCRIPT_DIR/prompt-act.md"
@@ -197,9 +199,9 @@ for var in PATH CHITIN_SINK_ROOT HERMES_TICK_DRY_RUN HERMES_TICK_TS HERMES_TICK_
 done
 
 # ---- Queue fetch ----------------------------------------------------------
-queue_labeled="$(gh issue list --repo chitinhq/chitin --label hermes-autonomous --state open --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
-queue_unlabeled="$(gh issue list --repo chitinhq/chitin --search 'no:label is:open' --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
-pr_inflight="$(gh pr list --repo chitinhq/chitin --search 'is:open linked:issue' --json number,title,closingIssuesReferences 2>/dev/null || echo '[]')"
+queue_labeled="$(gh issue list --repo "$REPO_SLUG" --label hermes-autonomous --state open --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
+queue_unlabeled="$(gh issue list --repo "$REPO_SLUG" --search 'no:label is:open' --json number,title,body,createdAt,updatedAt 2>/dev/null || echo '[]')"
+pr_inflight="$(gh pr list --repo "$REPO_SLUG" --search 'is:open linked:issue' --json number,title,closingIssuesReferences 2>/dev/null || echo '[]')"
 jq -n \
   --argjson labeled "$queue_labeled" \
   --argjson unlabeled "$queue_unlabeled" \

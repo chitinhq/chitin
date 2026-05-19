@@ -1,6 +1,6 @@
 # Hermes Staged Tick — Stage 1 (PLAN)
 
-You are the planner of a staged autonomous tick for the `chitinhq/chitin` repository.
+You are the planner of a staged autonomous tick for the board-configured repository.
 
 ## Your one job
 

@@ -30,12 +30,21 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
+
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
 DB_PATH = resolve_db()
 BOARD = resolve_board()
 LOG_DIR = Path.home() / ".openclaw" / "logs"
@@ -225,27 +234,45 @@ def has_lifecycle_marker(comments_: list[dict[str, Any]], kind: str, head: str) 
     return False
 
 
-def infer_ticket(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> str | None:
+class TicketRef(NamedTuple):
+    ticket_id: str
+    close_intent: bool
+
+def infer_ticket(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> TicketRef | None:
     # Use only trusted PR-owned fields. Do NOT infer from arbitrary comments:
     # lifecycle/reviewer comments can mention unrelated tickets and would mark
     # the wrong kanban item done after merge.
+    #
+    # Close keywords (closes/fixes/resolves) mark the ticket done on merge.
+    # Reference keywords (refs/references/ticket/task/kanban) only link the PR
+    # to the ticket — they post a comment but do NOT change ticket status.
     branch = str(pr.get("headRefName", ""))
     body_title = "\n".join([str(pr.get("title", "")), str(pr.get("body", ""))])
 
     # Branch convention: swarm/<driver>-<ticket-suffix>. This is the safest
     # swarm mapping because dispatcher-created PR branches carry the ticket id.
+    # Branch resolution always implies close intent (backward-compatible).
     m2 = re.search(r"-([a-f0-9]{8})(?:$|[^a-f0-9])", branch)
     if m2:
-        return "t_" + m2.group(1)
+        return TicketRef(ticket_id="t_" + m2.group(1), close_intent=True)
 
-    # Explicit PR body/title references are accepted only when they look like
-    # the PR's own ticket linkage, not incidental mentions in a repair summary.
-    explicit = re.search(
-        r"(?i)(?:closes|fixes|resolves|refs?|references?|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
+    # Close keywords: these trigger mark_done on merge.
+    close_match = re.search(
+        r"(?i)(?:closes|fixes|resolves)\s*[:#-]?\s*(t_[a-f0-9]{8})",
         body_title,
     )
-    if explicit:
-        return explicit.group(1)
+    if close_match:
+        return TicketRef(ticket_id=close_match.group(1), close_intent=True)
+
+    # Reference keywords: these only link the PR to the ticket (comment, no close).
+    # This prevents false-closes from "Refs t_XXXX" in PR bodies.
+    ref_match = re.search(
+        r"(?i)(?:refs?|references?|ticket|task|kanban)\s*[:#-]?\s*(t_[a-f0-9]{8})",
+        body_title,
+    )
+    if ref_match:
+        return TicketRef(ticket_id=ref_match.group(1), close_intent=False)
+
     return None
 
 
@@ -322,7 +349,9 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
     head = str(pr.get("headRefOid") or "")
     review = latest_review(comments_)
     check_state = checks_state(int(pr["number"])) if pr.get("state") == "OPEN" else "n/a"
-    ticket = infer_ticket(pr, comments_)
+    ticket_ref = infer_ticket(pr, comments_)
+    ticket = ticket_ref.ticket_id if ticket_ref else None
+    close_intent = ticket_ref.close_intent if ticket_ref else False
     info = ticket_info(ticket)
     status = info["status"]
     assignee = info["assignee"]
@@ -361,7 +390,12 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
     auto_merge_ready = gates_a_through_e and gate_status == "pass"
 
     if merged:
-        action = "mark-done" if ticket and status != "done" else "merged-noop"
+        if ticket and close_intent and status != "done":
+            action = "mark-done"
+        elif ticket and not close_intent and status != "done":
+            action = "merged-ref"      # referenced but not closed
+        else:
+            action = "merged-noop"
     elif gate_status == "deploy-drift":
         action = "deploy-drift"
     elif gate_status == "fail-invariant":
@@ -382,6 +416,7 @@ def classify(pr: dict[str, Any], comments_: list[dict[str, Any]]) -> dict[str, A
         "head": head,
         "branch": pr.get("headRefName", ""),
         "ticket": ticket,
+        "close_intent": close_intent,
         "ticket_status": status,
         "ticket_assignee": assignee,
         "state": pr.get("state"),
@@ -410,7 +445,7 @@ def post_ready_marker(item: dict[str, Any], apply: bool) -> None:
         return
     run(["gh", "pr", "comment", item["pr"], "--repo", REPO, "--body", msg], timeout=60, check=True)
     if item.get("ticket"):
-        run(["hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
+        run(["kanban-flow", "comment", item["ticket"], "--author", AUTHOR,
              f"Ready to merge: PR #{item['pr']} {item['url']} (review={item['review']}, checks={item['checks']})."], timeout=30, check=True)
 
 
@@ -480,9 +515,9 @@ def escalate_to_operator(item: dict[str, Any], operator: str | None, apply: bool
     reason = escalation_reason(item)
     if not apply:
         return True
-    run(["hermes", "kanban", "--board", BOARD, "assign", item["ticket"], operator], timeout=30, check=True)
+    run(["kanban-flow", "assign", item["ticket"], operator], timeout=30, check=True)
     run([
-        "hermes", "kanban", "--board", BOARD, "comment", item["ticket"], "--author", AUTHOR,
+        "kanban-flow", "comment", item["ticket"], "--author", AUTHOR,
         f"Escalated to {operator}: {reason}. {item['url']}",
     ], timeout=30, check=True)
     item["ticket_assignee"] = operator
@@ -551,9 +586,9 @@ def assign_ticket_to_operator(item: dict[str, Any], operator: str,
     if not ticket or not apply:
         return
     run([
-        "hermes", "kanban", "--board", BOARD,
+        "kanban-flow",
         "reassign", ticket, operator,
-        "--reclaim",
+        "--author", AUTHOR,
         "--reason", "regression-gate fail-invariant on PR "
                     f"#{item['pr']} head={item['head']}",
     ], timeout=60, check=False)
@@ -576,6 +611,15 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
             elif item["action"] == "mark-done":
                 mark_done(item, apply)
                 item["applied"] = "done" if apply else "would-done"
+            elif item["action"] == "merged-ref":
+                # PR references a ticket but does not close it (e.g. "Refs t_XXX").
+                # Post a link comment on the kanban ticket but do NOT change status.
+                if item.get("ticket") and apply:
+                    run(["kanban-flow", "comment", item["ticket"],
+                         "--author", AUTHOR,
+                         f"Referenced by merged PR #{item['pr']} {item['url']} "
+                         f"(close_intent=False, status unchanged)."], timeout=30, check=True)
+                item["applied"] = "ref-linked" if apply else "would-ref-link"
             elif item["action"] == "regression-gate-fail":
                 # Invariant broken on this head. Comment + reassign ticket; no merge.
                 post_regression_gate_comment(item, apply, request_changes=True)
@@ -617,6 +661,7 @@ def run_once(prefixes: tuple[str, ...], apply: bool, auto_merge: bool, escalate_
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--board", help="board slug override (default: KANBAN_BOARD or deprecated implicit chitin)")
     ap.add_argument("--apply", action="store_true", help="write comments / kanban status updates")
     ap.add_argument("--auto-merge", action="store_true", help="squash-merge PRs that satisfy strict autonomous gates")
     ap.add_argument("--escalate-to", help="assign mapped PR tickets that need operator action to this board profile")

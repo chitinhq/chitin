@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -eq 2 && "$1" == "-u" && "$2" == "+%Y-%m-%dT%H:%M:%SZ" ]]; then
+  printf '%s\n' "${STUB_DATE_NOW_TS:?}"
+  exit 0
+fi
+
+if [[ "$#" -eq 2 && "$1" == "-u" && "$2" == "+%Y-%m-%d" ]]; then
+  printf '%s\n' "${STUB_DATE_TODAY:?}"
+  exit 0
+fi
+
+if [[ "$#" -eq 4 && "$1" == "-u" && "$2" == "-d" && "$4" == "+%Y-%m-%dT%H:%M:%SZ" ]]; then
+  printf '%s\n' "${STUB_DATE_CUTOFF_TS:?}"
+  exit 0
+fi
+
+exec /usr/bin/date "$@"

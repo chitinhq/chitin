@@ -94,6 +94,31 @@
       @if (drawerLoading()) {
         <cc-loader message="Loading ticket"></cc-loader>
       } @else if (selectedDetail(); as d) {
+        <section class="block status-mut">
+          <h3 class="block-title">change status</h3>
+          <div class="status-mut-row">
+            <select class="input" [(ngModel)]="pendingStatus" [disabled]="mutating()" aria-label="New status">
+              @for (opt of mutationOptions; track opt.value) {
+                <option [value]="opt.value">{{ opt.label }}</option>
+              }
+            </select>
+            @if (selectedNeedsReason()) {
+              <input class="input" type="text" [(ngModel)]="pendingReason"
+                     [disabled]="mutating()"
+                     placeholder="reason / result (required)"
+                     aria-label="Reason or result" />
+            }
+            <button class="btn" type="button"
+                    [disabled]="!pendingStatus || mutating()"
+                    (click)="submitStatusChange()">
+              {{ mutating() ? 'submitting…' : 'apply' }}
+            </button>
+          </div>
+          @if (mutationError(); as err) {
+            <p class="status-mut-err mono small">{{ err }}</p>
+          }
+        </section>
+
         <section class="block">
           <h3 class="block-title">body</h3>
           @if (d.task.body) {

@@ -258,7 +258,22 @@ export interface Policy {
 export interface SuggestionsResponse {
   enabled: boolean;
   note: string;
-  suggestions: unknown[];
+  filters?: {
+    type: string;
+    target: string;
+    sort: string;
+  };
+  suggestions: AnalyzerSuggestion[];
+}
+
+export interface AnalyzerSuggestion {
+  id: string;
+  type: 'prompt_edit' | 'new_skill' | 'policy_rule' | 'route_tweak' | 'drop';
+  target: string;
+  diff: string;
+  rationale: string;
+  applied: number;
+  created_at: string;
 }
 
 export interface ArgusInfo {

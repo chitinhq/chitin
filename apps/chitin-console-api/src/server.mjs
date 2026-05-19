@@ -6,7 +6,8 @@
 // bound by default.
 //
 // Sources:
-//   ~/.hermes/kanban/boards/<board>/kanban.db   — tickets, runs, events
+//   ~/.chitin/kanban/<board>/kanban.db          — tickets, runs, events (preferred)
+//   ~/.hermes/kanban/boards/<board>/kanban.db   — legacy fallback during cutover
 //   ~/.openclaw/data/clawta.db                  — swarm ELO + dispatch scores
 //   ~/.openclaw/data/clawta_decisions.db        — per-ticket dispatch decisions
 //   ~/.argus/index.db                           — argus observatory index
@@ -17,7 +18,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
@@ -30,25 +31,83 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = process.env.CHITIN_REPO_ROOT
   || path.resolve(__dirname, '..', '..', '..');
 
-const KANBAN_ROOT = process.env.HERMES_KANBAN_ROOT || path.join(HOME, '.hermes', 'kanban');
+// Prefer the chitin-owned kanban DB (Phase 1: chitin-kernel kanban
+// migrate <board> populates ~/.chitin/kanban/<board>/kanban.db).
+// Fall back to the legacy hermes layout when the chitin copy is
+// absent so the console still works on operator boxes that haven't
+// run the migration yet.
+const CHITIN_KANBAN_ROOT = process.env.CHITIN_KANBAN_ROOT || path.join(HOME, '.chitin', 'kanban');
+const HERMES_KANBAN_ROOT = process.env.HERMES_KANBAN_ROOT || path.join(HOME, '.hermes', 'kanban');
+// KANBAN_ROOT kept as an alias for the legacy hermes root so the
+// existing `current` board sentinel resolves the same way.
+const KANBAN_ROOT = HERMES_KANBAN_ROOT;
 const CURRENT_BOARD = (() => {
   try { return fs.readFileSync(path.join(KANBAN_ROOT, 'current'), 'utf8').trim(); }
   catch { return 'chitin'; }
 })();
-const BOARD_DB = path.join(KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+// Chitin layout: <root>/<board>/kanban.db (no `boards/` segment).
+// Hermes layout: <root>/boards/<board>/kanban.db.
+const CHITIN_BOARD_DB = path.join(CHITIN_KANBAN_ROOT, CURRENT_BOARD, 'kanban.db');
+const HERMES_BOARD_DB = path.join(HERMES_KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
+const BOARD_DB = fs.existsSync(CHITIN_BOARD_DB) ? CHITIN_BOARD_DB : HERMES_BOARD_DB;
+const BOARD_DB_SOURCE = BOARD_DB === CHITIN_BOARD_DB ? 'chitin' : 'hermes';
 const BUS_DB = process.env.AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
 const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
 const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
+const ANALYZER_DB = process.env.CHITIN_ANALYZER_DB || path.join(CHAIN_LEDGER_DIR, 'analyzer.db');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
+
+// Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
+// built chitin-console (e.g. dist/apps/chitin-console/browser), the
+// server doubles as the SPA host so a single port covers both the
+// frontend and /api. Used for Tailscale exposure (one port to share)
+// and for any production-style deployment. Leave unset for the dev
+// loop where `nx serve` runs the frontend on its own port.
+const STATIC_ROOT = process.env.CHITIN_CONSOLE_STATIC_ROOT
+  || (fs.existsSync(path.join(REPO_ROOT, 'dist/apps/chitin-console/browser'))
+        ? path.join(REPO_ROOT, 'dist/apps/chitin-console/browser')
+        : null);
+const STATIC_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'application/javascript; charset=utf-8',
+  '.mjs':  'application/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico':  'image/x-icon',
+  '.woff':  'font/woff',
+  '.woff2': 'font/woff2',
+  '.map':  'application/json; charset=utf-8',
+};
 
 let kanbanDB = null;
 let busDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
+let analyzerDB = null;
+
+const ANALYZER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS analyzer_suggestions (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  target TEXT NOT NULL,
+  diff TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_created_at
+  ON analyzer_suggestions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_type_target
+  ON analyzer_suggestions(type, target);
+`;
 
 function openIfExists(p, readonly = true) {
   try {
@@ -60,13 +119,26 @@ function openIfExists(p, readonly = true) {
   }
 }
 
+function openAnalyzerDB() {
+  try {
+    fs.mkdirSync(path.dirname(ANALYZER_DB), { recursive: true });
+    const db = new Database(ANALYZER_DB);
+    db.exec(ANALYZER_SCHEMA);
+    return db;
+  } catch (e) {
+    console.warn(`[console-api] could not open ${ANALYZER_DB}: ${e.message}`);
+    return null;
+  }
+}
+
 function reopen() {
-  kanbanDB?.close(); busDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close();
+  kanbanDB?.close(); busDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); analyzerDB?.close();
   kanbanDB           = openIfExists(BOARD_DB);
   busDB              = openIfExists(BUS_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
+  analyzerDB         = openAnalyzerDB();
 }
 reopen();
 
@@ -856,13 +928,84 @@ function getPolicy() {
   } catch (e) { return { path: POLICY_FILE, error: e.message }; }
 }
 
-function getAnalyzerSuggestions() {
+function getAnalyzerSuggestions(query) {
+  if (!analyzerDB) {
+    return {
+      enabled: false,
+      note: `analyzer db unavailable at ${ANALYZER_DB}`,
+      suggestions: [],
+      filters: { type: '', target: '', sort: 'created_at_desc' },
+    };
+  }
+  const type = (query.get('type') || '').trim();
+  const target = (query.get('target') || '').trim().toLowerCase();
+  const sort = (query.get('sort') || 'created_at_desc').trim();
+  const clauses = [];
+  const params = {};
+  if (type) {
+    clauses.push('type = @type');
+    params.type = type;
+  }
+  if (target) {
+    clauses.push('LOWER(target) LIKE @target');
+    params.target = `%${target}%`;
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const order = sort === 'created_at_asc' ? 'created_at ASC' : 'created_at DESC';
+  const suggestions = analyzerDB.prepare(`
+    SELECT id, type, target, diff, rationale, applied, created_at
+    FROM analyzer_suggestions
+    ${where}
+    ORDER BY ${order}, id ASC
+    LIMIT 500
+  `).all(params);
   return {
-    enabled: false,
-    note: 'Analyzer cron (slice 5 of the dashboard epic) not yet implemented. ' +
-          'Once `analyzer-cron.lobster` ships, this endpoint will read from ' +
-          'analyzer_suggestions(id, type, target, diff, rationale, applied, created_at).',
-    suggestions: [],
+    enabled: true,
+    note: suggestions.length ? '' : 'No suggestions yet. Run the analyzer to generate a fresh batch.',
+    suggestions,
+    filters: { type, target, sort },
+  };
+}
+
+function runAnalyzer(body) {
+  const window = String(body?.window || '24h').trim() || '24h';
+  const args = [
+    '-m', 'analysis.analyzer',
+    '--window', window,
+    '--db-path', ANALYZER_DB,
+    '--policy-file', POLICY_FILE,
+  ];
+  if (body?.skip_llm === true) args.push('--skip-llm');
+  const proc = spawnSync('python3', args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, PYTHONPATH: 'python' },
+  });
+  reopen();
+  let summary = null;
+  try {
+    summary = JSON.parse(proc.stdout || '{}');
+  } catch {}
+  if (proc.status !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: 'analyzer_failed',
+        exit: proc.status,
+        stdout: (proc.stdout || '').slice(-2000),
+        stderr: (proc.stderr || '').slice(-2000),
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      summary,
+      suggestions: getAnalyzerSuggestions(new URLSearchParams()).suggestions,
+    },
   };
 }
 
@@ -911,23 +1054,129 @@ const handlers = [
   [/^\/api\/sessions$/,              (req, q) => listSessions(q)],
   [/^\/api\/sessions\/([a-zA-Z0-9_\-:.]+)$/, (req, q, m) => getSession(decodeURIComponent(m[1]))],
   [/^\/api\/policy$/,                () => getPolicy()],
-  [/^\/api\/suggestions$/,           () => getAnalyzerSuggestions()],
+  [/^\/api\/suggestions$/,           (req, q) => getAnalyzerSuggestions(q)],
   [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
 ];
 
-const server = http.createServer((req, res) => {
+// Write handlers. Body is the parsed JSON request body. Each handler
+// returns { status, body } or throws.
+//
+// Writes route through the legacy kanban-flow CLI which still mutates
+// the hermes-side DB (the swarm's source of truth during the cutover
+// window). After every successful write we refresh the chitin-owned
+// mirror by running `chitin-kernel kanban migrate <board>` so the next
+// read returns the post-write state. Yes, that's a small latency
+// blip; acceptable until Plan 4 retires the hermes DB.
+const writeHandlers = [
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/, (req, body, m) => postTaskStatus(m[1], body)],
+  [/^\/api\/analyze$/, (req, body) => runAnalyzer(body)],
+];
+
+function postTaskStatus(taskId, body) {
+  const status = (body?.status || '').trim();
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const reason = (body?.reason || '').trim();
+  const allowed = new Set(['start', 'ready', 'unblock', 'block', 'demote', 'done']);
+  if (!allowed.has(status)) {
+    return { status: 400, body: { error: 'invalid_status', detail: `status must be one of ${[...allowed].join(', ')}` } };
+  }
+  if ((status === 'block' || status === 'demote') && !reason) {
+    return { status: 400, body: { error: 'reason_required', detail: `${status} requires a reason` } };
+  }
+  if (status === 'done' && !reason) {
+    return { status: 400, body: { error: 'result_required', detail: 'done requires a result summary in `reason`' } };
+  }
+
+  const flowArgs = [status, taskId, '--author', author];
+  if (status === 'block' || status === 'demote') flowArgs.push(reason);
+  if (status === 'done') flowArgs.push('--result', reason);
+
+  const flow = spawnSync('kanban-flow', flowArgs, {
+    encoding: 'utf8',
+    env: { ...process.env, KANBAN_BOARD: CURRENT_BOARD },
+    timeout: 15_000,
+  });
+  if (flow.status !== 0) {
+    return { status: 502, body: {
+      error: 'kanban_flow_failed',
+      exit: flow.status,
+      stderr: (flow.stderr || '').slice(-1000),
+      stdout: (flow.stdout || '').slice(-1000),
+    }};
+  }
+
+  // Refresh the chitin-owned mirror so the next GET reflects the write.
+  // If migration fails we still return success — the write landed in
+  // hermes, and the next migrate cycle (whether manual or via a cron)
+  // will catch up.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: taskId,
+    status,
+    flow_stdout: (flow.stdout || '').trim(),
+    refreshed,
+    refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
+    task: getTask(taskId),
+  }};
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (c) => {
+      total += c.length;
+      if (total > 64 * 1024) { reject(new Error('body_too_large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); }
+      catch (e) { reject(new Error('invalid_json: ' + e.message)); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'content-type',
     });
     res.end();
     return;
   }
-  if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+
+  if (req.method === 'POST') {
+    for (const [re, fn] of writeHandlers) {
+      const m = url.pathname.match(re);
+      if (m) {
+        let body;
+        try { body = await readBody(req); }
+        catch (e) { return json(res, 400, { error: 'bad_body', detail: String(e.message || e) }); }
+        try {
+          const out = fn(req, body, m);
+          return json(res, out.status, out.body);
+        } catch (e) { return serverErr(res, e); }
+      }
+    }
+    return json(res, 404, { error: 'not_found' });
+  }
+
+  if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
+
   if (url.pathname === '/api/repo-file') {
     const file = getRepoFile(url.searchParams);
     if (!file) return notFound(res);
@@ -949,18 +1198,59 @@ const server = http.createServer((req, res) => {
       } catch (e) { return serverErr(res, e); }
     }
   }
+  if (STATIC_ROOT && !url.pathname.startsWith('/api/')) {
+    return serveStatic(req, res, url.pathname);
+  }
   notFound(res);
 });
+
+function serveStatic(req, res, pathname) {
+  // SPA shape: every non-/api GET that doesn't match a file on disk
+  // falls back to index.html so the Angular router can pick up the URL.
+  let rel = decodeURIComponent(pathname).replace(/^\/+/, '');
+  if (rel === '') rel = 'index.html';
+  const safe = path.normalize(rel);
+  if (safe.startsWith('..') || path.isAbsolute(safe)) {
+    return json(res, 400, { error: 'bad_path' });
+  }
+  let abs = path.join(STATIC_ROOT, safe);
+  let stat;
+  try { stat = fs.statSync(abs); } catch { stat = null; }
+  if (stat && stat.isDirectory()) {
+    abs = path.join(abs, 'index.html');
+    try { stat = fs.statSync(abs); } catch { stat = null; }
+  }
+  if (!stat || !stat.isFile()) {
+    // SPA fallback.
+    abs = path.join(STATIC_ROOT, 'index.html');
+    try { stat = fs.statSync(abs); } catch { stat = null; }
+    if (!stat) return notFound(res);
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = STATIC_MIME[ext] || 'application/octet-stream';
+  // Hashed bundles get a long cache; index.html is never cached.
+  const isHashed = /-[A-Z0-9]{8,}\.(?:js|css|woff2?|svg|png|jpe?g|ico|map)$/i.test(path.basename(abs));
+  const cacheControl = isHashed ? 'public, max-age=31536000, immutable' : 'no-store';
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': stat.size,
+    'Cache-Control': cacheControl,
+    'Access-Control-Allow-Origin': '*',
+  });
+  fs.createReadStream(abs).pipe(res);
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
   console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
-  console.log(`[chitin-console-api] kanban=${BOARD_DB} (${kanbanDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] kanban=${BOARD_DB} source=${BOARD_DB_SOURCE} (${kanbanDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] bus=${BUS_DB} (${busDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] analyzer=${ANALYZER_DB} (${analyzerDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
+  console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
 });
 
 process.on('SIGINT',  () => { server.close(); process.exit(0); });

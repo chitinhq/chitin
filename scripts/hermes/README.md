@@ -1,6 +1,6 @@
 # Hermes Staged Tick v1
 
-Cron-triggered autonomous worker for `chitinhq/chitin`. Three stages,
+Cron-triggered autonomous worker for the board-configured repo. Three stages,
 each with a locked model:
 
 | Stage | Model | Purpose |
@@ -16,7 +16,7 @@ not in the prompt.
 ## Running one tick manually
 
 ```bash
-cd ~/workspace/chitin/scripts/hermes
+cd <workspace_root>/scripts/hermes
 ./tick.sh            # normal — executes tool calls in Stage 3
 ./tick.sh --dry-run  # Stage 3 prints WOULD-RUN lines, takes no action
 ```

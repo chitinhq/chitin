@@ -63,8 +63,18 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    spec_dir_for_board,
+    warn_implicit_default_board,
+)
 
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH: Path = resolve_db()
 BOARD: str = resolve_board()
@@ -107,13 +117,27 @@ PICK_DRIVER = Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"
 CLAWTA_DECISIONS = Path.home() / ".openclaw" / "workflows" / "clawta_decisions.py"
 CLAWTA_ROUTER_MODE = os.environ.get("CLAWTA_ROUTER_MODE", "").strip().lower()
 CLAWTA_FORCE_DRIVER = os.environ.get("CLAWTA_FORCE_DRIVER", "").strip()
+
+
+def parse_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"{name}={raw!r} is not an integer; using {default}", file=sys.stderr)
+        return default
+
+
+PICK_DRIVER_TIMEOUT_SECONDS = parse_int_env("CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS", 75)
 INVARIANT_BIN = Path(os.environ.get(
     "CLAWTA_INVARIANT_BIN",
-    str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
+    str(board_workspace() / "swarm" / "bin" / "clawta-invariants"),
 ))
 AUTHOR = "clawta-poller"
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
-DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO", "chitinhq/chitin")
+BOARD = resolve_board()
+DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO") or board_repo()
 DEPENDENCY_BLOCK_PREFIX = "dependency gate:"
 PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
 PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
@@ -122,12 +146,17 @@ TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
 )
+SPEC_KIT_REF_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_.~/-]*/)?\.specify/specs/"
+    r"(?P<slug>[0-9A-Za-z][0-9A-Za-z_.-]*)/spec\.md)"
+)
 # Tracking-epic marker: a body line that opts a ticket out of auto-promotion
 # and out of the demote/stale-flag gates. Matches `Tracking-epic: true|yes|1`
 # at start of line, case-insensitive. See ticket t_6eba6ad2.
 TRACKING_EPIC_RE = re.compile(
     r"(?im)^tracking-epic:\s*(true|yes|1)\s*$"
 )
+LOOP_DETECTED_RE = re.compile(r"loop_detected\s*=\s*true|promote-demote loop detected", re.IGNORECASE)
 
 
 def log(msg: str) -> None:
@@ -176,6 +205,22 @@ def extract_named_boundaries(field_value: str | None) -> list[str]:
     return boundaries
 
 
+def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
+    """Legacy validator kept for reviewer/test callers; dispatch uses spec-kit."""
+    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
+    if not field_value:
+        return (
+            "missing invariants_and_boundaries: field — triage must name the "
+            "preserved invariant and explicit boundary list before promotion to ready"
+        )
+    if not extract_named_boundaries(field_value):
+        return (
+            "invariants_and_boundaries: missing explicit boundary list — "
+            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
+        )
+    return None
+
+
 def is_tracking_epic(body: str | None) -> bool:
     """True when the body opts the ticket out of auto-promotion + demote gates.
 
@@ -195,19 +240,63 @@ def is_parent_hierarchy_prefix(prefix: str) -> bool:
     return normalized.endswith("parent:")
 
 
-def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
-    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
-    if not field_value:
-        return (
-            "missing invariants_and_boundaries: field — triage must name the "
-            "preserved invariant and explicit boundary list before promotion to ready"
-        )
-    if not extract_named_boundaries(field_value):
-        return (
-            "invariants_and_boundaries: missing explicit boundary list — "
-            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
-        )
-    return None
+def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[Path]:
+    """Return referenced spec-kit `spec.md` paths that stay under this board's spec root."""
+    if not body:
+        return []
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in SPEC_KIT_REF_RE.finditer(body):
+        candidate = (spec_root / match.group("slug") / "spec.md").resolve()
+        try:
+            candidate.relative_to(spec_root)
+        except ValueError:
+            continue
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
+    return paths
+
+
+def spec_kit_entry_paths_for_ticket(tid: str | None, *, board: str | None = None) -> list[Path]:
+    """Return board-appropriate spec.md files that explicitly bind to this ticket id."""
+    if not tid:
+        return []
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    if not spec_root.is_dir():
+        return []
+    needle = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(tid)}(?![A-Za-z0-9_])")
+    paths: list[Path] = []
+    for spec_path in spec_root.glob("*/spec.md"):
+        try:
+            if needle.search(spec_path.read_text(errors="ignore")):
+                paths.append(spec_path)
+        except OSError:
+            continue
+    return paths
+
+
+def spec_kit_entry_mentions_ticket(tid: str | None, *, board: str | None = None) -> bool:
+    """True when any board-appropriate spec.md explicitly binds to this ticket id."""
+    return bool(spec_kit_entry_paths_for_ticket(tid, board=board))
+
+
+def has_spec_kit_entry(ticket: dict[str, Any], *, board: str | None = None) -> bool:
+    """True when ticket/spec content has an existing board-appropriate spec binding."""
+    if any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board)):
+        return True
+    return spec_kit_entry_mentions_ticket(ticket.get("id"), board=board)
+
+
+def missing_spec_kit_reason(ticket: dict[str, Any]) -> str | None:
+    if has_spec_kit_entry(ticket, board=BOARD):
+        return None
+    spec_root = spec_dir_for_board(BOARD)
+    return (
+        "missing spec-kit entry — dispatch/re-dispatch requires an existing "
+        f".specify/specs/NNN-<slug>/spec.md under {spec_root} before promotion to ready"
+    )
 
 
 @dataclass(frozen=True)
@@ -409,25 +498,57 @@ def filter_tickets_with_incomplete_runs(
     return filtered, sorted(blocked_ids)
 
 
+def ticket_has_loop_detected_marker(ticket_id: str) -> bool:
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "block_reason" in columns:
+                row = conn.execute("SELECT block_reason FROM tasks WHERE id = ?", (ticket_id,)).fetchone()
+                if row and row["block_reason"] and LOOP_DETECTED_RE.search(str(row["block_reason"])):
+                    return True
+            rows = conn.execute(
+                """
+                SELECT body
+                  FROM task_comments
+                 WHERE task_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 20
+                """,
+                (ticket_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return False
+    return any(LOOP_DETECTED_RE.search(str(row["body"])) for row in rows)
+
+
 def fetch_blocked_dependency_gate_tickets() -> list[dict[str, Any]]:
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tasks)")}
+        block_reason_expr = "t.block_reason" if "block_reason" in columns else "NULL"
+        block_reason_predicate = "t.block_reason LIKE ? OR" if "block_reason" in columns else ""
         rows = conn.execute(
-            """
-            SELECT t.id, t.title, t.body, t.assignee, t.priority, t.created_at, t.status
-              FROM tasks t
-             WHERE t.status = 'blocked'
-               AND (
+            f"""
+            SELECT t.id, t.title, t.body, t.assignee, t.priority, t.created_at, t.status,
+                   {block_reason_expr} AS block_reason,
+                   (
                     SELECT c.body
                       FROM task_comments c
                      WHERE c.task_id = t.id
                        AND c.body LIKE 'Blocked:%'
                      ORDER BY c.created_at DESC, c.id DESC
                      LIMIT 1
-                  ) LIKE ?
+                  ) AS latest_block_comment
+              FROM tasks t
+             WHERE t.status = 'blocked'
+               AND (
+                    {block_reason_predicate}
+                    latest_block_comment LIKE ?
+               )
              ORDER BY t.priority DESC, t.created_at ASC
             """,
-            (f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%",),
+            ((f"{DEPENDENCY_BLOCK_PREFIX}%", f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%") if "block_reason" in columns else (f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%",)),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -613,6 +734,77 @@ def block_for_unresolved_dependencies(ticket_id: str, unresolved: list[str], dry
     return True
 
 
+BLOCKED_UNTIL_RE = re.compile(r"^\s*(?:[-*]\s*)?Blocked until:\s*(?P<condition>.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def explicit_spec_blockers(ticket: dict[str, Any]) -> list[str]:
+    """Return unsatisfied explicit blockers declared in bound spec-kit entries.
+
+    Spec presence is necessary but not sufficient. A spec may include a
+    human-readable `Blocked until:` capability/dependency condition; when that
+    condition is still false, dependency auto-unblock must fail closed.
+    """
+    blockers: list[str] = []
+    paths = list(spec_kit_entry_paths(ticket.get("body"), board=BOARD))
+    paths.extend(spec_kit_entry_paths_for_ticket(ticket.get("id"), board=BOARD))
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        for match in BLOCKED_UNTIL_RE.finditer(text):
+            condition = match.group("condition").strip()
+            if not blocked_until_condition_satisfied(condition):
+                blockers.append(f"{path.parent.name}: Blocked until: {condition}")
+    return blockers
+
+
+def blocked_until_condition_satisfied(condition: str) -> bool:
+    """Best-effort evaluator for explicit spec `Blocked until:` conditions."""
+    # The driver allowlist spec gates on a concrete kernel capability. Treat
+    # command failure or non-JSON error payload as still blocked.
+    if "chitin-kernel drivers list --json" in condition:
+        try:
+            result = subprocess.run(
+                ["chitin-kernel", "drivers", "list", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"dependency probe: explicit blocker still active ({condition}): {e}")
+            return False
+        if result.returncode != 0:
+            log(f"dependency probe: explicit blocker still active ({condition}): rc={result.returncode} stderr={result.stderr[-200:]}")
+            return False
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            log(f"dependency probe: explicit blocker returned non-json for {condition}: {result.stdout[-200:]!r}")
+            return False
+        if isinstance(payload, dict) and payload.get("error"):
+            log(f"dependency probe: explicit blocker returned error for {condition}: {payload.get('error')}")
+            return False
+        return True
+    # Unknown explicit blockers are operator-authored gates. Fail closed rather
+    # than converting spec presence into readiness.
+    log(f"dependency probe: explicit blocker has no evaluator; leaving blocked: {condition}")
+    return False
+
+
+def stale_dependency_gate_reason(ticket: dict[str, Any]) -> str | None:
+    reason = str(ticket.get("block_reason") or "")
+    comment = str(ticket.get("latest_block_comment") or "")
+    for text in (reason, comment):
+        if DEPENDENCY_BLOCK_PREFIX in text and "currently unknown_subcommand" in text:
+            return text
+    return None
+
+
 def unblock_dependency_ticket(ticket_id: str, resolved: list[str], dry_run: bool) -> bool:
     if dry_run:
         log(f"[dry-run] would unblock {ticket_id}: {', '.join(resolved)}")
@@ -655,11 +847,23 @@ def auto_unblock_dependency_tickets(
     ticket_cache = {} if ticket_cache is None else ticket_cache
     unblocked: list[str] = []
     for ticket in fetch_blocked_dependency_gate_tickets():
+        ticket_id = str(ticket.get("id"))
+        if ticket_has_loop_detected_marker(ticket_id):
+            log(f"dependency probe: leaving {ticket_id} blocked because loop_detected=true")
+            continue
         refs = extract_dependency_refs(ticket.get("body"), self_ticket_id=ticket.get("id"))
         if not refs:
             continue
         unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
         if unresolved:
+            continue
+        explicit_blockers = explicit_spec_blockers(ticket)
+        if explicit_blockers:
+            log(f"dependency probe: leaving {ticket_id} blocked due to explicit spec blocker(s): {', '.join(explicit_blockers)}")
+            continue
+        stale_reason = stale_dependency_gate_reason(ticket)
+        if stale_reason:
+            log(f"dependency probe: leaving {ticket_id} blocked due to unresolved dependency gate reason: {stale_reason[:200]}")
             continue
         resolved_labels = [ref.label for ref in refs]
         if unblock_dependency_ticket(ticket["id"], resolved_labels, dry_run):
@@ -763,7 +967,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             input=classify_json,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=PICK_DRIVER_TIMEOUT_SECONDS,
             env=pick_driver_env,
         )
         if result.returncode != 0:
@@ -782,7 +986,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         # ticket stays visible for a later retry instead of being counted as
         # routed when kanban did not actually change.
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "assign",
+            ["hermes", "kanban", "--board", BOARD, "assign",
              ticket["id"], driver],
             timeout=15,
             check=True,
@@ -808,7 +1012,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             check=True,
         )
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "comment",
+            ["hermes", "kanban", "--board", BOARD, "comment",
              ticket["id"], "--author", AUTHOR,
              f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
             timeout=15,
@@ -849,11 +1053,49 @@ def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
 # Dispatch + demote actions
 # ---------------------------------------------------------------------------
 
+def fetch_current_status(ticket_id: str) -> str | None:
+    """Fresh-read the ticket status from the kanban DB. Returns None if
+    the ticket doesn't exist or the read fails.
+
+    Used as a pre-dispatch race guard: between the poller's snapshot fetch
+    and the moment it tries to flip ready → in_progress, an operator or
+    Ares/Clawta may have blocked the ticket. Without this guard, the
+    poller would race past the block, flip status, and spawn a worker
+    against a ticket the operator already pulled offline. See
+    chitinhq/workspace#418 day-0 retro tiger-team task C3.
+    """
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (ticket_id,)
+            ).fetchone()
+    except sqlite3.Error as e:
+        log(f"fetch_current_status({ticket_id}): {e}")
+        return None
+    return row[0] if row else None
+
+
 def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
-    """Flip ready→in_progress, then spawn clawta dispatch in background."""
+    """Flip ready→in_progress, then spawn clawta dispatch in background.
+
+    Pre-flight: fresh-read the ticket status. If it has slipped out of a
+    dispatchable status (blocked, demoted to triage, claimed by another
+    process, etc.), abort. Without this guard the poller can race past
+    an operator block (chitinhq/workspace#418 day-0 retro, tiger C3).
+    """
     if dry_run:
         log(f"[dry-run] would dispatch {ticket_id} to {assignee}: {reason[:80]}")
         return True
+
+    current_status = fetch_current_status(ticket_id)
+    if current_status not in DISPATCHABLE_STATUSES:
+        log(
+            f"dispatch_ticket({ticket_id}): aborting — status flipped to "
+            f"{current_status!r} between fetch and dispatch (was expected "
+            f"to be one of {DISPATCHABLE_STATUSES}). Likely operator/agent "
+            f"blocked or demoted in the dispatcher window. Not racing."
+        )
+        return False
 
     comment = f"clawta-poller dispatching to {assignee}. Sequence reason: {reason}"
     try:
@@ -941,8 +1183,8 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
     return demoted
 
 
-def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
-    """Demote ready/todo tickets that skipped the boundary-naming triage field."""
+def demote_missing_spec_kit_entries(dry_run: bool) -> list[str]:
+    """Demote ready/todo tickets that lack an existing spec-kit spec.md."""
     candidates = fetch_dispatchable_with_bodies()
     if not candidates:
         return []
@@ -950,7 +1192,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     for ticket in candidates:
         if is_tracking_epic(ticket.get("body")):
             continue
-        reason = missing_invariants_reason(ticket)
+        reason = missing_spec_kit_reason(ticket)
         if not reason:
             continue
         if demote_ticket(ticket["id"], reason, dry_run):
@@ -958,7 +1200,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     if demoted:
         log(
             "tick: demoted "
-            f"{len(demoted)} ticket(s) missing invariants_and_boundaries"
+            f"{len(demoted)} ticket(s) missing spec-kit entries"
         )
     return demoted
 
@@ -1007,21 +1249,21 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
-    # Step 2: Reject tickets that reached ready/todo without the mandatory
-    # invariants_and_boundaries triage field. This is the poller's enforcement
-    # point for the triage -> ready contract.
-    invariants_demoted = demote_missing_invariants_and_boundaries(dry_run)
-
-    # Step 3: Block ready/todo tickets with unresolved cross-ticket / cross-PR
+    # Step 2: Block ready/todo tickets with unresolved cross-ticket / cross-PR
     # dependencies so they don't get dispatched before their prerequisites land.
     dependency_blocked = apply_dependency_gate(
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
+    # Step 3: Reject remaining ready/todo tickets without the mandatory
+    # spec-kit entry. This is the poller's enforcement point for the
+    # triage -> ready contract.
+    spec_demoted = demote_missing_spec_kit_entries(dry_run)
+
     # Step 4: Dispatch already-routed terminal-lane work first so visible
     # ready→in_progress movement is not starved by a large clawta routing queue.
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
-    demoted = invariants_demoted + demoted
+    demoted = spec_demoted + demoted
 
     # Step 5: Demote ungroomed tickets (no assignee or non-dispatchable).
     ungroomed_demoted = demote_ungroomed(dry_run)

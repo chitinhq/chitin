@@ -741,9 +741,23 @@ def emit_result(
 
 def main() -> None:
     raw = sys.stdin.read()
-    if not raw.strip():
-        raise SystemExit("classify produced no JSON object")
-    classify = json.loads(raw)
+    # Hot-patch 2026-05-18: classify step's openclaw-agent call can return
+    # gateway error text instead of JSON when the gateway is degraded
+    # (recovered via gateway restart but classify still emits cached
+    # error envelopes). Fall back to empty classify so deterministic
+    # ranking can still proceed instead of crashing the whole dispatch.
+    # The deterministic path uses empty capabilities + default complexity —
+    # same as a "I don't know anything about this ticket" classify result.
+    # Documented in spec 022 (PR #744) Gate-1.
+    try:
+        classify = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(
+            f"[_pick_driver] WARN: classify stdin not JSON ({len(raw)} chars); "
+            "falling back to empty classify so deterministic routing can proceed",
+            file=sys.stderr,
+        )
+        classify = {}
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
     soul_id, soul_hash, soul_category = resolve_soul(classify)

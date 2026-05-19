@@ -1,11 +1,11 @@
 # Governance Setup Extras
 
-## Mirrored Workflow: kanban-dispatch.lobster
+## Mirrored Workflows
 
-This directory contains a mirrored copy of the canonical `kanban-dispatch.lobster` workflow from the `swarm` repository.
+This directory contains mirrored copies of canonical Lobster workflows from the `swarm` repository.
 
-- **Canonical location:** `swarm/workflows/kanban-dispatch.lobster`
-- **Mirror location:** `docs/governance-setup-extras/kanban-dispatch.lobster`
+- `swarm/workflows/kanban-dispatch.lobster` → `docs/governance-setup-extras/kanban-dispatch.lobster`
+- `swarm/workflows/analyzer-cron.lobster` → `docs/governance-setup-extras/analyzer-cron.lobster`
 
 ### Sync Policy
 
@@ -15,4 +15,4 @@ A sync script and/or CI check ensures these files remain identical. If you updat
 
 ---
 
-For more details on the dispatch workflow, see the main repo README and `swarm/workflows/kanban-dispatch.lobster`.
+For more details, see the main repo README plus the corresponding files under `swarm/workflows/`.

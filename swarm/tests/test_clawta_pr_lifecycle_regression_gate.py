@@ -98,13 +98,41 @@ class RegressionGateFetchTests(unittest.TestCase):
 
 
 class TicketInferenceTests(unittest.TestCase):
-    def test_infer_ticket_accepts_explicit_refs_in_pr_body(self) -> None:
+    def test_infer_ticket_branch_implies_close_intent(self) -> None:
+        m = load_module()
+        pr = base_pr(headRefName="swarm/hermes-f2ede4a8", body="")
+        ref = m.infer_ticket(pr, [])
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.ticket_id, "t_f2ede4a8")
+        self.assertTrue(ref.close_intent)
+
+    def test_infer_ticket_close_keywords_imply_close_intent(self) -> None:
+        m = load_module()
+        cases = [
+            ("Closes t_f2ede4a8", True),
+            ("Fixes t_f2ede4a8", True),
+            ("Resolves t_f2ede4a8", True),
+            ("closes: t_f2ede4a8", True),
+            ("Fixes #123, refs t_f2ede4a8", False),  # "refs" keyword = reference, not close
+        ]
+        for body, expected_close in cases:
+            with self.subTest(body=body):
+                pr = base_pr(headRefName="clawta/lifecycle-fix", body=body)
+                ref = m.infer_ticket(pr, [])
+                self.assertIsNotNone(ref)
+                self.assertEqual(ref.ticket_id, "t_f2ede4a8")
+                self.assertEqual(ref.close_intent, expected_close)
+
+    def test_infer_ticket_ref_keywords_imply_no_close_intent(self) -> None:
         m = load_module()
         cases = [
             "Refs t_f2ede4a8",
             "Ref t_f2ede4a8",
             "References t_f2ede4a8",
             "Reference t_f2ede4a8",
+            "ticket t_f2ede4a8",
+            "task t_f2ede4a8",
+            "kanban t_f2ede4a8",
         ]
         for body in cases:
             with self.subTest(body=body):
@@ -112,8 +140,10 @@ class TicketInferenceTests(unittest.TestCase):
                     headRefName="clawta/lifecycle-pr-ref-mapping",
                     body=f"## Summary\n- lifecycle mapping fix\n\n{body}",
                 )
-
-                self.assertEqual(m.infer_ticket(pr, []), "t_f2ede4a8")
+                ref = m.infer_ticket(pr, [])
+                self.assertIsNotNone(ref)
+                self.assertEqual(ref.ticket_id, "t_f2ede4a8")
+                self.assertFalse(ref.close_intent)
 
     def test_infer_ticket_ignores_arbitrary_comment_refs(self) -> None:
         m = load_module()
@@ -121,6 +151,11 @@ class TicketInferenceTests(unittest.TestCase):
         comments = [{"body": "Refs t_badbeef1"}]
 
         self.assertIsNone(m.infer_ticket(pr, comments))
+
+    def test_infer_ticket_no_match_returns_none(self) -> None:
+        m = load_module()
+        pr = base_pr(headRefName="clawta/no-ticket-id", body="Unrelated changes")
+        self.assertIsNone(m.infer_ticket(pr, []))
 
 
 class GateShortCircuitTests(unittest.TestCase):

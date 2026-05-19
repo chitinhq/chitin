@@ -27,6 +27,7 @@ import time
 from typing import Any, Callable
 
 from db import connect
+import discord_push
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -74,6 +75,10 @@ def bus_post_thread(conn, *, author: str, title: str, body: str,
     )
     message_id = cur.lastrowid
     conn.commit()
+    # bus_post_thread creates a fresh thread; discord_thread_id is unset
+    # at this point unless a poller later links it, so try_push is a no-op
+    # here. Call kept for symmetry in case auto-link is added later.
+    discord_push.try_push(channel_id=None, author=author, body=body)
     return {"thread_id": thread_id, "message_id": message_id, "created_at": now}
 
 
@@ -112,8 +117,38 @@ def bus_reply(conn, *, author: str, thread_id: int, body: str,
     cur.execute(
         "UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id)
     )
+    # Look up the Discord channel id BEFORE commit so a slow Discord POST
+    # doesn't hold the SQLite write lock.
+    channel_row = cur.execute(
+        "SELECT discord_thread_id FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()
     conn.commit()
-    return {"message_id": message_id, "created_at": now}
+    channel_id = channel_row["discord_thread_id"] if channel_row else None
+    # Per pos-002 AC5: stamp the returned Discord snowflake back onto
+    # the bus row BEFORE the next inbound mirror poll runs. Without
+    # this stamp, the inbound poll re-imports the message as a
+    # duplicate (canonical 3419→3420 echo bug).
+    snowflake = discord_push.try_push(
+        channel_id=channel_id, author=author, body=body
+    )
+    if snowflake:
+        try:
+            conn.execute(
+                "UPDATE messages SET discord_message_id=? WHERE id=?",
+                (snowflake, message_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            # Stamp failure is non-fatal — the message is already on
+            # both Discord and the bus; it'll just produce a duplicate
+            # on the next inbound poll. Log loudly so this surfaces.
+            print(
+                f"[bus_reply] WARN: failed to stamp snowflake "
+                f"{snowflake} onto bus msg {message_id}: {exc}",
+                file=__import__("sys").stderr,
+            )
+    return {"message_id": message_id, "created_at": now,
+            "discord_message_id": snowflake}
 
 
 def bus_list_threads(conn, *, board: str | None = None, status: str | None = None,

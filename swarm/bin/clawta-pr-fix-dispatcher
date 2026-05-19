@@ -25,8 +25,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "chitinhq/chitin")
-BASE_REPO = Path(os.environ.get("CHITIN_REPO", str(Path.home() / "workspace/chitin")))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    warn_implicit_default_board,
+)
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
+
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
+BASE_REPO = Path(os.environ.get("CHITIN_REPO", str(board_workspace())))
 WORKTREE_ROOT = Path(os.environ.get("CLAWTA_PR_FIX_WORKTREES", str(Path.home() / ".cache/chitin/pr-fix-worktrees")))
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-pr-fix-dispatcher.log"
@@ -263,6 +274,7 @@ def dispatch_once(prefixes: tuple[str, ...], max_prs: int, dry_run: bool) -> dic
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--board", help="board slug override (default: KANBAN_BOARD or deprecated implicit chitin)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-prs", type=int, default=1)
     ap.add_argument("--prefix", action="append")
