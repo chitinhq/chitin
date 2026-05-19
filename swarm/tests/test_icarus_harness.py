@@ -169,9 +169,24 @@ class TestEmitterClassifier(TestCase):
         self.assertFalse(is_fail)
         self.assertEqual(reason, "passed")
 
+    def test_pass_when_nested_reward_one(self):
+        """Harbor writes {'rewards': {'reward': 1.0}} in current builds."""
+        is_fail, reason, _ = self._classify(
+            {"verifier_result": {"rewards": {"reward": 1.0}}}
+        )
+        self.assertFalse(is_fail)
+        self.assertEqual(reason, "passed")
+
     def test_fail_when_reward_zero(self):
         is_fail, reason, _ = self._classify(
             {"verifier_result": {"reward": 0.0}}
+        )
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "verifier_failed")
+
+    def test_fail_when_nested_reward_zero(self):
+        is_fail, reason, _ = self._classify(
+            {"verifier_result": {"rewards": {"reward": 0.0}}}
         )
         self.assertTrue(is_fail)
         self.assertEqual(reason, "verifier_failed")

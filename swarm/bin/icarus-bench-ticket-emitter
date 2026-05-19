@@ -55,17 +55,27 @@ def hermes_bin() -> str:
 
 
 def find_recent_results(window_hours: int) -> list[Path]:
-    """Find ``results.json`` files under ``jobs/icarus/`` modified in
-    the last ``window_hours``."""
+    """Find Harbor trial result files under ``jobs/icarus/`` modified
+    in the last ``window_hours``.
+
+    Harbor writes both a job-level ``<job>/result.json`` and a
+    trial-level ``<job>/<trial>/result.json``. We want only the
+    trial-level files (each represents one bench attempt). Filter by
+    depth == 3 from JOBS_DIR (jobs/icarus / <job> / <trial> /
+    result.json).
+    """
     if not JOBS_DIR.is_dir():
         return []
     cutoff = datetime.now(timezone.utc).timestamp() - window_hours * 3600
     out: list[Path] = []
-    for results in JOBS_DIR.rglob("results.json"):
+    for results in JOBS_DIR.rglob("result.json"):
         try:
+            # Only trial-level: jobs/icarus/<job>/<trial>/result.json
+            if len(results.relative_to(JOBS_DIR).parts) != 3:
+                continue
             if results.stat().st_mtime >= cutoff:
                 out.append(results)
-        except OSError:
+        except (OSError, ValueError):
             continue
     return out
 
@@ -93,9 +103,14 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
     icarus_reason = metadata.get("icarus_block_reason") if metadata else None
 
     verifier_result = trial.get("verifier_result") or {}
+    # Harbor verifier writes either {"reward": <float>} (legacy) or
+    # {"rewards": {"reward": <float>}} (current). Probe both.
     reward = None
     if isinstance(verifier_result, dict):
-        reward = verifier_result.get("reward")
+        if "reward" in verifier_result:
+            reward = verifier_result.get("reward")
+        elif "rewards" in verifier_result and isinstance(verifier_result["rewards"], dict):
+            reward = verifier_result["rewards"].get("reward")
 
     if icarus_reason:
         return True, f"harness_loud_fail:{icarus_reason}", _verifier_excerpt(verifier_result)
@@ -208,6 +223,11 @@ def emit_ticket_or_comment(
         log(f"DRY-RUN: would create/append ticket key={key} title={title[:60]}")
         return {"action": "dry_run", "key": key}
 
+    # NOT --triage: Clawta's board watcher only picks up status='ready'
+    # tickets. We want her to surface every failure in #icarus within
+    # 60s, so the ticket lands in 'ready' from the start. The body is
+    # fully self-contained (no spec required) and the idempotency-key
+    # prevents duplicates.
     create_cmd = [
         hermes, "kanban", "--board", KANBAN_BOARD,
         "create", title,
@@ -215,7 +235,6 @@ def emit_ticket_or_comment(
         "--assignee", TICKET_ASSIGNEE,
         "--idempotency-key", key,
         "--skill", "bench-failure-triage",
-        "--triage",
         "--json",
     ]
     proc = subprocess.run(create_cmd, capture_output=True, text=True, check=False)
@@ -228,6 +247,28 @@ def emit_ticket_or_comment(
             tid = None
         action = "created"
         log(f"created ticket id={tid} key={key}")
+        # Promote to ready so Clawta's watcher picks it up within 60s.
+        # Clawta's clawta-swarm-board-watcher only emits #icarus
+        # notifications for tickets in status='ready'; without this
+        # promote the ticket sits invisible in triage.
+        if tid:
+            ready_cmd = [
+                shutil.which("kanban-flow") or "kanban-flow",
+                "ready", tid,
+                "--author", "icarus-bench-emitter",
+            ]
+            rproc = subprocess.run(
+                ready_cmd,
+                env={**os.environ, "KANBAN_BOARD": KANBAN_BOARD},
+                capture_output=True, text=True, check=False,
+            )
+            if rproc.returncode != 0:
+                log(
+                    f"  ready promote failed for {tid}: "
+                    f"{(rproc.stderr or rproc.stdout or '').strip()[:200]}"
+                )
+            else:
+                log(f"  promoted {tid} to ready")
         return {"action": action, "key": key, "ticket_id": tid}
 
     # hermes-kanban create returns non-zero when idempotency key collides.
