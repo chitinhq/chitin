@@ -27,8 +27,15 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "services" / "agent-bus"))
+BUS_PKG = REPO / "services" / "agent-bus"
+if not (BUS_PKG / "db.py").is_file() or not (BUS_PKG / "server.py").is_file():
+    print(f"swarm-bus: agent-bus package not found at {BUS_PKG}", file=sys.stderr)
+    sys.exit(1)
+sys.path.insert(0, str(BUS_PKG))
 
+# TODO: convert to package import (`python -m agent_bus.cli`) once
+# services/agent-bus has a proper setup.cfg/pyproject. Per Ares msg 5252,
+# `import server` is risky if anything else inserts a server.py shadow.
 from db import connect  # noqa: E402
 import server  # noqa: E402
 
