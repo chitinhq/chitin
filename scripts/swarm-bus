@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""swarm-bus — thin CLI over the agent-bus MCP tools.
+
+Wraps the 7 bus_* operations from services/agent-bus/server.py as plain
+shell commands so any agent can do:
+
+    swarm-bus reply <thread_id> "body"
+    swarm-bus inbox
+    swarm-bus read <thread_id>
+    swarm-bus post <board> <audience> "title" "body"
+    swarm-bus list [--board <b>] [--status <s>]
+    swarm-bus mark-read <message_id>
+
+Author defaults to $SWARM_BUS_AUTHOR or 'red'.
+
+Why this exists: the agent-bus MCP server is connected but its tools
+don't surface to Claude Code's ToolSearch keyword index, so agents
+keep falling back to ad-hoc python one-liners. This CLI is the
+guaranteed path until the MCP wiring is fixed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+BUS_PKG = REPO / "services" / "agent-bus"
+if not (BUS_PKG / "db.py").is_file() or not (BUS_PKG / "server.py").is_file():
+    print(f"swarm-bus: agent-bus package not found at {BUS_PKG}", file=sys.stderr)
+    sys.exit(1)
+sys.path.insert(0, str(BUS_PKG))
+
+# TODO: convert to package import (`python -m agent_bus.cli`) once
+# services/agent-bus has a proper setup.cfg/pyproject. Per Ares msg 5252,
+# `import server` is risky if anything else inserts a server.py shadow.
+from db import connect  # noqa: E402
+import server  # noqa: E402
+
+
+def _author() -> str:
+    return os.environ.get("SWARM_BUS_AUTHOR", "red")
+
+
+def _emit(payload: dict) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_reply(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_reply(
+        conn,
+        author=_author(),
+        thread_id=args.thread_id,
+        body=args.body,
+        parent_id=args.parent_id,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_post(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_post_thread(
+        conn,
+        author=_author(),
+        title=args.title,
+        body=args.body,
+        board=args.board,
+        audience=args.audience,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_inbox(
+        conn,
+        agent_id=args.agent or _author(),
+        unread_only=not args.all,
+        limit=args.limit,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_read_thread(conn, thread_id=args.thread_id)
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_list_threads(
+        conn,
+        board=args.board,
+        status=args.status,
+        audience=args.audience,
+        limit=args.limit,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_mark_read(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_mark_read(
+        conn,
+        agent_id=args.agent or _author(),
+        message_id=args.message_id,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    conn = connect()
+    r = server.bus_attach(
+        conn,
+        thread_id=args.thread_id,
+        kind=args.kind,
+        ref=args.ref,
+        label=args.label,
+    )
+    conn.close()
+    _emit(r)
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="swarm-bus")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pr = sub.add_parser("reply", help="Reply to a thread")
+    pr.add_argument("thread_id", type=int)
+    pr.add_argument("body")
+    pr.add_argument("--parent-id", type=int, default=None)
+    pr.set_defaults(fn=cmd_reply)
+
+    pp = sub.add_parser("post", help="Create a new thread")
+    pp.add_argument("board")
+    pp.add_argument("audience")
+    pp.add_argument("title")
+    pp.add_argument("body")
+    pp.set_defaults(fn=cmd_post)
+
+    pi = sub.add_parser("inbox", help="Show inbox for an agent")
+    pi.add_argument("--agent", default=None)
+    pi.add_argument("--all", action="store_true", help="include already-read messages")
+    pi.add_argument("--limit", type=int, default=20)
+    pi.set_defaults(fn=cmd_inbox)
+
+    pre = sub.add_parser("read", help="Read a full thread")
+    pre.add_argument("thread_id", type=int)
+    pre.set_defaults(fn=cmd_read)
+
+    pl = sub.add_parser("list", help="List recent threads")
+    pl.add_argument("--board", default=None)
+    pl.add_argument("--status", default=None)
+    pl.add_argument("--audience", default=None)
+    pl.add_argument("--limit", type=int, default=20)
+    pl.set_defaults(fn=cmd_list)
+
+    pm = sub.add_parser("mark-read", help="Mark a message as read")
+    pm.add_argument("message_id", type=int)
+    pm.add_argument("--agent", default=None)
+    pm.set_defaults(fn=cmd_mark_read)
+
+    pa = sub.add_parser("attach", help="Attach a link/ref to a thread")
+    pa.add_argument("thread_id", type=int)
+    pa.add_argument("kind", choices=["spec", "pr", "task", "discord", "url", "file"])
+    pa.add_argument("ref")
+    pa.add_argument("--label", default=None)
+    pa.set_defaults(fn=cmd_attach)
+
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
