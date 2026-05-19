@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from db import connect
 import discord_push
+import discord_routes
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -101,15 +102,35 @@ def _touch_agent(conn, agent_id: str) -> None:
 def bus_post_thread(conn, *, author: str, title: str, body: str,
                     board: str | None = None, task_id: str | None = None,
                     audience: str | None = None) -> dict:
-    """Create a top-level thread + its first message in one transaction."""
+    """Create a top-level thread + its first message in one transaction.
+
+    Discord routing: the deterministic resolver (discord_routes) decides
+    which channel the new thread mirrors. The resolved channel id is
+    stamped onto ``threads.discord_thread_id`` at INSERT time so future
+    replies via ``bus_reply`` automatically push to the same channel.
+
+    Routing precedence: audience > board > global default (see
+    discord_routes.resolve_channel docstring).
+
+    If no route resolves AND no global default is configured, the
+    thread is created with ``discord_thread_id=NULL`` and a warning is
+    emitted to stderr. The bus row is the committed ground truth; a
+    missing Discord route is a config gap, not a thread-creation
+    blocker. Operators surface these via discord-push-failures.jsonl.
+    """
     body = _canonicalize_mentions(body)
     now = _now()
     cur = conn.cursor()
     _touch_agent(conn, author)
+
+    channel_id = _resolve_route_or_warn(
+        conn, board=board, audience=audience, where="bus_post_thread",
+    )
     cur.execute(
         "INSERT INTO threads(board, task_id, title, author, audience, "
-        "created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
-        (board, task_id, title, author, audience, now, now),
+        "discord_thread_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (board, task_id, title, author, audience, channel_id, now, now),
     )
     thread_id = cur.lastrowid
     cur.execute(
@@ -119,11 +140,50 @@ def bus_post_thread(conn, *, author: str, title: str, body: str,
     )
     message_id = cur.lastrowid
     conn.commit()
-    # bus_post_thread creates a fresh thread; discord_thread_id is unset
-    # at this point unless a poller later links it, so try_push is a no-op
-    # here. Call kept for symmetry in case auto-link is added later.
-    discord_push.try_push(channel_id=None, author=author, body=body)
-    return {"thread_id": thread_id, "message_id": message_id, "created_at": now}
+    # Push the first message immediately if a channel was resolved.
+    # Per pos-002 AC5: stamp the returned snowflake onto messages so the
+    # inbound mirror doesn't re-import it as a duplicate.
+    snowflake = discord_push.try_push(
+        channel_id=channel_id, author=author, body=body,
+    ) if channel_id else None
+    if snowflake:
+        try:
+            conn.execute(
+                "UPDATE messages SET discord_message_id=? WHERE id=?",
+                (snowflake, message_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            print(
+                f"[bus_post_thread] WARN: failed to stamp snowflake "
+                f"{snowflake} onto bus msg {message_id}: {exc}",
+                file=sys.stderr,
+            )
+    return {"thread_id": thread_id, "message_id": message_id,
+            "discord_message_id": snowflake, "discord_channel_id": channel_id,
+            "created_at": now}
+
+
+def _resolve_route_or_warn(conn, *, board: str | None, audience: str | None,
+                           where: str) -> str | None:
+    """Resolve a Discord channel for the (board, audience) pair.
+
+    Catches UnroutableError and converts to a stderr warning + None so
+    the bus write itself never fails on a missing route. The warning
+    surface (stderr + failure JSONL via discord_push) lets operators
+    notice and add the route.
+    """
+    try:
+        return discord_routes.resolve_channel(
+            conn, board=board, audience=audience,
+        )
+    except discord_routes.UnroutableError as exc:
+        print(
+            f"[{where}] no Discord route for board={board!r} "
+            f"audience={audience!r}: {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def bus_reply(conn, *, author: str, thread_id: int, body: str,
@@ -330,6 +390,52 @@ def bus_attach(conn, *, thread_id: int, kind: str, ref: str,
 
 
 # ---------------------------------------------------------------------------
+# Discord route CRUD tools. Operators manage (audience, board, global)
+# routes through these — no raw SQL.
+# ---------------------------------------------------------------------------
+
+
+def bus_routes_set(conn, *, scope: str, key: str,
+                   channel_id: str | None = None,
+                   priority: int = 100) -> dict:
+    """Upsert a Discord route. channel_id=null means 'explicit mute'."""
+    route = discord_routes.set_route(
+        conn, scope=scope, key=key, channel_id=channel_id, priority=priority,
+    )
+    return {
+        "scope": route.scope, "key": route.key,
+        "channel_id": route.channel_id, "priority": route.priority,
+        "updated_at": route.updated_at,
+    }
+
+
+def bus_routes_unset(conn, *, scope: str, key: str) -> dict:
+    removed = discord_routes.unset_route(conn, scope=scope, key=key)
+    return {"removed": removed}
+
+
+def bus_routes_list(conn) -> dict:
+    rows = discord_routes.list_routes(conn)
+    return {"routes": [
+        {"scope": r.scope, "key": r.key, "channel_id": r.channel_id,
+         "priority": r.priority, "updated_at": r.updated_at}
+        for r in rows
+    ]}
+
+
+def bus_routes_resolve(conn, *, board: str | None = None,
+                       audience: str | None = None) -> dict:
+    """Diagnostic: show what resolve_channel would return for (board, audience).
+    Returns ``{channel_id, routed}`` — routed is False if UnroutableError."""
+    try:
+        ch = discord_routes.resolve_channel(conn, board=board, audience=audience)
+        return {"channel_id": ch, "routed": True,
+                "muted": ch is None}
+    except discord_routes.UnroutableError as e:
+        return {"channel_id": None, "routed": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Tool catalog (returned by tools/list). JSON Schema for inputs.
 # ---------------------------------------------------------------------------
 
@@ -426,16 +532,62 @@ TOOLS: list[dict] = [
             "required": ["thread_id", "kind", "ref"],
         },
     },
+    {
+        "name": "bus_routes_set",
+        "description": "Upsert a Discord route. scope ∈ {audience,board,global}; key is agent_id/board name/'*'; channel_id=null mutes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope":      {"type": "string", "enum": ["audience", "board", "global"]},
+                "key":        {"type": "string"},
+                "channel_id": {"type": ["string", "null"]},
+                "priority":   {"type": "integer", "default": 100},
+            },
+            "required": ["scope", "key"],
+        },
+    },
+    {
+        "name": "bus_routes_unset",
+        "description": "Remove a Discord route. Returns {removed: bool}.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["audience", "board", "global"]},
+                "key":   {"type": "string"},
+            },
+            "required": ["scope", "key"],
+        },
+    },
+    {
+        "name": "bus_routes_list",
+        "description": "List all Discord routes ordered by scope/priority.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "bus_routes_resolve",
+        "description": "Diagnostic: show which channel resolve_channel would pick for (board, audience).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "board":    {"type": ["string", "null"]},
+                "audience": {"type": ["string", "null"]},
+            },
+        },
+    },
 ]
 
 TOOL_DISPATCH: dict[str, Callable] = {
-    "bus_post_thread":  bus_post_thread,
-    "bus_reply":        bus_reply,
-    "bus_list_threads": bus_list_threads,
-    "bus_read_thread":  bus_read_thread,
-    "bus_inbox":        bus_inbox,
-    "bus_mark_read":    bus_mark_read,
-    "bus_attach":       bus_attach,
+    "bus_post_thread":     bus_post_thread,
+    "bus_reply":           bus_reply,
+    "bus_list_threads":    bus_list_threads,
+    "bus_read_thread":     bus_read_thread,
+    "bus_inbox":           bus_inbox,
+    "bus_mark_read":       bus_mark_read,
+    "bus_attach":          bus_attach,
+    "bus_routes_set":      bus_routes_set,
+    "bus_routes_unset":    bus_routes_unset,
+    "bus_routes_list":     bus_routes_list,
+    "bus_routes_resolve":  bus_routes_resolve,
 }
 
 

@@ -65,13 +65,15 @@ class AgentBusTests(unittest.TestCase):
         self.assertIn("protocolVersion", resp["result"])
         self.assertEqual(resp["result"]["serverInfo"]["name"], "agent-bus")
 
-    def test_tools_list_returns_seven_tools(self) -> None:
+    def test_tools_list_returns_all_tools(self) -> None:
         req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
         resp = self.server.handle_request(self.conn, req)
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {
             "bus_post_thread", "bus_reply", "bus_list_threads",
             "bus_read_thread", "bus_inbox", "bus_mark_read", "bus_attach",
+            "bus_routes_set", "bus_routes_unset", "bus_routes_list",
+            "bus_routes_resolve",
         })
 
     def test_unknown_method_returns_method_not_found(self) -> None:
