@@ -60,8 +60,8 @@ jobs:
           fi
           find node_modules -name 'better_sqlite3.node' | head
 
-      - name: Strict router stdin contract
-        run: python3 -m unittest swarm.tests.test_pick_driver.PickDriverTests.test_rejects_prefixed_stdout_noise_before_json
+      - name: Tolerant router stdin contract (spec 036 invariant 1)
+        run: python3 -m unittest swarm.tests.test_pick_driver.PickDriverTests.test_pick_driver_tolerates_garbage_stdin
 
       - name: Lifecycle trace smoke
         run: python3 -m unittest swarm.tests.test_trace_lifecycle
