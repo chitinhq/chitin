@@ -5,9 +5,10 @@ Boundary checklist (Knuth: name them up front):
 - Empty routes table + no board + no audience → UnroutableError
 - Only global default present → returns global for any input
 - Board match present → wins over global
-- Audience match (single agent) → wins over board
-- Audience match (multiple agents, multiple matching rows) → highest
-  priority wins; tie broken by older updated_at
+- Single-agent audience match present → wins over board
+- Multi-agent audience → falls through to board (NOT a coincidental
+  single-agent match); falls through to global if no board; raises
+  UnroutableError if neither
 - Explicit mute (channel_id=NULL) row matches → returns None (not raise)
 - set_route is upsert: same (scope, key) twice → second wins
 - unset_route returns True iff a row was removed
@@ -93,36 +94,34 @@ class DiscordRoutesTests(unittest.TestCase):
             "C-CLAWTA",
         )
 
-    def test_audience_for_multi_agent_picks_highest_priority(self):
-        self.routes.set_route(self.conn, scope="audience", key="clawta",
-                              channel_id="C-CLAWTA", priority=10)
-        self.routes.set_route(self.conn, scope="audience", key="ares",
-                              channel_id="C-ARES", priority=99)
+    def test_multi_agent_audience_falls_through_to_board(self):
+        # Coordination message: audience names more than one agent →
+        # belongs in the shared board channel, not in any one agent's DM.
+        self.routes.set_route(self.conn, scope="board", key="chitin", channel_id="C-SWARM")
+        self.routes.set_route(self.conn, scope="audience", key="clawta", channel_id="C-CLAWTA")
+        self.routes.set_route(self.conn, scope="audience", key="ares", channel_id="C-ARES")
         self.assertEqual(
             self.routes.resolve_channel(self.conn, board="chitin", audience="ares,clawta"),
-            "C-ARES",
+            "C-SWARM",
         )
 
-    def test_audience_priority_tie_broken_by_older_updated_at(self):
-        # Both priority=50; clawta's updated_at is older, so clawta wins.
-        # Set updated_at directly to avoid wall-clock flakiness on fast boxes.
-        self.routes.set_route(self.conn, scope="audience", key="clawta",
-                              channel_id="C-CLAWTA", priority=50)
-        self.routes.set_route(self.conn, scope="audience", key="ares",
-                              channel_id="C-ARES", priority=50)
-        self.conn.execute(
-            "UPDATE discord_routes SET updated_at=? WHERE scope='audience' AND key=?",
-            (1_000_000, "clawta"),
-        )
-        self.conn.execute(
-            "UPDATE discord_routes SET updated_at=? WHERE scope='audience' AND key=?",
-            (1_000_001, "ares"),
-        )
-        self.conn.commit()
+    def test_multi_agent_audience_falls_through_to_global_when_no_board(self):
+        self.routes.set_route(self.conn, scope="global", key="*", channel_id="C-GLOBAL")
+        self.routes.set_route(self.conn, scope="audience", key="clawta", channel_id="C-CLAWTA")
+        self.routes.set_route(self.conn, scope="audience", key="ares", channel_id="C-ARES")
         self.assertEqual(
-            self.routes.resolve_channel(self.conn, board="chitin", audience="ares,clawta"),
-            "C-CLAWTA",
+            self.routes.resolve_channel(self.conn, board=None, audience="ares,clawta"),
+            "C-GLOBAL",
         )
+
+    def test_multi_agent_audience_unroutable_when_no_board_and_no_global(self):
+        # Even when audience-scope rows exist for participants, a
+        # multi-agent audience is NOT a match — falls through to
+        # UnroutableError when no shared channel exists.
+        self.routes.set_route(self.conn, scope="audience", key="clawta", channel_id="C-CLAWTA")
+        self.routes.set_route(self.conn, scope="audience", key="ares", channel_id="C-ARES")
+        with self.assertRaises(self.routes.UnroutableError):
+            self.routes.resolve_channel(self.conn, board=None, audience="ares,clawta")
 
     # ---- explicit mute ----
 

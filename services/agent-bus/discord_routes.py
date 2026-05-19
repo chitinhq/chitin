@@ -87,25 +87,27 @@ def resolve_channel(
     Raises ``UnroutableError`` if no row matches and there is no
     ``scope='global', key='*'`` default.
 
-    Determinism: if two audience-scope rows match (multi-agent
-    audience), higher ``priority`` wins; ties broken by lower
-    ``updated_at`` (older is more deterministic — operator-pinned
-    routes survive new additions).
+    **Precedence (post-hotfix)**: single-agent audience > board > global.
+    A multi-agent audience (``"ares,clawta"``) is a coordination message
+    and **does NOT match the audience scope** — it falls through to
+    board and then global. Rationale: the audience scope models a DM
+    channel for one agent; coordination across multiple agents belongs
+    in the shared board channel where everyone can see it. This
+    corrects the PR #789 bug where multi-agent audience routed to one
+    arbitrary participant's channel, hiding the thread from the others.
     """
     audience_agents = _parse_audience(audience)
 
-    if audience_agents:
-        placeholders = ",".join("?" for _ in audience_agents)
-        rows = conn.execute(
-            f"SELECT scope, key, channel_id, priority, updated_at "
-            f"FROM discord_routes "
-            f"WHERE scope='audience' AND key IN ({placeholders}) "
-            f"ORDER BY priority DESC, updated_at ASC",
-            audience_agents,
-        ).fetchall()
-        if rows:
-            r = rows[0]
-            return _to_route(r).channel_id  # may be None (explicit mute)
+    # Single-agent audience only: that agent's channel takes precedence
+    # over board / global. Multi-agent audience falls through.
+    if len(audience_agents) == 1:
+        row = conn.execute(
+            "SELECT scope, key, channel_id, priority, updated_at "
+            "FROM discord_routes WHERE scope='audience' AND key=?",
+            (audience_agents[0],),
+        ).fetchone()
+        if row:
+            return _to_route(row).channel_id  # may be None (explicit mute)
 
     if board is not None:
         row = conn.execute(
