@@ -663,6 +663,17 @@ def main():
         # Prepare environment
         env = os.environ.copy()
         env.update(env_vars)
+
+        # Scrub operator-authorized governance bypass (Clawta review of
+        # PR #773 msg 5392): CHITIN_GOV_OPERATOR_AUTHORIZED=1 is a
+        # one-process affordance the operator sets in red's shell to
+        # green-light a specific action. It MUST NOT inherit into worker
+        # subprocesses — that would let a child action use the parent's
+        # one-shot bypass for unrelated denies, breaking the audit chain
+        # and turning local authorization into ambient sub-worker
+        # capability. Remove unconditionally; bypass-needing workers
+        # must re-set per their own operator authorization.
+        env.pop("CHITIN_GOV_OPERATOR_AUTHORIZED", None)
         chitin_home = env.get("CHITIN_HOME", os.path.join(os.path.expanduser("~"), ".chitin"))
 
         # Prepare working directory

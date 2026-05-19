@@ -3,6 +3,7 @@ package gov
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,60 @@ func TestGate_OperatorAuthorizedBypass_CommitProtected(t *testing.T) {
 	}
 	if d.RuleID != "operator-authorized-bypass" {
 		t.Errorf("RuleID: got %q", d.RuleID)
+	}
+}
+
+// Invariant: bypass fires for no-protected-push when env var is set
+// (Ares review msg 5252: companion to no-commit-to-protected — same
+// false-positive on detached-HEAD worktree state but for git push).
+func TestGate_OperatorAuthorizedBypass_ProtectedPush(t *testing.T) {
+	g, _ := newGateWithRule(t, "no-protected-push", "git.push", "")
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "1")
+
+	d := g.Evaluate(Action{Type: ActGitPush}, "red", nil)
+	if !d.Allowed {
+		t.Fatalf("expected bypass to allow git.push, got %+v", d)
+	}
+	if d.RuleID != "operator-authorized-bypass" {
+		t.Errorf("RuleID: got %q", d.RuleID)
+	}
+}
+
+// Invariant: bypass fires for no-gov-self-mod-via-shell when env set
+// (Ares review msg 5252: shell-vector companion to the file.write
+// self-mod rule — must bypass consistently or operator-edit-via-sed
+// stays blocked).
+func TestGate_OperatorAuthorizedBypass_GovSelfModViaShell(t *testing.T) {
+	g, _ := newGateWithRule(t, "no-gov-self-mod-via-shell",
+		"shell.exec", "chitin.yaml")
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "1")
+
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "sed -i 's/x/y/' chitin.yaml"}, "red", nil)
+	if !d.Allowed {
+		t.Fatalf("expected bypass to allow shell self-mod, got %+v", d)
+	}
+	if d.RuleID != "operator-authorized-bypass" {
+		t.Errorf("RuleID: got %q", d.RuleID)
+	}
+}
+
+// Invariant: Reason string explicitly states the bypass-window scope
+// (operator must unset env var to close; sub-process inheritance is
+// caller's responsibility). Catches the Ares P3 wording fix from
+// review msg 5252.
+func TestGate_OperatorAuthorizedBypass_ReasonStatesWindowScope(t *testing.T) {
+	g, _ := newGateWithRule(t, "no-governance-self-modification",
+		"file.write", "chitin.yaml")
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "1")
+
+	d := g.Evaluate(Action{Type: ActFileWrite, Target: "chitin.yaml"}, "red", nil)
+	if !d.Allowed {
+		t.Fatalf("expected bypass to allow, got %+v", d)
+	}
+	if !strings.Contains(d.Reason, "unset the env var") {
+		t.Errorf("Reason missing 'unset the env var' guidance: %q", d.Reason)
+	}
+	if !strings.Contains(d.Reason, "Sub-process") || !strings.Contains(d.Reason, "scrub") {
+		t.Errorf("Reason missing sub-process scrub warning: %q", d.Reason)
 	}
 }
