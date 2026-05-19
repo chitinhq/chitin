@@ -46,13 +46,26 @@ SELF_AUTHOR = "Clawta"  # what Clawta writes as
 # Clawta's Discord user ID — operator + other bots use Discord's native
 # <@id> mention format, not the text @clawta form. Both must trigger.
 CLAWTA_DISCORD_USER_ID = "1503438472801685565"
-MENTION_RE = re.compile(
-    r"(?<![A-Za-z0-9_])@clawta(?![A-Za-z0-9_-])"
-    r"|<@!?" + CLAWTA_DISCORD_USER_ID + r">",
-    re.IGNORECASE,
-)
+
+# Per Clawta self-review (msg 5392): addressed-detection must include
+# raw Discord mention ID, display-name forms, direct leading "Clawta,"
+# mention, AND peer-review/status phrasing.
+_MENTION_PATTERNS = [
+    # Text @clawta (any case)
+    re.compile(r"(?<![A-Za-z0-9_])@clawta(?![A-Za-z0-9_-])", re.IGNORECASE),
+    # Discord native <@id> or <@!id>
+    re.compile(r"<@!?" + CLAWTA_DISCORD_USER_ID + r">"),
+    # Leading direct address ("Clawta — ...", "Clawta, ...", "Clawta: ...")
+    re.compile(r"^\s*Clawta\b[\s,:\-—]", re.MULTILINE),
+    # Peer-review phrasing — directed when posted in #clawta context
+    re.compile(r"\b(peer\s+review|review\s+request|REQUEST_CHANGES|LGTM)\b", re.IGNORECASE),
+    # Status query phrasing aimed at her
+    re.compile(r"\bwhat\s*[\'’]?\s*s\s+(up|happening)\s+(with\s+)?(you|clawta)\b", re.IGNORECASE),
+]
 LOG_FILE = Path.home() / ".openclaw" / "logs" / "clawta-mention-listener.log"
-LIMIT_PER_TICK = int(os.environ.get("CLAWTA_LISTENER_LIMIT_PER_TICK", "5"))
+# Bumped default to 10 per Clawta msg 5392 — backlog catch-up matters.
+# Operator can override via env if a tick floods.
+LIMIT_PER_TICK = int(os.environ.get("CLAWTA_LISTENER_LIMIT_PER_TICK", "10"))
 
 
 def _log(msg: str) -> None:
@@ -69,15 +82,30 @@ def _connect() -> sqlite3.Connection:
 
 
 def _addressed_to_clawta(row: sqlite3.Row) -> bool:
-    """True iff this message addresses Clawta (mention OR audience)."""
+    """True iff this message addresses Clawta.
+
+    Five-way detection per Clawta msg 5392 + a quoted-context guard:
+    if a body is mostly historical quotes (>50% lines start with '>'),
+    only explicit Discord/text mentions count — phrasing patterns
+    suppressed to avoid responding to old quoted peer-review requests
+    bouncing through a thread.
+    """
     if row["author"] == SELF_AUTHOR:
-        return False  # never reply to self
+        return False
     body = row["body"] or ""
-    if MENTION_RE.search(body):
-        return True
+
+    # Audience-field membership — strongest signal, always wins.
     audience = row["audience"] or ""
     members = {m.strip() for m in audience.split(",") if m.strip()}
-    return AGENT in members or SELF_AUTHOR in members
+    if AGENT in members or SELF_AUTHOR in members:
+        return True
+
+    lines = [l for l in body.split("\n") if l.strip()]
+    quote_lines = sum(1 for l in lines if l.lstrip().startswith(">"))
+    is_mostly_quote = lines and quote_lines / len(lines) > 0.5
+    # When mostly-quote, only explicit @-mention or <@id> counts.
+    active = _MENTION_PATTERNS[:2] if is_mostly_quote else _MENTION_PATTERNS
+    return any(p.search(body) for p in active)
 
 
 def _unread_messages(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -111,14 +139,30 @@ def _mark_read(conn: sqlite3.Connection, message_id: int) -> None:
 
 
 def _build_prompt(row: sqlite3.Row) -> str:
+    """Per Clawta msg 5392: include thread/channel id, author, exact
+    message body, and explicit output constraints. The prompt is the
+    only context Clawta sees — every field she needs to route the
+    reply correctly must be inline.
+    """
     return (
-        f"You are Clawta. In thread '{row['thread_title']}' (id {row['thread_id']}), "
-        f"agent '{row['author']}' just said:\n\n"
-        f"---\n{row['body']}\n---\n\n"
-        f"Respond concisely as Clawta. If this is a peer-review request, "
-        f"reply with one of: REVIEW (LGTM), REQUEST_CHANGES (with specific "
-        f"asks), or COMMENT (clarifying question). If it's a status query, "
-        f"answer directly. Keep responses under 500 words."
+        f"You are Clawta, a dispatch-readiness reviewer agent.\n\n"
+        f"## Inbound context\n"
+        f"- thread_id: {row['thread_id']}\n"
+        f"- thread_title: {row['thread_title']!r}\n"
+        f"- message_id: {row['id']}\n"
+        f"- author: {row['author']}\n"
+        f"- created_at: {row['created_at']} (unix epoch)\n\n"
+        f"## Message body (verbatim)\n"
+        f"{row['body']}\n\n"
+        f"## Output constraints\n"
+        f"- Respond as Clawta speaking directly to the author.\n"
+        f"- For peer-review requests: start with EXACTLY one of:\n"
+        f"  REVIEW (LGTM), REQUEST_CHANGES, or COMMENT.\n"
+        f"- For status/availability queries: answer in 1-2 sentences.\n"
+        f"- For dispatch-readiness checks: cite the specific spec gap or\n"
+        f"  invariant that fails, not generic concerns.\n"
+        f"- Max 500 words. Plain text. No code fences around the reply.\n"
+        f"- Do not echo this prompt or repeat the inbound message body.\n"
     )
 
 
