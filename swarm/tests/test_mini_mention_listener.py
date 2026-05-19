@@ -420,5 +420,72 @@ class ListenerImportBoundary(unittest.TestCase):
         )
 
 
+class InstallerRewritesChitinRepo(unittest.TestCase):
+    """The installer copies the listener to ~/.openclaw/bin/, where
+    `parents[2]` resolves to $HOME and the swarm package becomes
+    un-importable. The in-tree listener must carry a `# CHITIN_REPO`
+    marker that the installer rewrites to an absolute path. Regression
+    guard for #786 follow-up: without the marker the live cron tick
+    fails with ModuleNotFoundError every minute.
+    """
+
+    INSTALLER_PATH = REPO / "swarm" / "bin" / "install-mini-mention-listener.sh"
+
+    def test_listener_has_chitin_repo_marker(self) -> None:
+        text = LISTENER_PATH.read_text()
+        marker_lines = [
+            line for line in text.splitlines()
+            if line.startswith("REPO = ") and line.rstrip().endswith("# CHITIN_REPO")
+        ]
+        self.assertEqual(
+            len(marker_lines), 1,
+            "Expected exactly one `REPO = ... # CHITIN_REPO` line in the listener; "
+            "the installer's sed rewrite anchors on this marker.",
+        )
+
+    def test_installer_references_chitin_repo_marker(self) -> None:
+        text = self.INSTALLER_PATH.read_text()
+        self.assertIn(
+            "# CHITIN_REPO", text,
+            "Installer must rewrite the listener's `# CHITIN_REPO` marker so the "
+            "installed copy can import swarm.* from outside the repo.",
+        )
+
+    def test_installer_bakes_absolute_path_into_installed_copy(self) -> None:
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "HOME": tmp, "PATH": os.environ.get("PATH", "")}
+            # Use --dry-run so we don't touch the user's real crontab; assert
+            # the dry-run announces the rewrite, then do a real copy via the
+            # installer's sed snippet against a tmp destination.
+            result = subprocess.run(
+                ["bash", str(self.INSTALLER_PATH), "--dry-run"],
+                capture_output=True, text=True, env=env, timeout=10, check=True,
+            )
+            self.assertIn("CHITIN_REPO marker", result.stdout)
+            self.assertIn(str(REPO), result.stdout)
+
+            # Real copy + rewrite, into a tmp dst so crontab is not touched.
+            dst = Path(tmp) / "bin" / "mini-mention-listener"
+            dst.parent.mkdir(parents=True)
+            shutil.copy2(LISTENER_PATH, dst)
+            subprocess.run(
+                ["sed", "-i",
+                 f's|^REPO = .*# CHITIN_REPO$|REPO = Path("{REPO}")  # CHITIN_REPO|',
+                 str(dst)],
+                check=True, timeout=5,
+            )
+            installed = dst.read_text()
+            self.assertIn(
+                f'REPO = Path("{REPO}")  # CHITIN_REPO', installed,
+                "Installer's sed rewrite did not bake the absolute repo path.",
+            )
+            self.assertNotIn(
+                "Path(__file__).resolve().parents[2]", installed,
+                "Old parents[2] derivation must be replaced in the installed copy.",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

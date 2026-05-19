@@ -31,6 +31,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$SCRIPT_DIR/mini-mention-listener"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DST_DIR="$HOME/.openclaw/bin"
 DST="$DST_DIR/mini-mention-listener"
 LOG_DIR="$HOME/.openclaw/logs"
@@ -42,13 +43,29 @@ if [[ ! -f "$SRC" ]]; then
   exit 1
 fi
 
+# The in-repo listener uses `parents[2]` to find the chitin root. Once
+# copied to ~/.openclaw/bin/, that resolves to $HOME and the swarm
+# package becomes un-importable. Rewrite the CHITIN_REPO marker line to
+# bake the absolute repo path into the installed copy.
+if ! grep -q '# CHITIN_REPO' "$SRC"; then
+  echo "ERROR: $SRC is missing the '# CHITIN_REPO' marker the installer rewrites" >&2
+  exit 1
+fi
+
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "[dry-run] would: mkdir -p $DST_DIR $LOG_DIR"
   echo "[dry-run] would: install -m 0755 $SRC $DST"
+  echo "[dry-run] would: rewrite CHITIN_REPO marker -> REPO = Path('$REPO_ROOT')"
 else
   mkdir -p "$DST_DIR" "$LOG_DIR"
   install -m 0755 "$SRC" "$DST"
-  echo "installed: $DST"
+  # Use a non-/ delimiter so REPO_ROOT containing / is safe.
+  sed -i "s|^REPO = .*# CHITIN_REPO\$|REPO = Path(\"$REPO_ROOT\")  # CHITIN_REPO|" "$DST"
+  if ! grep -q "^REPO = Path(\"$REPO_ROOT\")  # CHITIN_REPO\$" "$DST"; then
+    echo "ERROR: CHITIN_REPO rewrite did not take effect in $DST" >&2
+    exit 1
+  fi
+  echo "installed: $DST (REPO=$REPO_ROOT)"
 fi
 
 # Cron registration. --once mode so cron schedules the cadence and the
