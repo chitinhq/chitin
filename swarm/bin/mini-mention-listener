@@ -26,7 +26,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-REPO = Path(__file__).resolve().parents[2]
+# CHITIN_REPO: in-tree default uses parents[2] (repo root from swarm/bin/).
+# install-mini-mention-listener.sh rewrites this line to an absolute path
+# when copying into ~/.openclaw/bin/, where parents[2] would resolve to $HOME.
+REPO = Path(__file__).resolve().parents[2]  # CHITIN_REPO
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
