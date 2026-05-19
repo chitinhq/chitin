@@ -202,33 +202,11 @@ class PickDriverTests(unittest.TestCase):
         self.assertEqual(allowed["driver"], "gemini")
         self.assertEqual(allowed["selection_mode"], "exploration")
 
-    def test_rejects_prefixed_stdout_noise_before_json(self):
-        result = self.run_pick_driver_raw(
-            '_pick_driver compatibility noise\n{"complexity":"low","capabilities":["python"]}',
-            CLAWTA_EXPLORATION_PERCENT="0",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Expecting value", result.stderr)
-
-    def test_empty_stdin_is_rejected(self):
-        # Boundary: empty input. Strict-JSON routing must fail fast, not
-        # parse an empty string into a half-formed classify dict.
-        for raw in ("", "   \n\t  "):
-            result = self.run_pick_driver_raw(raw, CLAWTA_EXPLORATION_PERCENT="0")
-            self.assertNotEqual(result.returncode, 0, msg=f"raw={raw!r}")
-            self.assertIn("classify produced no JSON object", result.stderr)
-
-    def test_error_boundary_malformed_json_is_rejected(self):
-        # Boundary: error. Malformed classify JSON must surface the parser
-        # failure instead of silently routing with partial input.
-        result = self.run_pick_driver_raw(
-            '{"complexity":"low","capabilities":["python"',
-            CLAWTA_EXPLORATION_PERCENT="0",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Expecting", result.stderr)
+    # Spec 036 (this PR) supersedes the old strict-reject contract.
+    # The 3 strict-reject tests previously here were removed because
+    # invariant 1 (Classify-step robustness) explicitly demands
+    # tolerant fallback. See test_pick_driver_tolerates_garbage_stdin
+    # below for the new contract.
 
     def test_max_size_classify_payload_still_routes(self):
         # Boundary: max. A large-but-valid classify payload (many capability
