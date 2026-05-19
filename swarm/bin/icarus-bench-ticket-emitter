@@ -171,7 +171,7 @@ agent: {agent_info.get("name", "?")}@{agent_info.get("version", "?")} model={mod
 
 ## What to do
 Reproduce locally with:
-  cd ~/workspace/chitin
+  cd {REPO_ROOT}
   PYTHONPATH=. harbor run --path ~/.cache/harbor/tasks/*/{task_name} \\
     --agent-import-path swarm.icarus_harness.agent:IcarusAgent \\
     --model ollama/qwen3-coder:30b-32k --job-name icarus-repro-{task_name}
