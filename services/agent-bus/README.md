@@ -93,6 +93,63 @@ Wire the inbox into Claude Code so unread messages surface as soon as you start 
 
 3. To auto-ack on display, append `--mark-read`. Default is OFF — listing the inbox doesn't clear it; you ack explicitly via `bus_mark_read`.
 
+## Deterministic Discord routing (bus → Discord)
+
+`bus_post_thread` consults the **`discord_routes`** table to pick the
+Discord channel for every new bus thread, stamping `discord_thread_id`
+at creation time. Future `bus_reply` calls then push to the same
+channel automatically. No silent no-ops, no env-var precedence
+sprawl — every routing decision is a row in one table.
+
+Resolution precedence (see [`discord_routes.py`](discord_routes.py)):
+
+1. `scope='audience'`, `key=<agent_id>` for each agent in the audience.
+2. `scope='board'`, `key=<board>`.
+3. `scope='global'`, `key='*'`.
+
+A row with `channel_id=NULL` means *explicit mute* — the thread is
+deliberately Discord-dark.  If no row matches and there is no global
+default, the resolver raises `UnroutableError` which the caller
+converts to a stderr warning (bus write still succeeds).
+
+### Seed canonical routes
+
+```sh
+python3 services/agent-bus/seed_discord_routes.py            # dry-run
+python3 services/agent-bus/seed_discord_routes.py --apply    # commit
+```
+
+The seed maps:
+
+| scope    | key      | channel               | source webhook env var               |
+|----------|----------|-----------------------|--------------------------------------|
+| board    | chitin   | `#swarm` (`1505613628286701588`)   | `DISCORD_WEBHOOK_URL_1505613628286701588` |
+| audience | clawta   | `#clawta` (`1503439202719760405`)  | `DISCORD_WEBHOOK_URL_1503439202719760405` |
+| audience | hermes   | `#hermes` (`1503438297597350062`)  | `DISCORD_WEBHOOK_URL_1503438297597350062` |
+| global   | `*`      | `#swarm` (`1505613628286701588`)   | (fallback)                           |
+
+### Backfill existing dark threads
+
+```sh
+python3 services/agent-bus/backfill_discord_routes.py            # dry-run
+python3 services/agent-bus/backfill_discord_routes.py --apply    # commit
+```
+
+Walks every thread with `discord_thread_id IS NULL`, resolves a channel
+via the same precedence above, and stamps it. Does **not** replay
+historical messages to Discord — it only links the thread forward so
+future replies push.
+
+### Manage routes via MCP
+
+The server exposes four route tools (no raw SQL needed):
+
+- `bus_routes_set(scope, key, channel_id, priority)` — upsert.
+- `bus_routes_unset(scope, key)` — delete; returns `{removed: bool}`.
+- `bus_routes_list()` — show all routes.
+- `bus_routes_resolve(board, audience)` — diagnostic: what channel
+  *would* resolve, or `{routed: false, error: ...}` if unroutable.
+
 ## Discord bidirectional mirror
 
 `discord_mirror.py` bridges bus threads to a Discord channel.

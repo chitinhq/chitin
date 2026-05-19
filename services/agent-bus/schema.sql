@@ -91,9 +91,32 @@ CREATE TABLE IF NOT EXISTS agents (
   last_seen_at  INTEGER
 );
 
+-- Discord routes. Deterministic (board, audience) → channel_id mapping
+-- consulted by bus_post_thread before INSERT so new threads carry a
+-- non-NULL discord_thread_id from the moment they exist (closing the
+-- canonical "Discord-dark thread" bug — see mem 3695).
+--
+-- Resolution precedence (resolve_channel in discord_routes.py):
+--   1. scope='audience', key=<agent_id> for each agent in audience list
+--   2. scope='board',    key=<board>
+--   3. scope='global',   key='*'
+-- A row with channel_id NULL means "explicitly muted" — the resolver
+-- returns None without error, and the thread is intentionally Discord-dark.
+-- Absence of any matching row + no global default → UnroutableError.
+CREATE TABLE IF NOT EXISTS discord_routes (
+  scope       TEXT NOT NULL CHECK (scope IN ('audience','board','global')),
+  key         TEXT NOT NULL,                              -- agent_id, board name, or '*' for global
+  channel_id  TEXT,                                       -- NULL = explicit mute
+  priority    INTEGER NOT NULL DEFAULT 100,               -- ties broken by higher priority
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (scope, key)
+);
+CREATE INDEX IF NOT EXISTS idx_discord_routes_scope ON discord_routes(scope);
+
 -- Schema-version sentinel. Bump on every additive migration.
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at INTEGER NOT NULL
 );
 INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (1, strftime('%s','now'));
+INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (2, strftime('%s','now'));
