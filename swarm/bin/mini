@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# minnie — slice-1 CLI for spec 038 (Octi).
+# mini — slice-1 CLI for spec 038 (Octi).
 #
 # Persistent kitty + Claude Code session per goal-id, with status.json
 # contract, input lease, filtered Discord tailer, recovery mode.
@@ -19,19 +19,19 @@ import sys
 import time
 from pathlib import Path
 
-# Make the swarm.minnie package importable when minnie is invoked as a
+# Make the swarm.mini package importable when mini is invoked as a
 # symlink from ~/.local/bin/.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from swarm.minnie import MiniSession  # noqa: E402
-from swarm.minnie.session import (  # noqa: E402
+from swarm.mini import MiniSession  # noqa: E402
+from swarm.mini.session import (  # noqa: E402
     GoalIdCollisionError,
     RecoveryStateMissingError,
     StatusMissingError,
 )
-from swarm.minnie._internal import (  # noqa: E402
+from swarm.mini._internal import (  # noqa: E402
     kitty as _kitty,
     lease as _lease,
     statedir as _statedir,
@@ -169,7 +169,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     pid_file.write_text(f"{os.getpid()}\n")
 
     transcript_path = sd / "transcript.log"
-    poll_sec = float(os.environ.get("MINNIE_TRANSCRIPT_POLL_SEC", "2"))
+    poll_sec = float(os.environ.get("MINI_TRANSCRIPT_POLL_SEC", "2"))
     last_state = None
     err_re = re.compile(r"^(Error:|Traceback \(most recent call last\)|FATAL:)")
 
@@ -237,7 +237,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="minnie", description="Persistent kitty + Claude Code + Discord bridge (spec 038 slice 1)")
+    p = argparse.ArgumentParser(prog="mini", description="Persistent kitty + Claude Code + Discord bridge (spec 038 slice 1)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     o = sub.add_parser("open", help="open a new session or recover an existing one")

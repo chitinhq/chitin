@@ -12,12 +12,12 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal.statedir import (
+from swarm.mini._internal.statedir import (
     STATE_ROOT_ENV,
     create_state_dir,
     state_dir,
 )
-from swarm.minnie.session import MiniSession, StatusMissingError
+from swarm.mini.session import MiniSession, StatusMissingError
 
 
 VALID_STATES = {"starting", "working", "blocked", "verifying", "done", "failed", "needs_review"}
@@ -55,10 +55,10 @@ class TestStatusSchema(unittest.TestCase):
         good = {
             "state": "working",
             "updated_at": int(time.time()),
-            "summary": "implementing minnie",
+            "summary": "implementing mini",
             "next": "write tests",
             "blockers": [],
-            "verify": "pytest swarm/tests/test_minnie_state_dir.py",
+            "verify": "pytest swarm/tests/test_mini_state_dir.py",
         }
         self._write_status(good)
         sess = MiniSession.attach("gtest")

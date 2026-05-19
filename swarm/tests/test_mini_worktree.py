@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal import worktree as wt_mod
+from swarm.mini._internal import worktree as wt_mod
 
 
 def _ok(args, **kw):

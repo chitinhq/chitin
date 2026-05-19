@@ -13,17 +13,17 @@ if str(REPO) not in sys.path:
 
 
 class TestRecoveryUsageError(unittest.TestCase):
-    """AC11 — minnie open --recovery <nonexistent> is a usage error (exit 2)."""
+    """AC11 — mini open --recovery <nonexistent> is a usage error (exit 2)."""
 
     def test_recovery_missing_state_dir_exits_2(self):
         with tempfile.TemporaryDirectory() as td:
             env = {
                 **os.environ,
-                "MINNIE_STATE_ROOT": td,
+                "MINI_STATE_ROOT": td,
                 "PYTHONPATH": str(REPO),
             }
             proc = subprocess.run(
-                ["python3", str(REPO / "swarm" / "bin" / "minnie"),
+                ["python3", str(REPO / "swarm" / "bin" / "mini"),
                  "open", "--recovery", "does-not-exist-12345678"],
                 env=env, capture_output=True, text=True, timeout=15,
             )

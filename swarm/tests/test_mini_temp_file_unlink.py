@@ -19,8 +19,8 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from swarm.minnie._internal import kitty as kitty_mod
-from swarm.minnie._internal.statedir import cleanup_stale_temp_files
+from swarm.mini._internal import kitty as kitty_mod
+from swarm.mini._internal.statedir import cleanup_stale_temp_files
 
 
 def _fake_ok_proc() -> subprocess.CompletedProcess:
@@ -70,7 +70,7 @@ class TestTempFileUnlink(unittest.TestCase):
     def test_stale_cleanup_removes_old_inject_files(self):
         # Simulate a crashed prior session leaving temp files behind.
         import os as _os
-        from swarm.minnie._internal.statedir import STATE_ROOT_ENV, state_dir as _state_dir
+        from swarm.mini._internal.statedir import STATE_ROOT_ENV, state_dir as _state_dir
         _os.environ[STATE_ROOT_ENV] = str(self.sd)
         try:
             sd = _state_dir("g-stale")

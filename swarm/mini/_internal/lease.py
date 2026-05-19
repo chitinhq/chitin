@@ -1,4 +1,4 @@
-"""Input lease protocol for Minnie goals.
+"""Input lease protocol for Mini goals.
 
 Lock file: <state_dir>/input.lock
 Format: {"holder": str, "acquired_at": float, "expires_at": float}

@@ -5,10 +5,10 @@
 Octi is the deterministic workflow layer for swarm operations. It owns git state
 gates, ticket/state-machine transitions, leases, retry policy, loop/freeze
 detection, agent communication contracts, handoff rules, and verifier-required
-progression. It drives pluggable backends (Minnie being the first) as workflow
+progression. It drives pluggable backends (Mini being the first) as workflow
 activities, not the other way around.
 
-**Slice 1 is Minnie** — the persistent kitty + Claude Code + Discord bridge
+**Slice 1 is Mini** — the persistent kitty + Claude Code + Discord bridge
 interface. Octi's workflow engine is downstream, built once the interface seam
 exists and has been proven through operator use.
 
@@ -16,12 +16,12 @@ exists and has been proven through operator use.
 
 | Slice | Artifact | What it proves |
 |-------|----------|---------------|
-| 1 | **Minnie** (`swarm/bin/minnie`, `swarm/minnie/`) | Persistent kitty session, `status.json` writes, filtered Discord tail, input lease, operator handoff. Proves the interface seam. |
+| 1 | **Mini** (`swarm/bin/mini`, `swarm/mini/`) | Persistent kitty session, `status.json` writes, filtered Discord tail, input lease, operator handoff. Proves the interface seam. |
 | 2 | **Octi controller loop** | Stall detection, nudge on stale `status.json`, verify on `done` claim, escalation with evidence. Proves the loop. |
 | 3 | **Octi state machine** | Transition enforcement (`starting→working→blocked→verifying→done|needs_review|failed`), controller-verified completion, recovery mode. Proves the determinism. |
 | 4 | **Octi worker + Temporal integration** | `swarm/bin/octi-worker`, Temporal workflows for retry/timers/history/replay. Proves durability at scale. |
 
-Slice 1 delivers Minnie. Slices 2-4 build Octi on top of the interface Minnie
+Slice 1 delivers Mini. Slices 2-4 build Octi on top of the interface Mini
 proves. This spec defines the full architecture so slices don't paint into
 corners, but only slice 1 AC is binding for MVP.
 
@@ -31,22 +31,22 @@ corners, but only slice 1 AC is binding for MVP.
 |-------|------|-------------|
 | **Chitin** | Governance around tool calls & driver lifecycle | Deterministic policy evaluation |
 | **Icarus** | Driver runtime (local LLM, thick determinism) | Deterministic-first execution |
-| **Minnie** | Persistent Claude/kitty interface adapter | Transport/interface |
+| **Mini** | Persistent Claude/kitty interface adapter | Transport/interface |
 | **Octi** | Deterministic workflow governance for swarm ops | State machine + verifier |
 
-Minnie is a pluggable activity backend that Octi drives, not the brain. The
+Mini is a pluggable activity backend that Octi drives, not the brain. The
 full spec is runtime-neutral (language/framework TBD) but workflow-engine
 shaped: durable state machine first, pluggable activities second. Slice 1 ships
-Minnie as the first activity backend, proving the interface before building the
+Mini as the first activity backend, proving the interface before building the
 engine around it.
 
 ## Dependency chain (explicit)
 
 ```
-Minnie (slice 1): persistent kitty + Claude Code + Discord bridge
+Mini (slice 1): persistent kitty + Claude Code + Discord bridge
   ↳ Proves: status.json contract, input lease, operator handoff, filtered tail
 
-Octi spec iteration (concurrent): operator/spec work conducted through Minnie,
+Octi spec iteration (concurrent): operator/spec work conducted through Mini,
   with red/Claude Code able to handle signed governance steps
   ↳ Proves: the interface seam supports real governance workflows
 
@@ -59,16 +59,16 @@ Octi implementation (slices 2-4): deterministic workflow engine after the
 
 Hermes cron dispatches are fire-and-forget: no terminal, no visibility, no
 continuity. Swarm behavior is currently fuzzy — git state, ticket transitions,
-retry policy, and agent handoffs are ad-hoc. Minnie makes the session durable,
+retry policy, and agent handoffs are ad-hoc. Mini makes the session durable,
 observable, and handoff-safe. Octi makes the rest deterministic: state machines
 with required transitions, leases with expiry, verifiers with pass/fail, and
 escalation with evidence.
 
 ## Architecture
 
-### Slice 1: Minnie
+### Slice 1: Mini
 
-**Launcher** (`swarm/bin/minnie`): CLI entrypoint. Creates or reuses a named
+**Launcher** (`swarm/bin/mini`): CLI entrypoint. Creates or reuses a named
 kitty window/tab with stable title, env, and cwd. Starts an interactive
 `claude --dangerously-skip-permissions` session inside it.
 
@@ -82,12 +82,12 @@ kitty window/tab with stable title, env, and cwd. Starts an interactive
 updates to Discord via webhook. Default surface is `#octi`; `#swarm` gets
 coordination-only summaries.
 
-Slice 1 delivers `minnie open`, `minnie status`, `minnie nudge`, `minnie watch`,
-`minnie stop` — the interface adapter and bridge, not the workflow engine.
+Slice 1 delivers `mini open`, `mini status`, `mini nudge`, `mini watch`,
+`mini stop` — the interface adapter and bridge, not the workflow engine.
 
-### Slices 2-4: Octi (downstream of Minnie)
+### Slices 2-4: Octi (downstream of Mini)
 
-**Controller loop**: Outer loop that drives the kitty session via Minnie's
+**Controller loop**: Outer loop that drives the kitty session via Mini's
 public interface (`MiniSession`). Watches `status.json` for staleness, sends
 nudges on stall, runs verifiers on completion claims.
 
@@ -97,7 +97,7 @@ nudges on stall, runs verifiers on completion claims.
 **Worker + Temporal** (`swarm/bin/octi-worker`): Durable workflows for retry,
 timers, history, replay. Proves durability at scale.
 
-The controller loop never imports Minnie internals — only `MiniSession`.
+The controller loop never imports Mini internals — only `MiniSession`.
 This boundary is enforced by CI (see AC12).
 
 ### Status file schema (mandatory)
@@ -133,22 +133,22 @@ is the primary liveness signal — not terminal output.
    not updating JSON
 3. Cursor at input prompt for >N seconds with no status update → likely stuck
 
-Slice 1: layers 1 and 3 are observable via `minnie status`. Automatic nudge
+Slice 1: layers 1 and 3 are observable via `mini status`. Automatic nudge
 on stall is slice 2.
 
 ### Command set
 
-Slice 1 (`minnie`):
+Slice 1 (`mini`):
 
 | Command | Purpose |
 |---------|---------|
-| `minnie open --spec/--ticket/--goal` | Launch/reuse kitty session with goal |
-| `minnie status` | Read `status.json` + operator log |
-| `minnie nudge --message` | Lease-locked input injection |
-| `minnie watch` | Summarize transcript events to Discord |
-| `minnie stop` | Terminate session, mark `state=failed` |
+| `mini open --spec/--ticket/--goal` | Launch/reuse kitty session with goal |
+| `mini status` | Read `status.json` + operator log |
+| `mini nudge --message` | Lease-locked input injection |
+| `mini watch` | Summarize transcript events to Discord |
+| `mini stop` | Terminate session, mark `state=failed` |
 
-Slices 2-4 (`octi`, added on top of `minnie`):
+Slices 2-4 (`octi`, added on top of `mini`):
 
 | Command | Purpose |
 |---------|---------|
@@ -166,7 +166,7 @@ and Claude Code is not expected to self-suspend. Claude-honored pause is a
 future explicit contract, not part of the MVP.
 
 Slice 1: pause/resume not applicable — there is no outer loop yet. Manual
-nudge via `minnie nudge` is the slice-1 substitute.
+nudge via `mini nudge` is the slice-1 substitute.
 
 ### Discord surface contract
 
@@ -211,8 +211,8 @@ Roles are not hardcoded to people. Default flow: goal setter owns until
 
 ### MAY write under
 
-- `swarm/bin/minnie` (slice-1 launcher script)
-- `swarm/minnie/` (slice-1 implementation package)
+- `swarm/bin/mini` (slice-1 launcher script)
+- `swarm/mini/` (slice-1 implementation package)
 - `swarm/bin/octi` (slice-2+ launcher script)
 - `swarm/octi/` (slice-2+ implementation support package)
 - `swarm/bin/octi-worker` (slice-4 placeholder; not invoked in slice 1)
@@ -227,37 +227,37 @@ Roles are not hardcoded to people. Default flow: goal setter owns until
 - `.specify/` (governance — this spec is the exception, already placed)
 - Any path under `~/workspace/chitin/` primary checkout
 
-## Acceptance criteria (slice 1 — Minnie)
+## Acceptance criteria (slice 1 — Mini)
 
-1. `minnie open --goal "..."` creates a named kitty window with stable title and
+1. `mini open --goal "..."` creates a named kitty window with stable title and
    starts an interactive Claude Code session.
 2. `status.json` is written periodically by Claude Code with all six fields
    populated.
-3. `minnie status` reads and displays current state from `status.json`.
-4. `minnie nudge --message "..."` acquires input lease before sending, releases
+3. `mini status` reads and displays current state from `status.json`.
+4. `mini nudge --message "..."` acquires input lease before sending, releases
    after.
-5. `minnie watch` posts filtered event-shaped updates to Discord via webhook.
-6. `minnie stop` terminates the kitty session and marks `state=failed` in
+5. `mini watch` posts filtered event-shaped updates to Discord via webhook.
+6. `mini stop` terminates the kitty session and marks `state=failed` in
    `status.json`.
 7. Webhook URL sourced from env/config, never committed to git.
 8. All worktree operations use `~/workspace/chitin-octi-<slug>`, never
    primary checkout.
 9. Temp prompt files (goal text, nudge text passed via kitty remote control)
    are written to `.swarm/octi/<goal-id>/` and unlinked after injection. On
-   crash or early exit, stale temp files are cleaned up on next `minnie open`
-   or `minnie status` invocation for the same goal-id. An `unlink` call that
+   crash or early exit, stale temp files are cleaned up on next `mini open`
+   or `mini status` invocation for the same goal-id. An `unlink` call that
    fails because the file is already gone is not an error.
-10. Import boundary: Minnie exports `MiniSession` as its public interface.
-    Octi (slice 2+) MAY import `MiniSession`. Octi MUST NOT import Minnie
+10. Import boundary: Mini exports `MiniSession` as its public interface.
+    Octi (slice 2+) MAY import `MiniSession`. Octi MUST NOT import Mini
     internals (kitty window management, prompt formatting, terminal parsing).
     This boundary is verified by a grep/assert in CI:
     `grep -r 'from.*mini.*import' swarm/octi/ | grep -v 'MiniSession'`
     must return zero matches.
-11. `--recovery <goal-id>` on `minnie open` resumes an existing goal's state
+11. `--recovery <goal-id>` on `mini open` resumes an existing goal's state
     directory and kitty session. If the goal-id has no existing state directory,
     `--recovery` is a usage error (not a fresh start).
 12. `swarm/bin/octi-worker` is a slice-4 placeholder. Slice 1 invokes the
-    Minnie backend directly from `swarm/bin/minnie`. The worker entrypoint
+    Mini backend directly from `swarm/bin/mini`. The worker entrypoint
     exists only as a stub to reserve the file path.
 13. Temp file unlink is verified in tests: a test creates a temp prompt file,
     injects it via kitty remote control, and asserts the file no longer exists

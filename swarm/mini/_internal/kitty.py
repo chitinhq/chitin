@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 
-KITTY_BIN_ENV = "MINNIE_KITTY_BIN"
+KITTY_BIN_ENV = "MINI_KITTY_BIN"
 
 
 def kitty_bin() -> str:
@@ -43,11 +43,11 @@ def kitty_ls() -> list[dict]:
 
 
 def find_window_by_goal(goal_id: str) -> dict | None:
-    """Walk `kitty @ ls` looking for a window with user_var minnie_goal=<id>."""
+    """Walk `kitty @ ls` looking for a window with user_var mini_goal=<id>."""
     for os_window in kitty_ls():
         for tab in os_window.get("tabs", []):
             for window in tab.get("windows", []):
-                if window.get("user_vars", {}).get("minnie_goal") == goal_id:
+                if window.get("user_vars", {}).get("mini_goal") == goal_id:
                     return window
     return None
 
@@ -60,8 +60,8 @@ def launch_session(goal_id: str, *, cwd: Path, command: list[str]) -> int:
     args = [
         "launch",
         "--type=tab",
-        f"--tab-title=minnie:{goal_id}",
-        f"--var=minnie_goal={goal_id}",
+        f"--tab-title=mini:{goal_id}",
+        f"--var=mini_goal={goal_id}",
         f"--cwd={str(cwd)}",
         "--hold",
     ] + list(command)
@@ -81,7 +81,7 @@ def launch_session(goal_id: str, *, cwd: Path, command: list[str]) -> int:
 def send_text_from_file(goal_id: str, file_path: Path, *, timeout: int = 10) -> None:
     args = [
         "send-text",
-        f"--match=var:minnie_goal={goal_id}",
+        f"--match=var:mini_goal={goal_id}",
         f"--from-file={str(file_path)}",
     ]
     proc = run_kitten(args, timeout=timeout)
@@ -95,7 +95,7 @@ def send_text_from_file(goal_id: str, file_path: Path, *, timeout: int = 10) -> 
 def get_screen_text(goal_id: str) -> str:
     args = [
         "get-text",
-        f"--match=var:minnie_goal={goal_id}",
+        f"--match=var:mini_goal={goal_id}",
         "--extent=screen",
     ]
     proc = run_kitten(args)
@@ -110,7 +110,7 @@ def get_screen_text(goal_id: str) -> str:
 def close_window(goal_id: str) -> None:
     args = [
         "close-window",
-        f"--match=var:minnie_goal={goal_id}",
+        f"--match=var:mini_goal={goal_id}",
     ]
     proc = run_kitten(args)
     if proc.returncode != 0 and b"No matching" not in proc.stderr:

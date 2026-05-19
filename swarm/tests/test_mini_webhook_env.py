@@ -11,24 +11,24 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class TestWebhookEnvOnly(unittest.TestCase):
-    def test_no_minnie_file_holds_actual_webhook_url(self):
+    def test_no_mini_file_holds_actual_webhook_url(self):
         """Real Discord webhook URLs have a long hash; pattern: discord.com/api/webhooks/<digits>/<token>.
-        Walk Minnie-owned files on disk (independent of git index state)."""
+        Walk Mini-owned files on disk (independent of git index state)."""
         import re
 
         url_re = re.compile(r"discord\.com/api/webhooks/\d+/[A-Za-z0-9_-]+")
         targets: list[Path] = []
         for rel in [
-            "swarm/bin/minnie", "swarm/bin/octi-worker",
-            "swarm/bin/install-minnie.sh", "swarm/docs/minnie.md",
+            "swarm/bin/mini", "swarm/bin/octi-worker",
+            "swarm/bin/install-mini.sh", "swarm/docs/mini.md",
         ]:
             p = REPO / rel
             if p.is_file():
                 targets.append(p)
-        for d in [REPO / "swarm" / "minnie", REPO / "swarm" / "tests"]:
+        for d in [REPO / "swarm" / "mini", REPO / "swarm" / "tests"]:
             if d.is_dir():
                 for p in d.rglob("*"):
-                    if p.is_file() and (p.name.startswith("test_minnie_") or "minnie" in p.parts):
+                    if p.is_file() and (p.name.startswith("test_mini_") or "mini" in p.parts):
                         targets.append(p)
 
         offenders: list[str] = []
@@ -39,7 +39,7 @@ class TestWebhookEnvOnly(unittest.TestCase):
             except (OSError, UnicodeDecodeError):
                 pass
         self.assertFalse(offenders,
-                         f"Minnie-owned file(s) contain a real Discord webhook URL: {offenders}")
+                         f"Mini-owned file(s) contain a real Discord webhook URL: {offenders}")
 
     def test_webhook_file_path_is_gitignored_or_under_dotswarm(self):
         """Any per-session webhook URL must live under .swarm/octi/*/webhook.url"""

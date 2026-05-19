@@ -3,7 +3,7 @@
 #
 # This entrypoint reserves the file path for the future Temporal-backed
 # worker (slice 4). It is intentionally non-functional in slice 1, where
-# Minnie is invoked directly from `swarm/bin/minnie`.
+# Mini is invoked directly from `swarm/bin/mini`.
 #
 # See: .specify/specs/038-octi-persistent-claude-session/spec.md AC12.
 
@@ -13,7 +13,7 @@ import sys
 def main() -> int:
     sys.stderr.write(
         "octi-worker: slice-4 placeholder; not yet implemented.\n"
-        "Use `minnie open` for slice-1 sessions.\n"
+        "Use `mini open` for slice-1 sessions.\n"
         "See .specify/specs/038-octi-persistent-claude-session/spec.md\n"
     )
     return 1

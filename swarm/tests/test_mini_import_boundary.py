@@ -1,4 +1,4 @@
-"""AC10 — Octi (slice 2+) may only import MiniSession from minnie."""
+"""AC10 — Octi (slice 2+) may only import MiniSession from mini."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-class TestMinnieImportBoundary(unittest.TestCase):
+class TestMiniImportBoundary(unittest.TestCase):
     def test_octi_only_imports_minisession(self):
         octi_dir = REPO / "swarm" / "octi"
         if not octi_dir.is_dir():
@@ -22,15 +22,15 @@ class TestMinnieImportBoundary(unittest.TestCase):
             capture_output=True, text=True, check=False, timeout=10,
         )
         self.assertEqual(result.stdout.strip(), "",
-                         f"octi imports minnie internals:\n{result.stdout}")
+                         f"octi imports mini internals:\n{result.stdout}")
 
-    def test_minnie_package_exports_only_minisession(self):
-        from swarm.minnie import __all__ as exported
+    def test_mini_package_exports_only_minisession(self):
+        from swarm.mini import __all__ as exported
         self.assertEqual(set(exported), {"MiniSession"})
 
     def test_minisession_importable_from_top(self):
         import importlib
-        mod = importlib.import_module("swarm.minnie")
+        mod = importlib.import_module("swarm.mini")
         self.assertTrue(hasattr(mod, "MiniSession"))
 
 
