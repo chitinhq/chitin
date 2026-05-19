@@ -37,6 +37,18 @@ class TestStateDir(unittest.TestCase):
     def test_state_root_honors_env(self):
         self.assertEqual(state_root(), Path(self.tmp.name).resolve())
 
+    def test_state_root_default_is_home_dot_swarm_octi(self):
+        """Default MUST be ~/.swarm/octi — NOT cwd-rooted. Putting state under
+        cwd caused writes inside the primary checkout (constitution §2
+        violation) in slice-1 when the operator ran `mini open` from the
+        primary."""
+        # Remove the override to exercise the default.
+        os.environ.pop(STATE_ROOT_ENV, None)
+        expected = (Path.home() / ".swarm" / "octi").resolve()
+        self.assertEqual(state_root(), expected)
+        # Restore so tearDown's pop is a no-op for this test.
+        os.environ[STATE_ROOT_ENV] = self.tmp.name
+
     def test_create_state_dir_writes_all_files(self):
         sd = create_state_dir(
             "abc-12345678",

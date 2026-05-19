@@ -54,9 +54,13 @@ echo "kitty: remote control OK."
 
 # webhook
 if [[ -z "${OCTI_DISCORD_WEBHOOK_URL:-}" ]]; then
-  echo "INFO: OCTI_DISCORD_WEBHOOK_URL is not set."
-  echo "  Per-session override available at .swarm/octi/<goal-id>/webhook.url"
-  echo "  \`mini watch\` requires a webhook URL."
+  echo "INFO: OCTI_DISCORD_WEBHOOK_URL is not set. Three ways to wire one up:"
+  echo "  1. Export OCTI_DISCORD_WEBHOOK_URL=<discord webhook URL>"
+  echo "  2. Use the hermes convention: export MINI_DISCORD_CHANNEL_ID=<channel id>"
+  echo "     and ensure ~/.hermes/.env has DISCORD_WEBHOOK_URL_<channel id>=<url>"
+  echo "  3. Per-session override: echo '<url>' > ~/.swarm/octi/<goal-id>/webhook.url"
+  echo "  \`mini watch\` and per-event posts (session.opened, nudge.sent, stop)"
+  echo "  silently skip when no URL resolves."
 fi
 
 echo "install complete. Try: mini --help"

@@ -31,6 +31,10 @@ class TestResolveWebhookUrl(unittest.TestCase):
     def setUp(self) -> None:
         self._old_primary = os.environ.pop(wh.PRIMARY_ENV, None)
         self._old_swarm = os.environ.pop(wh.SWARM_ENV, None)
+        self._old_cid = os.environ.pop(wh.CHANNEL_ID_ENV, None)
+        # Strip any pre-existing DISCORD_WEBHOOK_URL_* so the test sees a clean env.
+        self._old_chan_urls = {k: os.environ.pop(k) for k in list(os.environ)
+                               if k.startswith("DISCORD_WEBHOOK_URL_")}
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.sd = Path(self.tmp.name)
@@ -40,10 +44,26 @@ class TestResolveWebhookUrl(unittest.TestCase):
             os.environ[wh.PRIMARY_ENV] = self._old_primary
         if self._old_swarm is not None:
             os.environ[wh.SWARM_ENV] = self._old_swarm
+        if self._old_cid is not None:
+            os.environ[wh.CHANNEL_ID_ENV] = self._old_cid
+        os.environ.update(self._old_chan_urls)
 
     def test_env_var_primary_source(self):
         os.environ[wh.PRIMARY_ENV] = "https://discord.example/webhook"
         self.assertEqual(wh.resolve_webhook_url(self.sd), "https://discord.example/webhook")
+
+    def test_channel_id_fallback_from_hermes_env(self):
+        """MINI_DISCORD_CHANNEL_ID=1234 + DISCORD_WEBHOOK_URL_1234=<url>
+        should resolve to <url>. This is the hermes/.env convention."""
+        os.environ[wh.CHANNEL_ID_ENV] = "1234"
+        os.environ["DISCORD_WEBHOOK_URL_1234"] = "https://discord.example/chan1234"
+        self.assertEqual(wh.resolve_webhook_url(self.sd), "https://discord.example/chan1234")
+
+    def test_primary_env_beats_channel_id(self):
+        os.environ[wh.PRIMARY_ENV] = "https://discord.example/explicit"
+        os.environ[wh.CHANNEL_ID_ENV] = "1234"
+        os.environ["DISCORD_WEBHOOK_URL_1234"] = "https://discord.example/chan1234"
+        self.assertEqual(wh.resolve_webhook_url(self.sd), "https://discord.example/explicit")
 
     def test_state_dir_fallback(self):
         (self.sd / "webhook.url").write_text("https://discord.example/sessionhook\n")
@@ -67,14 +87,29 @@ class TestPost(unittest.TestCase):
         calls = []
 
         def fake_opener(req, timeout=5):
-            calls.append((req.full_url, req.data))
+            calls.append((req.full_url, req.data, dict(req.headers)))
             return _FakeResp(204)
 
         self.assertTrue(wh.post("https://example/wh", "hello", opener=fake_opener))
         self.assertEqual(len(calls), 1)
-        url, data = calls[0]
+        url, data, headers = calls[0]
         self.assertEqual(url, "https://example/wh")
         self.assertEqual(json.loads(data)["content"], "hello")
+
+    def test_post_sends_discord_compatible_user_agent(self):
+        """Discord webhooks reject bare Python-urllib UA with HTTP 403.
+        Slice 1 shipped without a UA header; this regression test guards
+        against that recurring."""
+        captured = {}
+
+        def fake_opener(req, timeout=5):
+            captured["headers"] = dict(req.headers)
+            return _FakeResp(204)
+
+        wh.post("https://example/wh", "hi", opener=fake_opener)
+        ua = captured["headers"].get("User-agent") or captured["headers"].get("User-Agent")
+        self.assertIsNotNone(ua, "no User-Agent header sent")
+        self.assertIn("DiscordBot", ua)
 
     def test_post_truncates_long_content(self):
         captured = {}
