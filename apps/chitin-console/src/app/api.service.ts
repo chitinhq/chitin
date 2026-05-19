@@ -5,7 +5,7 @@ import type {
   Stats, TaskListResponse, TaskDetail, AssigneeRow,
   RecentRun, EloRow, SessionSummary, SessionDetail,
   Policy, SuggestionsResponse, ArgusInfo, ArgusFindingsResponse,
-  CostHistogram, ClawtaDecision,
+  CostHistogram, ClawtaDecision, ThreadListResponse, ThreadDetail, AttachmentEnrichment,
 } from './api.types';
 
 const API_BASE = (window as { __CHITIN_API__?: string }).__CHITIN_API__ ?? '/api';
@@ -30,6 +30,21 @@ export class ApiService {
   }
   task(id: string): Observable<TaskDetail> {
     return this.http.get<TaskDetail>(`${API_BASE}/tasks/${encodeURIComponent(id)}`);
+  }
+  threads(opts: { board?: string; status?: string; audience?: string; q?: string; limit?: number } = {}): Observable<ThreadListResponse> {
+    let params = new HttpParams();
+    if (opts.board) params = params.set('board', opts.board);
+    if (opts.status) params = params.set('status', opts.status);
+    if (opts.audience) params = params.set('audience', opts.audience);
+    if (opts.q) params = params.set('q', opts.q);
+    if (opts.limit) params = params.set('limit', String(opts.limit));
+    return this.http.get<ThreadListResponse>(`${API_BASE}/threads`, { params });
+  }
+  thread(id: number): Observable<ThreadDetail> {
+    return this.http.get<ThreadDetail>(`${API_BASE}/threads/${id}`);
+  }
+  attachmentEnrichment(threadId: number, attachmentId: number): Observable<AttachmentEnrichment> {
+    return this.http.get<AttachmentEnrichment>(`${API_BASE}/threads/${threadId}/attachments/${attachmentId}`);
   }
   assignees(): Observable<{ assignees: AssigneeRow[] }> {
     return this.http.get<{ assignees: AssigneeRow[] }>(`${API_BASE}/assignees`);

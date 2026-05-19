@@ -1,0 +1,86 @@
+@if (loading()) {
+  <div class="attachment plate pending">
+    <div class="attachment-head">
+      <span class="attachment-kind mono">{{ attachment.kind }}</span>
+      <span class="mono tiny text-dim">loading…</span>
+    </div>
+    <div class="attachment-title mono">{{ attachment.display || attachment.ref }}</div>
+  </div>
+} @else if (enrichment(); as item) {
+  <div class="attachment plate" [class.missing]="item.status !== 'ok'">
+    @switch (attachment.kind) {
+      @case ('pr') {
+        <div class="attachment-head">
+          <a class="attachment-link mono" [href]="item.href || null" target="_blank" rel="noreferrer">
+            {{ item.label }}
+          </a>
+          <div class="attachment-meta">
+            <cc-status-pill [status]="item.prState || item.status"></cc-status-pill>
+            @if (item.checks) {
+              <span class="ci-bucket mono">{{ item.checks }}</span>
+            }
+          </div>
+        </div>
+        <div class="attachment-title">{{ item.title }}</div>
+        <div class="attachment-subtitle mono">{{ item.subtitle }}</div>
+      }
+      @case ('spec') {
+        <div class="attachment-head">
+          <button class="attachment-toggle mono" type="button" (click)="toggleExpanded()">
+            {{ item.label }} · {{ expanded() ? 'collapse' : 'expand' }}
+          </button>
+          @if (item.href) {
+            <a class="attachment-open mono" [href]="item.href" target="_blank" rel="noreferrer">open raw</a>
+          }
+        </div>
+        <div class="attachment-title" [title]="item.preview || item.subtitle">{{ item.title }}</div>
+        <div class="attachment-subtitle">{{ item.subtitle }}</div>
+        @if (expanded()) {
+          <pre class="attachment-body mono">{{ item.body || '' }}</pre>
+        }
+      }
+      @case ('task') {
+        <div class="attachment-head">
+          <a class="attachment-link mono" [href]="item.href || null">
+            {{ item.label }}
+          </a>
+          @if (item.taskStatus) {
+            <cc-status-pill [status]="item.taskStatus"></cc-status-pill>
+          }
+        </div>
+        <div class="attachment-title">{{ item.title }}</div>
+        <div class="attachment-subtitle mono">{{ item.subtitle }}</div>
+      }
+      @case ('discord') {
+        <div class="attachment-head">
+          <a class="attachment-link mono" [href]="item.href || null" target="_blank" rel="noreferrer">
+            {{ item.label }}
+          </a>
+        </div>
+        <div class="attachment-title">{{ item.title }}</div>
+        <div class="attachment-subtitle mono">{{ item.subtitle }}</div>
+      }
+      @case ('url') {
+        <div class="attachment-head">
+          <a class="attachment-link mono" [href]="item.href || null" target="_blank" rel="noreferrer">
+            {{ item.label }}
+          </a>
+        </div>
+        <div class="attachment-title">{{ item.title }}</div>
+        <div class="attachment-subtitle mono">{{ item.subtitle }}</div>
+      }
+      @case ('file') {
+        <div class="attachment-head">
+          <a class="attachment-link mono" [href]="item.href || null" target="_blank" rel="noreferrer">
+            {{ item.label }}
+          </a>
+        </div>
+        <div class="attachment-title mono">{{ item.title }}</div>
+        <div class="attachment-subtitle">{{ item.subtitle }}</div>
+      }
+    }
+    @if (item.status !== 'ok') {
+      <div class="missing-note mono">(missing)</div>
+    }
+  </div>
+}

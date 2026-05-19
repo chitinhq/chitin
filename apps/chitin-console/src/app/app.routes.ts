@@ -18,6 +18,11 @@ export const appRoutes: Route[] = [
     data: { title: 'Session' },
   },
   {
+    path: 'threads',
+    loadComponent: () => import('./pages/threads.page').then(m => m.ThreadsPage),
+    data: { title: 'Threads' },
+  },
+  {
     path: 'tickets',
     loadComponent: () => import('./pages/tickets.page').then(m => m.TicketsPage),
     data: { title: 'Tickets' },
