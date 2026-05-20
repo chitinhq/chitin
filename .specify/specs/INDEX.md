@@ -129,7 +129,7 @@ spec 049 §R6.
 | 061 | L1 | unified-spec-model | draft | `t_095e6cf0` |
 | 062 | L2/L3 | spec-build-attribution | draft | `t_0291fcfc` |
 | 063 | L5 | cross-layer-replay | draft | `t_87eeb464` |
-| 064 | L6 | telemetry-spec-feedback | draft | `t_c2c59167` |
+| 064 | L6 | telemetry-spec-feedback | draft (Q1+Q2 resolved) | `t_c2c59167`; PR #805 |
 | 065 | L7 | goal-rebuild-engine | draft | `t_aaf68eaa` |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
