@@ -40,6 +40,19 @@
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
 
+## Octi orchestration plane (Temporal Go) — PR 2/3 (critique closures)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; this PR (2/3) = the three
+> Clawta-critique-closure specs; PR 3 = workflow migrations.
+
+| Spec | Title | Status | Closes |
+|------|-------|--------|--------|
+| **041** | octi-event-mirror-contract | draft | Clawta critique #1 — replay from telemetry alone, no Temporal-visibility dependency |
+| **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 — anchor + dedup + multi-audience fan-out (post-#swarm-deletion) |
+| **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership (narrowed: per-agent channels only) |
+
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
 > Filed during the overnight goal's Ares-lane audit. Cross-lane
