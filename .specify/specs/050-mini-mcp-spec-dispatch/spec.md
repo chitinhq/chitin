@@ -121,11 +121,32 @@ commit the prompt: Claude Code's TUI treats the whole `send-text`
 blob as pasted input (bracketed-paste semantics), so the trailing
 `\r` is literal text inside the paste, not an Enter keypress.
 
-**Fix**: submission MUST be a separate step from text injection. After
-`send-text --from-file` delivers the prompt body, issue a distinct
-`kitty @ send-key --match var:mini_goal=<id> enter` (or an equivalent
-separate `send-text` carrying only the carriage return). The Enter
-arrives outside the paste and commits the prompt.
+**Fix** (corrected after live diagnosis 2026-05-19 — see below). Three
+mechanisms were tried against a 57-line composed goal:
+
+1. Trailing `\r` folded into the body `send-text` — fails. The `\r` is
+   literal content inside the bracketed paste, not a submit.
+2. A separate `kitty @ send-key enter` — fails. It commits a short
+   typed input but is a no-op against an input holding a collapsed
+   `[Pasted text]` chip.
+3. A separate `send-text` carrying a raw `\r`, bracketed paste
+   **disabled** so the CR is not folded into a paste — **works**.
+   Methodically confirmed: the paste-chip count went 1 → 0 and the TUI
+   began processing.
+
+So the mechanism is:
+
+- `send-text --bracketed-paste=auto --from-file=<body>` — deliver the
+  prompt body as a properly start/end-delimited paste.
+- `send-text --bracketed-paste=disable --stdin` with `\r` on stdin —
+  a distinct raw carriage return that commits the prompt.
+
+`kitty @ send-key` is NOT used for submission.
+
+Additionally, injection at session-open/recovery time MUST wait for
+Claude Code's TUI to be ready (the `bypass permissions` footer marker)
+before sending — otherwise the keystrokes race the TUI boot and are
+lost.
 
 The invariant: **after `inject_via_temp_file` returns, the prompt has
 been submitted to Claude — not left in the input buffer.**
