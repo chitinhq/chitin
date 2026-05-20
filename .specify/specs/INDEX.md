@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-19 (Octi orchestration corpus PR 1/3 — foundation).
+> Last updated 2026-05-19 (Octi orchestration corpus PR 3/3 — workflow migrations).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -74,8 +74,21 @@ spec 049 §R6.
 | **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 — anchor + dedup + multi-audience fan-out (post-#swarm-deletion) |
 | **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership (narrowed: per-agent channels only) |
 
-PR 3/3 (workflow migrations) will add: 043 dispatch, 044 poller,
-045 bridge, 046 autonomous-claim, 048 ha-migration-template.
+## Octi orchestration plane (Temporal Go) — PR 3/3 (workflow migrations)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; PR 2 = critique closures
+> (041/042/047); this PR (3/3) = the workflow migrations that port
+> today's cron/lobster sprawl onto Octi Temporal workflows.
+
+| Spec | Title | Status | Migration target |
+|------|-------|--------|------------------|
+| **043** | octi-dispatch-workflow | draft | `kanban-dispatch.lobster` (6-stage pipeline) |
+| **044** | octi-poller-workflow | draft | `swarm/bin/clawta-poller` |
+| **045** | octi-bridge-workflow | draft | `hermes-clawta-bridge.py` |
+| **046** | octi-autonomous-claim-workflow | draft | `autonomous-board-engine.sh` |
+| **048** | octi-ha-migration-template | draft (template) | tripwired `start-dev` → HA cluster |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
