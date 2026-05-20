@@ -4,6 +4,10 @@ Date: 2026-05-20
 Status: **active** — supersedes the role-lane dispatch model.
 Owner: red (operator). Ratified by operator directive 2026-05-20.
 
+![Chitin Swarm operating model](./chitin-swarm-operating-model.png)
+
+*Diagram source: [`chitin-swarm-operating-model.svg`](./chitin-swarm-operating-model.svg)*
+
 ## Why this exists
 
 The board stalled. 21 todo / 13 ready / 1 in_progress, with nearly every
