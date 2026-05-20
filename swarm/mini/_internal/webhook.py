@@ -25,6 +25,48 @@ SWARM_ENV = "OCTI_DISCORD_SWARM_WEBHOOK_URL"
 CHANNEL_ID_ENV = "MINI_DISCORD_CHANNEL_ID"
 USER_AGENT = "DiscordBot (https://github.com/chitinhq/chitin, 1.0) Mini"
 
+# Path to the hermes dotenv. Overridable via MINI_HERMES_ENV so tests can
+# point at an isolated (or absent) file and not pick up the operator's
+# real secrets.
+HERMES_ENV_PATH_ENV = "MINI_HERMES_ENV"
+_hermes_env_cache: tuple[str, float] | None = None
+
+
+def _hermes_env_path() -> Path:
+    return Path(os.environ.get(HERMES_ENV_PATH_ENV)
+                or (Path.home() / ".hermes" / ".env"))
+
+
+def _load_hermes_env_if_changed() -> None:
+    """Merge OCTI_*/DISCORD_*/MINI_* keys from the hermes dotenv into os.environ.
+
+    Re-reads when the file's (path, mtime) changes; cheap when unchanged.
+    Mirrors the pattern in services/agent-bus/discord_push.py — kitty-
+    spawned sessions and cron-driven invocations don't inherit the
+    operator's interactive env, so the secret has to come from disk.
+    """
+    global _hermes_env_cache
+    path = _hermes_env_path()
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    key = (str(path), mtime)
+    if _hermes_env_cache == key:
+        return
+    _hermes_env_cache = key
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        if not (k.startswith("OCTI_") or k.startswith("DISCORD_") or k.startswith("MINI_")):
+            continue
+        v = v.strip().strip('"').strip("'")
+        # Don't clobber a value the operator explicitly set in their shell.
+        os.environ.setdefault(k, v)
+
 
 def _channel_webhook_from_env() -> str | None:
     cid = os.environ.get(CHANNEL_ID_ENV, "").strip()
@@ -34,6 +76,7 @@ def _channel_webhook_from_env() -> str | None:
 
 
 def resolve_webhook_url(state_dir: Path | None = None) -> str | None:
+    _load_hermes_env_if_changed()
     env_url = os.environ.get(PRIMARY_ENV, "").strip()
     if env_url:
         return env_url
