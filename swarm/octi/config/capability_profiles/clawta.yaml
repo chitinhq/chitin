@@ -1,0 +1,55 @@
+# Octi capability profile — Clawta
+# Schema: octi.capability.v1 (frozen per spec 049 §R2)
+# spec: 049-octi-swarm-role-architecture
+
+agent_id: clawta
+runtime: openclaw
+model: codex-5.5
+discord_channel_id: "1503439202719760405"   # #clawta
+bus_audience_keys: [clawta]
+
+roles:
+  - name: implementer
+    confidence: 0.85
+    constraints:
+      - test_first_per_spec_020          # worker-pre-commit-no-code-without-test.sh
+      - scope_matches_allowed_paths
+      - assignee_match_required           # only picks up tickets with assignee=clawta
+    notes: |
+      Canonical implementer per spec-factory.md. Picks up tickets
+      from clawta-poller where assignee=clawta and a merged spec PR
+      already exists. No direct "please implement this thread"
+      handoff.
+
+  - name: spec_reviewer
+    confidence: 0.65
+    constraints:
+      - never_review_own_work
+      - review_must_cite_invariants
+      - review_body_min_chars: 200
+    notes: |
+      Fallback spec-reviewer when Ares is offline. Higher conflict
+      sensitivity than Ares — Clawta cannot review specs for
+      tickets clawta dispatched, implemented, or repaired.
+
+availability:
+  status: online
+  in_flight: 0
+  max_concurrent: 2
+
+conflict_sets:
+  spec_reviewer:
+    - never_review_pr_for_spec_i_authored
+    - never_review_spec_for_ticket_i_dispatched
+    - never_review_spec_for_ticket_i_implemented
+    - never_review_spec_for_ticket_i_repaired
+  implementer:
+    - never_implement_own_spec_authorship_when_solo
+
+max_role_wait:
+  implementer: 43200       # 12h — pick up time before bottleneck alarm
+  spec_reviewer: 14400
+
+fallbacks:
+  implementer: codex_driver      # @ 0.70
+  spec_reviewer: red             # explicit operator fallback

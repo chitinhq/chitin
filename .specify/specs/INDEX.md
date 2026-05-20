@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-17 (overnight roadmap sprint).
+> Last updated 2026-05-19 (Octi orchestration corpus 040-048 drafted).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -39,6 +39,39 @@
 | 015 | diagnostics-mutation-separation | shipped | Diagnostics read-only; mutation gated |
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
+
+## Octi orchestration plane (Temporal Go)
+
+> Ratified 2026-05-19 via agent-bus thread 17 msg 7702. Three
+> proposals received (Ares, Clawta, claude-code); hybrid ratified —
+> Temporal Go + Clawta's three critiques baked in. Parent: spec 038
+> ("Octi — Deterministic Workflow Governance"), slice 4 ("Octi
+> worker + Temporal integration").
+>
+> Ares' chitin-native counter-proposal absorbed as constraints, not
+> rejected: Temporal MUST NOT become a second source of truth;
+> chitin-kernel gate remains the floor; CI-enforced `workflowcheck`
+> is non-negotiable; every workflow step is replayable bit-for-bit
+> from Octi/chitin telemetry alone.
+
+| Spec | Title | Status | Maps to | Bake target |
+|------|-------|--------|---------|-------------|
+| **040** | octi-scaffolding | draft | Temporal Go module + `workflowcheck` CI gate + hello-world workflow | n/a — foundation |
+| **041** | octi-event-mirror-contract | draft | Clawta critique #1 — replay from telemetry alone | spec 040 §R8 stub |
+| **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 + thread-1-vs-thread-17 routing failure | spec 023 mirror |
+| **043** | octi-dispatch-workflow | draft | Port `kanban-dispatch.lobster` (6-stage pipeline) | `~/.openclaw/workflows/kanban-dispatch.lobster` |
+| **044** | octi-poller-workflow | draft | Replace `clawta-poller` cron | `swarm/bin/clawta-poller` |
+| **045** | octi-bridge-workflow | draft | Replace `hermes-clawta-bridge.py` | `~/.hermes/scripts/hermes-clawta-bridge.py` |
+| **046** | octi-autonomous-claim-workflow | draft | Replace `autonomous-board-engine.sh` | `~/.hermes/scripts/autonomous-board-engine.sh` |
+| **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership preserved | `swarm/bin/{clawta,mini}-mention-listener` |
+| **048** | octi-ha-migration-template | draft (template) | Tripwired `start-dev` → HA cluster | template only — not actionable until tripwire fires |
+| **049** | octi-swarm-role-architecture | draft | 6 roles, capability schema, handoff packet, derived confidence — the BEHAVIOR layer above 040-048 | ratified thread 19 + operator override 2026-05-19 (Ares = research + spec-review + board-groom + pr-reviewer-signal); reconciles `spec-factory.md` |
+
+Sequencing: 040 ships first (foundation). 041 + 042 close the
+critique gaps before any production migration. 043 is the
+highest-value single migration (kanban-dispatch.lobster). 044-047
+follow per-surface. 048 is a template, dormant until a measurable
+tripwire fires.
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 

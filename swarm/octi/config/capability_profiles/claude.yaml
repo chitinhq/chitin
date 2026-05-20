@@ -1,0 +1,47 @@
+# Octi capability profile — Claude (operator-paired spec writer)
+# Schema: octi.capability.v1 (frozen per spec 049 §R2)
+# spec: 049-octi-swarm-role-architecture
+
+agent_id: claude
+runtime: claude-code-cli
+model: claude-sonnet-or-opus
+discord_channel_id: null            # no own channel; operator-paired
+bus_audience_keys: [claude]
+
+roles:
+  - name: spec_writer
+    confidence: 0.90
+    constraints:
+      - one_spec_per_pr
+      - must_cite_research_or_operator_priority
+      - all_chitin_sections_required     # file-system scope, test coverage, AC, invariants, OOS (spec 020 + 024)
+    notes: |
+      Primary spec authorship lane per spec-factory.md. Reads research
+      output from Ares + operator priority signal; drafts spec PR.
+      First through the assembly line.
+
+  - name: research
+    confidence: 0.65
+    constraints:
+      - source_citation_required
+    notes: |
+      Fallback researcher when Ares is offline. Lower confidence than
+      Ares (claude has wider context but less reasoning-specialized
+      for long-form investigation).
+
+availability:
+  status: online                 # claude is operator-paired; "online" when red has a session
+  in_flight: 0
+  max_concurrent: 2
+
+conflict_sets:
+  spec_writer:
+    - never_author_spec_for_topic_i_currently_review
+
+max_role_wait:
+  spec_writer: 86400              # 24h — claude is session-paced
+  research: 86400
+
+fallbacks:
+  spec_writer: red                # explicit operator fallback
+  research: ares                  # cycle: Ares is primary, claude is fallback
