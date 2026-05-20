@@ -107,14 +107,15 @@ spec 049 §R6.
 
 > The Mini session primitive — the L4 worker layer the Octi controller
 > dispatches into. Specs landed via PR #795 (050 slice 1) and PR #799
-> (050 slice 2 + 051/052/053).
+> (050 slice 2 + 051/052/053). Superseded by spec 069; retained here
+> only as historical index context.
 
 | Spec | Title | Status | What it owns |
 |------|-------|--------|--------------|
-| 050 | mini-mcp-spec-dispatch | ratified | Mini MCP server + spec-driven dispatch; slice 1 shipped (PR #795), slice 2 in PR #799 |
-| 051 | mini-goalid-from-specs | draft | `goal_id` minted from the spec set a Mini session is opened against |
-| 052 | agent-worktree-mention-guardrails | draft | Worktree + mention-addressing guardrails for agent sessions |
-| 053 | mini-dispatch-via-kanban-driver | draft | Route Mini dispatch through the kanban driver (Option 3) |
+| 050 | mini-mcp-spec-dispatch | superseded by 069 | Mini MCP server + spec-driven dispatch |
+| 051 | mini-goalid-from-specs | superseded by 069 | `goal_id` minted from the spec set a Mini session is opened against |
+| 052 | agent-worktree-mention-guardrails | superseded by 069 | Worktree + mention-addressing guardrails for agent sessions |
+| 053 | mini-dispatch-via-kanban-driver | superseded by 069 | Route Mini dispatch through the kanban driver (Option 3) |
 
 ## SDD platform — charter 060 + roadmap 061-065
 
@@ -194,3 +195,17 @@ triage rationale.
 - Workers MUST NOT promote a ticket to `ready` without a `Spec:
   NNN-<slug>` reference in the body that resolves to an existing
   spec.md here.
+
+## Decommissioned (spec 069 — 2026-05-20)
+
+Operator directive: the kanban board is the swarm's sole coordination
+channel. The following specs are **superseded** — their subsystems are
+removed by spec `069-decommission-agent-bus-mini`:
+
+- **001** (agent-bus) — the agent-bus is decommissioned (unreliable; the
+  board replaced it).
+- **050–053** (Mini worker plane) — the `mini` Claude-Code-CLI wrapper is
+  decommissioned ("not necessary right now").
+
+Specs **040–048** ("Octi" Temporal orchestration) are **NOT** superseded —
+they are re-homed under spec `070-chitin-orchestrator` (Chitin Orchestrator).

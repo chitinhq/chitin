@@ -24,13 +24,12 @@ class HandleRequestTests(unittest.TestCase):
         self.assertEqual(resp["result"]["protocolVersion"], "2024-11-05")
         self.assertEqual(resp["result"]["serverInfo"]["name"], "swarm-kanban-mcp")
 
-    def test_tools_list_includes_all_seven(self):
+    def test_tools_list_includes_board_tools(self):
         resp = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {
             "list_boards", "list_tickets", "get_ticket",
             "claim_ticket", "update_status", "create_ticket",
-            "post_swarm_message",
         })
 
     def test_unknown_method_errors(self):

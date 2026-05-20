@@ -5,8 +5,7 @@ Lets a Claude Code session interact with any kanban board (chitin /
 readybench / personal-os / swarm) without subprocess-calling
 `hermes kanban` over and over.
 
-JSON-RPC 2.0 over stdio, zero external deps (matches the
-agent-bus/server.py pattern).
+JSON-RPC 2.0 over stdio, zero external deps.
 
 Tools exposed:
   - list_boards()
@@ -15,7 +14,6 @@ Tools exposed:
   - claim_ticket(board, ticket_id, owner)
   - update_status(board, ticket_id, new_status, author, comment?)
   - create_ticket(board, title, body, assignee, priority?, triage?)
-  - post_swarm_message(body) — convenience wrapper that posts to #swarm thread 9
 """
 from __future__ import annotations
 
@@ -26,8 +24,6 @@ import sys
 from pathlib import Path
 
 KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
-BUS_DB = Path.home() / ".chitin" / "agent-bus" / "bus.db"
-SWARM_THREAD_ID = 9
 
 
 def _board_db(board: str) -> Path:
@@ -138,42 +134,6 @@ def create_ticket(board: str, title: str, body: str, assignee: str,
     return _run(cmd)
 
 
-def post_swarm_message(body: str, author: str = "red",
-                       audience: str | None = None,
-                       ack_required: bool = False) -> dict:
-    """Convenience wrapper that posts to #swarm thread 9 via agent-bus.
-
-    Per Copilot review on PR #753 L115: importing via `from server import
-    bus_reply` collides with this very module's name when it's loaded as
-    `server` in tests. Load via importlib so the other server.py is bound
-    under a distinct module name.
-    """
-    import importlib.util
-    bus_path = Path(__file__).resolve().parents[1] / "agent-bus"
-    db_spec = importlib.util.spec_from_file_location("agent_bus_db",
-                                                     bus_path / "db.py")
-    db_mod = importlib.util.module_from_spec(db_spec)
-    db_spec.loader.exec_module(db_mod)
-    # agent-bus server.py imports from `db` and `discord_push` as bare
-    # names — ensure those are resolvable while loading it.
-    sys.path.insert(0, str(bus_path))
-    try:
-        srv_spec = importlib.util.spec_from_file_location("agent_bus_server",
-                                                          bus_path / "server.py")
-        srv_mod = importlib.util.module_from_spec(srv_spec)
-        srv_spec.loader.exec_module(srv_mod)
-    finally:
-        if str(bus_path) in sys.path:
-            sys.path.remove(str(bus_path))
-    conn = db_mod.connect()
-    try:
-        return srv_mod.bus_reply(conn, author=author, thread_id=SWARM_THREAD_ID,
-                                 body=body, audience=audience,
-                                 ack_required=ack_required)
-    finally:
-        conn.close()
-
-
 def _kanban_flow(board: str, *args: str) -> dict:
     cmd = ["env", f"KANBAN_BOARD={board}", "kanban-flow", *args]
     return _run(cmd)
@@ -192,7 +152,6 @@ TOOLS = {
     "claim_ticket": claim_ticket,
     "update_status": update_status,
     "create_ticket": create_ticket,
-    "post_swarm_message": post_swarm_message,
 }
 
 TOOL_SCHEMAS = [
@@ -229,13 +188,6 @@ TOOL_SCHEMAS = [
                                     "assignee": {"type": "string"},
                                     "priority": {"type": "integer", "default": 1},
                                     "triage": {"type": "boolean", "default": True}}}},
-    {"name": "post_swarm_message",
-     "description": "Post a message to #swarm thread 9 (the 3-agent coordination channel).",
-     "inputSchema": {"type": "object", "required": ["body"],
-                     "properties": {"body": {"type": "string"},
-                                    "author": {"type": "string", "default": "red"},
-                                    "audience": {"type": "string"},
-                                    "ack_required": {"type": "boolean", "default": False}}}},
 ]
 
 
