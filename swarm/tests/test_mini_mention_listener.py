@@ -186,6 +186,41 @@ class AddressedToMiniTests(unittest.TestCase):
     def test_leading_hyphen_address_matches(self) -> None:
         self.assertTrue(listener._addressed_to_mini(_row("Mini - status please")))
 
+    # ----- Backtick code-span exclusion (slice 1.5 regression) --------------
+    # When discussing @mini in a doc thread, a user might write `@mini` in
+    # backticks. That is a Markdown code-span, not addressing — the listener
+    # must NOT match. Verified live 2026-05-19: Clawta posted
+    # "`@mini` belongs to Mini" in the Octi orchestration thread and the
+    # smoke-test session's auto-bind grabbed that thread instead of #mini.
+
+    def test_backtick_wrapped_at_mini_does_not_match(self) -> None:
+        """`@mini` in a code-span is documentation, not addressing."""
+        self.assertFalse(
+            listener._addressed_to_mini(_row("`@mini` belongs to Mini, `@Clawta` belongs to Clawta")),
+        )
+
+    def test_at_mini_with_leading_backtick_only_does_not_match(self) -> None:
+        """Leading backtick is enough to mark this as quoted reference."""
+        self.assertFalse(listener._addressed_to_mini(_row("see `@mini in the spec")))
+
+    def test_at_mini_with_trailing_backtick_only_does_not_match(self) -> None:
+        """Trailing backtick is enough to mark this as quoted reference."""
+        self.assertFalse(listener._addressed_to_mini(_row("@mini` is the handle")))
+
+    def test_at_mini_in_triple_backtick_block_is_known_limitation(self) -> None:
+        """Multi-line code blocks DO currently match — lookbehind regex can't
+        see across newlines to the fence. Documented limitation; if it bites
+        in practice, escalate to a stateful pre-pass that strips fenced blocks
+        before regex match. Pinning current behavior so any future regression
+        in either direction is visible."""
+        body = "```\n@mini do thing\n```"
+        self.assertTrue(listener._addressed_to_mini(_row(body)))
+
+    def test_plain_at_mini_still_matches_after_backtick_fix(self) -> None:
+        """Regression guard: tightening must not break the common case."""
+        self.assertTrue(listener._addressed_to_mini(_row("@mini ping")))
+        self.assertTrue(listener._addressed_to_mini(_row("hey @mini, status?")))
+
 
 # ----- End-to-end tick tests with sqlite + fakes ----------------------------
 
