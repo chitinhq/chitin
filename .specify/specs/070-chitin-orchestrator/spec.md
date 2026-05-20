@@ -102,11 +102,14 @@ orchestration action originates outside the orchestrator.
 - **FR-007**: A cron job or shell script MUST be deleted once its replacement workflow is proven; the orchestrator MUST become the single origin of orchestration.
 - **FR-008**: The orchestrator MUST emit run telemetry to the Chitin Telemetry layer.
 - **FR-009**: The orchestrator MUST support indefinitely-running workflows without unbounded state growth.
-- **FR-010**: The orchestrator MUST NOT depend on the agent-bus (decommissioned — spec 069); agent coordination is via the Chitin Board.
+- **FR-010**: The orchestrator MUST NOT depend on the agent-bus (decommissioned — spec 069); it coordinates agents directly (see FR-015/016).
 - **FR-011**: The operator MUST be able to start, stop, inspect, and replay any workflow.
 - **FR-012**: A workflow code change MUST NOT break in-flight runs — version/replay safety is required.
 - **FR-013**: Every work unit the orchestrator dispatches MUST execute as a **worker** process in its own **dedicated git worktree** — never in the primary/shared repository checkout. The platform flow always uses workers + worktrees; orchestration and work never mutate the shared checkout.
 - **FR-014**: A worktree MUST be created fresh per work unit and removed on completion; a worktree orphaned by a crashed worker MUST be reclaimable (garbage-collected) by the orchestrator.
+- **FR-015**: The orchestrator MUST be the source of truth for work **sequencing and scheduling** — derived deterministically (mathematically) from the spec task graph. No heuristic optimizer; no human-managed kanban deciding order.
+- **FR-016**: A kanban / activity log is a **telemetry read-surface only** — a projection of orchestrator state that humans may read. The orchestrator MUST NOT depend on it to decide what runs next. (The Hermes Kanban's driving role moves into the orchestrator; its readable role moves into Chitin Telemetry — the Hermes Kanban is end-of-life.)
+- **FR-017**: The orchestrator MUST be **agent-agnostic and driver-agnostic** — no dependency on Hermes plugins or the Hermes Kanban. Any agent — Ares, Clawta, Claude Code, Copilot, or a future first-party Chitin agent — is a routing choice, not an architectural dependency.
 
 ### Key Entities
 
