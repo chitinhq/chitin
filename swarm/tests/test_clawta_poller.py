@@ -74,6 +74,138 @@ def make_db(root: Path) -> Path:
 
 
 class ClawtaPollerDependencyTests(unittest.TestCase):
+    def test_resolve_boards_all_discovers_every_board_db(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            for slug in ("readybench", "chitin", "icarus"):
+                board_dir = root / slug
+                board_dir.mkdir()
+                (board_dir / "kanban.db").write_text("")
+                (board_dir / "config.json").write_text(
+                    f'{{"workspace_root": "{workspace}"}}\n'
+                )
+            (root / "no-db").mkdir()
+            unconfigured = root / "career"
+            unconfigured.mkdir()
+            (unconfigured / "kanban.db").write_text("")
+
+            with mock.patch.object(module, "BOARDS_DIR", root):
+                self.assertEqual(
+                    module._resolve_boards("all"),
+                    ["chitin", "icarus", "readybench"],
+                )
+
+    def test_resolve_boards_default_discovers_every_board_db(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            for slug in ("readybench", "chitin"):
+                board_dir = root / slug
+                board_dir.mkdir()
+                (board_dir / "kanban.db").write_text("")
+                (board_dir / "config.json").write_text(
+                    f'{{"workspace_root": "{workspace}"}}\n'
+                )
+
+            with mock.patch.object(module, "BOARDS_DIR", root), mock.patch.dict(
+                os.environ, {}, clear=True
+            ):
+                self.assertEqual(module._resolve_boards(None), ["chitin", "readybench"])
+
+    def test_resolve_boards_explicit_kanban_db_stays_single_board(self) -> None:
+        module = load_module()
+        with mock.patch.dict(
+            os.environ,
+            {"KANBAN_DB": "/tmp/single-board.db", "KANBAN_BOARD": "readybench"},
+            clear=True,
+        ):
+            self.assertEqual(module._resolve_boards(None), ["readybench"])
+
+    def test_multi_board_set_board_ignores_explicit_kanban_db(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(module, "BOARDS_DIR", root), mock.patch.dict(
+                os.environ, {"KANBAN_DB": "/tmp/single-board.db"}, clear=False
+            ):
+                module.MULTI_BOARD_MODE = True
+                module._set_board("readybench")
+
+            self.assertEqual(module.DB_PATH, root / "readybench" / "kanban.db")
+
+    def test_fetch_routable_includes_chitin_worker_lane(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_worker01', 'worker ticket', '', 'ready', 'chitin-worker', NULL, 50, 1),
+                  ('t_ares0001', 'ares ticket', '', 'ready', 'ares', NULL, 40, 2);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                self.assertEqual(
+                    [ticket["id"] for ticket in module.fetch_routable()],
+                    ["t_worker01"],
+                )
+
+    def test_ungroomed_ready_ignores_named_role_queues(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_missing1', 'missing assignee', '', 'ready', NULL, NULL, 50, 1),
+                  ('t_ares0001', 'ares ticket', '', 'ready', 'ares', NULL, 40, 2);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                self.assertEqual(
+                    [ticket["id"] for ticket in module.fetch_ungroomed_ready()],
+                    ["t_missing1"],
+                )
+
+    def test_missing_spec_kit_demote_only_checks_poller_owned_lanes(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_worker01', 'worker ticket', '', 'ready', 'chitin-worker', NULL, 50, 1),
+                  ('t_ares0001', 'ares ticket', '', 'ready', 'ares', NULL, 40, 2);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "has_spec_kit_entry", return_value=False
+            ), mock.patch.object(module, "demote_ticket", return_value=True) as demote:
+                demoted = module.demote_missing_spec_kit_entries(dry_run=True)
+
+        self.assertEqual(demoted, ["t_worker01"])
+        demote.assert_called_once()
+
     def test_has_spec_kit_entry_accepts_existing_board_spec(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

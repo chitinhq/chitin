@@ -33,11 +33,12 @@ Invocation:
   clawta-poller --boards chitin,readybench   tick multiple boards sequentially
 
 Configured via env:
-  KANBAN_DB                 default: resolved from KANBAN_BOARD
-  KANBAN_BOARD              default: chitin (comma-separated for multi-board)
+  KANBAN_DB                 explicit single-board DB override
+  KANBAN_BOARD              comma-separated board list override
   POLL_SEC                  default: 120
   TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
-  ROUTING_LANE              assignee for routing-level tickets, default: clawta
+  ROUTING_LANES             comma list for routing-level tickets, default: clawta,chitin-worker
+  ROUTING_LANE              legacy single routing lane override
   CLAWTA_BIN                default: clawta (must be on PATH)
   KANBAN_FLOW_BIN           default: kanban-flow
   CLAWTA_ROUTER_MODE        passed to _pick_driver as ROUTER_MODE when set
@@ -64,28 +65,29 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from board_resolver import (
+    BOARDS_DIR,
     apply_board_cli_override,
     board_repo,
     board_workspace,
     resolve_db,
     resolve_board,
     spec_dir_for_board,
-    warn_implicit_default_board,
 )
 
 apply_board_cli_override()
-warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH: Path = resolve_db()
 BOARD: str = resolve_board()
+MULTI_BOARD_MODE = False
 
 
 def _set_board(slug: str) -> None:
     """Recompute module globals for the given board slug."""
-    global DB_PATH, BOARD
+    global DB_PATH, BOARD, DEFAULT_GH_REPO
     os.environ["KANBAN_BOARD"] = slug
-    DB_PATH = resolve_db(slug)
+    DB_PATH = BOARDS_DIR / slug / "kanban.db" if MULTI_BOARD_MODE else resolve_db(slug)
     BOARD = slug
+    DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO") or board_repo(slug)
     log(f"board context: {slug} (db={DB_PATH})")
 POLL_SEC = int(os.environ.get("POLL_SEC", "120"))
 TERMINAL_LANES = tuple(
@@ -93,7 +95,13 @@ TERMINAL_LANES = tuple(
         "TERMINAL_LANES", "codex,copilot,claude-code,gemini"
     ).split(",") if s.strip()
 )
-ROUTING_LANE = os.environ.get("ROUTING_LANE", "clawta")
+ROUTING_LANES = tuple(
+    s.strip() for s in os.environ.get(
+        "ROUTING_LANES",
+        os.environ.get("ROUTING_LANE", "clawta,chitin-worker"),
+    ).split(",") if s.strip()
+)
+ROUTING_LANE = ROUTING_LANES[0] if ROUTING_LANES else "clawta"
 CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
 # Direct openclaw client for the sequencer LLM call. The `clawta` wrapper
 # has unanchored regex pattern detection — any prompt containing a
@@ -370,13 +378,16 @@ def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
 
 
 def fetch_routable() -> list[dict[str, Any]]:
-    """Return ready/todo tickets assigned to the routing lane (clawta by default).
+    """Return ready/todo tickets assigned to a routing lane.
 
     These tickets need their assignee resolved to a terminal lane via the
     LLM router (/_pick_driver) before they can be dispatched. The poller
     routes them and reassigns to the chosen terminal lane.
     """
+    if not ROUTING_LANES:
+        return []
     status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    routing_placeholders = ",".join("?" * len(ROUTING_LANES))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -384,10 +395,10 @@ def fetch_routable() -> list[dict[str, Any]]:
             SELECT id, title, body, assignee, priority, created_at
               FROM tasks
              WHERE status IN ({status_placeholders})
-               AND assignee = ?
+               AND assignee IN ({routing_placeholders})
              ORDER BY priority DESC, created_at ASC
             """,
-            (*DISPATCHABLE_STATUSES, ROUTING_LANE),
+            (*DISPATCHABLE_STATUSES, *ROUTING_LANES),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -396,17 +407,10 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
     """Return ready/todo tickets that grooming missed — no assignee, or assignee
     in a non-terminal, non-routing lane the poller can't dispatch.
 
-    Hermes is the groomer and is supposed to attach a terminal-lane assignee
-    (or the routing lane) when promoting triage→ready; tickets that show up
-    here bypassed that step (most often because they were created directly
-    with --status ready instead of going through triage). Demoting them back
-    to triage with a specific reason keeps kanban honest about where work
-    actually stands.
-
-    IMPORTANT: tickets assigned to the routing lane (clawta) are NOT
-    considered ungroomed — they go through route_ticket() instead.
+    The poller only owns implementation routing/dispatch. Other named role
+    assignees such as ares are valid queues on multi-role boards, so this
+    guard only treats missing assignees as poller-actionable grooming gaps.
     """
-    placeholders = ",".join("?" * len(TERMINAL_LANES))
     status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
@@ -415,19 +419,20 @@ def fetch_ungroomed_ready() -> list[dict[str, Any]]:
             SELECT id, title, body, assignee, priority, created_at
               FROM tasks
              WHERE status IN ({status_placeholders})
-               AND (assignee IS NULL
-                    OR assignee = ''
-                    OR (assignee NOT IN ({placeholders})
-                        AND assignee != ?))
+               AND (assignee IS NULL OR assignee = '')
              ORDER BY priority DESC, created_at ASC
             """,
-            (*DISPATCHABLE_STATUSES, *TERMINAL_LANES, ROUTING_LANE),
+            DISPATCHABLE_STATUSES,
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
+def fetch_poller_owned_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
+    assignees = tuple(dict.fromkeys((*TERMINAL_LANES, *ROUTING_LANES)))
+    if not assignees:
+        return []
     status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    assignee_placeholders = ",".join("?" * len(assignees))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -435,27 +440,16 @@ def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
             SELECT id, title, body, assignee, priority, created_at, status
               FROM tasks
              WHERE status IN ({status_placeholders})
+               AND assignee IN ({assignee_placeholders})
              ORDER BY priority DESC, created_at ASC
             """,
-            DISPATCHABLE_STATUSES,
+            (*DISPATCHABLE_STATUSES, *assignees),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def fetch_dispatchable_with_bodies() -> list[dict[str, Any]]:
-    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT id, title, body, assignee, priority, created_at, status
-              FROM tasks
-             WHERE status IN ({status_placeholders})
-             ORDER BY priority DESC, created_at ASC
-            """,
-            DISPATCHABLE_STATUSES,
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return fetch_poller_owned_ready_or_todo_with_bodies()
 
 
 def filter_tickets_with_incomplete_runs(
@@ -880,7 +874,7 @@ def apply_dependency_gate(
     pr_cache = {} if pr_cache is None else pr_cache
     ticket_cache = {} if ticket_cache is None else ticket_cache
     blocked: list[str] = []
-    for ticket in fetch_ready_or_todo_with_bodies():
+    for ticket in fetch_poller_owned_ready_or_todo_with_bodies():
         unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
         if not unresolved:
             continue
@@ -1011,14 +1005,15 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             timeout=15,
             check=True,
         )
+        from_lane = str(ticket.get("assignee") or ROUTING_LANE)
         subprocess.run(
             ["hermes", "kanban", "--board", BOARD, "comment",
              ticket["id"], "--author", AUTHOR,
-             f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
+             f"Routed by clawta-poller: {from_lane} -> {driver}. Reasoning: {reasoning}"],
             timeout=15,
             check=True,
         )
-        log(f"routed {ticket['id']} {ROUTING_LANE} -> {driver} ({reasoning[:60]})")
+        log(f"routed {ticket['id']} {from_lane} -> {driver} ({reasoning[:60]})")
         return driver
     except Exception as e:
         log(f"route_ticket({ticket['id']}): routing failed: {e}")
@@ -1038,7 +1033,7 @@ def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
     total = len(routable)
     if limit is not None and limit > 0:
         routable = routable[:limit]
-    log(f"tick: routing {len(routable)}/{total} routing-lane ({ROUTING_LANE}) ticket(s)")
+    log(f"tick: routing {len(routable)}/{total} routing-lane ticket(s) ({','.join(ROUTING_LANES)})")
     routed: list[str] = []
     for t in routable:
         driver = route_ticket(t, dry_run)
@@ -1170,7 +1165,7 @@ def demote_ungroomed(dry_run: bool) -> list[str]:
         if not t["assignee"]:
             reason = (
                 f"missing assignee — grooming step must route to a terminal "
-                f"lane ({lanes}) or the routing lane ({ROUTING_LANE}) before "
+                f"lane ({lanes}) or a routing lane ({','.join(ROUTING_LANES)}) before "
                 f"clawta-poller can dispatch"
             )
         else:
@@ -1238,6 +1233,31 @@ def dispatch_ready_batch(max_dispatch: int, dry_run: bool) -> tuple[list[str], l
 
 
 def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
+    # Multi-board ticks are intentionally dispatch-only. Boards have different
+    # grooming semantics; broad demotion/blocking across every board is too
+    # destructive for the global poller.
+    if MULTI_BOARD_MODE:
+        dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
+        remaining = max_dispatch - len(dispatched)
+        routed: list[str] = []
+        if remaining > 0:
+            routed = route_clawta_assigned(dry_run, limit=remaining)
+            more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
+            dispatched.extend(more_dispatched)
+            demoted.extend(more_demoted)
+            queue_size = max(queue_size, queue_size_after_route)
+        if not dispatched and not demoted and not routed:
+            log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
+        return {
+            "dispatched": dispatched,
+            "demoted": demoted,
+            "routed": routed,
+            "dependency_blocked": [],
+            "dependency_unblocked": [],
+            "invariants": [],
+            "queue_size": queue_size,
+        }
+
     # Step 0: Self-heal safe board/finalize invariants before starting new work.
     invariants = run_invariant_repairs(dry_run)
 
@@ -1300,14 +1320,44 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     }
 
 
+def _discover_boards() -> list[str]:
+    """Return configured board slugs with kanban DBs, in stable order."""
+    if not BOARDS_DIR.exists():
+        return []
+    boards = []
+    for path in BOARDS_DIR.glob("*/kanban.db"):
+        if not path.is_file():
+            continue
+        slug = path.parent.name
+        config_path = BOARDS_DIR / slug / "config.json"
+        if not config_path.is_file():
+            continue
+        workspace = board_workspace(slug)
+        if not workspace.exists():
+            continue
+        boards.append(slug)
+    return sorted(set(boards))
+
+
+def _parse_boards(value: str) -> list[str]:
+    boards = [s.strip() for s in value.split(",") if s.strip()]
+    if any(board.lower() == "all" for board in boards):
+        discovered = _discover_boards()
+        return discovered or ["chitin"]
+    return boards
+
+
 def _resolve_boards(boards_arg: str | None) -> list[str]:
-    """Parse --boards arg or fall back to KANBAN_BOARD env."""
+    """Parse board overrides, otherwise poll every board with a kanban DB."""
     if boards_arg:
-        return [s.strip() for s in boards_arg.split(",") if s.strip()]
+        return _parse_boards(boards_arg)
     env = os.environ.get("KANBAN_BOARD", "").strip()
     if env:
-        return [s.strip() for s in env.split(",") if s.strip()]
-    return ["chitin"]
+        return _parse_boards(env)
+    if os.environ.get("KANBAN_DB"):
+        return [resolve_board()]
+    discovered = _discover_boards()
+    return discovered or ["chitin"]
 
 
 def main() -> int:
@@ -1318,10 +1368,12 @@ def main() -> int:
     g.add_argument("--loop", action="store_true", help=f"loop every POLL_SEC ({POLL_SEC}s)")
     ap.add_argument("--max-dispatch", type=int, default=5, help="max tickets to dispatch per tick (default 5)")
     ap.add_argument("--boards", type=str, default=None,
-                    help="comma-separated board slugs (default: KANBAN_BOARD env or 'chitin')")
+                    help="comma-separated board slugs, or 'all' (default: discover all boards)")
     args = ap.parse_args()
 
     boards = _resolve_boards(args.boards)
+    global MULTI_BOARD_MODE
+    MULTI_BOARD_MODE = len(boards) > 1
     log(f"boards: {','.join(boards)}")
 
     results: dict[str, Any] = {}
@@ -1345,7 +1397,7 @@ def main() -> int:
         return 0
 
     if args.loop:
-        log(f"loop start (boards={','.join(boards)}, poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lane={ROUTING_LANE})")
+        log(f"loop start (boards={','.join(boards)}, poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lanes={','.join(ROUTING_LANES)})")
         while True:
             for slug in boards:
                 _set_board(slug)
