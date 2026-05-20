@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-19 (Octi orchestration corpus PR 3/3 — workflow migrations).
+> Last updated 2026-05-19 (spec 054 — Octi assembly-line process).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -89,6 +89,19 @@ spec 049 §R6.
 | **045** | octi-bridge-workflow | draft | `hermes-clawta-bridge.py` |
 | **046** | octi-autonomous-claim-workflow | draft | `autonomous-board-engine.sh` |
 | **048** | octi-ha-migration-template | draft (template) | tripwired `start-dev` → HA cluster |
+
+## Octi assembly-line process spec
+
+> Spec 054 is the **process spec** — it sequences the Octi role
+> architecture (049) and runtime (040-048) into one end-to-end
+> 10-stage, 2-gate deterministic assembly line. On ratification it
+> supersedes `workspace/claude/skills/spec-factory.md` as the
+> canonical swarm operating procedure. Awaiting Ares + Clawta
+> alignment sign-off, then operator ratification.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **054** | octi-assembly-line | draft | The canonical 10-stage / 2-gate swarm operating procedure — ties 038 + 040-049 into one process |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
