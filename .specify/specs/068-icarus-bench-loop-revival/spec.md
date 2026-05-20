@@ -37,7 +37,7 @@ paused and "never meaningfully used." Net effect today: exactly one
 historical run (2026-05-19, scored 0.0 — verifier failed, but the agent
 ran 20 steps to `TASK_COMPLETE`), and nothing scheduled. `harbor` is
 installed, docker works, 20+ tasks are cached at `~/.cache/harbor/tasks/`,
-and `ollama/qwen3-coder:30b-32k` is loaded — the substrate is intact; only
+and `ollama/qwen3.6:27b` is loaded — the substrate is intact; only
 the loop machinery was removed. The v2 Harbor adapter (036/038) is the
 intended long-term agent but is unimplemented, so reviving v1 is the
 fastest path to live signal.
@@ -60,8 +60,9 @@ not the non-stop mechanism.)
 AC4. **Failures become tickets.** The ticket emitter reads bench results
 and creates kanban tickets for failed tasks (idempotently — no dupes).
 
-AC5. **Handoff.** Once the loop is live, Ares and Clawta are notified on
-the agent-bus and own the "decide what's next" call.
+AC5. **Handoff.** Once the loop is live, Ares and Clawta are handed the
+"decide what's next" call via a kanban ticket on the chitin board — the
+reliable channel; the agent-bus is unreliable (operator, 2026-05-20).
 
 ## Invariants
 
@@ -74,7 +75,8 @@ the agent-bus and own the "decide what's next" call.
 ## Out of scope
 
 - Implementing the v2 `IcarusHarborAgent` (specs 036/038) — separate work.
-- Changing the agent's reasoning loop, step budget, or model.
+- Changing the agent's reasoning loop or step budget. (Model is
+  `ollama/qwen3.6:27b` — local, operator-chosen 2026-05-20: no cloud.)
 - Improving task pass rates — this spec gets the loop *running*, not
   *winning*.
 

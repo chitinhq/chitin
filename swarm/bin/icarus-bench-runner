@@ -42,7 +42,7 @@ HARBOR_TASKS_DIR = Path.home() / ".cache" / "harbor" / "tasks"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = REPO_ROOT / "jobs" / "icarus"
 
-DEFAULT_MODEL = os.environ.get("ICARUS_MODEL", "ollama/qwen3-coder:30b-32k")
+DEFAULT_MODEL = os.environ.get("ICARUS_MODEL", "ollama/qwen3.6:27b")
 DEFAULT_N_TASKS = int(os.environ.get("ICARUS_N_TASKS", "1"))
 DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("ICARUS_PER_TASK_WALLCLOCK", "1800"))
 EMITTER = REPO_ROOT / "swarm" / "bin" / "icarus-bench-ticket-emitter"
