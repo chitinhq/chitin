@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-19 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065).
+> Last updated 2026-05-20 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -131,6 +131,15 @@ spec 049 §R6.
 | 063 | L5 | cross-layer-replay | draft | `t_87eeb464` |
 | 064 | L6 | telemetry-spec-feedback | draft | `t_c2c59167` |
 | 065 | L7 | goal-rebuild-engine | draft | `t_aaf68eaa` |
+
+## Grooming observability — spec 066
+
+> Spec 066 adds structured decision records and drift analysis to the
+> kanban grooming loop (spec 054 stage 8 → stage 0 flywheel telemetry).
+
+| Spec | Layer | Slug | Status | Bound ticket |
+|------|-------|------|--------|---------------|
+| 066 | 8→0 | grooming-telemetry | draft | `t_70a085ab` |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
