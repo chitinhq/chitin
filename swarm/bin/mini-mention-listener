@@ -55,14 +55,19 @@ POLL_SECONDS = int(os.environ.get("MINI_LISTENER_POLL_SECONDS", "60"))
 # mention ID is left as None until an operator wires up a Mini Discord
 # identity. Text `@mini` and leading "Mini, ..." both work today.
 #
-# The second pattern requires addressing punctuation (comma, colon, hyphen,
-# em-dash) after the "Mini" token — optionally separated by whitespace.
-# An earlier version included `\s` in the trailing char class, which
-# greedily matched any narrative sentence beginning with "Mini" (e.g.
-# Ares replying "Mini is installed and ready"). The current shape only
-# fires on operator-style addressing: "Mini, …", "Mini: …", "Mini — …".
+# Pattern 1 (`@mini`) excludes backticks on either side. A user discussing
+# `@mini` in a Markdown code-span (e.g. Clawta writing "@mini belongs to
+# Mini" in a doc thread) must NOT trigger inbound routing — verified live
+# 2026-05-19 when such a message hijacked the smoke-test session's
+# binding to a wrong thread.
+#
+# Pattern 2 (leading "Mini, …") requires addressing punctuation (comma,
+# colon, hyphen, em-dash) after the "Mini" token — optionally separated
+# by whitespace. An earlier version included `\s` in the trailing char
+# class, which greedily matched any narrative sentence beginning with
+# "Mini" (e.g. Ares replying "Mini is installed and ready").
 _MENTION_PATTERNS = [
-    re.compile(r"(?<![A-Za-z0-9_])@mini(?![A-Za-z0-9_-])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_`])@mini(?![A-Za-z0-9_\-`])", re.IGNORECASE),
     re.compile(r"^\s*Mini\b\s*[,:\-—]", re.MULTILINE),
 ]
 
