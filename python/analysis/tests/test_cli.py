@@ -10,6 +10,26 @@ def _stage_fixture(decisions_dir: Path, fixtures_dir: Path):
     (decisions_dir / "gov-decisions-2026-04-25.jsonl").write_text(src.read_text())
 
 
+def _stage_repeated_deny_fixture(decisions_dir: Path, count: int):
+    lines = [
+        json.dumps(
+            {
+                "ts": f"2026-04-25T08:{i:02d}:00Z",
+                "allowed": False,
+                "mode": "enforce",
+                "rule_id": "no-destructive-rm",
+                "reason": "destructive",
+                "agent": "copilot-cli",
+                "action_type": "shell.exec",
+                "action_target": f"rm -rf /tmp/{i}",
+                "envelope_id": f"env_{i:03d}",
+            }
+        )
+        for i in range(count)
+    ]
+    (decisions_dir / "gov-decisions-2026-04-25.jsonl").write_text("\n".join(lines))
+
+
 def test_cli_runs_end_to_end_on_fixture(tmp_path, fixtures_dir):
     decisions_dir = tmp_path / "decisions"
     decisions_dir.mkdir()
@@ -186,3 +206,80 @@ def test_sentinel_error_boundary_rejects_missing_decisions_dir(tmp_path):
     )
     assert result.returncode == 2
     assert "does not exist" in result.stderr.lower()
+
+
+def test_sentinel_threshold_above_enters_review_queue(tmp_path):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_repeated_deny_fixture(decisions_dir, 7)
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "analysis.sentinel",
+         "--window", "100d",
+         "--top-n", "5",
+         "--out-dir", str(out_dir),
+         "--decisions-dir", str(decisions_dir),
+         "--now", "2026-04-30T12:00:00+00:00"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = json.loads(list(out_dir.glob("sentinel-*.json"))[0].read_text())
+    proposal = body["metadata"]["promotion"]["proposals"][0]
+    assert proposal["threshold_status"] == "above-threshold"
+    assert proposal["status"] == "proposed"
+    assert proposal["attribution"]["spec_provenance"] == "spec:062-attribution TBD"
+    assert proposal["attribution"]["sentinel_source"]
+    assert proposal["evidence"]["build_grounding"] == "spec:063-build TBD"
+    assert body["metadata"]["promotion"]["review_queue_count"] == 1
+
+
+def test_sentinel_threshold_below_stays_out_of_review_queue(tmp_path):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_repeated_deny_fixture(decisions_dir, 2)
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "analysis.sentinel",
+         "--window", "100d",
+         "--top-n", "5",
+         "--out-dir", str(out_dir),
+         "--decisions-dir", str(decisions_dir),
+         "--now", "2026-04-30T12:00:00+00:00"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = json.loads(list(out_dir.glob("sentinel-*.json"))[0].read_text())
+    proposal = body["metadata"]["promotion"]["proposals"][0]
+    assert proposal["threshold_status"] == "below-threshold"
+    assert proposal["status"] == "below-threshold"
+    assert body["metadata"]["promotion"]["review_queue_count"] == 0
+
+
+def test_sentinel_threshold_from_config_clamps_below_floor(tmp_path):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_repeated_deny_fixture(decisions_dir, 2)
+    config = tmp_path / "chitin.yaml"
+    config.write_text("sentinel:\n  promotion_threshold: 1\n")
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "analysis.sentinel",
+         "--window", "100d",
+         "--top-n", "5",
+         "--out-dir", str(out_dir),
+         "--decisions-dir", str(decisions_dir),
+         "--config", str(config),
+         "--now", "2026-04-30T12:00:00+00:00"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "clamped to 3" in result.stderr
+    body = json.loads(list(out_dir.glob("sentinel-*.json"))[0].read_text())
+    assert body["metadata"]["promotion"]["min_evidence_threshold"] == 3
+    assert body["metadata"]["promotion"]["proposals"][0]["status"] == "below-threshold"
