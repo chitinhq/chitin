@@ -205,3 +205,18 @@ If a feature seems missing, the substrate probably has it. Look
 in hermes (`tools/approval.py`, `kanban_*`, plugin hooks) and
 openclaw (`before_tool_call`, exec-approvals.json) before
 proposing a chitin-side build.
+
+<!-- SPECKIT START -->
+This repo is a spec-kit project. For spec-driven work, use the Codex
+skills under `.agents/skills/speckit-*`:
+
+- `$speckit-specify` for a new or revised spec in `.specify/specs/`.
+- `$speckit-plan` and `$speckit-tasks` before implementation work.
+- `$speckit-implement` only after a spec, plan, and tasks exist.
+- `$speckit-analyze` or `$speckit-checklist` when consistency or
+  requirements quality is uncertain.
+
+For kanban-driven work, read the bound `.specify/specs/*/spec.md`,
+`plan.md`, and `tasks.md` before editing. If a ticket lacks a reviewed
+spec-kit binding, do not implement it; route it back through grooming.
+<!-- SPECKIT END -->
