@@ -10,7 +10,13 @@ import json
 import os
 import secrets
 import subprocess
+import time
 from pathlib import Path
+
+# Claude Code's TUI shows this footer string once it is ready for input —
+# present in both idle and mid-thought states, so it is a stable readiness
+# marker. Injecting before the TUI is up loses the keystrokes (spec 050 R4).
+_CLAUDE_READY_MARKER = "bypass permissions"
 
 
 KITTY_BIN_ENV = "MINI_KITTY_BIN"
@@ -79,9 +85,19 @@ def launch_session(goal_id: str, *, cwd: Path, command: list[str]) -> int:
 
 
 def send_text_from_file(goal_id: str, file_path: Path, *, timeout: int = 10) -> None:
+    """Send a prompt body into the goal's window.
+
+    Spec 050 R4: `--bracketed-paste=auto` wraps the text in proper
+    paste start/end escapes when Claude Code's TUI has bracketed-paste
+    mode on (it does). Without delimiters, a large multi-line prompt is
+    half-detected as a paste — the TUI shows `[Pasted text]` but the
+    paste never terminates, so a subsequent Enter is a no-op. A
+    properly delimited paste is committable.
+    """
     args = [
         "send-text",
         f"--match=var:mini_goal={goal_id}",
+        "--bracketed-paste=auto",
         f"--from-file={str(file_path)}",
     ]
     proc = run_kitten(args, timeout=timeout)
@@ -120,18 +136,85 @@ def close_window(goal_id: str) -> None:
         )
 
 
-def inject_via_temp_file(goal_id: str, content: str, *, state_dir: Path, label: str) -> None:
-    """AC9/AC13 — write content to temp file, send-text --from-file, unlink.
+def send_enter(goal_id: str, *, timeout: int = 10) -> None:
+    """Submit the current prompt with a raw carriage return.
 
-    Adds trailing \\r so the prompt commits in Claude Code's TUI.
+    Spec 050 R4 (corrected after live diagnosis 2026-05-19):
+
+    - A trailing \\r folded into the prompt's own send-text does NOT
+      commit it — it rides inside the bracketed paste as literal content.
+    - `kitty @ send-key enter` does NOT commit a Claude Code TUI input
+      that holds a collapsed `[Pasted text]` chip either — verified live,
+      the chip just sits there.
+    - A raw \\r delivered as its OWN `send-text` call, with bracketed
+      paste disabled so it is not folded into a paste, DOES commit.
+      Methodically confirmed: paste chip count went 1 → 0 and the TUI
+      began processing.
+
+    So submission is a distinct raw-CR send-text, separate from the
+    prompt body's send-text.
+    """
+    args = [
+        "send-text",
+        f"--match=var:mini_goal={goal_id}",
+        "--bracketed-paste=disable",
+        "--stdin",
+    ]
+    proc = run_kitten(args, input_bytes=b"\r", timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"kitty @ send-text <CR> failed (rc={proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace').strip()}"
+        )
+
+
+def wait_for_claude_ready(goal_id: str, *, timeout: float = 45.0,
+                          poll: float = 0.5) -> bool:
+    """Poll the goal's window until Claude Code's TUI is ready for input.
+
+    Spec 050 R4: injecting at session-open/recovery time raced the TUI
+    boot — send-text + send-key landed before Claude was listening and
+    the prompt sat unsubmitted. Returns True once the readiness marker
+    appears, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if _CLAUDE_READY_MARKER in get_screen_text(goal_id):
+                return True
+        except RuntimeError:
+            pass  # window not up yet — keep polling
+        time.sleep(poll)
+    return False
+
+
+def inject_via_temp_file(goal_id: str, content: str, *, state_dir: Path,
+                         label: str, wait_ready: bool = True) -> None:
+    """AC9/AC13 — write content to temp file, send-text --from-file, unlink,
+    then commit with a separate Enter keypress (spec 050 R4).
+
+    The prompt body is sent WITHOUT a trailing \\r — submission is a
+    distinct `send_enter` call so Enter lands outside the TUI's paste
+    chunk. When `wait_ready` is set (default), block until Claude's TUI
+    is up before injecting, so the keystrokes are not lost to a boot
+    race. Invariant: after this returns, the prompt has been submitted
+    to Claude, not left sitting in the input buffer.
+
     Already-gone unlink is not an error.
     """
+    if wait_ready and not wait_for_claude_ready(goal_id):
+        raise RuntimeError(
+            f"claude TUI for {goal_id} not ready within timeout; "
+            f"prompt not injected"
+        )
     state_dir.mkdir(parents=True, exist_ok=True)
     tmp = state_dir / f".inject-{label}-{os.getpid()}-{secrets.token_hex(4)}.txt"
-    payload = content if content.endswith("\r") else content + "\r"
-    tmp.write_text(payload)
+    # Body only — strip any trailing CR/LF so the heuristic sees a clean
+    # paste and the Enter we send next is unambiguous.
+    tmp.write_text(content.rstrip("\r\n"))
     try:
         send_text_from_file(goal_id, tmp)
+        send_enter(goal_id)
     finally:
         try:
             tmp.unlink()

@@ -46,7 +46,8 @@ class TestTempFileUnlink(unittest.TestCase):
         with mock.patch.object(kitty_mod, "run_kitten",
                                side_effect=lambda a, **kw: fake_run([kitty_mod.kitty_bin(), "@"] + a, **kw)):
             kitty_mod.inject_via_temp_file(
-                "g1", "/goal hello world", state_dir=self.sd, label="open"
+                "g1", "/goal hello world", state_dir=self.sd, label="open",
+                wait_ready=False,
             )
 
         self.assertIn("path", captured)
@@ -64,7 +65,7 @@ class TestTempFileUnlink(unittest.TestCase):
         with mock.patch.object(kitty_mod, "run_kitten",
                                side_effect=lambda a, **kw: fake_run([kitty_mod.kitty_bin(), "@"] + a, **kw)):
             kitty_mod.inject_via_temp_file(
-                "g1", "msg", state_dir=self.sd, label="nudge"
+                "g1", "msg", state_dir=self.sd, label="nudge", wait_ready=False,
             )  # must not raise
 
     def test_stale_cleanup_removes_old_inject_files(self):
