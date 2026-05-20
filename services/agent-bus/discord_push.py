@@ -26,11 +26,15 @@ History:
     operator added webhook URLs.
   * spec 023 ships the fix (mtime-based refresh) + inbound poll cron
     + bidirectional e2e tests.
+  * ticket t_a6df2cdc: resolve @AgentName text mentions to Discord
+    <@user_id> mention entities and set allowed_mentions so Discord
+    creates structural mention objects that gateway listeners detect.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -45,6 +49,70 @@ _ENV_MTIME: float = 0.0
 _BOT_TOKEN = ""
 _WEBHOOKS_BY_ID: dict[str, str] = {}
 _WEBHOOKS_BY_NAME: dict[str, str] = {}
+
+# ---------------------------------------------------------------------------
+# Mention resolution: @AgentName → Discord <@user_id> mention entities
+# ticket t_a6df2cdc: causes 2-3 of parent ticket t_241ddc44
+#
+# Discord only fires user-mention notifications when the message content
+# contains a structural <@user_id> mention. Plain-text @AgentName does
+# NOT create a mention entity, so gateway listeners that filter on
+# message.mentions never see it. We resolve @AgentName tokens to the
+# native <@id> form and set allowed_mentions so Discord parses them.
+#
+# To add a new agent: append an entry below with the agent's Discord
+# user ID (obtain via Discord dev tools / right-click → Copy User ID).
+# The _MENTION_RESOLVE_RE regex is built from this dict at module load.
+# ---------------------------------------------------------------------------
+_AGENT_DISCORD_IDS: dict[str, str] = {
+    "clawta": "1503438472801685565",
+    # Ares/hermes share the same bot identity (runtime id = hermes).
+    # The bot token prefix decodes to this user ID.
+    "ares": "150343848646685258",
+    "hermes": "150343848646685258",
+    # Agents without a Discord user ID yet — text @mentions resolve to
+    # nothing (left as plain text). Add the ID when the operator wires
+    # up a Discord identity for these agents.
+    # "icarus": "<pending>",
+    # "red": "<pending>",
+    # "copilot": "<pending>",
+}
+
+# Pre-compile regex matching @<agentname> tokens (case-insensitive).
+# Word-boundary lookarounds avoid matching email@clawta.com or
+# @clawta-poller.
+_MENTION_RESOLVE_NAMES = "|".join(_AGENT_DISCORD_IDS)
+_MENTION_RESOLVE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])@(" + _MENTION_RESOLVE_NAMES + r")(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+
+
+def resolve_mentions(body: str) -> tuple[str, list[str]]:
+    """Replace @AgentName tokens with Discord <@user_id> mention syntax.
+
+    Returns (resolved_body, user_ids) where resolved_body has every
+    known @AgentName replaced with ``<@discord_user_id>``, and user_ids
+    is the list of distinct Discord user IDs that were resolved (for
+    use in the ``allowed_mentions`` payload).
+
+    Unknown @mentions (not in _AGENT_DISCORD_IDS) pass through unchanged.
+    """
+    user_ids: list[str] = []
+    seen: set[str] = set()
+
+    def _replace(m: re.Match) -> str:
+        name = m.group(1).lower()
+        uid = _AGENT_DISCORD_IDS.get(name)
+        if not uid:
+            return m.group(0)  # leave unknown @mentions as plain text
+        if uid not in seen:
+            user_ids.append(uid)
+            seen.add(uid)
+        return f"<@{uid}>"
+
+    resolved = _MENTION_RESOLVE_RE.sub(_replace, body)
+    return resolved, user_ids
 
 
 def _load_env_if_changed() -> None:
@@ -138,10 +206,21 @@ def _post_via_webhook(webhook_url: str, *, author: str, body: str) -> str | None
     We use `?wait=true` so Discord returns the message object instead
     of 204 No Content (default).
     """
-    payload = json.dumps({
+    resolved_body, user_ids = resolve_mentions(body)
+    payload_dict: dict = {
         "username": author[:32],  # Discord limit
-        "content": _truncate(body),
-    }).encode("utf-8")
+        "content": _truncate(resolved_body),
+    }
+    # ticket t_a6df2cdc: set allowed_mentions so Discord parses <@id>
+    # mentions into structural mention entities that gateway listeners
+    # detect via message.mentions. Without this, Discord silently
+    # strips the mention entity even if <@id> appears in content.
+    if user_ids:
+        payload_dict["allowed_mentions"] = {
+            "parse": ["users"],
+            "users": user_ids,
+        }
+    payload = json.dumps(payload_dict).encode("utf-8")
     sep = "&" if "?" in webhook_url else "?"
     url = f"{webhook_url}{sep}wait=true"
     req = urllib.request.Request(
@@ -171,8 +250,17 @@ def _post_via_bot(channel_id: str, *, author: str, body: str) -> str | None:
     Per pos-002 AC5: returning the id is required for self-echo dedupe.
     Bot endpoint returns the full message object by default.
     """
-    content = _truncate(f"**{author}**: {body}", limit=1980)
-    payload = json.dumps({"content": content}).encode("utf-8")
+    resolved_body, user_ids = resolve_mentions(body)
+    content = _truncate(f"**{author}**: {resolved_body}", limit=1980)
+    payload_dict: dict = {"content": content}
+    # ticket t_a6df2cdc: set allowed_mentions so Discord parses the
+    # <@id> mentions we resolved above into structural entities.
+    if user_ids:
+        payload_dict["allowed_mentions"] = {
+            "parse": ["users"],
+            "users": user_ids,
+        }
+    payload = json.dumps(payload_dict).encode("utf-8")
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
     req = urllib.request.Request(
         url,
