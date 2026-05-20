@@ -32,7 +32,7 @@ parallel during the bake period; spec 040 §R10's tripwire applies.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/workflows/dispatch.go` — `DispatchTicketWorkflow`
 - `swarm/octi/activities/dispatch/` — six Activity packages, one per
@@ -49,7 +49,7 @@ parallel during the bake period; spec 040 §R10's tripwire applies.
   until tripwire)
 - `.specify/specs/043-octi-dispatch-workflow/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - `~/.openclaw/workflows/kanban-dispatch.lobster` (canonical lobster
   file — unchanged during bake)

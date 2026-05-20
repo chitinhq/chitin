@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-17 (overnight roadmap sprint).
+> Last updated 2026-05-19 (Octi orchestration corpus PR 3/3 — workflow migrations).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec

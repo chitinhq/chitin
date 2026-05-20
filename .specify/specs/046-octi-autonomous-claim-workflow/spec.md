@@ -26,7 +26,7 @@ decision per candidate.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/workflows/claim.go` — `AutonomousClaimWorkflow`
 - `swarm/octi/activities/claim/` — Activity packages
@@ -40,7 +40,7 @@ decision per candidate.
 - `swarm/bin/install-octi-claim.sh` — installer
 - `.specify/specs/046-octi-autonomous-claim-workflow/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - `autonomous-board-engine.sh` (legacy, removed only after bake)
 - Existing cron entries (rewritten by installer)

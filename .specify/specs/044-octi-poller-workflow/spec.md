@@ -27,7 +27,7 @@ deterministic, and replayable.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/workflows/poller.go` — `PollerWorkflow`
 - `swarm/octi/activities/poller/` — Activity packages
@@ -43,7 +43,7 @@ deterministic, and replayable.
   install-clawta-poller.sh after bake)
 - `.specify/specs/044-octi-poller-workflow/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - `swarm/bin/clawta-poller` (legacy, removed only after bake)
 - `~/.hermes/cron/jobs.json` (cron entry removed by install script)
@@ -126,10 +126,23 @@ ready tickets. Operator-configurable per board.
 ### R7 — Idempotency
 
 A child `DispatchTicketWorkflow` is started with workflow ID
-`dispatch-<ticket_id>-<tick_seq>`. If a ticket was dispatched in the
+`dispatch-<ticket_id>-<tick_seq>`, where **`tick_seq` is the
+Temporal Schedule's action sequence number** — the monotonically
+increasing counter Temporal assigns to each scheduled firing of
+`PollerWorkflow`, available on the workflow as
+`workflow.GetInfo(ctx).??` / passed in `PollerInput`. It is
+deterministic (assigned by the Schedule, recorded in event
+history) and unique per tick. If a ticket was dispatched in the
 previous tick (still in-progress), the next tick's start call
 returns `WorkflowExecutionAlreadyStartedError` and the poller logs
 a structured skip with reason `already_dispatching`. No double-dispatch.
+
+Note: because `tick_seq` differs per tick, the workflow ID is
+unique per (ticket, tick) — the `AlreadyStarted` collision is
+detected via a deterministic `dispatch-<ticket_id>-*` query, not
+by ID equality. The implementation keys idempotency on
+`ticket_id` with the most-recent in-flight dispatch, and uses
+`tick_seq` only to make each ID unique for Temporal's history.
 
 ### R8 — Dry-run mode
 

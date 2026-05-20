@@ -27,7 +27,7 @@ bounded work, durable, replayable, every decision recorded.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/workflows/bridge.go` — `BridgeWorkflow`
 - `swarm/octi/activities/bridge/` — Activity packages
@@ -43,7 +43,7 @@ bounded work, durable, replayable, every decision recorded.
   manually signal the workflow for a specific ticket (debugging)
 - `.specify/specs/045-octi-bridge-workflow/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - Legacy bridge files (kept until bake completes)
 - `chitin.yaml` (policy unchanged)

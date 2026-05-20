@@ -34,7 +34,7 @@ state and the migration becomes work.
 
 ## File-system scope (when activated)
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/deploy/ha/` — HA deployment artifacts
   - `docker-compose.ha.yml` — local-multi-node HA emulation
@@ -46,7 +46,7 @@ state and the migration becomes work.
   `~/.octi/worker.toml` shape)
 - `.specify/specs/048-octi-ha-migration-template/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - `chitin.yaml` (kernel policy unchanged — HA cluster is just a
   bigger Temporal, same gate boundary)
@@ -77,8 +77,14 @@ Minimum production deployment:
 | Postgres | 3 (primary + 2 replicas) | Persistence backend |
 | Elasticsearch | 3 nodes | Visibility / search |
 
-For local emulation (CI, dev box): `docker-compose.ha.yml` runs the
-same topology in containers.
+For local emulation (CI, dev box): `docker-compose.ha.yml` runs a
+**scaled-down 6-container topology** — one container each for
+Frontend, History, Matching, Worker, Postgres, Elasticsearch
+(replica count 1 per service, vs. 3 in production). It exercises
+the same *service decomposition* and the same inter-service wiring
+as production; it does not reproduce production's replica counts.
+"Same topology" in this spec means same service set + wiring, not
+same replica counts. AC4 asserts the 6-container compose form.
 
 ### R2 — Backend-agnostic workflow code (verified)
 
@@ -171,8 +177,10 @@ issue.
 2. Tripwire monitor surfaces an operator issue when any condition
    hits 80% threshold.
 3. `octi ha migrate --plan` produces a step-by-step checklist.
-4. `docker-compose.ha.yml` brings up a 6-node Temporal HA cluster
-   locally; smoke workflow runs to completion.
+4. `docker-compose.ha.yml` brings up the 6-container scaled-down
+   topology (Frontend, History, Matching, Worker, Postgres,
+   Elasticsearch — one container each per R1); smoke workflow
+   runs to completion.
 5. CI runs the full test corpus against both `start-dev` and the
    compose-HA cluster; all tests pass on both.
 6. `--snapshot` → `--pause` → `--export` → `--switch` → `--resume`
