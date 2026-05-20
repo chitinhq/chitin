@@ -51,6 +51,20 @@ def test_operator_approve_records_audit_transition():
     assert audit.actor_kind == "operator"
 
 
+def test_operator_cannot_use_generic_transition_path():
+    queue = ProposalQueue()
+    queue.add(_proposal())
+
+    with pytest.raises(PermissionError, match=r"operator transitions must use operator_transition\(\)"):
+        queue.transition(
+            "prop_1",
+            ProposalStatus.APPROVED,
+            actor="red",
+            actor_kind="operator",
+            operator_action_token="human-reviewed-token",
+        )
+
+
 def test_every_transition_appends_audit_entry():
     queue = ProposalQueue()
     queue.add(_proposal())

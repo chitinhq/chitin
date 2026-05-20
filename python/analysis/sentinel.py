@@ -9,12 +9,15 @@ only policy file path a worker may patch.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from analysis.detect import detect_patterns
 from analysis.draft import draft_for_pattern, reason_no_template
@@ -25,7 +28,6 @@ from analysis.proposals.models import (
     DispatchPolicyUpdate,
     ProposalStatus,
     ThresholdStatus,
-    new_proposal_id,
 )
 from analysis.writers import build_finding, write_json, write_markdown_from_json
 import analysis.templates.all  # noqa: F401  (registers all templates)
@@ -67,25 +69,18 @@ def _promotion_threshold(config_path: Path) -> tuple[int, list[str]]:
     if not config_path.exists():
         return default, warnings
     try:
-        config_text = config_path.read_text()
+        config = yaml.safe_load(config_path.read_text()) or {}
     except OSError as exc:
         warnings.append(f"Warning: could not read sentinel.promotion_threshold from {config_path}: {exc}")
         return default, warnings
+    except yaml.YAMLError as exc:
+        warnings.append(f"Warning: could not parse sentinel.promotion_threshold from {config_path}: {exc}")
+        return default, warnings
 
-    value: str | int = default
-    in_sentinel = False
-    for raw_line in config_text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        if not line.startswith((" ", "\t")):
-            in_sentinel = line.strip() == "sentinel:"
-            continue
-        if in_sentinel:
-            key, sep, raw_value = line.strip().partition(":")
-            if sep and key == "promotion_threshold":
-                value = raw_value.strip().strip("'\"")
-                break
+    sentinel_config = config.get("sentinel", {}) if isinstance(config, dict) else {}
+    value: Any = default
+    if isinstance(sentinel_config, dict):
+        value = sentinel_config.get("promotion_threshold", default)
 
     try:
         threshold = int(value)
@@ -100,7 +95,27 @@ def _promotion_threshold(config_path: Path) -> tuple[int, list[str]]:
     return threshold, warnings
 
 
-def _proposal_for_finding(finding, *, threshold: int, now: datetime) -> dict[str, Any] | None:
+def _stable_proposal_id(finding, now: datetime) -> str:
+    pattern = finding.pattern
+    seed = "|".join(
+        [
+            now.date().isoformat(),
+            str(finding.rank),
+            pattern.rule_id,
+            pattern.action_type,
+            pattern.agent_id,
+        ]
+    )
+    return f"sentinel_{hashlib.sha256(seed.encode()).hexdigest()[:12]}"
+
+
+def _proposal_for_finding(
+    finding,
+    *,
+    threshold: int,
+    now: datetime,
+    proposal_path: str,
+) -> dict[str, Any] | None:
     draft = finding.draft
     if draft is None or not draft.rule_yaml.strip():
         return None
@@ -117,7 +132,7 @@ def _proposal_for_finding(finding, *, threshold: int, now: datetime) -> dict[str
     )
     impact = draft.predicted_impact
     proposal = DispatchPolicyUpdate(
-        id=new_proposal_id("sentinel"),
+        id=_stable_proposal_id(finding, now),
         attribution=Attribution(
             spec_provenance="spec:062-attribution TBD",
             sentinel_source=f"analysis.sentinel:{now.date().isoformat()}",
@@ -125,7 +140,7 @@ def _proposal_for_finding(finding, *, threshold: int, now: datetime) -> dict[str
         evidence=BuildEvidence(build_grounding="spec:063-build TBD"),
         threshold_status=threshold_status,
         status=status,
-        policy_path=PROPOSAL_PATH,
+        policy_path=proposal_path,
         update_summary=f"Candidate invariant for {pattern.rule_id}/{pattern.action_type}",
     )
     return {
@@ -156,10 +171,21 @@ def _proposal_for_finding(finding, *, threshold: int, now: datetime) -> dict[str
     }
 
 
-def _promotion_metadata(findings, *, threshold: int, now: datetime) -> dict[str, Any]:
+def _promotion_metadata(
+    findings,
+    *,
+    threshold: int,
+    now: datetime,
+    proposal_path: str,
+) -> dict[str, Any]:
     proposals: list[dict[str, Any]] = []
     for finding in findings:
-        proposal = _proposal_for_finding(finding, threshold=threshold, now=now)
+        proposal = _proposal_for_finding(
+            finding,
+            threshold=threshold,
+            now=now,
+            proposal_path=proposal_path,
+        )
         if proposal is not None:
             proposals.append(proposal)
 
@@ -167,7 +193,7 @@ def _promotion_metadata(findings, *, threshold: int, now: datetime) -> dict[str,
     status = "candidate" if proposals else "no-candidate"
     return {
         "promotion": {
-            "proposal_path": PROPOSAL_PATH,
+            "proposal_path": proposal_path,
             "proposal_count": len(proposals),
             "review_queue_count": len(review_queue),
             "min_evidence_threshold": threshold,
@@ -185,7 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     now = _now(args.now)
-    threshold, threshold_warnings = _promotion_threshold(Path(args.config))
+    config_path = Path(args.config)
+    threshold, threshold_warnings = _promotion_threshold(config_path)
     for warning in threshold_warnings:
         print(warning, file=sys.stderr)
     decisions_dir = Path(args.decisions_dir)
@@ -250,7 +277,12 @@ def main(argv: list[str] | None = None) -> int:
     date_str = now.date().isoformat()
     json_path = out_dir / f"sentinel-{date_str}.json"
     md_path = out_dir / f"sentinel-{date_str}.md"
-    metadata = _promotion_metadata(findings, threshold=threshold, now=now)
+    metadata = _promotion_metadata(
+        findings,
+        threshold=threshold,
+        now=now,
+        proposal_path=str(config_path),
+    )
 
     try:
         write_json(
@@ -273,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     proposal_count = metadata["promotion"]["proposal_count"]
     print(f"Wrote {json_path}", file=sys.stderr)
     print(f"Wrote {md_path}", file=sys.stderr)
-    print(f"Candidate invariant proposals for {PROPOSAL_PATH}: {proposal_count}", file=sys.stderr)
+    print(f"Candidate invariant proposals for {config_path}: {proposal_count}", file=sys.stderr)
     return 0
 
 

@@ -235,6 +235,31 @@ def test_sentinel_threshold_above_enters_review_queue(tmp_path):
     assert body["metadata"]["promotion"]["review_queue_count"] == 1
 
 
+def test_sentinel_cli_deterministic_with_fixed_now(tmp_path):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_repeated_deny_fixture(decisions_dir, 7)
+
+    def run(out_dir):
+        return subprocess.run(
+            [sys.executable, "-m", "analysis.sentinel",
+             "--window", "100d",
+             "--top-n", "5",
+             "--out-dir", str(out_dir),
+             "--decisions-dir", str(decisions_dir),
+             "--now", "2026-04-30T12:00:00+00:00"],
+            capture_output=True, text=True, check=True,
+        )
+
+    a_dir = tmp_path / "a"
+    b_dir = tmp_path / "b"
+    run(a_dir)
+    run(b_dir)
+    a = list(a_dir.glob("sentinel-*.json"))[0].read_bytes()
+    b = list(b_dir.glob("sentinel-*.json"))[0].read_bytes()
+    assert a == b
+
+
 def test_sentinel_threshold_below_stays_out_of_review_queue(tmp_path):
     decisions_dir = tmp_path / "decisions"
     decisions_dir.mkdir()
@@ -282,4 +307,31 @@ def test_sentinel_threshold_from_config_clamps_below_floor(tmp_path):
     assert "clamped to 3" in result.stderr
     body = json.loads(list(out_dir.glob("sentinel-*.json"))[0].read_text())
     assert body["metadata"]["promotion"]["min_evidence_threshold"] == 3
+    assert body["metadata"]["promotion"]["proposal_path"] == str(config)
+    assert body["metadata"]["promotion"]["proposals"][0]["proposal_path"] == str(config)
     assert body["metadata"]["promotion"]["proposals"][0]["status"] == "below-threshold"
+
+
+def test_sentinel_threshold_from_yaml_inline_map(tmp_path):
+    decisions_dir = tmp_path / "decisions"
+    decisions_dir.mkdir()
+    _stage_repeated_deny_fixture(decisions_dir, 4)
+    config = tmp_path / "custom.yaml"
+    config.write_text("sentinel: {promotion_threshold: 4}\n")
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "analysis.sentinel",
+         "--window", "100d",
+         "--top-n", "5",
+         "--out-dir", str(out_dir),
+         "--decisions-dir", str(decisions_dir),
+         "--config", str(config),
+         "--now", "2026-04-30T12:00:00+00:00"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = json.loads(list(out_dir.glob("sentinel-*.json"))[0].read_text())
+    assert body["metadata"]["promotion"]["min_evidence_threshold"] == 4
+    assert body["metadata"]["promotion"]["proposals"][0]["status"] == "proposed"

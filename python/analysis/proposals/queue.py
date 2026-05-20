@@ -91,9 +91,10 @@ class ProposalQueue:
     ) -> ProposalBase:
         target = ProposalStatus(to_status)
         if actor_kind == "operator":
-            self._require_operator_token(target, operator_action_token)
-        else:
-            self._reject_agent_operator_states(target)
+            raise PermissionError("operator transitions must use operator_transition()")
+        if operator_action_token is not None:
+            raise PermissionError("operator action token is only accepted by operator_transition()")
+        self._reject_non_operator_states(target)
 
         return self._transition_checked(
             proposal_id,
@@ -163,7 +164,7 @@ class ProposalQueue:
         )
 
     @staticmethod
-    def _reject_agent_operator_states(target: ProposalStatus) -> None:
+    def _reject_non_operator_states(target: ProposalStatus) -> None:
         if target == ProposalStatus.APPROVED:
             raise PermissionError("only operator approve() may transition to approved")
         if target == ProposalStatus.APPLIED:
