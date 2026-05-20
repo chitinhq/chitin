@@ -34,7 +34,7 @@ _DATE_STEM_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+")
 _EXPLICIT_REQ_RE = re.compile(r"^(?:###\s+)?\*{0,2}(R\d+)\s*[—\-]+\s*(.+?)\*{0,2}$")
 _EXPLICIT_AC_RE = re.compile(r"^\*{0,2}(AC\d+)\*{0,2}[\s:]*[—\-]?\s*(.+?)\*{0,2}$")
 _SLICE_HEADING_RE = re.compile(r"^#{2,3}\s+(Slice\s+\d+|Milestone\s+M\d+|M\d+)\s*[—:-]\s*(.+)$", re.IGNORECASE)
-_QUESTION_RE = re.compile(r"^(?:[-*]|\d+\.)\s+\*{0,2}(?:Q(\d+)\s*[—\-])?\s*(.+?)\*{0,2}$")
+_QUESTION_RE = re.compile(r"^(?:(?:[-*]|\d+\.)\s+)?\*{0,2}(?:Q(\d+)\s*[—\-])?\s*(.+?)\*{0,2}$")
 
 _REQUIREMENT_SECTIONS = {
     "goal",
@@ -66,11 +66,10 @@ def detect(path: str | Path) -> bool:
     """Return True for Superpowers markdown documents."""
     p = Path(path)
     if p.is_dir():
-        return (p / "plan.md").is_file() or (p / "spec.md").is_file()
+        return _is_superpowers_dir(p) and ((p / "plan.md").is_file() or (p / "spec.md").is_file())
     if p.suffix.lower() != ".md":
         return False
-    parts = set(p.parts)
-    return "docs" in parts and "superpowers" in parts and _DATE_STEM_RE.match(p.stem) is not None
+    return _is_superpowers_markdown(p)
 
 
 def parse(path: str | Path) -> UnifiedSpec:
@@ -86,7 +85,7 @@ def parse(path: str | Path) -> UnifiedSpec:
     acceptance = _extract_acceptance(doc)
 
     return UnifiedSpec(
-        spec_id=source.stem,
+        spec_id=_spec_id_for_path(path, source),
         title=title,
         status=_extract_status(doc),
         source_framework=SourceFramework.SUPERPOWERS,
@@ -112,6 +111,26 @@ def _resolve_source(path: str | Path) -> Path:
     if p.suffix.lower() != ".md":
         raise SuperpowersParseError(str(p), "file-read", "expected markdown file")
     return p
+
+
+def _spec_id_for_path(path: str | Path, source: Path) -> str:
+    original = Path(path)
+    if original.is_dir():
+        return original.name
+    return source.stem
+
+
+def _is_superpowers_dir(path: Path) -> bool:
+    return _has_superpowers_segment(path) and _DATE_STEM_RE.match(path.name) is not None
+
+
+def _is_superpowers_markdown(path: Path) -> bool:
+    return _has_superpowers_segment(path) and _DATE_STEM_RE.match(path.stem) is not None
+
+
+def _has_superpowers_segment(path: Path) -> bool:
+    parts = path.parts
+    return any(parts[i] == "docs" and i + 1 < len(parts) and parts[i + 1] == "superpowers" for i in range(len(parts)))
 
 
 def _extract_title(doc: str) -> str:
