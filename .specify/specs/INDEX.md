@@ -40,6 +40,22 @@
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
 
+## Octi orchestration plane (Temporal Go) — PR 3/3 (workflow migrations)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; PR 2 = critique closures
+> (041/042/047); this PR (3/3) = the workflow migrations that port
+> today's cron/lobster sprawl onto Octi Temporal workflows.
+
+| Spec | Title | Status | Migration target |
+|------|-------|--------|------------------|
+| **043** | octi-dispatch-workflow | draft | `kanban-dispatch.lobster` (6-stage pipeline) |
+| **044** | octi-poller-workflow | draft | `swarm/bin/clawta-poller` |
+| **045** | octi-bridge-workflow | draft | `hermes-clawta-bridge.py` |
+| **046** | octi-autonomous-claim-workflow | draft | `autonomous-board-engine.sh` |
+| **048** | octi-ha-migration-template | draft (template) | tripwired `start-dev` → HA cluster |
+
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
 > Filed during the overnight goal's Ares-lane audit. Cross-lane
