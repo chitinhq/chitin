@@ -21,6 +21,7 @@ Output schema (stdout JSON):
     "caps_needed":          <echo>,
     "candidates_considered": <int>,
     "router_mode":          "llm" | "deterministic" | "forced",
+    "approval_source":      "kernel" | "fallback" | "forced",
     "elo_consulted":        false,
     "reasoning":            "<one-line justification>",
     "card_load_errors":      <int>
@@ -186,9 +187,12 @@ def load_kernel_approved_driver_ids() -> tuple[set[str] | None, str]:
         return None, "fallback"
 
     approved_ids = {
-        str(driver.get("id")).strip()
+        driver_id
         for driver in drivers
-        if isinstance(driver, dict) and str(driver.get("id")).strip()
+        if isinstance(driver, dict)
+        and (driver_id := driver.get("id")) is not None
+        and isinstance(driver_id, str)
+        and driver_id.strip()
     }
     if not approved_ids:
         emit_structured_log(
@@ -894,6 +898,13 @@ def main() -> None:
     force = os.environ.get("FORCE_DRIVER", "").strip()
     if force:
         forced_card = next((c for c in cards if c.get("id") == force), {})
+        emit_structured_log(
+            "info",
+            "force_driver_override",
+            approval_source="forced",
+            reason="FORCE_DRIVER env var bypassed kernel approval filtering",
+            force_driver=force,
+        )
         emit_result(
             driver=force,
             model=select_model(forced_card, classify),
@@ -909,7 +920,7 @@ def main() -> None:
             soul_hash=soul_hash,
             soul_category=soul_category,
             shape=shape,
-            approval_source=approval_source,
+            approval_source="forced",
         )
         return
 
