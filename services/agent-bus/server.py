@@ -59,7 +59,7 @@ def _now() -> int:
 # edits are required.
 _CANONICAL_MENTIONS: dict[str, str] = {
     "clawta": "Clawta",
-    "ares": "ares",
+    "ares": "Ares",
     "hermes": "hermes",
     "icarus": "icarus",
     "red": "red",
