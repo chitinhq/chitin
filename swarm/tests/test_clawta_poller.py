@@ -160,27 +160,54 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
                     ["t_worker01"],
                 )
 
-    def test_ungroomed_ready_ignores_named_role_queues(self) -> None:
+    def test_tick_leaves_unassigned_ready_ticket_in_open_pool(self) -> None:
+        """Operating model (2026-05-20): an unassigned `ready` ticket is
+        the open pool. The poller must NOT demote it — agents claim from
+        the pool. Replaces the old demote_ungroomed behavior; see
+        docs/strategy/chitin-kanban-operating-model.md.
+        """
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             db_path = make_db(Path(tmp))
             conn = sqlite3.connect(db_path)
-            conn.executescript(
-                """
-                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
-                VALUES
-                  ('t_missing1', 'missing assignee', '', 'ready', NULL, NULL, 50, 1),
-                  ('t_ares0001', 'ares ticket', '', 'ready', 'ares', NULL, 40, 2);
-                """
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_pool01", "open pool ticket", "groomed work", "ready", None, 50, 1),
             )
             conn.commit()
             conn.close()
 
-            with mock.patch.object(module, "DB_PATH", db_path):
-                self.assertEqual(
-                    [ticket["id"] for ticket in module.fetch_ungroomed_ready()],
-                    ["t_missing1"],
-                )
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                if cmd[0] == module.KANBAN_FLOW_BIN and cmd[1] == "demote":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+            with mock.patch.object(module, "DB_PATH", db_path), mock.patch.object(
+                module, "run_invariant_repairs", return_value={"skipped": "test"}
+            ), mock.patch.object(
+                module, "demote_missing_spec_kit_entries", return_value=[]
+            ), mock.patch.object(
+                module, "dispatch_ready_batch", return_value=([], [], 0)
+            ), mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                result = module.tick(max_dispatch=1, dry_run=False)
+
+        self.assertEqual(
+            result["demoted"], [],
+            "unassigned ready ticket must stay in the open pool, not be demoted",
+        )
+        self.assertFalse(
+            any(c[:2] == [module.KANBAN_FLOW_BIN, "demote"] for c in seen),
+            f"open-pool ticket must not trigger a demote; got {seen}",
+        )
+        self.assertFalse(
+            hasattr(module, "demote_ungroomed"),
+            "demote_ungroomed must stay removed — the poller no longer "
+            "demotes tickets for lacking an assignee",
+        )
 
     def test_missing_spec_kit_demote_only_checks_poller_owned_lanes(self) -> None:
         module = load_module()

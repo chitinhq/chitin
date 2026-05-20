@@ -13,9 +13,10 @@ in `ready` forever.
 What it does. On each tick:
   1. Route any ready/todo tickets assigned to the routing lane (clawta)
      through _pick_driver, reassigning to a terminal lane.
-  2. Demote any remaining ready/todo ticket whose assignee is NULL or
-     not a terminal lane — these are grooming-step gaps; surfacing them
-     is loud-by-design so they can't pile up silently.
+  2. Leave unassigned ready/todo tickets alone — they are the open
+     pool that agents claim from (see docs/strategy/
+     chitin-kanban-operating-model.md). The poller never demotes a
+     ticket merely for lacking an assignee.
   3. SELECT remaining ready/todo tickets WHERE assignee IN {codex,
      copilot, claude-code, gemini}
   4. Sequence them via a frontier-LLM call (openclaw agent). The LLM
@@ -399,30 +400,6 @@ def fetch_routable() -> list[dict[str, Any]]:
              ORDER BY priority DESC, created_at ASC
             """,
             (*DISPATCHABLE_STATUSES, *ROUTING_LANES),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def fetch_ungroomed_ready() -> list[dict[str, Any]]:
-    """Return ready/todo tickets that grooming missed — no assignee, or assignee
-    in a non-terminal, non-routing lane the poller can't dispatch.
-
-    The poller only owns implementation routing/dispatch. Other named role
-    assignees such as ares are valid queues on multi-role boards, so this
-    guard only treats missing assignees as poller-actionable grooming gaps.
-    """
-    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT id, title, body, assignee, priority, created_at
-              FROM tasks
-             WHERE status IN ({status_placeholders})
-               AND (assignee IS NULL OR assignee = '')
-             ORDER BY priority DESC, created_at ASC
-            """,
-            DISPATCHABLE_STATUSES,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1139,45 +1116,6 @@ def demote_ticket(ticket_id: str, reason: str, dry_run: bool) -> bool:
     return True
 
 
-def demote_ungroomed(dry_run: bool) -> list[str]:
-    """Demote any ready/todo ticket whose assignee isn't a terminal lane
-    and isn't the routing lane.
-
-    Hermes is the groomer; clawta is the enforcer. A ticket in `ready` or
-    `todo` with no dispatchable assignee is a grooming-step output we can't
-    act on, so we surface the gap by sending it back to triage with a comment
-    that names the exact missing piece. This is loud-by-design — better a
-    noisy triage backlog than tickets silently aging in `ready`.
-
-    Tickets assigned to the routing lane (clawta) are NOT demoted — they
-    go through route_clawta_assigned() instead.
-    """
-    ungroomed = fetch_ungroomed_ready()
-    if not ungroomed:
-        return []
-    log(f"tick: {len(ungroomed)} ungroomed ready ticket(s) to demote")
-    demoted: list[str] = []
-    lanes = "/".join(TERMINAL_LANES)
-    for t in ungroomed:
-        tid = t["id"]
-        if is_tracking_epic(t.get("body")):
-            continue
-        if not t["assignee"]:
-            reason = (
-                f"missing assignee — grooming step must route to a terminal "
-                f"lane ({lanes}) or a routing lane ({','.join(ROUTING_LANES)}) before "
-                f"clawta-poller can dispatch"
-            )
-        else:
-            reason = (
-                f"assignee={t['assignee']!r} is not a terminal lane — "
-                f"grooming must route to one of: {lanes}"
-            )
-        if demote_ticket(tid, reason, dry_run):
-            demoted.append(tid)
-    return demoted
-
-
 def demote_missing_spec_kit_entries(dry_run: bool) -> list[str]:
     """Demote ready/todo tickets that lack an existing spec-kit spec.md."""
     candidates = fetch_dispatchable_with_bodies()
@@ -1285,11 +1223,7 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
     demoted = spec_demoted + demoted
 
-    # Step 5: Demote ungroomed tickets (no assignee or non-dispatchable).
-    ungroomed_demoted = demote_ungroomed(dry_run)
-    demoted.extend(ungroomed_demoted)
-
-    # Step 6: If dispatch capacity remains, route only enough clawta-assigned
+    # Step 5: If dispatch capacity remains, route only enough clawta-assigned
     # tickets to fill that capacity, then immediately dispatch them.
     remaining = max_dispatch - len(dispatched)
     routed: list[str] = []
