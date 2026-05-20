@@ -33,6 +33,13 @@ audience's per-agent channel, all sharing the same anchor. The
 inbound poller looks the anchor up. The bus dedups by
 `(channel_id, discord_message_id)` so retries are safe.
 
+2026-05-20 amendment: bus-originated Discord posts must also resolve
+agent mentions to Discord-native user entities (`<@user_id>` or
+`<@!user_id>`), not plain text display names such as `@Clawta`.
+Display-name canonicalization is insufficient because Discord does
+not notify on raw text; the bus is the right boundary to perform this
+normalization before `discord_push.try_push`.
+
 ## Ticket refs
 
 - Closes: Clawta critique #2 (msg 7690).
@@ -54,12 +61,18 @@ Worker MAY write under:
   - `services/agent-bus/identity/migration.py` — backfill anchors on
     existing bus threads that have a `discord_thread_id`
 - `services/agent-bus/discord_push.py` — patch to embed anchor on
-  every outbound post (extends spec 023)
+  every outbound post and send already-resolved Discord user mention
+  entities (extends spec 023)
 - `services/agent-bus/discord_mirror.py` — patch to parse anchor on
   every inbound message and route to the correct bus thread
+- `services/agent-bus/mentions.py` — canonical agent identity and
+  Discord user-id mention resolver
 - `services/agent-bus/server.py` — MCP surface: expose
-  `bus_resolve_anchor(discord_message_id)` for diagnostics
+  `bus_resolve_anchor(discord_message_id)` for diagnostics; call
+  the mention resolver before writes that can be mirrored to Discord
 - `services/agent-bus/tests/test_identity_anchor.py` — unit
+- `services/agent-bus/tests/test_discord_mention_entities.py` —
+  unit: plain-text `@agent` inputs become `<@user_id>` entities
 - `services/agent-bus/tests/test_inbound_thread_routing.py` — unit
 - `services/agent-bus/tests/test_bidirectional_identity_e2e.py` — **e2e**
 - `services/agent-bus/migrations/042-add-message-identity.sql`
@@ -143,6 +156,46 @@ behavior — explicit fallback, not silent drop).
 **Single-audience case is the degenerate fan-out of N=1.** The
 spec's pre-channel-revision behavior is preserved unchanged when
 the bus message targets exactly one audience.
+
+### R2a — Outbound mentions resolve to Discord user entities
+
+Before any bus-originated body is persisted for a Discord-mirrored
+thread or sent via `discord_push.try_push`, the bus resolves known
+agent mentions to native Discord syntax:
+
+```text
+@clawta / @Clawta / @CLAWTA -> <@{clawta.discord_user_id}>
+@ares / @Ares / @hermes     -> <@{ares.discord_user_id}>
+```
+
+The exact user IDs are loaded from the same canonical identity
+configuration that defines the per-agent routes. The config MUST
+distinguish:
+
+- `agent_id` — stable bus/runtime identity (`clawta`, `ares`)
+- `discord_channel_id` — where that agent's mirrored messages land
+- `discord_user_id` — the user entity to mention in Discord content
+- `display_aliases` — accepted human text aliases, e.g.
+  `@clawta`, `@Clawta`, `@hermes`
+
+The resolver MUST:
+
+1. Rewrite only whole mention tokens, never emails, URLs,
+   `@clawta-poller`, or unknown handles.
+2. Preserve existing native Discord mentions (`<@id>` and `<@!id>`)
+   unchanged.
+3. Convert aliases before truncation so the pushed Discord payload and
+   stored bus body agree.
+4. Fail closed for configured agents with no `discord_user_id`: leave
+   the text unchanged and emit structured log
+   `octi.identity.unresolved_discord_user_id` with the missing
+   `agent_id`.
+5. Treat display-name canonicalization as a compatibility fallback
+   only for non-Discord sinks; it MUST NOT be the Discord push path.
+
+This requirement replaces the older "canonical case" invariant that
+assumed `@Clawta` was sufficient to notify. It is not sufficient.
+Discord notifications require the entity form.
 
 ### R3 — Inbound resolves anchor → bus thread
 
@@ -236,6 +289,18 @@ returns:
 Operator runs `chitin-kernel mcp call bus_resolve_anchor
 <discord_message_id>` to debug "where did this message route" issues.
 
+`bus_resolve_mention(agent_id)` is exposed for the same diagnostic
+surface and returns the configured native mention:
+
+```json
+{
+  "agent_id": "clawta",
+  "discord_user_id": "123456789012345678",
+  "native_mention": "<@123456789012345678>",
+  "aliases": ["@clawta", "@Clawta"]
+}
+```
+
 ### R10 — Octi consumers reference this spec, not the underlying
 mirror
 
@@ -271,10 +336,18 @@ identity contract centralized.
 7. `bus_resolve_anchor(<discord_msg_id>)` returns the correct
    `bus_thread_id` + `bus_message_id` for both inbound and
    outbound messages.
-8. `migrations/042-add-message-identity.sql` + backfill complete
+8. Bus-originated content containing `@clawta`, `@Clawta`,
+   `@ARES`, or `@hermes` is stored and pushed as the configured
+   Discord native mention (`<@user_id>`), while emails, URLs,
+   hyphenated identifiers, unknown handles, and already-native
+   mentions are unchanged.
+9. `bus_resolve_mention("clawta")` and
+   `bus_resolve_mention("ares")` return configured
+   `discord_user_id` values and native `<@...>` strings.
+10. `migrations/042-add-message-identity.sql` + backfill complete
    on a 10k-row fixture in < 5 seconds with no row loss.
-9. p99 anchor lookup < 1ms over 10k dedup rows.
-10. CI gate: any change to `discord_push.py` or `discord_mirror.py`
+11. p99 anchor lookup < 1ms over 10k dedup rows.
+12. CI gate: any change to `discord_push.py` or `discord_mirror.py`
     that doesn't also update or reference the identity contract
     fails review (PR-template checklist).
 
@@ -286,6 +359,9 @@ identity contract centralized.
   R3 resolution + R6 idempotency
 - `services/agent-bus/tests/test_outbound_anchor_stamp.py` — unit:
   R2 stamping (both reply and first-message paths)
+- `services/agent-bus/tests/test_discord_mention_entities.py` —
+  unit: R2a alias-to-`<@user_id>` rewriting and non-mention
+  passthrough
 - `services/agent-bus/tests/test_dedup_migration.py` — unit: R5
   backfill correctness + idempotency
 - `services/agent-bus/tests/test_bidirectional_identity_e2e.py` —
@@ -310,6 +386,9 @@ All test files carry `// spec: 042-octi-agentbus-identity-contract`
   `octi.identity.fallback_to_catchall` is emitted.
 - **I5**: Octi workflows consume Discord via the bus contract here,
   never via the Discord API directly.
+- **I6**: outbound Discord mentions are native user entities. Raw
+  display-name text (`@Clawta`) is accepted as input, but is not the
+  Discord projection.
 
 ## Out of scope
 

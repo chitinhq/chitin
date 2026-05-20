@@ -23,6 +23,10 @@ What this spec still owns under the new architecture:
 1. **Own-channel listener** — each agent's mention-listener workflow
    subscribes to its own per-agent Discord channel + own bus
    inbox. No cross-channel polling.
+   Bus-originated mentions arrive as Discord-native user entities
+   (`<@user_id>` / `<@!user_id>`) per spec 042; plain display-name
+   `@Agent` strings are compatibility input, not the canonical
+   workflow signal.
 2. **DLQ** for messages in own channel that don't belong (bot
    spam, misdirected @-mentions, operator typos addressing the
    other agent — those are dead-lettered with reason, never
@@ -111,7 +115,13 @@ type InboundMessageSignal struct {
     Body           string `json:"body"`
     DiscordMsgID   string `json:"discord_message_id,omitempty"`
     ChannelID      string `json:"channel_id,omitempty"`
+    DiscordMentions []DiscordMention `json:"discord_mentions,omitempty"`
     Timestamp      int64  `json:"ts_unix_ns"`
+}
+
+type DiscordMention struct {
+    UserID string `json:"user_id"`
+    Raw    string `json:"raw"` // `<@id>` or `<@!id>` as observed
 }
 ```
 
@@ -127,18 +137,23 @@ schema: octi.channel_ownership.v1
 channels:
   - channel_id: "1503438297597350062"  # #ares
     owner: ares
+    discord_user_id: "${ARES_DISCORD_USER_ID}"
     task_queue: hermes-py
-    accepts_mentions: ["@ares", "@hermes"]   # both map to Ares (runtime ID = hermes)
-    matcher: word_boundary_case_insensitive
+    accepts_mentions: ["<@${ARES_DISCORD_USER_ID}>", "<@!${ARES_DISCORD_USER_ID}>"]
+    display_aliases: ["@ares", "@Ares", "@hermes", "@Hermes"]
+    matcher: discord_user_entity
   - channel_id: "1503439202719760405"  # #clawta
     owner: clawta
+    discord_user_id: "${CLAWTA_DISCORD_USER_ID}"
     task_queue: clawta-py
-    accepts_mentions: ["@Clawta", "@clawta"]
-    matcher: word_boundary_case_insensitive
+    accepts_mentions: ["<@${CLAWTA_DISCORD_USER_ID}>", "<@!${CLAWTA_DISCORD_USER_ID}>"]
+    display_aliases: ["@Clawta", "@clawta"]
+    matcher: discord_user_entity
 ```
 
-The table is **frozen at v1**. Adding a channel or changing an
-owner requires `octi.channel_ownership.v2`.
+The table is **frozen at v1**. Adding a channel, changing an
+owner, or changing a `discord_user_id` requires
+`octi.channel_ownership.v2`.
 
 Note: `@mini` and `@red` are NOT channel owners — Mini has no
 channel (deleted 2026-05-19), and operator (red) reads both
@@ -149,7 +164,11 @@ channel land in DLQ (R5).
 
 For each `InboundMessageSignal`:
 1. Iterate ownership table in declared order
-2. Apply each entry's matcher to the message body
+2. Match native Discord mentions from `accepts_mentions` first.
+   If the bus signal exposes Discord's parsed `mentions[]` payload,
+   use that structured list instead of body text. Body matching is
+   allowed only as a compatibility fallback for historical fixtures
+   and must use `display_aliases`, not hard-coded names.
 3. **First match wins** — stable, deterministic
 4. Dispatch the message to that owner's task queue via a child
    Activity `DispatchToOwnerActivity`
@@ -240,11 +259,15 @@ not failures).
 
 ## Acceptance criteria
 
-1. A bus message in `#clawta` containing `@Clawta` produces
+1. A bus message in `#clawta` containing
+   `<@${CLAWTA_DISCORD_USER_ID}>` or `<@!${CLAWTA_DISCORD_USER_ID}>`
+   produces
    exactly one dispatch to the `clawta-py` task queue.
-2. A bus message in `#ares` containing `@ares` (or `@hermes`)
+2. A bus message in `#ares` containing
+   `<@${ARES_DISCORD_USER_ID}>` or `<@!${ARES_DISCORD_USER_ID}>`
    produces exactly one dispatch to the `hermes-py` task queue.
-3. A message in `#ares` containing `@Clawta` is **dead-lettered**
+3. A message in `#ares` containing
+   `<@${CLAWTA_DISCORD_USER_ID}>` is **dead-lettered**
    — Clawta does not own #ares (R2 channel_ownership.v1), so the
    mention cannot be cross-routed. DLQ reason
    `mention_not_owned_in_channel`.
@@ -289,6 +312,9 @@ All files carry `// spec: 047-octi-mention-routing-workflow`.
   dropped, and not auto-routed to "closest match."
 - **I4**: spec 039 mini regex is reused, not duplicated.
 - **I5**: deterministic first-match-wins on multi-mention messages.
+- **I6**: native Discord user entities are the canonical routing
+  signal. Display-name aliases exist only for backward-compatible
+  replay and non-Discord inputs.
 
 ## Out of scope
 
