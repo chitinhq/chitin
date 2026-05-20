@@ -1,5 +1,14 @@
 # Chitin Repo Constitution Overlay
 
+<!--
+Amendment 2026-05-20 — §2 strengthened: "the platform flow always uses
+workers + worktrees" is now a hard MUST (was a soft convention). Rationale:
+shared-checkout churn. Aligns with spec 070 (Chitin Orchestrator) FR-013/014.
+No spec-kit template references §2's worktree rule — no template changes
+required. Applied to both .specify/memory/constitution.md and
+.specify/constitution.md.
+-->
+
 > Extends `~/workspace/.specify/constitution.md` with kernel- and swarm-specific
 > rules. Never weakens a workspace-level invariant.
 
@@ -21,10 +30,20 @@ kernel to write chain events; never bypass hermes to write kanban state.
 - Worker branches: `agent/<driver>-<hash>` (current), `swarm/<driver>-<hash>` (legacy)
 - Integration branch: `main` (this is the chitin board's default branch)
 - Workers PR against `main`, not against feature branches
-- Sibling worktrees (`~/workspace/chitin-*`) are ephemeral dispatch targets.
-  Canonical source is the tracked repo on `main`; branch work happens in
-  sibling worktrees. Do not edit the primary checkout directly — always
-  use a worktree for branch changes.
+
+**Rule — the platform flow ALWAYS uses workers + worktrees.** Every unit of
+work — every worker dispatch, every agent action, every operator task — MUST
+run as a worker process in its own dedicated git worktree. The primary
+(shared) repository checkout is NEVER a work surface: nothing edits files,
+runs a build, or commits branch work in it. Worktrees are created fresh per
+work unit and torn down on completion; an orphaned worktree is reclaimable,
+never silently reused.
+
+**Rationale:** concurrent work in a shared checkout clobbers branches and
+loses commits — observed repeatedly (a branch's commit landing on `main`, the
+working tree switched mid-edit). Per-worktree isolation makes parallel work
+deterministic. The Chitin Orchestrator (spec 070, FR-013/014) is the
+mechanism that enforces this rule.
 
 ## 3. Spec-kit promotion gate
 
