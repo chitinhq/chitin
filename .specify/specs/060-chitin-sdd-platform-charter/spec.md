@@ -1,9 +1,9 @@
-# Spec 054: Chitin SDD Platform — charter
+# Spec 060: Chitin SDD Platform — charter
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off (constitution §1
-pair-write rule). Slot 054 free (050 last on main; 051–053 in PR #799).
+pair-write rule). Slot 060 free (050 last on main; 051–053 in PR #799).
 
-**Type**: charter spec. Unlike an implementation spec, 054 does not ship
+**Type**: charter spec. Unlike an implementation spec, 060 does not ship
 code. It ratifies an *architecture* and *binds a spec roadmap* — its
 acceptance is that the layer contracts and the downstream spec sequence
 are agreed. The strategy narrative is
@@ -26,7 +26,7 @@ telemetered corpus.
 
 This charter ratifies the seven-layer capability stack, the contract
 each layer owes the one above, the current built/gap state, and the
-numbered spec roadmap (055–059) that realizes the gaps.
+numbered spec roadmap (061–065) that realizes the gaps.
 
 ## Motivation
 
@@ -42,7 +42,7 @@ numbered spec roadmap (055–059) that realizes the gaps.
    (determinism), Sentinel (telemetry), agent-bus + Mini + Octi
    (swarm orchestration), and now spec-kit (specs). The pieces exist
    but are not yet unified into one spec→execute→record→replay→learn
-   loop. 054 names that loop and sequences its completion.
+   loop. 060 names that loop and sequences its completion.
 
 ## The capability stack (ratified architecture)
 
@@ -63,9 +63,9 @@ Seven layers; each depends only on the contract of the layer below.
 ### R1 — the layer contracts are the ratified interface
 
 Each layer's upward contract (table above) is binding. A downstream
-spec (055–059) MUST implement its layer's contract without requiring
+spec (061–065) MUST implement its layer's contract without requiring
 changes to the contract of any lower layer. If a lower contract proves
-insufficient, that is a charter amendment (new 054 revision), not an
+insufficient, that is a charter amendment (new 060 revision), not an
 ad-hoc reach-through.
 
 ### R2 — multi-framework spec support is non-negotiable (L1)
@@ -87,7 +87,7 @@ load-bearing invariant of the whole stack.
 The construction order is fixed: L5 (replay) MUST be working before L6
 (aggregation/learning) is built, and L6 MUST be working before L7
 (`/goal` rebuild). A `/goal` rebuild without replay is prompt-and-hope
-with extra steps. Specs 057 → 058 → 059 land in that order.
+with extra steps. Specs 063 → 064 → 065 land in that order.
 
 ### R5 — the roadmap is bound to numbered specs
 
@@ -95,11 +95,11 @@ The gaps are realized by these specs, written and ratified in order:
 
 | Spec | Layer | Scope |
 |---|---|---|
-| 055 | L1 | Unified spec model + framework adapters (spec-kit / OpenSpec / Superpowers) |
-| 056 | L2/L3 | Spec ↔ build attribution — `(spec_id, build_id)` on every event + telemetry row |
-| 057 | L5 | Cross-layer replay — reconstruct a build from chain + OctiEvent + bus history |
-| 058 | L6 | Telemetry → spec feedback loop — mined invariants become spec amendments / dispatch policy |
-| 059 | L7 | `/goal` rebuild engine — single-goal app reconstruction |
+| 061 | L1 | Unified spec model + framework adapters (spec-kit / OpenSpec / Superpowers) |
+| 062 | L2/L3 | Spec ↔ build attribution — `(spec_id, build_id)` on every event + telemetry row |
+| 063 | L5 | Cross-layer replay — reconstruct a build from chain + OctiEvent + bus history |
+| 064 | L6 | Telemetry → spec feedback loop — mined invariants become spec amendments / dispatch policy |
+| 065 | L7 | `/goal` rebuild engine — single-goal app reconstruction |
 
 Existing specs ladder in unchanged: 038/039/050–053 (Mini — L4 worker
 primitive), 040–049 (Octi — L4 controller), 001 (agent-bus — L4
@@ -108,7 +108,7 @@ transport), the Sentinel specs (L3).
 ### R6 — the charter is the north star for grooming
 
 Any ticket promoted that claims to advance "the platform" MUST cite the
-layer (L1–L7) it serves and the numbered spec (055–059) it implements.
+layer (L1–L7) it serves and the numbered spec (061–065) it implements.
 Work that fits no layer is either out of scope or a charter amendment.
 
 ## Current state — built vs. gap
@@ -125,30 +125,30 @@ Work that fits no layer is either out of scope or a charter amendment.
 
 ## Non-goals
 
-- 054 does not implement any layer — it ratifies the architecture and
+- 060 does not implement any layer — it ratifies the architecture and
   roadmap only.
-- 054 does not pick OpenSpec/Superpowers integration *mechanics* — that
-  is spec 055.
-- 054 does not redesign the kernel, Sentinel, Octi, or agent-bus — they
-  are existing contracts L055+ build on.
+- 060 does not pick OpenSpec/Superpowers integration *mechanics* — that
+  is spec 061.
+- 060 does not redesign the kernel, Sentinel, Octi, or agent-bus — they
+  are existing contracts L061+ build on.
 
 ## Open questions
 
 - **Q1 — unified spec model owner.** Does the normalized spec model
   live in the kernel (Go), in a Python service, or as a schema-only
-  contract? Resolve in spec 055.
+  contract? Resolve in spec 061.
 - **Q2 — build_id minting.** What mints a `build_id`, and when — at
-  dispatch, at `mini_open`, at the first chain event? Resolve in 056.
+  dispatch, at `mini_open`, at the first chain event? Resolve in 062.
 - **Q3 — replay scope.** Is L5 replay *observational* (reconstruct what
   happened for analysis) or *executable* (re-run and get the same
   artifacts)? They are very different builds. Proposed: observational
-  first (057 slice 1), executable later. Resolve in 057.
+  first (063 slice 1), executable later. Resolve in 063.
 - **Q4 — does `/goal` rebuild in place or to a fresh worktree?** A
   rebuild that overwrites is dangerous; a rebuild to a fresh tree is
-  comparable/diffable. Proposed: fresh worktree. Resolve in 059.
+  comparable/diffable. Proposed: fresh worktree. Resolve in 065.
 - **Q5 — OpenSpec / Superpowers priority.** spec-kit is in. Which of
   OpenSpec / Superpowers is the second adapter, and is the third
-  deferred? Operator call, feeds spec 055.
+  deferred? Operator call, feeds spec 061.
 
 ## Acceptance criteria
 
@@ -157,17 +157,17 @@ not when code passes.
 
 - **AC1** — red signs off the seven-layer stack and the L1–L7 contracts
   (R1).
-- **AC2** — red signs off the 055–059 roadmap and the fixed
+- **AC2** — red signs off the 061–065 roadmap and the fixed
   replay→learn→`/goal` ordering (R4, R5).
 - **AC3** — the strategy doc `docs/strategy/chitin-spec-driven-platform.md`
   and this charter are consistent — no contradiction between them.
 - **AC4** — Q1–Q5 are either answered here or explicitly delegated to a
   named downstream spec.
-- **AC5** — on ratification, specs 055–059 are created as `triage`
+- **AC5** — on ratification, specs 061–065 are created as `triage`
   kanban tickets so the swarm can groom them (constitution §1).
 
 ## Slice plan
 
 Single artifact — a charter is not sliced. Its *downstream* specs
-(055–059) are where slicing happens. Construction order is fixed by R4:
-055 → 056 → 057 → 058 → 059, bottom-up on the contracts.
+(061–065) are where slicing happens. Construction order is fixed by R4:
+061 → 062 → 063 → 064 → 065, bottom-up on the contracts.

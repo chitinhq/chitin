@@ -2,7 +2,7 @@
 
 > Strategy doc. Authored 2026-05-19 (red + claude, chitin-console session).
 > Status: DRAFT — the thesis and capability stack below are the input to
-> charter spec `054-chitin-sdd-platform-charter`.
+> charter spec `060-chitin-sdd-platform-charter`.
 
 ## The thesis (the moat)
 
@@ -137,19 +137,19 @@ restoring (operational, in flight).
 ## Spec roadmap
 
 This vision is realized as specs — chitin eats its own dog food. The
-charter spec `054` binds this roadmap; each capability below is a
+charter spec `060` binds this roadmap; each capability below is a
 numbered spec to be written and ratified in sequence.
 
-1. **054 — SDD platform charter** *(this roadmap, ratifiable)*
-2. **055 — unified spec model + framework adapters** (L1) — normalize
+1. **060 — SDD platform charter** *(this roadmap, ratifiable)*
+2. **061 — unified spec model + framework adapters** (L1) — normalize
    spec-kit / OpenSpec / Superpowers into one model.
-3. **056 — spec ↔ build attribution** (L2/L3) — every chain event and
+3. **062 — spec ↔ build attribution** (L2/L3) — every chain event and
    telemetry row carries its spec id + build id.
-4. **057 — cross-layer replay** (L5) — replay a build from chain +
+4. **063 — cross-layer replay** (L5) — replay a build from chain +
    OctiEvent + bus history.
-5. **058 — telemetry → spec feedback loop** (L6) — mined invariants
+5. **064 — telemetry → spec feedback loop** (L6) — mined invariants
    become spec amendments / dispatch policy.
-6. **059 — `/goal` rebuild engine** (L7) — single-goal app
+6. **065 — `/goal` rebuild engine** (L7) — single-goal app
    reconstruction from the specced + telemetered corpus.
 
 Existing specs that ladder into this: 038/039/050/051/052/053 (Mini —
@@ -167,6 +167,6 @@ L7 before L5 — a rebuild with no replay is just vibes again.
 
 1. Land PR #802 (spec-kit) and PR #799 (specs 050s2/051/052/053).
 2. Restore the dispatch poller (operational — handed to Clawta).
-3. Ratify charter spec 054.
-4. Write + groom specs 055–059 onto the kanban; the swarm implements
+3. Ratify charter spec 060.
+4. Write + groom specs 061–065 onto the kanban; the swarm implements
    bottom-up.

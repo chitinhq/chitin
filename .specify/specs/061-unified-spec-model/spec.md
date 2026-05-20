@@ -1,7 +1,7 @@
-# Spec 055: Unified spec model + framework adapters (L1)
+# Spec 061: Unified spec model + framework adapters (L1)
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements layer
-L1 of charter spec 054. Inherits charter Q1 (model owner) and Q5
+L1 of charter spec 060. Inherits charter Q1 (model owner) and Q5
 (adapter priority) as open questions below.
 
 **Author lens (Knuth)**: name the normalized shape exactly. Every field
@@ -11,7 +11,7 @@ through the whole stack.
 
 ## Summary
 
-Charter 054 R2 makes multi-framework spec support non-negotiable: spec-kit,
+Charter 060 R2 makes multi-framework spec support non-negotiable: spec-kit,
 OpenSpec, and Superpowers are all first-class spec *inputs*. This spec
 defines the **unified spec model** — one normalized shape — and the
 **adapter interface** that maps each framework into it. Layers L2–L7
@@ -35,7 +35,7 @@ A spec normalizes to:
 
 ```
 UnifiedSpec {
-  spec_id:          string   # stable id — e.g. "054", "ic-001"
+  spec_id:          string   # stable id — e.g. "060", "ic-001"
   title:            string
   status:           enum(draft|ratified|superseded)
   source_framework: enum(spec-kit|openspec|superpowers|house)
@@ -49,8 +49,8 @@ UnifiedSpec {
 ```
 
 `spec_id` is the stable key (constitution §1 — the `NNN` prefix). It is
-the join key for L2/L3 attribution (spec 056), replay (057), and the
-`/goal` corpus (059).
+the join key for L2/L3 attribution (spec 062), replay (063), and the
+`/goal` corpus (065).
 
 ## Requirements
 
@@ -98,7 +98,7 @@ Superpowers is a non-goal — see Non-goals.)
 ## Boundary cases
 
 1. **Spec with no requirements / no ACs** (e.g. a charter spec like
-   054) → `requirements`/`acceptance` may be empty; `status` and a
+   060) → `requirements`/`acceptance` may be empty; `status` and a
    non-empty `slices` or narrative still make it valid.
 2. **Ambiguous `spec_id`** (two dirs share `036`) → the adapter
    surfaces the collision as an error, never silently picks one
@@ -129,7 +129,7 @@ Superpowers is a non-goal — see Non-goals.)
 - No bidirectional round-trip for OpenSpec/Superpowers — adapters are
   one-way (source → `UnifiedSpec`) except the native house format (R6).
 - No spec *authoring* UI — `/speckit-specify` and hand-authoring stay
-  as-is. 055 is ingestion/normalization only.
+  as-is. 061 is ingestion/normalization only.
 - No migration of the 53 house specs to another format — they are
   adapted in place.
 

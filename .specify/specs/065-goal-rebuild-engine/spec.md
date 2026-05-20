@@ -1,8 +1,8 @@
-# Spec 059: `/goal` rebuild engine (L7)
+# Spec 065: `/goal` rebuild engine (L7)
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements layer
-L7 of charter spec 054 — the apex capability. Depends on specs 055
-(unified model), 056 (attribution), 057 (replay), 058 (feedback loop).
+L7 of charter spec 060 — the apex capability. Depends on specs 061
+(unified model), 062 (attribution), 063 (replay), 064 (feedback loop).
 Inherits charter Q4 (in-place vs fresh worktree) below.
 
 **Author lens (da Vinci)**: this is the showcase — the capability that
@@ -12,34 +12,34 @@ does not have). The magic is real only if it is measurable.
 
 ## Summary
 
-Charter 054 L7: given an app's specs + its accumulated event chains +
+Charter 060 L7: given an app's specs + its accumulated event chains +
 the mined improvements, a single **`/goal`** invocation reconstructs
 the app — and reconstructs it *better* than the last build, because L6
 fed the learnings forward.
 
 This is not scratch-vibes. The rebuild is driven by the **specced,
-telemetered, replayable corpus**: the unified specs (055) say what to
-build, the attributed event chains (056) and replay (057) say how prior
-builds went, and the mined amendments (058) say what to do differently.
+telemetered, replayable corpus**: the unified specs (061) say what to
+build, the attributed event chains (062) and replay (063) say how prior
+builds went, and the mined amendments (064) say what to do differently.
 
 ## Motivation
 
 - **This is what chitin is *for*.** Every layer below exists to make
   L7 possible. The thesis ("you should be able to build a project with
-  chitin, then rewrite it in a single `/goal`") is only true when 059
+  chitin, then rewrite it in a single `/goal`") is only true when 065
   ships.
 - **It is the demonstration of the moat.** A `/goal` rebuild that is
   visibly better than the last — fewer failed builds, fewer mined
   defects recurring — is the proof no vibes tool can match.
-- **It compounds.** Each `/goal` run is itself a build (056) — it is
-  telemetered, replayable, and feeds 058. The engine improves the
+- **It compounds.** Each `/goal` run is itself a build (062) — it is
+  telemetered, replayable, and feeds 064. The engine improves the
   engine.
 
 ## Definitions
 
 - **App corpus** — for a given app/project: its set of `UnifiedSpec`s
-  (055) + all builds' event chains (056) + replay timelines (057) +
-  applied amendments and policy versions (058).
+  (061) + all builds' event chains (062) + replay timelines (063) +
+  applied amendments and policy versions (064).
 - **`/goal` run** — one invocation of the rebuild engine against an
   app corpus. Itself a build, with its own `build_id`.
 
@@ -64,9 +64,9 @@ worktree, not by reverting production.
 ### R3 — the rebuild consumes the learnings (the whole point)
 
 The engine MUST feed the mined amendments and dispatch-policy updates
-(058) into the rebuild: known-recurring defects from prior builds are
+(064) into the rebuild: known-recurring defects from prior builds are
 pre-empted, not re-encountered. A `/goal` run that ignores the corpus
-learnings is a 059 contract violation — it would just be a fresh build.
+learnings is a 065 contract violation — it would just be a fresh build.
 
 ### R4 — the rebuild is decomposed into specced, dispatched work
 
@@ -78,8 +78,8 @@ The rebuild is itself a swarm build, not a monolith.
 
 ### R5 — a `/goal` run is a build, recursively
 
-A `/goal` run mints its own `build_id` (056), emits `build.started` /
-`build.done`, is replayable (057), and feeds 058. The engine is inside
+A `/goal` run mints its own `build_id` (062), emits `build.started` /
+`build.done`, is replayable (063), and feeds 064. The engine is inside
 the loop it powers — each `/goal` run makes the next one better.
 
 ### R6 — the rebuild is measured against its predecessor
@@ -106,15 +106,15 @@ guaranteed (every spec's acceptance criteria met) and what is not
    allowed.
 2. **Goal contradicts the corpus specs** → the engine surfaces the
    conflict and refuses rather than silently overriding ratified
-   specs. A goal that changes intent must amend specs first (058).
+   specs. A goal that changes intent must amend specs first (064).
 3. **A decomposed unit fails repeatedly** → the rebuild does not hang;
    it fails the `/goal` run with a partial-rebuild report (the fresh
    worktree is kept for inspection, R2).
 4. **Concurrent `/goal` runs on the same app** → each gets its own
    `build_id` and worktree; they do not collide. Comparing them is an
    operator choice.
-5. **Corpus learnings conflict** (058 left contradictory amendments)
-   → 058 R3/boundary-1 should have caught it; if one slips through,
+5. **Corpus learnings conflict** (064 left contradictory amendments)
+   → 064 R3/boundary-1 should have caught it; if one slips through,
    the `/goal` run flags it and proceeds with the ratified spec, not
    the unreviewed amendment.
 
@@ -146,21 +146,21 @@ guaranteed (every spec's acceptance criteria met) and what is not
   (Octi/poller/Mini); it does not build a parallel executor.
 - No incremental rebuild in slice 1 (Q4).
 - `/goal` does not author specs — it consumes them. Spec authoring
-  stays with `/speckit-specify` / hand-authoring / 058 amendments.
+  stays with `/speckit-specify` / hand-authoring / 064 amendments.
 
 ## Acceptance criteria
 
 - **AC1** — `/goal` rejects a run with no app corpus (R1).
 - **AC2** — a `/goal` run produces a fresh worktree, diffable against
   the current app, never an in-place overwrite (R2).
-- **AC3** — the run demonstrably consumes 058 amendments — a
+- **AC3** — the run demonstrably consumes 064 amendments — a
   previously-mined defect, present in the corpus, does not recur in the
   rebuild (R3), proven by a seeded test.
 - **AC4** — the goal is decomposed and dispatched through L4
   orchestration; every unit is an attributed, chain-recorded build
   (R4).
 - **AC5** — the `/goal` run is itself a build: own `build_id`,
-  replayable (057), feeds 058 (R5).
+  replayable (063), feeds 064 (R5).
 - **AC6** — the run emits a comparison report with success rate,
   defect-recurrence, and spec-coverage vs. the prior build (R6); a
   non-improvement is surfaced.
@@ -173,7 +173,7 @@ guaranteed (every spec's acceptance criteria met) and what is not
   decomposes + dispatches through L4 into a fresh worktree, is itself a
   build, and is honest about determinism. Full rebuild only. AC1, AC2,
   AC4, AC5, AC7.
-- **Slice 2** — R3, R6: feeding 058 learnings into the rebuild + the
+- **Slice 2** — R3, R6: feeding 064 learnings into the rebuild + the
   comparison report. AC3, AC6. This is the slice that makes `/goal`
   *better than last time* — the moat payload.
 - **Slice 3** — incremental rebuild (Q4) — rebuild only changed specs.

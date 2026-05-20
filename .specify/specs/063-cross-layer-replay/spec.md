@@ -1,7 +1,7 @@
-# Spec 057: Cross-layer replay (L5)
+# Spec 063: Cross-layer replay (L5)
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements layer
-L5 of charter spec 054. Depends on spec 056 (attribution). Inherits
+L5 of charter spec 060. Depends on spec 062 (attribution). Inherits
 charter Q3 (replay scope) as an open question below.
 
 **Author lens (Knuth)**: state the replay invariant precisely. "Same
@@ -11,14 +11,14 @@ claims. This spec must not blur them.
 
 ## Summary
 
-Charter 054 L5: the chitin-kernel event chain (L2) + the OctiEvent
+Charter 060 L5: the chitin-kernel event chain (L2) + the OctiEvent
 mirror (L4) + agent-bus history together are a *complete* record of a
 build. This spec defines **cross-layer replay** — given a `build_id`,
 reconstruct that build's full timeline from all three event sources,
-keyed by the attribution from spec 056.
+keyed by the attribution from spec 062.
 
-Per charter R4, replay MUST work before learning (058) and `/goal`
-(059) are built — a rebuild with no replay is prompt-and-hope again.
+Per charter R4, replay MUST work before learning (064) and `/goal`
+(065) are built — a rebuild with no replay is prompt-and-hope again.
 
 ## Motivation
 
@@ -26,8 +26,8 @@ Per charter R4, replay MUST work before learning (058) and `/goal`
   tool calls; OctiEvent knows workflow steps; agent-bus knows
   inter-agent messages. Today nothing stitches them into one ordered
   story of "what happened in build X".
-- **Replay is the audit substrate.** Spec 058's invariant mining and
-  spec 059's `/goal` rebuild both consume a build's full history. They
+- **Replay is the audit substrate.** Spec 064's invariant mining and
+  spec 065's `/goal` rebuild both consume a build's full history. They
   need one timeline, not three logs.
 - **Determinism is only a claim until you can replay it.** The kernel
   is append-only; OctiEvent is replayable; but "the build is
@@ -45,7 +45,7 @@ Per charter R4, replay MUST work before learning (058) and `/goal`
 ### R1 — gather all three sources by `build_id`
 
 Replay takes a `build_id` and selects every kernel chain event, every
-OctiEvent, and every agent-bus message tagged with it (spec 056
+OctiEvent, and every agent-bus message tagged with it (spec 062
 attribution). Missing a source is not silent — replay reports which
 sources had zero events.
 
@@ -62,7 +62,7 @@ Slice 1 delivers observational replay: the merged timeline, rendered
 as a structured artifact (JSON + a human-readable view). It shows, in
 order: build start, each tool call (gated/denied), each workflow step,
 each agent message, each status transition, build end. This is enough
-for 058 (learning) to consume.
+for 064 (learning) to consume.
 
 ### R4 — executable replay (slice 2, gated on Q1)
 
@@ -74,7 +74,7 @@ is a separate slice — see Q1.
 ### R5 — replay is itself attributable
 
 A replay run emits its own `build.started`/`build.done` events
-(spec 056) with a `replay_of=<original_build_id>` field, so replays are
+(spec 062) with a `replay_of=<original_build_id>` field, so replays are
 distinguishable from original builds and a replay can itself be
 replayed.
 
@@ -91,7 +91,7 @@ silently presents a partial history as complete.
 2. **Clock skew across sources** → the stable per-source sequence
    tie-breaker (R2) keeps ordering deterministic even when timestamps
    collide or mildly disagree.
-3. **`build_id="none"` / `"legacy"`** (spec 056 sentinels) → replay
+3. **`build_id="none"` / `"legacy"`** (spec 062 sentinels) → replay
    refuses — these are not real builds. Typed error.
 4. **A build still in progress** → replay produces the timeline so far,
    marked `in_progress` (a special case of R6).
@@ -101,13 +101,13 @@ silently presents a partial history as complete.
 ## Open questions
 
 - **Q1 — observational vs executable scope** (charter Q3). Proposed:
-  057 slice 1 = observational only; executable replay (R4) is slice 2
+  063 slice 1 = observational only; executable replay (R4) is slice 2
   and may itself spin off a dedicated spec given model-output
   non-determinism. Sign-off needed on shipping observational-first.
 - **Q2 — timeline storage.** Is a replayed timeline persisted (a
   replay artifact table) or recomputed on demand? Proposed: recompute
   on demand from the event sources (they are the source of truth);
-  cache only if 058/059 make it a hot path.
+  cache only if 064/065 make it a hot path.
 - **Q3 — agent-bus retention.** The kernel chain is append-only
   forever; agent-bus history may be pruned. If bus messages for an old
   `build_id` are gone, replay is permanently partial. Does the bus
@@ -118,7 +118,7 @@ silently presents a partial history as complete.
 - No executable replay in slice 1 (R4 is slice 2).
 - No replay UI — the artifact is JSON + a text view; visualization is
   later.
-- No change to what L2/L3/L4 record — 057 only *reads* and merges.
+- No change to what L2/L3/L4 record — 063 only *reads* and merges.
 
 ## Acceptance criteria
 

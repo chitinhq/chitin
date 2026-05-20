@@ -1,7 +1,7 @@
-# Spec 056: Spec ↔ build attribution (L2/L3)
+# Spec 062: Spec ↔ build attribution (L2/L3)
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements the
-L2/L3 attribution contract of charter spec 054 (charter R3). Inherits
+L2/L3 attribution contract of charter spec 060 (charter R3). Inherits
 charter Q2 (build_id minting) as an open question below.
 
 **Author lens (Knuth)**: this is one invariant, stated once and
@@ -11,19 +11,19 @@ is *no* exception.
 
 ## Summary
 
-Charter 054 R3 names this the **load-bearing invariant** of the whole
+Charter 060 R3 names this the **load-bearing invariant** of the whole
 stack: every chitin-kernel chain event (L2) and every Sentinel
 telemetry row (L3) MUST carry the `spec_id` and `build_id` it belongs
-to. Without it there is no per-spec replay (057) and no per-spec
-learning (058) — telemetry that can't be attributed to a spec and a
+to. Without it there is no per-spec replay (063) and no per-spec
+learning (064) — telemetry that can't be attributed to a spec and a
 build is noise.
 
 ## Motivation
 
-- **Replay needs a key.** Spec 057 reconstructs a build by selecting
+- **Replay needs a key.** Spec 063 reconstructs a build by selecting
   every event with a given `build_id`. If events aren't tagged, there
   is nothing to select.
-- **Learning needs a grain.** Spec 058 mines invariants *per spec* —
+- **Learning needs a grain.** Spec 064 mines invariants *per spec* —
   "spec 044-style dispatch tickets fail this way 30% of the time".
   That requires telemetry grouped by `spec_id`.
 - **Today there is no `build_id` at all.** The kernel chain records
@@ -33,7 +33,7 @@ build is noise.
 
 ## Definitions
 
-- **`spec_id`** — the stable spec key from spec 055 (`UnifiedSpec.spec_id`).
+- **`spec_id`** — the stable spec key from spec 061 (`UnifiedSpec.spec_id`).
 - **`build`** — one execution attempt of one spec (or spec set): a Mini
   session, an Octi dispatch, a `/goal` run. A build has a lifecycle
   (started → ... → done/failed).
@@ -66,9 +66,9 @@ build context.
 ### R4 — attribution is queryable both directions
 
 - **By build** — "every event + telemetry row for `build_id=X`" — the
-  input to replay (057).
+  input to replay (063).
 - **By spec** — "every build of `spec_id=Y`, with outcomes" — the
-  input to learning (058).
+  input to learning (064).
 
 Both are first-class indexed queries.
 
@@ -114,7 +114,7 @@ learning can compute success rates.
 
 - No change to *what* events the kernel or Sentinel record — only the
   addition of two attribution columns.
-- No replay logic here — that is spec 057. 056 only guarantees the
+- No replay logic here — that is spec 063. 062 only guarantees the
   data replay will need.
 
 ## Acceptance criteria

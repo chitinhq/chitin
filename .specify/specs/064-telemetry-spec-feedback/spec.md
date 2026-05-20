@@ -1,7 +1,7 @@
-# Spec 058: Telemetry → spec feedback loop (L6)
+# Spec 064: Telemetry → spec feedback loop (L6)
 
 **Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements layer
-L6 of charter spec 054. Depends on specs 056 (attribution) and 057
+L6 of charter spec 060. Depends on specs 062 (attribution) and 063
 (replay).
 
 **Author lens (da Vinci)**: this is the flywheel — the part that makes
@@ -11,10 +11,10 @@ future build.
 
 ## Summary
 
-Charter 054 L6 — the flywheel. Sentinel already mines invariant
+Charter 060 L6 — the flywheel. Sentinel already mines invariant
 proposals from telemetry (L3). This spec closes the loop: mined
-invariants, attributed per spec (056) and grounded in replayable
-builds (057), become **spec amendments** and **dispatch-policy
+invariants, attributed per spec (062) and grounded in replayable
+builds (063), become **spec amendments** and **dispatch-policy
 updates** — so the next build of a spec is informed by every prior
 build of it.
 
@@ -28,8 +28,8 @@ build of it.
   aggregated across builds makes the next build better." Without L6
   every build is still zero-state; with it, build N benefits from
   builds 1..N-1. That compounding is what `/goal` (L7) monetizes.
-- **Per-spec grain is now available.** Spec 056 made telemetry
-  attributable to `spec_id`; spec 057 made each build replayable. L6
+- **Per-spec grain is now available.** Spec 062 made telemetry
+  attributable to `spec_id`; spec 063 made each build replayable. L6
   can finally ask "how does *this spec* tend to fail, across all its
   builds?" and act on the answer.
 
@@ -37,7 +37,7 @@ build of it.
 
 - **Mined invariant** — a Sentinel-produced proposal: "across builds
   of spec X, pattern P holds / fails Q% of the time".
-- **Spec amendment** — a proposed edit to a `UnifiedSpec` (055): a new
+- **Spec amendment** — a proposed edit to a `UnifiedSpec` (061): a new
   boundary case, a tightened acceptance criterion, an added invariant.
 - **Dispatch-policy update** — a proposed change to how the
   orchestration layer (L4) dispatches: driver choice, retry, veto,
@@ -48,7 +48,7 @@ build of it.
 ### R1 — mined invariants are attributed and grounded
 
 Every mined invariant carries the `spec_id`(s) it concerns and cites
-the `build_id`s that evidence it (056 attribution). A claim with no
+the `build_id`s that evidence it (062 attribution). A claim with no
 cited builds is rejected — no ungrounded "improvements".
 
 ### R2 — an invariant becomes a typed proposal
@@ -66,10 +66,10 @@ under constitution §1) approves, edits, or rejects. The loop learns;
 it does not self-rewrite unsupervised. This is the safety boundary of
 the flywheel.
 
-### R4 — an approved amendment edits the spec through 055
+### R4 — an approved amendment edits the spec through 061
 
 An approved `SpecAmendment` is applied to the `UnifiedSpec` and
-written back through the spec 055 native-format renderer (055 R6
+written back through the spec 061 native-format renderer (061 R6
 round-trip). The spec's `status` and git history record the amendment;
 the originating `build_id`s are cited in the spec.
 
@@ -77,7 +77,7 @@ the originating `build_id`s are cited in the spec.
 
 An approved `DispatchPolicyUpdate` changes dispatch policy as a
 versioned, attributable change — never an unlogged mutation. The L4
-layer reads the current policy version; a replay (057) of an old build
+layer reads the current policy version; a replay (063) of an old build
 can see which policy version was in force.
 
 ### R6 — the loop is itself telemetered
@@ -93,7 +93,7 @@ not help is flagged for revert. The flywheel measures itself.
    amendments to one spec section) → both surface in the review queue
    flagged as conflicting; the operator resolves. Never auto-merge.
 2. **Proposal evidence goes stale** (cited builds pruned past
-   retention — see 057 Q3) → the proposal is marked
+   retention — see 063 Q3) → the proposal is marked
    `evidence-incomplete`; it may still be reviewed but the gap is
    explicit.
 3. **An amendment that made things worse** (R6 detects post-amendment
@@ -120,12 +120,12 @@ not help is flagged for revert. The flywheel measures itself.
 
 ## Non-goals
 
-- No auto-application — R3 is absolute. 058 is a *proposal* engine, not
+- No auto-application — R3 is absolute. 064 is a *proposal* engine, not
   an autonomous rewriter.
 - No new mining algorithms — Sentinel's existing detection passes are
-  the source; 058 is the *routing and feedback*, not the mining.
-- No `/goal` rebuild — that is spec 059. 058 makes the corpus smarter;
-  059 consumes the smarter corpus.
+  the source; 064 is the *routing and feedback*, not the mining.
+- No `/goal` rebuild — that is spec 065. 064 makes the corpus smarter;
+  065 consumes the smarter corpus.
 
 ## Acceptance criteria
 
@@ -137,9 +137,9 @@ not help is flagged for revert. The flywheel measures itself.
   gate (R3), proven by test — an unreviewed proposal cannot mutate a
   spec or policy.
 - **AC4** — an approved amendment edits the spec losslessly via the
-  055 renderer and records the citing builds (R4).
+  061 renderer and records the citing builds (R4).
 - **AC5** — dispatch-policy updates are versioned and visible to a
-  057 replay (R5).
+  063 replay (R5).
 - **AC6** — the loop emits its own telemetry, including
   post-amendment improvement/regression detection (R6).
 
