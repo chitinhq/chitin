@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://chitin.dev/schemas/unified-spec.schema.json",
+  "title": "UnifiedSpec",
+  "description": "Normalized spec shape produced by all framework adapters (spec 061).",
+  "type": "object",
+  "required": [
+    "spec_id",
+    "title",
+    "status",
+    "source_framework",
+    "source_path",
+    "requirements",
+    "acceptance",
+    "boundaries",
+    "slices",
+    "open_questions"
+  ],
+  "properties": {
+    "spec_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier (e.g. \"060\", \"ic-001\"). Join key for L2/L3."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable spec title."
+    },
+    "status": {
+      "$ref": "#/$defs/SpecStatus"
+    },
+    "source_framework": {
+      "$ref": "#/$defs/SourceFramework"
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "File path the adapter read from (provenance / traceability)."
+    },
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Requirement" },
+      "description": "Ordered list of requirements (R1, R2, …)."
+    },
+    "acceptance": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AcceptanceCriterion" },
+      "description": "Ordered list of acceptance criteria (AC1, AC2, …)."
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Boundary-case descriptions (free text)."
+    },
+    "slices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Slice" },
+      "description": "Ordered list of delivery slices."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Question" },
+      "description": "Open / unresolved questions."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SpecStatus": {
+      "type": "string",
+      "enum": ["draft", "ratified", "superseded"]
+    },
+    "SourceFramework": {
+      "type": "string",
+      "enum": ["spec-kit", "openspec", "superpowers", "house"]
+    },
+    "Requirement": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "AcceptanceCriterion": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "Slice": {
+      "type": "object",
+      "required": ["id", "scope", "requirement_ids"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string", "minLength": 1 },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Question": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "proposed": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
