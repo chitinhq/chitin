@@ -25,6 +25,38 @@ SWARM_ENV = "OCTI_DISCORD_SWARM_WEBHOOK_URL"
 CHANNEL_ID_ENV = "MINI_DISCORD_CHANNEL_ID"
 USER_AGENT = "DiscordBot (https://github.com/chitinhq/chitin, 1.0) Mini"
 
+_HERMES_ENV_PATH = Path.home() / ".hermes" / ".env"
+_HERMES_ENV_MTIME: float = 0.0
+
+
+def _load_hermes_env_if_changed() -> None:
+    """Merge OCTI_*/DISCORD_*/MINI_* keys from ~/.hermes/.env into os.environ.
+
+    Re-reads when the file's mtime changes; cheap when unchanged. Mirrors
+    the pattern in services/agent-bus/discord_push.py — kitty-spawned
+    sessions and cron-driven invocations don't inherit the operator's
+    interactive env, so the secret has to come from disk on every call.
+    """
+    global _HERMES_ENV_MTIME
+    try:
+        mtime = _HERMES_ENV_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return
+    if mtime == _HERMES_ENV_MTIME:
+        return
+    _HERMES_ENV_MTIME = mtime
+    for line in _HERMES_ENV_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        if not (k.startswith("OCTI_") or k.startswith("DISCORD_") or k.startswith("MINI_")):
+            continue
+        v = v.strip().strip('"').strip("'")
+        # Don't clobber a value the operator explicitly set in their shell.
+        os.environ.setdefault(k, v)
+
 
 def _channel_webhook_from_env() -> str | None:
     cid = os.environ.get(CHANNEL_ID_ENV, "").strip()
@@ -34,6 +66,7 @@ def _channel_webhook_from_env() -> str | None:
 
 
 def resolve_webhook_url(state_dir: Path | None = None) -> str | None:
+    _load_hermes_env_if_changed()
     env_url = os.environ.get(PRIMARY_ENV, "").strip()
     if env_url:
         return env_url
