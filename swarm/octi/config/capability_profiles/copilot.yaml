@@ -1,0 +1,31 @@
+# Octi capability profile — github-copilot (PR auto-review signal)
+# Schema: octi.capability.v1 (frozen per spec 049 §R2)
+# spec: 049-octi-swarm-role-architecture
+#
+# Copilot is a VERIFIER SIGNAL, not a role-holder. See spec 049 §R1
+# "What's NOT a role".
+
+schema: octi.capability.v1
+agent_id: github-copilot
+runtime: github-action
+model: copilot-pr-review
+discord_channel_id: null
+bus_audience_keys: []
+
+surface_type: verifier_signal
+
+verifier_signals:
+  - name: pr_auto_review
+    fires_on: pr_open
+    output_format: github_pr_inline_comments
+    consumed_by: verifier_activity     # spec 049 §R1 verifier role
+
+availability:
+  status: always_online                # GitHub-hosted
+
+notes: |
+  GitHub Copilot auto-review fires on every PR open in
+  bench-devs-platform (and chitin, when configured). Output is
+  inline-comment data on the PR. The verifier Activity (spec 049 §R1)
+  reads these signals as input but does NOT treat them as approval.
+  Operator merge gate (R10) is the only acceptance authority.
