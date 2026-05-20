@@ -233,6 +233,55 @@ class ClawtaPollerDependencyTests(unittest.TestCase):
         self.assertEqual(demoted, ["t_worker01"])
         demote.assert_called_once()
 
+    def test_dispatch_ticket_starts_run_with_dedicated_worktree(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            (tmp / "logs").mkdir()
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO tasks(id, title, body, status, assignee, priority, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("t_worktree1", "worktree ticket", "body", "ready", "codex", 50, 1),
+            )
+            conn.commit()
+            conn.close()
+
+            seen: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                seen.append(list(cmd))
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.dict(os.environ, {"HOME": str(tmp)}, clear=False), mock.patch.object(
+                module, "DB_PATH", db_path
+            ), mock.patch.object(module, "LOG_DIR", tmp / "logs"), mock.patch.object(
+                module.subprocess, "run", side_effect=fake_run
+            ), mock.patch.object(module.subprocess, "Popen") as popen:
+                ok = module.dispatch_ticket(
+                    "t_worktree1",
+                    "codex",
+                    "ready terminal-lane ticket",
+                    dry_run=False,
+                )
+
+        self.assertTrue(ok)
+        expected_worktree = tmp / ".cache" / "chitin" / "swarm-worktrees" / "codex-t_worktree1"
+        self.assertEqual(
+            seen[0],
+            [
+                module.KANBAN_FLOW_BIN,
+                "start",
+                "t_worktree1",
+                "--author",
+                module.AUTHOR,
+                "--worktree",
+                str(expected_worktree),
+            ],
+        )
+        popen.assert_called_once()
+
     def test_has_spec_kit_entry_accepts_existing_board_spec(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

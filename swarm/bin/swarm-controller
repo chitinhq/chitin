@@ -358,6 +358,10 @@ PICK_DRIVER_TIMEOUT_SECONDS = int(os.environ.get("PICK_DRIVER_TIMEOUT_SECONDS", 
 
 # ── State transitions ────────────────────────────────────────────────
 
+def dispatch_worktree_path(driver: str, ticket_id: str) -> Path:
+    return Path.home() / ".cache" / "chitin" / "swarm-worktrees" / f"{driver}-{ticket_id}"
+
+
 def dispatch_ticket(con: sqlite3.Connection, board: str,
                     ticket: Task, driver: str, dry_run: bool) -> bool:
     """Transition ready→in_progress and spawn dispatch."""
@@ -372,9 +376,10 @@ def dispatch_ticket(con: sqlite3.Connection, board: str,
         return False
 
     # sw-008 Bug 1: pass board via _kanban_flow helper (sets KANBAN_BOARD env)
+    worktree_path = dispatch_worktree_path(driver, ticket.id)
     try:
         _kanban_flow(
-            ["start", ticket.id, "--author", AUTHOR],
+            ["start", ticket.id, "--author", AUTHOR, "--worktree", str(worktree_path)],
             board=board, check=True, capture_output=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
