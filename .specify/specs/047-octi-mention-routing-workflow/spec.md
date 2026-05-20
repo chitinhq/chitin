@@ -53,7 +53,7 @@ workflows — stands; the cross-channel scope shrinks dramatically.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/workflows/mention.go` — `MentionRoutingWorkflow`
 - `swarm/octi/activities/mention/` — Activity packages
@@ -61,7 +61,7 @@ workflows — stands; the cross-channel scope shrinks dramatically.
   - `dispatch_to_owner.go` — sends the message to the owning agent's
     task queue
   - `dlq.go` — dead-letter for un-owned mentions
-- `swarm/octi/config/mention_ownership.yaml` — frozen ownership
+- `swarm/octi/config/channel_ownership.yaml` — frozen ownership
   table (R2)
 - `swarm/octi/workflows/mention_test.go` — unit
 - `swarm/octi/e2e/mention_routing_test.go` — **e2e**: each
@@ -70,7 +70,7 @@ workflows — stands; the cross-channel scope shrinks dramatically.
   for debugging mis-routes
 - `.specify/specs/047-octi-mention-routing-workflow/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - Legacy mention-listener scripts (kept until bake; removed by
   installer)
@@ -240,19 +240,21 @@ not failures).
 
 ## Acceptance criteria
 
-1. A bus message containing `@Clawta` produces exactly one
-   dispatch to the `clawta-py` task queue; no dispatch to
-   `mini-cli` or `hermes-py`.
-2. A bus message containing `@mini` produces exactly one dispatch
-   to `mini-cli`.
-3. A message with both `@mini` and `@Clawta` produces a dispatch
-   to the **first-table-listed** owner (mini per R2 ordering) AND a
-   structured `multi_mention_first_win` log.
-4. A message with `@bogus` (no owner) lands in
+1. A bus message in `#clawta` containing `@Clawta` produces
+   exactly one dispatch to the `clawta-py` task queue.
+2. A bus message in `#ares` containing `@ares` (or `@hermes`)
+   produces exactly one dispatch to the `hermes-py` task queue.
+3. A message in `#ares` containing `@Clawta` is **dead-lettered**
+   — Clawta does not own #ares (R2 channel_ownership.v1), so the
+   mention cannot be cross-routed. DLQ reason
+   `mention_not_owned_in_channel`.
+4. A message with `@bogus` or `@mini` (no channel owner — Mini
+   has no channel post-2026-05-19) lands in
    `~/.chitin/octi-mention-dlq-*.jsonl` with reason
    `no_owner_matched`.
-5. Mini regex (spec 039) is the ONLY matcher used for `@mini`;
-   verified by import graph + behavior fixture.
+5. The spec-039 Mini regex is consumed unchanged where a Mini
+   listener still applies (Mini's own goal-session inbound, R7) —
+   it is NOT used for channel routing, since Mini owns no channel.
 6. `octi-no-broadcast-mention.yml` CI gate refuses any code that
    would dispatch a single mention to multiple owners.
 7. Owner acknowledgment latency: signal sent → owner Activity

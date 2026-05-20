@@ -45,7 +45,7 @@ inbound poller looks the anchor up. The bus dedups by
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `services/agent-bus/identity/` — new Python package
   - `services/agent-bus/identity/anchor.py` — anchor generator + parser
@@ -67,7 +67,7 @@ inbound poller looks the anchor up. The bus dedups by
   `discord_dedup` table)
 - `.specify/specs/042-octi-agentbus-identity-contract/**`
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - Discord side (no bot changes — anchor is an in-message convention)
 - `~/.hermes/.env` (already managed; no new env vars)
@@ -76,14 +76,14 @@ inbound poller looks the anchor up. The bus dedups by
 
 ## Goal
 
-A Discord user replies to a specific bus-originated message in
-`#swarm`. The reply lands in the same bus thread that produced the
-original message, **never** in the channel's catchall thread.
-Discord replies that don't carry an anchor (operator typing freeform
-in a channel) still land in the channel's catchall thread — that
-behavior is intentional and preserved. Retries of the same inbound
-poll are idempotent: re-polling the same Discord message twice
-produces zero duplicate bus messages.
+A Discord user replies to a specific bus-originated message in a
+per-agent channel (`#ares` or `#clawta`). The reply lands in the
+same bus thread that produced the original message, **never** in
+that agent's catchall thread. Discord replies that don't carry an
+anchor (operator typing freeform in a channel) still land in that
+agent's own catchall thread — intentional and preserved. Retries
+of the same inbound poll are idempotent: re-polling the same
+Discord message twice produces zero duplicate bus messages.
 
 ## Requirements
 
@@ -248,23 +248,24 @@ identity contract centralized.
 ## Acceptance criteria
 
 1. A new bus thread created via `bus_post_thread(..., audience='ares,clawta')`
-   posts to `#swarm` with an embedded anchor (R1.b zero-width form,
-   since it's the first message).
-2. A reply created via `bus_reply(thread_id=N, ...)` posts to
-   `#swarm` using Discord's `message_reference` (R1.a) pointing to
-   the prior bus-originated message.
+   **fans out** (R2): one post in `#ares` AND one in `#clawta`, both
+   carrying the same R1.b zero-width anchor.
+2. A reply created via `bus_reply(thread_id=N, ...)` posts to each
+   audience's channel using Discord's `message_reference` (R1.a)
+   pointing to that channel's prior bus-originated message.
 3. A Discord user replying (via Discord's native reply UI) to a
    bus-originated message lands in the **same bus thread**, not
-   the channel catchall. Verified by e2e fixture: post to thread
-   17, send a Discord reply, assert the new bus message has
-   `thread_id=17`.
+   the agent's catchall. Verified by e2e fixture: post to a bus
+   thread, send a Discord reply in #ares, assert the new bus
+   message carries the originating `thread_id`.
 4. The reproducer that motivated this spec is fixed: Ares-style
    Discord-originating replies to RFP threads route to the RFP
-   thread, not thread 1. e2e test
+   bus thread, not a catchall. e2e test
    `test_bidirectional_identity_e2e.py` replays the exact failure
-   scenario.
-5. A Discord user posting freeform in `#swarm` (no reply target)
-   lands in thread 1 (the channel catchall) — preserved behavior.
+   scenario (thread 17 / thread 19 → catchall thread 1).
+5. A Discord user posting freeform in `#ares` (no reply target,
+   no anchor) lands in the **#ares agent-owned catchall** bus
+   thread — preserved fallback behavior, per-agent (R3).
 6. Re-running the inbound poll over the same window produces zero
    duplicate bus messages (R6 idempotency).
 7. `bus_resolve_anchor(<discord_msg_id>)` returns the correct

@@ -31,7 +31,7 @@ This spec makes that maxim a tested invariant.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/mirror/` — new Go package
   - `swarm/octi/mirror/mirror.go` — `MirrorEvent(ctx, event)` real impl
@@ -50,7 +50,7 @@ This spec makes that maxim a tested invariant.
   takes a date range + workflow id and replays state from the mirror
   alone (proves the contract)
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - Temporal's persistence backing (SQLite or Postgres) — read only
 - `swarm/octi/workflows/` — workflows MUST NOT call mirror directly;
@@ -218,13 +218,17 @@ A canonical "what is every workflow doing right now" query is a
 single jq invocation against today's mirror file:
 
 ```
-jq -r 'select(.event_type | startswith("workflow.")) | "\(.workflow_id) \(.event_type) \(.timestamp)"' \
+jq -r 'select(.event_type | startswith("workflow.")) | "\(.workflow_id) \(.event_type) \(.ts_unix_ns)"' \
    ~/.chitin/octi-events-$(date -u +%F).jsonl \
    | sort -u
 ```
 
-This query is enshrined as `swarm/bin/octi-snapshot` and documented
-in spec 040 §R4 as a new operator-CLI verb (`octi snapshot`).
+(Field is `ts_unix_ns` per the R1 `OctiEvent` schema — not
+`timestamp`.) This query is enshrined as `swarm/bin/octi-snapshot`
+and documented in spec 040 §R4 as a new operator-CLI verb
+(`octi snapshot`). `octi snapshot` emits **text rows** (one
+workflow per line: `workflow_id event_type ts_unix_ns`) — not
+JSON; AC6 below is worded to match.
 
 ## Acceptance criteria
 
@@ -242,10 +246,11 @@ in spec 040 §R4 as a new operator-CLI verb (`octi snapshot`).
    marked with a `// SCHEMA: octi.event.v1 — FROZEN` comment;
    `golangci-lint` is configured to flag PRs that modify these
    structs without an accompanying v2 schema file.
-6. `swarm/bin/octi snapshot` returns a JSON listing of every
-   currently-in-flight workflow with no Temporal API call (verified
-   by network-trace assertion in e2e: no traffic to Temporal
-   frontend port during snapshot).
+6. `swarm/bin/octi snapshot` returns a text-row listing (one
+   in-flight workflow per line, `workflow_id event_type
+   ts_unix_ns`) with no Temporal API call — verified by
+   network-trace assertion in e2e: no traffic to the Temporal
+   frontend port during snapshot.
 7. Daily rotation: a workflow that crosses 00:00 UTC produces
    OctiEvents in both YYYY-MM-DD.jsonl files cleanly (no missing
    events, no duplicate seq).
