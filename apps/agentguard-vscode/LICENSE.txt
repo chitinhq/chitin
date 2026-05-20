@@ -1,4 +1,0 @@
-Apache-2.0
-
-This extension is packaged from the chitin monorepo.
-See the repository root LICENSE file for the full license text.
