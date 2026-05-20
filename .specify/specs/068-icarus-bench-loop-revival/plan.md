@@ -18,7 +18,7 @@ schedule it.
 2. `pick_tasks()` — LRU pick, `(last_tried_ts, task_name)` ordering,
    state in `~/.icarus/bench-runner-state.json`.
 3. `run_one_task()` — `harbor run --path <task> --agent-import-path
-   swarm.icarus_harness.agent:IcarusAgent --model ollama/qwen3-coder:30b-32k
+   swarm.icarus_harness.agent:IcarusAgent --model ollama/qwen3.6:27b
    --job-name icarus-<ts>-<task> --jobs-dir jobs/icarus -k 1`, with
    `PYTHONPATH` = repo root and a 1800s wall-clock cap.
 4. After all picks, invoke `icarus-bench-ticket-emitter` (unless
@@ -43,7 +43,7 @@ periodic-mode alternative, superseded for non-stop by the service.
 
 - `harbor` CLI on PATH — yes (`/home/red/.local/bin/harbor`).
 - docker daemon — yes (2 containers running).
-- `ollama/qwen3-coder:30b-32k` — yes (`ollama list`).
+- `ollama/qwen3.6:27b` — yes (`ollama list`).
 - Cached tasks — yes (20+ under `~/.cache/harbor/tasks/`).
 
 ## Risks

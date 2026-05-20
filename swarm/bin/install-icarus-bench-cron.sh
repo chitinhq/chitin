@@ -37,7 +37,7 @@ EMITTER_WRAPPER="$WRAPPER_DIR/$EMITTER_WRAPPER_NAME"
 
 MARKER="# icarus-bench-cron-managed"
 
-MODEL="${ICARUS_MODEL:-ollama/qwen3-coder:30b-32k}"
+MODEL="${ICARUS_MODEL:-ollama/qwen3.6:27b}"
 N_TASKS="${ICARUS_N_TASKS:-1}"
 
 JOB_NAME_RUNNER="icarus-bench-runner"
