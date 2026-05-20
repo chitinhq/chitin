@@ -2,8 +2,7 @@
 # octi-worker — slice-4 placeholder for spec 038.
 #
 # This entrypoint reserves the file path for the future Temporal-backed
-# worker (slice 4). It is intentionally non-functional in slice 1, where
-# Mini is invoked directly from `swarm/bin/mini`.
+# worker. The old Mini wrapper was decommissioned in spec 069.
 #
 # See: .specify/specs/038-octi-persistent-claude-session/spec.md AC12.
 
@@ -13,8 +12,8 @@ import sys
 def main() -> int:
     sys.stderr.write(
         "octi-worker: slice-4 placeholder; not yet implemented.\n"
-        "Use `mini open` for slice-1 sessions.\n"
-        "See .specify/specs/038-octi-persistent-claude-session/spec.md\n"
+        "Mini was decommissioned in spec 069; use the Chitin Orchestrator spec 070 path.\n"
+        "See .specify/specs/070-chitin-orchestrator/spec.md\n"
     )
     return 1
 

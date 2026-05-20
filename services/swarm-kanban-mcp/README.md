@@ -14,7 +14,6 @@ Per `docs/strategy/2026-05-18-swarm-redesign.md` §Week 1 (red's lane work). Let
 | `claim_ticket(board, ticket_id, owner)` | Transition to in_progress, attach audit comment |
 | `update_status(board, ticket_id, new_status, author, comment?)` | Transition state |
 | `create_ticket(board, title, body, assignee, priority?, triage?)` | File new ticket |
-| `post_swarm_message(body, author?, audience?, ack_required?)` | Post to #swarm thread 9 |
 
 ## Install for Claude Code
 
@@ -37,4 +36,4 @@ cd ~/workspace/chitin
 python3 -m unittest services.swarm-kanban-mcp.tests.test_server -v
 ```
 
-11 tests, all passing.
+Board-tool tests should pass.

@@ -131,40 +131,6 @@ def dedup_key(ticket: dict) -> str:
     return f"{ticket['id']}:{ticket['status']}:{ticket['assignee']}:{ticket['latest_ts']}"
 
 
-def post_swarm_receipt(ticket: dict, board: str) -> None:
-    """Best-effort post of a short invocation receipt to #swarm (thread 9).
-
-    Per Clawta sw-009 gate 5: receipt on invocation, but no body leak.
-    Receipt contains only ticket id + title (already public on the board).
-    Failure to post is non-fatal (logged to stderr) so dispatch isn't
-    blocked on agent-bus availability."""
-    try:
-        import importlib.util
-        bus_server_path = (
-            Path(__file__).resolve().parents[2]
-            / "services" / "agent-bus" / "server.py"
-        )
-        if not bus_server_path.is_file():
-            return  # Bus not available in this checkout; silent skip.
-        spec = importlib.util.spec_from_file_location("agent_bus_server", bus_server_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        from db import get_conn  # noqa: E402 — local to services/agent-bus
-        conn = get_conn()
-        mod.bus_reply(
-            conn,
-            author=AGENT_NAME,
-            thread_id=9,  # #swarm thread
-            body=f"[swarm-invoker] invoked {ticket['id']} — {ticket['title']} ({board})",
-            kind="system",
-        )
-        conn.commit()
-        conn.close()
-    except Exception as exc:  # noqa: BLE001 — best-effort, never block dispatch
-        print(f"[swarm-invoker] receipt-post failed (non-fatal): {exc}", file=sys.stderr)
-
-
 # ── Invocation ──────────────────────────────────────────────────────
 
 def format_invocation(ticket: dict, board: str) -> str:
@@ -226,8 +192,6 @@ def main():
                 print(prompt)
                 print()
                 print(f"[swarm-invoker] invoked {ticket['id']} on {board}", file=sys.stderr)
-                # Receipt to #swarm (gate 5) — best-effort, non-blocking.
-                post_swarm_receipt(ticket, board)
                 invoked_any = True
 
     if not args.dry_run and invoked_any:
