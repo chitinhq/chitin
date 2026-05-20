@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -41,10 +42,23 @@ DEFAULT_CLAUDE_CMD = ["claude", "--dangerously-skip-permissions"]
 
 
 def _claude_command() -> list[str]:
+    """Resolve the claude binary to an absolute path before handing it
+    to `kitty @ launch`. The kitty child shell may not inherit the
+    operator's interactive PATH — when claude lives in a Node-managed
+    location like ~/.vite-plus/bin, that dir isn't on the default zsh
+    PATH the child shell loads. Resolving once at session-open avoids
+    the "claude not found in PATH" silent kitty-window-dies-immediately
+    failure mode."""
     raw = os.environ.get(CLAUDE_CMD_ENV)
     if raw:
         return raw.split()
-    return list(DEFAULT_CLAUDE_CMD)
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        raise FileNotFoundError(
+            "claude CLI not found in PATH. Set MINI_CLAUDE_CMD env var "
+            "with an absolute command, or add claude to PATH."
+        )
+    return [claude_bin, "--dangerously-skip-permissions"]
 
 
 class MiniSession:

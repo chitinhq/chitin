@@ -38,6 +38,11 @@ class TestResolveWebhookUrl(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.sd = Path(self.tmp.name)
+        # Point the hermes-dotenv loader at an absent file so resolve_webhook_url
+        # doesn't pick up the operator's real ~/.hermes/.env during tests.
+        self._old_hermes_env = os.environ.get(wh.HERMES_ENV_PATH_ENV)
+        os.environ[wh.HERMES_ENV_PATH_ENV] = str(self.tmp.name + "/no-such.env")
+        wh._hermes_env_cache = None
 
     def tearDown(self) -> None:
         if self._old_primary is not None:
@@ -47,6 +52,11 @@ class TestResolveWebhookUrl(unittest.TestCase):
         if self._old_cid is not None:
             os.environ[wh.CHANNEL_ID_ENV] = self._old_cid
         os.environ.update(self._old_chan_urls)
+        if self._old_hermes_env is None:
+            os.environ.pop(wh.HERMES_ENV_PATH_ENV, None)
+        else:
+            os.environ[wh.HERMES_ENV_PATH_ENV] = self._old_hermes_env
+        wh._hermes_env_cache = None
 
     def test_env_var_primary_source(self):
         os.environ[wh.PRIMARY_ENV] = "https://discord.example/webhook"
