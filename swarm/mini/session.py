@@ -61,6 +61,50 @@ def _claude_command() -> list[str]:
     return [claude_bin, "--dangerously-skip-permissions"]
 
 
+# Status-to-emoji mapping for Discord posts (S2-R3)
+_STATUS_EMOJI: dict[str, str] = {
+    "working": "✅",
+    "verifying": "✅",
+    "blocked": "🔶",
+    "done": "🏁",
+    "needs_review": "🏁",
+    "failed": "🛑",
+    "paused": "🔶",
+    "idle": "🔶",
+}
+
+
+def _status_emoji(state: str) -> str:
+    return _STATUS_EMOJI.get(state, "🔁")
+
+
+def _format_opened_message(
+    goal_id: str,
+    worktree: Path,
+    goal: str,
+    *,
+    invoked_by: str | None = None,
+    source: str = "cli",
+    specs: list[str] | None = None,
+) -> str:
+    """Build the 🐙 session.opened message per S2-R1.
+
+    Format:
+      🐙 Mini session opened — spec 037,038,039 — invoked by `ares` via mcp
+         goal_id: spec-037..039-3a1f   ·   thread ↳
+    """
+    invoker = invoked_by or os.environ.get("OCTI_OPERATOR") or "operator"
+    spec_list = ",".join(specs) if specs else ""
+    parts = [f"🐙 Mini session opened"]
+    if spec_list:
+        parts.append(f"spec {spec_list}")
+    parts.append(f"invoked by `{invoker}` via {source}")
+    line1 = " — ".join(parts)
+    line2 = f"   goal_id: `{goal_id}`   ·   worktree: `{worktree}`"
+    line3 = f"> {goal[:200]}"
+    return f"{line1}\n{line2}\n{line3}"
+
+
 class MiniSession:
     def __init__(self, goal_id: str) -> None:
         self._goal_id = goal_id
@@ -75,6 +119,9 @@ class MiniSession:
         recovery: str | None = None,
         ticket: str | None = None,
         cwd_is_worktree: bool = False,
+        invoked_by: str | None = None,
+        source: str = "cli",
+        specs: list[str] | None = None,
     ) -> "MiniSession":
         if recovery is not None and goal:
             raise ValueError("--recovery and --goal are mutually exclusive")
@@ -106,10 +153,25 @@ class MiniSession:
         )
         _kitty.inject_via_temp_file(goal_id, prompt, state_dir=sd, label="open")
 
-        _webhook.post(
-            _webhook.resolve_webhook_url(sd),
-            f"🐙 session.opened `{goal_id}` worktree=`{wt}`\n> {goal[:200]}",
+        # S2-R1: enhanced opened message with invoker, source, specs
+        opened_msg = _format_opened_message(
+            goal_id, wt, goal,
+            invoked_by=invoked_by, source=source, specs=specs,
         )
+
+        webhook_url = _webhook.resolve_webhook_url(sd)
+
+        # S2-R2: create a per-session Discord thread
+        thread_id: str | None = None
+        thread_id = _webhook.create_and_post_to_thread(
+            webhook_url, goal_id, opened_msg,
+        )
+        if thread_id:
+            _statedir.write_discord_thread_id(goal_id, thread_id)
+        else:
+            # Thread creation failed; post to channel as fallback (S2-R4)
+            _webhook.post(webhook_url, opened_msg)
+
         return cls(goal_id)
 
     @classmethod
@@ -167,6 +229,13 @@ class MiniSession:
             )
         return json.loads(path.read_text())
 
+    def _webhook_url_and_thread(self) -> tuple[str | None, str | None]:
+        """Resolve webhook URL and per-session thread_id (if any)."""
+        sd = self.state_dir
+        url = _webhook.resolve_webhook_url(sd)
+        thread_id = _statedir.read_discord_thread_id(self._goal_id)
+        return url, thread_id
+
     def nudge(
         self,
         message: str,
@@ -179,8 +248,10 @@ class MiniSession:
         sd = self.state_dir
         with _lease.Lease(sd, holder=holder, lease_seconds=lease_seconds):
             _kitty.inject_via_temp_file(self._goal_id, message, state_dir=sd, label="nudge")
-            _webhook.post(
-                _webhook.resolve_webhook_url(sd),
+            # S2-R3: post nudge.sent into the session thread when available
+            url, thread_id = self._webhook_url_and_thread()
+            _webhook.post_to_thread(
+                url, thread_id,
                 f"📣 nudge.sent `{self._goal_id}` by `{holder or 'operator'}`\n> {message[:120]}",
             )
 
@@ -216,7 +287,9 @@ class MiniSession:
             pid_file.unlink(missing_ok=True)
 
         _lease.release(sd)
-        _webhook.post(
-            _webhook.resolve_webhook_url(sd),
+        # S2-R3: post session.stopped into the session thread when available
+        url, thread_id = self._webhook_url_and_thread()
+        _webhook.post_to_thread(
+            url, thread_id,
             f"🛑 session.stopped `{self._goal_id}` reason=`{reason}` state=failed",
         )
