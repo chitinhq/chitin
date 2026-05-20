@@ -349,6 +349,15 @@ steps:
         git -C "$WORKTREE_DIR" reset --hard "origin/$DEFAULT_BRANCH" 2>&1
         git -C "$WORKTREE_DIR" clean -fd 2>&1
       fi
+      # Copy gitignored governance sidecars (chitin.yaml.sig) into the
+      # worktree. `git worktree add` does not carry gitignored files;
+      # without the .sig an autonomous worker — which scrubs the
+      # operator-presence bypass — has every tool call rejected by the
+      # kernel as policy_signature_missing, a silent iteration-budget
+      # deadlock (ticket t_5b665efe). Runs after the create AND the
+      # re-dispatch `clean -fd` branch so the sidecar is always present.
+      bash "$CHITIN_REPO/scripts/copy-governance-sidecars.sh" "$CHITIN_REPO" "$WORKTREE_DIR" \
+        || echo "spawn_worker: WARN copy-governance-sidecars failed — worker may hit policy_signature_missing" >&2
       if ! cd "$WORKTREE_DIR"; then
         echo "spawn_worker: failed to enter worktree $WORKTREE_DIR" >&2
         exit 1

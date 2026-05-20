@@ -77,6 +77,11 @@ entries:
     category: operator
     purpose: render an operator-facing health snapshot for the chitin host
 
+  - path: scripts/copy-governance-sidecars.sh
+    category: runtime-critical
+    purpose: copy gitignored governance sidecars (chitin.yaml.sig) into dispatched worktrees so workers do not deadlock on policy_signature_missing
+    port_ticket: t_5b665efe
+
   - path: scripts/create-worktree.sh
     category: operator
     purpose: create a task-scoped git worktree with the repo naming and path conventions
