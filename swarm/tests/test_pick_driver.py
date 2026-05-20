@@ -54,6 +54,12 @@ CARDS = {
 
 
 class PickDriverTests(unittest.TestCase):
+    def write_kernel_stub(self, root: Path, body: str) -> Path:
+        kernel = root / "chitin-kernel"
+        kernel.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        kernel.chmod(0o755)
+        return kernel
+
     def run_pick_driver(self, classify: dict, **env_overrides: str) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             cards_dir = Path(tmp)
@@ -107,6 +113,94 @@ class PickDriverTests(unittest.TestCase):
                 check=False,
                 env=env,
             )
+
+    def test_kernel_approved_driver_list_filters_unapproved_cards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cards_dir = root / "cards"
+            cards_dir.mkdir()
+            souls_dir = root / "souls"
+            souls_dir.mkdir()
+            for card_id, payload in CARDS.items():
+                (cards_dir / f"{card_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            for soul_id in ("knuth", "davinci", "sun-tzu", "socrates"):
+                (souls_dir / f"{soul_id}.md").write_text(f"{soul_id} soul\n", encoding="utf-8")
+
+            kernel = self.write_kernel_stub(
+                root,
+                "printf '%s\\n' '{\"drivers\":[{\"id\":\"gemini\",\"identities\":[\"gemini\"]}],\"count\":1}'\n",
+            )
+            env = {
+                **os.environ,
+                "OPENCLAW_AGENT_CARDS_DIR": str(cards_dir),
+                "CHITIN_SOULS_DIR": str(souls_dir),
+                "ROUTER_MODE": "deterministic",
+                "CLAWTA_EXPLORATION_PERCENT": "0",
+                "CHITIN_KERNEL_BIN": str(kernel),
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT)],
+                input=json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "gemini")
+        self.assertEqual(payload["approval_source"], "kernel")
+        self.assertIn('"warning": "driver_not_kernel_approved"', result.stderr)
+        self.assertIn('"driver": "copilot"', result.stderr)
+
+    def test_kernel_empty_driver_registry_falls_back_to_roster(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kernel = self.write_kernel_stub(
+                root,
+                "printf '%s\\n' '{\"drivers\":[],\"count\":0}'\n",
+            )
+            result = self.run_pick_driver_raw(
+                json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_KERNEL_BIN=str(kernel),
+            )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"warning": "kernel_driver_registry_empty"', result.stderr)
+
+    def test_kernel_unavailable_falls_back_to_roster(self):
+        result = self.run_pick_driver_raw(
+            json.dumps({"complexity": "low", "capabilities": ["python"]}),
+            CLAWTA_EXPLORATION_PERCENT="0",
+            CHITIN_KERNEL_BIN="/nonexistent/chitin-kernel",
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"warning": "kernel_driver_registry_unavailable"', result.stderr)
+
+    def test_kernel_malformed_json_falls_back_to_roster(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kernel = self.write_kernel_stub(root, "printf '%s\\n' 'not-json'\n")
+            result = self.run_pick_driver_raw(
+                json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_KERNEL_BIN=str(kernel),
+            )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "fallback")
+        self.assertIn('"warning": "kernel_driver_registry_unavailable"', result.stderr)
 
     def test_exploration_can_be_disabled(self):
         result = self.run_pick_driver(
