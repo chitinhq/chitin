@@ -231,6 +231,14 @@ without committing.
 10. Tripwire condition documented and observable: a status command
     `octi dispatch bake-status` reports current shadow match rate and
     the 99/100 threshold.
+11. **Cross-board boundary (I5)**: a `DispatchTicketWorkflow` run
+    with `Board=chitin` touches ONLY the chitin kanban DB and
+    chitin workspace_root; an e2e test runs a dispatch with a
+    fixture ticket id that also exists on the readybench board and
+    asserts no readybench DB read/write occurs (verified by
+    per-DB access trace). A dispatch whose ticket id resolves on a
+    different board than `Board` fails fast with
+    `cross_board_violation`.
 
 ## Test coverage
 
@@ -242,6 +250,8 @@ without committing.
 - `swarm/octi/e2e/dispatch_replay_test.go` — **e2e**: AC8
 - `swarm/octi/e2e/dispatch_spawn_atomicity_test.go` — **e2e**: AC7
   (single-attempt invariant)
+- `swarm/octi/e2e/dispatch_cross_board_test.go` — **e2e**: AC11
+  (cross-board boundary — I5 enforcement)
 
 All files carry `// spec: 043-octi-dispatch-workflow`.
 

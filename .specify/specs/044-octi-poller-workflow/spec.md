@@ -195,6 +195,12 @@ Reversible: `--rollback` undoes step 1 + 2.
    one interval.
 10. `--rollback` restores the legacy cron entry and removes the
     Schedule.
+11. **Cross-board boundary (I4)**: a `PollerWorkflow` run with
+    `Board=chitin` reads only the chitin kanban DB and starts only
+    child dispatches scoped to `Board=chitin`; an e2e test runs the
+    poller against a fixture environment with both chitin and
+    readybench boards populated and asserts zero readybench DB
+    access and zero readybench-scoped child workflows.
 
 ## Test coverage
 
@@ -204,6 +210,8 @@ Reversible: `--rollback` undoes step 1 + 2.
 - `swarm/octi/e2e/poller_e2e_test.go` — **e2e**: AC2, AC3, AC4
 - `swarm/octi/e2e/poller_veto_test.go` — **e2e**: AC5, AC6
 - `swarm/octi/e2e/poller_idempotency_test.go` — **e2e**: AC7
+- `swarm/octi/e2e/poller_cross_board_test.go` — **e2e**: AC11
+  (cross-board boundary — I4 enforcement)
 
 All files carry `// spec: 044-octi-poller-workflow`.
 
