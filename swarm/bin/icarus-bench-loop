@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# icarus-bench-loop — continuous Icarus terminal-bench driver.
+#
+# Runs icarus-bench-runner back-to-back, forever. This is the "non-stop"
+# mechanism (spec 068): the 2h icarus-bench-cron is a periodic mode; this
+# loop is the continuous one. Managed by icarus-bench.service
+# (Restart=always), so a crash or a clean exit is auto-revived.
+#
+# Single-flight is still enforced inside icarus-bench-runner via flock on
+# ~/.icarus/bench-runner.lock, so a stray manual run can never stack with
+# the loop. The loop itself is one process — no self-contention.
+#
+# A short pause between ticks lets ollama settle and yields the model
+# lease to the lint-fix watcher if it is waiting.
+#
+# Env:
+#   ICARUS_MODEL       model passed to the runner (default qwen3-coder:30b-32k)
+#   ICARUS_N_TASKS     tasks per tick (default 1)
+#   ICARUS_LOOP_PAUSE  seconds to sleep between ticks (default 60)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUNNER="$SCRIPT_DIR/icarus-bench-runner"
+
+if [[ ! -x "$RUNNER" ]]; then
+    echo "FATAL: $RUNNER not found or not executable" >&2
+    exit 1
+fi
+
+# Load hermes env (kanban creds for the inline ticket emitter) if present.
+set -a
+. "${HOME}/.hermes/.env" 2>/dev/null || true
+set +a
+
+# systemd user services get a minimal PATH — harbor lives in ~/.local/bin.
+export PATH="${HOME}/.local/bin:${PATH}"
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+export ICARUS_MODEL="${ICARUS_MODEL:-ollama/qwen3-coder:30b-32k}"
+export ICARUS_N_TASKS="${ICARUS_N_TASKS:-1}"
+PAUSE="${ICARUS_LOOP_PAUSE:-60}"
+
+echo "[icarus-bench-loop] starting — model=$ICARUS_MODEL n_tasks=$ICARUS_N_TASKS pause=${PAUSE}s"
+
+while true; do
+    "$RUNNER" --n-tasks "$ICARUS_N_TASKS" || \
+        echo "[icarus-bench-loop] runner exited non-zero — continuing" >&2
+    sleep "$PAUSE"
+done

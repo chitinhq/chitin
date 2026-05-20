@@ -81,3 +81,7 @@ chitin.yaml.sig
 .swarm/
 
 .angular
+
+# Icarus terminal-bench runtime output — the non-stop loop writes here
+# continuously (spec 068)
+jobs/
