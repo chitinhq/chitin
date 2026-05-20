@@ -1047,6 +1047,10 @@ def fetch_current_status(ticket_id: str) -> str | None:
     return row[0] if row else None
 
 
+def dispatch_worktree_path(assignee: str, ticket_id: str) -> Path:
+    return Path.home() / ".cache" / "chitin" / "swarm-worktrees" / f"{assignee}-{ticket_id}"
+
+
 def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
     """Flip ready→in_progress, then spawn clawta dispatch in background.
 
@@ -1070,9 +1074,10 @@ def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -
         return False
 
     comment = f"clawta-poller dispatching to {assignee}. Sequence reason: {reason}"
+    worktree_path = dispatch_worktree_path(assignee, ticket_id)
     try:
         subprocess.run(
-            [KANBAN_FLOW_BIN, "start", ticket_id, "--author", AUTHOR],
+            [KANBAN_FLOW_BIN, "start", ticket_id, "--author", AUTHOR, "--worktree", str(worktree_path)],
             check=True, timeout=15,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:

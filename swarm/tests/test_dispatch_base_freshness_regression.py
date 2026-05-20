@@ -17,6 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = ROOT / "swarm" / "workflows" / "kanban-dispatch.lobster"
 MIRROR = ROOT / "docs" / "governance-setup-extras" / "kanban-dispatch.lobster"
+POLLER = ROOT / "swarm" / "bin" / "clawta-poller"
+CONTROLLER = ROOT / "swarm" / "bin" / "swarm-controller"
 
 
 class DispatchBaseFreshnessRegressionTests(unittest.TestCase):
@@ -38,6 +40,37 @@ class DispatchBaseFreshnessRegressionTests(unittest.TestCase):
         )
         self.assertGreater(fetch_idx, 0, "fetch must exist")
         self.assertGreater(worktree_add_idx, fetch_idx, "fetch must precede worktree add")
+
+    def test_start_records_dedicated_dispatch_worktree(self):
+        """Spec 070 FR-013/SC-007: direct workflow dispatch must not let
+        kanban-flow infer the primary checkout as the task run worktree."""
+        workflow = CANONICAL.read_text()
+        self.assertIn(
+            'DISPATCH_WORKTREE="$HOME/.cache/chitin/swarm-worktrees/$pick_driver.json.driver-${ticket_id}"',
+            workflow,
+        )
+        self.assertIn(
+            'kanban-flow start ${ticket_id} --author clawta --worktree "$DISPATCH_WORKTREE"',
+            workflow,
+        )
+        start_idx = workflow.find(
+            'kanban-flow start ${ticket_id} --author clawta --worktree "$DISPATCH_WORKTREE"'
+        )
+        worktree_add_idx = workflow.find(
+            'git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR"'
+        )
+        self.assertGreater(start_idx, 0)
+        self.assertGreater(worktree_add_idx, start_idx)
+
+    def test_python_dispatchers_start_with_dedicated_worktree(self):
+        """Poller/controller must record the same worktree path the Lobster
+        worker spawn will use, instead of letting kanban-flow fall back to a
+        task workspace or operator checkout."""
+        for path in (POLLER, CONTROLLER):
+            text = path.read_text()
+            with self.subTest(path=path):
+                self.assertIn('".cache" / "chitin" / "swarm-worktrees"', text)
+                self.assertIn('"--worktree", str(worktree_path)', text)
 
     def test_fetch_failure_aborts_spawn(self):
         """R1 fail-loud: if fetch fails, spawn aborts (does not fall through

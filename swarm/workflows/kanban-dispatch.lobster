@@ -222,7 +222,8 @@ steps:
       # continue spawning: blocked must be a hard stop. Poller may have
       # already claimed the ticket, so an in_progress status after a start
       # failure is acceptable; any other status aborts dispatch.
-      if ! kanban-flow start ${ticket_id} --author clawta 2>/dev/null; then
+      DISPATCH_WORKTREE="$HOME/.cache/chitin/swarm-worktrees/$pick_driver.json.driver-${ticket_id}"
+      if ! kanban-flow start ${ticket_id} --author clawta --worktree "$DISPATCH_WORKTREE" 2>/dev/null; then
         STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json | jq -r '.task.status // .status // empty')
         if [[ "$STATUS" != "in_progress" ]]; then
           echo "dispatch aborted: ${ticket_id} status is $STATUS after start attempt" >&2
