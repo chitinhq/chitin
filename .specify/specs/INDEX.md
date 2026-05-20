@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-19 (Octi orchestration corpus PR 1/3 — foundation).
+> Last updated 2026-05-20 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -61,11 +61,85 @@ Capability profiles under `swarm/octi/config/capability_profiles/`:
 ares, claude, clawta, mini, copilot, codex, claudecode. Operationalize
 spec 049 §R6.
 
-PR 2/3 (critique closures) will add: 041 event-mirror-contract,
-042 agentbus-identity-contract, 047 mention-routing-workflow.
+## Octi orchestration plane (Temporal Go) — PR 2/3 (critique closures)
 
-PR 3/3 (workflow migrations) will add: 043 dispatch, 044 poller,
-045 bridge, 046 autonomous-claim, 048 ha-migration-template.
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; this PR (2/3) = the three
+> Clawta-critique-closure specs; PR 3 = workflow migrations.
+
+| Spec | Title | Status | Closes |
+|------|-------|--------|--------|
+| **041** | octi-event-mirror-contract | draft | Clawta critique #1 — replay from telemetry alone, no Temporal-visibility dependency |
+| **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 — anchor + dedup + multi-audience fan-out (post-#swarm-deletion) |
+| **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership (narrowed: per-agent channels only) |
+
+## Octi orchestration plane (Temporal Go) — PR 3/3 (workflow migrations)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; PR 2 = critique closures
+> (041/042/047); this PR (3/3) = the workflow migrations that port
+> today's cron/lobster sprawl onto Octi Temporal workflows.
+
+| Spec | Title | Status | Migration target |
+|------|-------|--------|------------------|
+| **043** | octi-dispatch-workflow | draft | `kanban-dispatch.lobster` (6-stage pipeline) |
+| **044** | octi-poller-workflow | draft | `swarm/bin/clawta-poller` |
+| **045** | octi-bridge-workflow | draft | `hermes-clawta-bridge.py` |
+| **046** | octi-autonomous-claim-workflow | draft | `autonomous-board-engine.sh` |
+| **048** | octi-ha-migration-template | draft (template) | tripwired `start-dev` → HA cluster |
+
+## Octi assembly-line process spec
+
+> Spec 054 is the **process spec** — it sequences the Octi role
+> architecture (049) and runtime (040-048) into one end-to-end
+> 10-stage, 2-gate deterministic assembly line. On ratification it
+> supersedes `workspace/claude/skills/spec-factory.md` as the
+> canonical swarm operating procedure. Awaiting Ares + Clawta
+> alignment sign-off, then operator ratification.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **054** | octi-assembly-line | draft | The canonical 10-stage / 2-gate swarm operating procedure — ties 038 + 040-049 into one process |
+
+## Mini worker plane
+
+> The Mini session primitive — the L4 worker layer the Octi controller
+> dispatches into. Specs landed via PR #795 (050 slice 1) and PR #799
+> (050 slice 2 + 051/052/053).
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| 050 | mini-mcp-spec-dispatch | ratified | Mini MCP server + spec-driven dispatch; slice 1 shipped (PR #795), slice 2 in PR #799 |
+| 051 | mini-goalid-from-specs | draft | `goal_id` minted from the spec set a Mini session is opened against |
+| 052 | agent-worktree-mention-guardrails | draft | Worktree + mention-addressing guardrails for agent sessions |
+| 053 | mini-dispatch-via-kanban-driver | draft | Route Mini dispatch through the kanban driver (Option 3) |
+
+## SDD platform — charter 060 + roadmap 061-065
+
+> The chitin spec-driven-development platform (PR #803). Charter spec
+> 060 ratifies the 7-layer stack; specs 061-065 realize the gaps, built
+> bottom-up: 061 → 062 → 063 → 064 → 065. Strategy narrative:
+> `docs/strategy/chitin-spec-driven-platform.md`.
+
+| Spec | Layer | Title | Status | Triage ticket |
+|------|-------|-------|--------|---------------|
+| **060** | — | chitin-sdd-platform-charter | ratified (operator) | — |
+| 061 | L1 | unified-spec-model | draft | `t_095e6cf0` |
+| 062 | L2/L3 | spec-build-attribution | draft | `t_0291fcfc` |
+| 063 | L5 | cross-layer-replay | draft | `t_87eeb464` |
+| 064 | L6 | telemetry-spec-feedback | draft (Q1+Q2 resolved) | `t_c2c59167`; PR #805 |
+| 065 | L7 | goal-rebuild-engine | draft | `t_aaf68eaa` |
+
+## Grooming observability — spec 066
+
+> Spec 066 adds structured decision records and drift analysis to the
+> kanban grooming loop (spec 054 stage 8 → stage 0 flywheel telemetry).
+
+| Spec | Layer | Slug | Status | Bound ticket |
+|------|-------|------|--------|---------------|
+| 066 | 8→0 | grooming-telemetry | draft | `t_70a085ab` |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
