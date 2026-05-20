@@ -15,6 +15,7 @@ import (
 // Register wires every workflow into the worker host.
 func Register(w worker.Worker) {
 	w.RegisterWorkflow(HelloWorkflow)
+	w.RegisterWorkflow(SequenceWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

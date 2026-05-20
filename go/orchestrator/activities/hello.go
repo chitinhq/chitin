@@ -13,6 +13,7 @@ import (
 // Register wires every activity into the worker host.
 func Register(w worker.Worker) {
 	w.RegisterActivity(Greet)
+	w.RegisterActivity(ParseTasks)
 }
 
 // Greet is the Phase 0 smoke activity (tasks.md T010) — the activity half of
