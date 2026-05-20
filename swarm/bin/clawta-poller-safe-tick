@@ -11,6 +11,7 @@ MAX_LOAD=${CLAWTA_MAX_LOAD:-12}
 MAX_DISPATCH=${CLAWTA_MAX_DISPATCH:-1}
 TERMINAL_LANES=${TERMINAL_LANES:-codex,copilot,gemini}
 CLAWTA_POLLER_BIN=${CLAWTA_POLLER_BIN:-/home/red/.local/bin/clawta-poller}
+CLAWTA_POLLER_BOARDS=${CLAWTA_POLLER_BOARDS:-all}
 
 # Count active dispatch roots by ticket id; avoid counting child codex/vendor processes twice.
 # There are two valid active shapes:
@@ -43,5 +44,5 @@ if [ "$load_high" = "1" ]; then
   exit 0
 fi
 
-log "run: active_dispatch_tickets=$active_tickets load1=$load1 max_dispatch=$MAX_DISPATCH lanes=$TERMINAL_LANES"
-exec env TERMINAL_LANES="$TERMINAL_LANES" CLAWTA_ROUTER_MODE="${CLAWTA_ROUTER_MODE:-deterministic}" "$CLAWTA_POLLER_BIN" --once --max-dispatch "$MAX_DISPATCH"
+log "run: active_dispatch_tickets=$active_tickets load1=$load1 max_dispatch=$MAX_DISPATCH lanes=$TERMINAL_LANES boards=$CLAWTA_POLLER_BOARDS"
+exec env TERMINAL_LANES="$TERMINAL_LANES" CLAWTA_ROUTER_MODE="${CLAWTA_ROUTER_MODE:-deterministic}" "$CLAWTA_POLLER_BIN" --once --max-dispatch "$MAX_DISPATCH" --boards "$CLAWTA_POLLER_BOARDS"
