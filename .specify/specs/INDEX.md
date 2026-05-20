@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-17 (overnight roadmap sprint).
+> Last updated 2026-05-19 (Octi orchestration corpus PR 1/3 — foundation).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -39,6 +39,33 @@
 | 015 | diagnostics-mutation-separation | shipped | Diagnostics read-only; mutation gated |
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
+
+## Octi orchestration plane (Temporal Go) — PR 1/3 (foundation)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Three proposals (Ares
+> msgs 7740-7743, Clawta msg 7722, claude-code msg 7726); hybrid
+> ratified — Ares 5-role frame + Clawta conflict_sets + claude-code
+> derived confidence. Parent: spec 038. Operator override (2026-05-19):
+> Ares = research + spec-reviewer + board-groomer; #swarm + #mini +
+> #hermes deleted, only #ares + #clawta survive.
+>
+> Split across 3 PRs to honor chitin bounds:max_lines_changed (2000):
+> this PR (foundation) = 040 + 049 + 7 capability profile YAMLs.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **040** | octi-scaffolding | draft | Temporal Go module + `workflowcheck` CI gate + hello-world workflow |
+| **049** | octi-swarm-role-architecture | draft | 6 roles, capability schema, handoff packet, derived confidence — BEHAVIOR layer above 040-048 |
+
+Capability profiles under `swarm/octi/config/capability_profiles/`:
+ares, claude, clawta, mini, copilot, codex, claudecode. Operationalize
+spec 049 §R6.
+
+PR 2/3 (critique closures) will add: 041 event-mirror-contract,
+042 agentbus-identity-contract, 047 mention-routing-workflow.
+
+PR 3/3 (workflow migrations) will add: 043 dispatch, 044 poller,
+045 bridge, 046 autonomous-claim, 048 ha-migration-template.
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
