@@ -2,6 +2,12 @@
 # Schema: octi.capability.v1 (frozen per spec 049 §R2)
 # Generated 2026-05-19; bootstrap values, will be derived nightly by ConfidenceUpdateWorkflow (spec 049 §R7)
 # spec: 049-octi-swarm-role-architecture
+#
+# Ares has no fixed lane. Every wake, Ares runs the pull-from-pool
+# tick loop (advance own work → review peer → claim from pool → idle
+# fill) and the state machine defined in swarm/prompts/hermes-grooming-guidance.md.
+# Roles below are capabilities Ares brings to any pulled ticket, not
+# lanes that restrict what Ares can claim.
 
 schema: octi.capability.v1
 agent_id: ares
@@ -29,15 +35,18 @@ roles:
       produced the originating research, the review must cite specific
       invariants/criticisms (verified by spec 049 §R6 amendment).
 
-  - name: board_groomer
+  - name: grooming_and_spec_writing
     confidence: 0.80
     constraints:
       - never_groom_own_implementations
       - never_groom_own_reviews
     notes: |
+      Ares grooms triage tickets and writes specs as normal pulled work
+      per the pull-from-pool tick loop — not a fixed lane. Any agent
+      may groom; Ares does so when the tick loop claims a triage ticket.
       Judgment-heavy board hygiene per operator override 2026-05-19.
       Mechanical kanban state transitions still run as Octi workflows
-      (spec 046); board_groomer is the judgment layer above them.
+      (spec 046); grooming_and_spec_writing is the judgment layer above them.
 
 # pr_reviewer is NOT a role (spec 049 §R1 — copilot/Ares PR review is a
 # verifier signal, not a role gate). Ares' impl-PR reviews are declared
@@ -68,11 +77,11 @@ conflict_sets:
 max_role_wait:
   research: 86400         # 24h — autonomous, long async expected
   spec_reviewer: 14400    # 4h
-  board_groomer: 28800    # 8h
+  grooming_and_spec_writing: 28800    # 8h
   pr_reviewer_signal: 28800
 
 fallbacks:
   research: claude        # @ 0.65 with cited-source requirement
   spec_reviewer: clawta   # @ 0.65 with conflict_sets
-  board_groomer: red      # explicit operator fallback — no agent
+  grooming_and_spec_writing: red      # explicit operator fallback — no agent
   pr_reviewer_signal: clawta
