@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-20 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
+> Last updated 2026-05-20 (spec 071 + INDEX backfill: 025, 037, 039, 067–071, 728; collision flags at 036/038).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -141,6 +141,12 @@ spec 049 §R6.
 |------|-------|------|--------|---------------|
 | 066 | 8→0 | grooming-telemetry | draft | `t_70a085ab` |
 
+## Dispatch invariants — spec 025
+
+|| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **025** | dispatch-atomicity-invariant | draft | — | Block↔close single-owner invariant |
+
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
 > Filed during the overnight goal's Ares-lane audit. Cross-lane
@@ -160,6 +166,8 @@ spec 049 §R6.
 | 033 | typed-egress-mcp-trust-policy | t_c7bb6c64 | draft (stub) |
 | 034 | argus-standup-fold | t_da209102 | draft (stub) |
 | 035 | copilot-driver-chitin-policy-env | t_6bfe83b7 | draft (stub) |
+| 037 | sw-011-heartbeat-proof-tests | — | draft (stub) |
+| 039 | mini-discord-inbound | — | draft |
 
 10 other chitin tickets recommended for **archive** (operator-
 attended; tracking epics, research deferred, operator-audit planning
@@ -167,10 +175,36 @@ docs, or work superseded by GitHub-archived upstreams). See
 `.specify/specs/audit-2026-05-18/INDEX.md` for the per-ticket
 triage rationale.
 
+## Poller dispatch fix — spec 071
+
+> The Clawta poller treats assignee=clawta exclusively as a routing
+> signal. When Clawta is the intended implementer (not a router),
+> tickets sit ready forever. This spec adds IMPLEMENTER_LANES so the
+> poller can distinguish "route this" from "implement this yourself".
+
+|| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **067** | tasks-to-tickets | draft | — | Decomposer derives kanban tickets from tasks.md |
+| **068** | icarus-bench-loop-revival | draft | — | Icarus bench loop revival (terminal-bench non-stop) |
+| **069** | decommission-agent-bus-octi | draft | — | Decommission agent-bus and Octi |
+| **070** | chitin-orchestrator | Draft | — | Temporal orchestration layer |
+| **071** | poller-implementer-lanes | draft | `t_52283967` | Stale ticket `t_73b8dad9` (56h ready, never dispatched) |
+
+> **⚠️ Number collisions (036 and 038).** Three spec dirs share prefix 036,
+> two share prefix 038. These need operator resolution:
+>
+> - `036-dispatch-fault-tolerance-invariants` vs `036-ic-001-icarus-local-llm-driver`
+>   vs `036-icarus-harbor-agent-adapter`
+> - `038-icarus-harbor-agent-adapter` vs `038-octi-persistent-claude-session`
+>
+> Suggested fix: renumber to fill gaps or append suffixes. Pending operator
+> decision on canonical numbering.
+
 ## Workspace-overlay & retro specs
 
-| Spec | Title | Status | Notes |
+|| Spec | Title | Status | Notes |
 |------|-------|--------|-------|
+| 728 | dispatch-default-branch-fix | shipped | Respect board default_branch in worker commit gate |
 | 730 | path-scope-race-guards | shipped | Day-0 readybench portal retro fix (3-layer scope defense) |
 
 ## How this file is maintained
