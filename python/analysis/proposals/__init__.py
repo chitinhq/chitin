@@ -9,20 +9,31 @@ from analysis.proposals.models import (
     ThresholdStatus,
 )
 from analysis.proposals.queue import InvalidTransition, ProposalQueue
+from analysis.proposals.regression import RegressionDetector, RegressionResult
 from analysis.proposals.review import operator_approve
+from analysis.proposals.self_telemetry import (
+    AmendmentBaseline,
+    SelfTelemetry,
+    SentinelObservation,
+)
 from analysis.proposals.versioned_policy import PolicyVersion, PolicyVersionError, VersionedPolicyLog
 
 __all__ = [
+    "AmendmentBaseline",
     "Attribution",
     "BuildEvidence",
     "DispatchPolicyUpdate",
     "InvalidTransition",
-    "ProposalQueue",
-    "ProposalStatus",
-    "SpecAmendment",
-    "ThresholdStatus",
-    "operator_approve",
     "PolicyVersion",
     "PolicyVersionError",
+    "ProposalQueue",
+    "ProposalStatus",
+    "RegressionDetector",
+    "RegressionResult",
+    "SelfTelemetry",
+    "SentinelObservation",
+    "SpecAmendment",
+    "ThresholdStatus",
     "VersionedPolicyLog",
+    "operator_approve",
 ]
