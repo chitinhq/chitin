@@ -87,6 +87,7 @@ orchestration action originates outside the orchestrator.
 - A workflow is long-running by design (the pull-loop never "ends") — the orchestrator MUST support indefinitely-running workflows without unbounded history growth.
 - A cron is cut over to its workflow while a run is in flight — the cutover MUST NOT double-run or drop the in-flight tick.
 - An agent (Ares/Clawta) the orchestrator coordinates is unavailable — the workflow MUST wait/retry per policy, not fail silently.
+- Two work units run concurrently — each MUST run in its own isolated worktree and never observe the other's changes; the shared checkout is never a work surface.
 
 ## Requirements *(mandatory)*
 
@@ -104,6 +105,8 @@ orchestration action originates outside the orchestrator.
 - **FR-010**: The orchestrator MUST NOT depend on the agent-bus (decommissioned — spec 069); agent coordination is via the Chitin Board.
 - **FR-011**: The operator MUST be able to start, stop, inspect, and replay any workflow.
 - **FR-012**: A workflow code change MUST NOT break in-flight runs — version/replay safety is required.
+- **FR-013**: Every work unit the orchestrator dispatches MUST execute as a **worker** process in its own **dedicated git worktree** — never in the primary/shared repository checkout. The platform flow always uses workers + worktrees; orchestration and work never mutate the shared checkout.
+- **FR-014**: A worktree MUST be created fresh per work unit and removed on completion; a worktree orphaned by a crashed worker MUST be reclaimable (garbage-collected) by the orchestrator.
 
 ### Key Entities
 
@@ -111,6 +114,8 @@ orchestration action originates outside the orchestrator.
 - **Activity**: A single side-effecting step within a workflow (a board mutation, a `gh` call, an agent invocation) — retryable, timeout-bounded.
 - **Orchestrator service**: The runtime that executes and persists workflows and exposes their history.
 - **Migration register**: The mapping of each legacy cron/script → its replacement workflow → its retirement status.
+- **Worker**: An isolated process that executes exactly one work unit (a driver — codex/copilot/gemini/claude-code — or a generic task runner). Spawned by a workflow; short-lived.
+- **Worktree**: A dedicated git worktree, created fresh per work unit — the worker's isolated filesystem, torn down on completion. The shared checkout is never the work surface.
 
 ## Success Criteria *(mandatory)*
 
@@ -122,6 +127,7 @@ orchestration action originates outside the orchestrator.
 - **SC-004**: The orchestration surface shrinks from ~36 cron jobs + ~52 shell scripts to a count near zero.
 - **SC-005**: The pull-loop (P1 slice) runs as a workflow for 7 consecutive days with every tick inspectable before the next slice begins.
 - **SC-006**: Time to answer "did orchestration X run, and what did it do?" drops to seconds (open the run) from minutes (guessing + logs).
+- **SC-007**: Zero dispatched work units run in or mutate the primary repository checkout — every unit is isolated in its own worktree.
 
 ## Assumptions
 
