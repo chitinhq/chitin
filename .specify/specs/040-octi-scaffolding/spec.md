@@ -37,7 +37,7 @@ the tripwired `start-dev` → HA cluster migration template.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/` — new Go package root
   - `swarm/octi/workflows/` — Temporal workflow code (Go, deterministic)
@@ -60,7 +60,7 @@ the tripwired `start-dev` → HA cluster migration template.
 - `.specify/specs/040-octi-scaffolding/**`
 - `.specify/specs/INDEX.md` — add 040-048 rows under Active specs
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - `go/` (chitin kernel — Octi is a consumer of the gate, not an author)
 - `chitin.yaml` (governance policy — kernel gate stays unchanged)
@@ -157,10 +157,13 @@ string) (string, error)`. It:
 2. Calls `workflow.Now(ctx)` to get the deterministic timestamp
 3. Invokes one Activity, `EchoActivity`, which:
    - Takes the message
-   - Calls the chitin-kernel gate (`chitin-kernel gate eval --agent=octi
-     --action=echo --input=...`) and verifies allow
-   - Returns the echoed message + the gate decision id
-4. Returns `"echoed:<msg>@<ts>:gate=<decision_id>"`
+   - Calls the chitin-kernel gate (`chitin-kernel gate evaluate
+     --tool=Bash --args-json='{...}'`) and verifies the result's
+     `allowed` field is true
+   - Returns the echoed message + the gate decision's
+     `chain_id`/`seq` pair (the kernel's stable per-decision
+     coordinates — there is no single `decision_id` field)
+4. Returns `"echoed:<msg>@<ts>:gate=<chain_id>:<seq>"`
 
 The hello-world is deliberately trivial — it exists to prove the
 end-to-end shape: workflow code → Activity → kernel gate → event
@@ -186,15 +189,22 @@ shipped scaffolding.
 Every Activity that produces an externally visible side effect
 (network, filesystem, subprocess, sqlite write, MCP call) MUST
 issue a chitin-kernel gate evaluation before the side effect. The
-gate decision (`allow` / `deny` / `defer`) is recorded in chitin's
-existing `~/.chitin/gov-decisions-YYYY-MM-DD.jsonl` log.
+gate result — a boolean `allowed` plus a `mode`
+(`monitor` | `enforce` | `guide`) and optional escalation
+metadata — is recorded in chitin's existing
+`~/.chitin/gov-decisions-YYYY-MM-DD.jsonl` log. (There is no
+`defer` outcome in the current kernel schema; a blocked action is
+`allowed=false`.)
 
 Activity code MUST NOT bypass the gate by issuing side effects
-directly. CI enforces this via a grep gate
-(`.github/workflows/octi-no-gate-bypass.yml`) that flags any
-`http.Get`, `os/exec`, `sql.Open`, etc. in `swarm/octi/activities/`
-not preceded by a `chitin.GateEval(...)` call within the same
-function.
+directly. CI enforces this via an **AST-based static-analysis
+check** (`.github/workflows/octi-no-gate-bypass.yml`, running a
+`go vet`-style analyzer) — not a plain grep, since detecting "a
+side-effect call not preceded by `chitin.GateEval(...)` in the
+same function" requires per-function control-flow reasoning.
+The analyzer flags any `http.Get`, `os/exec`, `sql.Open`, etc. in
+`swarm/octi/activities/` whose enclosing function has no
+preceding `chitin.GateEval(...)` call.
 
 ### R8 — Event mirror is a separate spec (041)
 
@@ -241,8 +251,9 @@ latency > 5s. This spec (040) ships only `start-dev`.
    confirmed by `swarm/bin/octi dev status` reporting the running
    PID.
 5. `swarm/bin/octi hello "test"` returns
-   `"echoed:test@<ts>:gate=<decision_id>"` where `<decision_id>` is
-   present in `~/.chitin/gov-decisions-YYYY-MM-DD.jsonl`.
+   `"echoed:test@<ts>:gate=<chain_id>:<seq>"` where the
+   `<chain_id>:<seq>` pair matches a decision row in
+   `~/.chitin/gov-decisions-YYYY-MM-DD.jsonl`.
 6. `swarm/bin/octi replay <workflow-id>` for the run from AC5
    completes with exit code 0 and a "replay match" message.
 7. e2e test `swarm/octi/e2e/replay_test.go` runs in CI and passes.

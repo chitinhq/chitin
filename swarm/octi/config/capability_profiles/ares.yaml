@@ -3,6 +3,7 @@
 # Generated 2026-05-19; bootstrap values, will be derived nightly by ConfidenceUpdateWorkflow (spec 049 §R7)
 # spec: 049-octi-swarm-role-architecture
 
+schema: octi.capability.v1
 agent_id: ares
 runtime: hermes
 model: glm-5.1
@@ -21,8 +22,8 @@ roles:
     confidence: 0.85
     constraints:
       - never_review_own_work
-      - review_must_cite_invariants     # R6 research-author soft guard
-      - review_body_min_chars: 200
+      - review_must_cite_invariants       # R6 research-author soft guard
+      - review_body_min_chars=200         # string form — constraints list is uniform strings
     notes: |
       Single review authority for spec PRs. Soft guard: when Ares
       produced the originating research, the review must cite specific
@@ -38,13 +39,18 @@ roles:
       Mechanical kanban state transitions still run as Octi workflows
       (spec 046); board_groomer is the judgment layer above them.
 
+# pr_reviewer is NOT a role (spec 049 §R1 — copilot/Ares PR review is a
+# verifier signal, not a role gate). Ares' impl-PR reviews are declared
+# here as a signal capability, kept out of the `roles` list.
+signal_capabilities:
   - name: pr_reviewer_signal
     confidence: 0.85
     constraints:
       - never_review_own_implementations
+    feeds: verifier_activity              # spec 049 §R1
     notes: |
-      Ares reviews impl PRs as input INTO the verifier Activity (spec
-      049 §R1). Output is a verifier signal, not a role gate.
+      Ares reviews impl PRs as input INTO the verifier Activity.
+      Output is a verifier signal, not a role gate.
 
 availability:
   status: online

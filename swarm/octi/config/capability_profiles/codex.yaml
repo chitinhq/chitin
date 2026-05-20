@@ -5,6 +5,7 @@
 # codex is an IMPLEMENTER-DRIVER, dispatched to per-ticket. Not an
 # autonomous role-holder under spec 049.
 
+schema: octi.capability.v1
 agent_id: codex_driver
 runtime: openai-codex-cli
 model: gpt-5.4-or-later
@@ -22,12 +23,12 @@ roles:
       - single_task_spawn               # one ticket per invocation; no continuous session
     notes: |
       Single-task implementation worker dispatched by spec 043's
-      DispatchTicketWorkflow when board-maintainer/Clawta routes a
-      ticket to codex. Worker lifecycle is spawn → implement →
-      open PR → exit.
+      DispatchTicketWorkflow when the board-groomer role + the
+      poller route a ticket to codex. Worker lifecycle is
+      spawn → implement → open PR → exit.
 
 availability:
-  status: pool                          # not "online" — spawned on demand
+  status: pool                          # routable per spec 049 §R5 isRoutable(); spawned on demand
   in_flight: 0
   max_concurrent: 4                     # parallel worker pool
 

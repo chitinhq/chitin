@@ -5,6 +5,7 @@
 # Mini is an EXECUTION SURFACE, not a role-holder. See spec 049 §R1
 # "What's NOT a role" and §I6.
 
+schema: octi.capability.v1
 agent_id: mini
 runtime: claude-code-cli-via-kitty
 model: claude-sonnet-or-opus

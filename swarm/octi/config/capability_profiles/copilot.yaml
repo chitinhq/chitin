@@ -5,6 +5,7 @@
 # Copilot is a VERIFIER SIGNAL, not a role-holder. See spec 049 §R1
 # "What's NOT a role".
 
+schema: octi.capability.v1
 agent_id: github-copilot
 runtime: github-action
 model: copilot-pr-review

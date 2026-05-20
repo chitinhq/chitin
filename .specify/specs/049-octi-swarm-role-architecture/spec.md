@@ -47,7 +47,7 @@ granularity.
 
 ## File-system scope
 
-### MAY write under
+Worker MAY write under:
 
 - `swarm/octi/roles/` — new Go package
   - `swarm/octi/roles/schema.go` — `CapabilityProfile`,
@@ -76,7 +76,7 @@ granularity.
   pointer to this spec, NOT rewrite (the skill file is the
   operator-facing summary; this spec is the contract)
 
-### MUST NOT write under
+Worker MUST NOT write under:
 
 - Agent runtime code (`swarm/mini/`, hermes scripts,
   openclaw workflows) — agents declare capability profiles,
@@ -89,15 +89,15 @@ granularity.
 ## Goal
 
 A spec idea enters the assembly line via a `research` stage
-emission. Octi routes the resulting handoff packet through each of
-the five role stations: research → spec-writer → spec-reviewer
-(operator-ratify gate) → implementer → verifier (operator-merge
+emission. Octi routes the resulting handoff packet through the six
+roles: research → spec-writer → spec-reviewer (operator-ratify
+gate) → board-groomer → implementer → verifier (operator-merge
 gate). Every routing decision is recorded as an OctiEvent;
 "why did this stage go to Ares this time" is a one-query answer
 against the event mirror. Verifier failures decay agent confidence
 automatically. The reviewer bottleneck is **visible**, not
-**solved** — by design — and surfaces to operator via
-`max_review_wait` timer rather than auto-approving.
+**solved** — by design — and surfaces to operator via the
+`max_role_wait` timer (R8) rather than auto-approving.
 
 ## Requirements
 
@@ -221,7 +221,7 @@ Failure raises an Activity error; the producing stage gets re-routed.
 func RouteStage(role string, packet HandoffPacket, profiles []CapabilityProfile) RoutingDecision {
     candidates := filter(profiles, func(p) bool {
         return hasRole(p, role) &&
-               p.availability.status == "online" &&
+               isRoutable(p.availability.status) &&
                p.availability.in_flight < p.availability.max_concurrent &&
                !violatesConflictSets(p, packet)
     })
@@ -241,6 +241,16 @@ func RouteStage(role string, packet HandoffPacket, profiles []CapabilityProfile)
 Decision is recorded as `octi.routing.decision` OctiEvent
 (extending spec 041 schema). "Why this agent this time" is one
 `jq` query against the mirror.
+
+**Availability status enum (v1, frozen)**: `online` | `busy` |
+`offline` | `pool` | `always_online`. `isRoutable(status)` returns
+true for `online`, `pool`, and `always_online`; false for `busy`
+and `offline`. Rationale: `pool` (driver workers spawned on
+demand — codex, claudecode) and `always_online` (GitHub-hosted
+verifier signals — copilot, CI) are both eligible for routing;
+only `busy`/`offline` agents are filtered out. A bare `online`
+agent past its `max_concurrent` is filtered by the in-flight
+check, not the status check.
 
 ### R6 — Initial role assignment (v1 capability profiles)
 
@@ -420,8 +430,8 @@ jq -r 'select(.event_type == "octi.role.claimed") | "\(.payload.agent_id) \(.pay
 jq -r 'select(.event_type == "octi.routing.decision" and .payload.conflict_check_result != "passed")' \
    ~/.chitin/octi-events-*.jsonl
 
-# "review overdue summary"
-jq -r 'select(.event_type == "octi.stage.review_overdue")' \
+# "role overdue summary"
+jq -r 'select(.event_type == "octi.stage.role_overdue")' \
    ~/.chitin/octi-events-*.jsonl
 ```
 
@@ -433,7 +443,8 @@ These three queries become operator-CLI verbs:
 ## Acceptance criteria
 
 1. `swarm/octi/config/capability_profiles/` contains YAML for
-   each named agent in R6 (8 files total).
+   each named agent in R6 (7 files: ares, claude, clawta, mini,
+   copilot, codex, claudecode).
 2. `RouteStage()` returns deterministic results on the same
    input — fixture test asserts identical RoutingDecision over
    100 invocations.
@@ -445,8 +456,8 @@ These three queries become operator-CLI verbs:
 5. `ConfidenceUpdateWorkflow` runs nightly; e2e test simulates
    30 days of verifier results and asserts confidence updates
    are within ±0.05 of expected exponentially-weighted pass rate.
-6. Review overdue: spec-review with no response for >4h emits
-   `octi.stage.review_overdue` and posts to red's inbox —
+6. Role overdue: spec-review with no response for >4h emits
+   `octi.stage.role_overdue` and posts to red's inbox —
    verified by mock-clock e2e.
 7. `octi-roles snapshot` returns the current set of
    `octi.role.claimed` events with no terminal_ts; matches

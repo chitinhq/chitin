@@ -2,6 +2,7 @@
 # Schema: octi.capability.v1 (frozen per spec 049 §R2)
 # spec: 049-octi-swarm-role-architecture
 
+schema: octi.capability.v1
 agent_id: claude
 runtime: claude-code-cli
 model: claude-sonnet-or-opus

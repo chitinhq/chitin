@@ -6,6 +6,7 @@
 # IMPLEMENTER-DRIVER, dispatched to per-ticket. Distinct from `claude`
 # (operator-paired spec writer in claude.yaml).
 
+schema: octi.capability.v1
 agent_id: claudecode_driver
 runtime: claude-code-cli-headless
 model: claude-sonnet-or-opus

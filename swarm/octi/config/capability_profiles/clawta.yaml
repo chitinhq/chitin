@@ -2,6 +2,7 @@
 # Schema: octi.capability.v1 (frozen per spec 049 §R2)
 # spec: 049-octi-swarm-role-architecture
 
+schema: octi.capability.v1
 agent_id: clawta
 runtime: openclaw
 model: codex-5.5
@@ -26,7 +27,7 @@ roles:
     constraints:
       - never_review_own_work
       - review_must_cite_invariants
-      - review_body_min_chars: 200
+      - review_body_min_chars=200         # string form — constraints list is uniform strings
     notes: |
       Fallback spec-reviewer when Ares is offline. Higher conflict
       sensitivity than Ares — Clawta cannot review specs for
