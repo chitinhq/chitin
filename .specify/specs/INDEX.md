@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-17 (overnight roadmap sprint).
+> Last updated 2026-05-19 (spec 054 — Octi assembly-line process).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -39,6 +39,19 @@
 | 015 | diagnostics-mutation-separation | shipped | Diagnostics read-only; mutation gated |
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
+
+## Octi assembly-line process spec
+
+> Spec 054 is the **process spec** — it sequences the Octi role
+> architecture (049) and runtime (040-048) into one end-to-end
+> 9-stage, 2-gate deterministic assembly line. On ratification it
+> supersedes `workspace/claude/skills/spec-factory.md` as the
+> canonical swarm operating procedure. Awaiting Ares + Clawta
+> alignment sign-off, then operator ratification.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **054** | octi-assembly-line | draft | The canonical 9-stage / 2-gate swarm operating procedure — ties 038 + 040-049 into one process |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
