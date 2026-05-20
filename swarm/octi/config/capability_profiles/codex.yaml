@@ -1,0 +1,36 @@
+# Octi capability profile — codex driver
+# Schema: octi.capability.v1 (frozen per spec 049 §R2)
+# spec: 049-octi-swarm-role-architecture
+#
+# codex is an IMPLEMENTER-DRIVER, dispatched to per-ticket. Not an
+# autonomous role-holder under spec 049.
+
+agent_id: codex_driver
+runtime: openai-codex-cli
+model: gpt-5.4-or-later
+discord_channel_id: null
+bus_audience_keys: []
+
+surface_type: implementer_driver
+
+roles:
+  - name: implementer
+    confidence: 0.70
+    constraints:
+      - test_first_per_spec_020
+      - scope_matches_allowed_paths
+      - single_task_spawn               # one ticket per invocation; no continuous session
+    notes: |
+      Single-task implementation worker dispatched by spec 043's
+      DispatchTicketWorkflow when board-maintainer/Clawta routes a
+      ticket to codex. Worker lifecycle is spawn → implement →
+      open PR → exit.
+
+availability:
+  status: pool                          # not "online" — spawned on demand
+  in_flight: 0
+  max_concurrent: 4                     # parallel worker pool
+
+dispatch_target:
+  task_queue: codex-py
+  spawn_via: spawn_worker_subprocess.py
