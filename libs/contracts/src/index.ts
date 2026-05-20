@@ -7,3 +7,4 @@ export * from './execution-request.schema.js';
 export * from './fingerprint.js';
 export * from './hash.js';
 export { resolveChitinDir } from './chitindir-resolve.js';
+export * from './unified-spec.schema.js';

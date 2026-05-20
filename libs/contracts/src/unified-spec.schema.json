@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chitin.dev/schemas/unified-spec.schema.json",
+  "title": "UnifiedSpec",
+  "description": "Unified spec model — the normalized shape all framework adapters produce. Layers L2–L7 consume only this contract.",
+  "type": "object",
+  "required": ["spec_id", "title", "status", "source_framework", "source_path", "requirements", "acceptance", "boundaries", "slices", "open_questions"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id — e.g. '060', 'ic-001'. The join key for L2/L3 attribution, replay, and the /goal corpus."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable spec title."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "ratified", "superseded"],
+      "description": "Lifecycle status of the spec."
+    },
+    "source_framework": {
+      "type": "string",
+      "enum": ["spec-kit", "openspec", "superpowers", "house"],
+      "description": "Which framework produced this spec. For provenance/debugging only — L2+ never branches on it."
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provenance — where the spec was adapted from (e.g. '.specify/specs/061-unified-spec-model/spec.md')."
+    },
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Requirement" },
+      "description": "Ordered list of requirements (R1, R2, ...). May be empty for charter/stub specs."
+    },
+    "acceptance": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AcceptanceCriterion" },
+      "description": "Ordered list of acceptance criteria (AC1, AC2, ...). May be empty for stub specs."
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Boundary cases the spec must handle."
+    },
+    "slices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Slice" },
+      "description": "Implementation slices."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Question" },
+      "description": "Open questions with optional proposed resolution."
+    }
+  },
+  "$defs": {
+    "Requirement": {
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Requirement id, e.g. 'R1'." },
+        "text": { "type": "string", "minLength": 1, "description": "Requirement text." }
+      }
+    },
+    "AcceptanceCriterion": {
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "AC id, e.g. 'AC1'." },
+        "text": { "type": "string", "minLength": 1, "description": "Acceptance criterion text." }
+      }
+    },
+    "Slice": {
+      "type": "object",
+      "required": ["id", "scope", "requirement_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Slice id, e.g. 'Slice 1'." },
+        "scope": { "type": "string", "minLength": 1, "description": "What the slice covers." },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Requirement ids this slice implements."
+        }
+      }
+    },
+    "Question": {
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Question id, e.g. 'Q1'." },
+        "text": { "type": "string", "minLength": 1, "description": "Question text." },
+        "proposed": {
+          "type": "string",
+          "nullable": true,
+          "description": "Proposed resolution, if any."
+        }
+      }
+    }
+  }
+}
