@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from analysis.proposals.models import ProposalBase, ProposalStatus
+from analysis.proposals.versioned_policy import PolicyVersion, VersionedPolicyLog
 
 ActorKind = Literal["operator", "agent", "sentinel"]
 
@@ -43,12 +44,12 @@ class ProposalQueue:
     _OPERATOR_ALLOWED = {
         ProposalStatus.PROPOSED: {ProposalStatus.READY_FOR_REVIEW, ProposalStatus.APPROVED, ProposalStatus.REJECTED},
         ProposalStatus.READY_FOR_REVIEW: {ProposalStatus.PROPOSED, ProposalStatus.APPROVED, ProposalStatus.REJECTED},
-        ProposalStatus.APPROVED: {ProposalStatus.APPLIED},
     }
 
-    def __init__(self) -> None:
+    def __init__(self, policy_log: VersionedPolicyLog | None = None) -> None:
         self._proposals: dict[str, ProposalBase] = {}
         self._audit: list[AuditEntry] = []
+        self.policy_log = policy_log or VersionedPolicyLog()
 
     @property
     def audit_log(self) -> tuple[AuditEntry, ...]:
@@ -119,6 +120,33 @@ class ProposalQueue:
             actor_kind="operator",
         )
 
+    def apply(
+        self,
+        proposal_id: str,
+        *,
+        operator_id: str,
+        action_token: str,
+        applied_diff: dict[str, object] | None = None,
+    ) -> PolicyVersion:
+        self._require_operator_token(ProposalStatus.APPLIED, action_token)
+        proposal = self.get(proposal_id)
+        if proposal.status != ProposalStatus.APPROVED:
+            raise InvalidTransition("only approved proposals may be applied")
+
+        version = self.policy_log.apply(
+            proposal_id,
+            applied_diff or self._default_applied_diff(proposal),
+        )
+        proposal.status = ProposalStatus.APPLIED
+        self._audit_transition(
+            proposal_id,
+            from_status=str(ProposalStatus.APPROVED),
+            to_status=str(ProposalStatus.APPLIED),
+            actor=operator_id,
+            actor_kind="operator",
+        )
+        return version
+
     def _transition_checked(
         self,
         proposal_id: str,
@@ -173,3 +201,11 @@ class ProposalQueue:
     def _require_operator_token(target: ProposalStatus, token: str | None) -> None:
         if target in {ProposalStatus.APPROVED, ProposalStatus.APPLIED, ProposalStatus.REJECTED} and not token:
             raise PermissionError("operator action token required")
+
+    @staticmethod
+    def _default_applied_diff(proposal: ProposalBase) -> dict[str, object]:
+        return {
+            "proposal_id": proposal.id,
+            "kind": getattr(proposal, "kind", "unknown"),
+            "summary": getattr(proposal, "update_summary", "") or getattr(proposal, "amendment_summary", ""),
+        }
