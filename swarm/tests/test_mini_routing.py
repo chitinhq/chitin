@@ -115,6 +115,64 @@ class TestRouteMessage(unittest.TestCase):
         self.assertEqual(r.decision, "first_inbound_bind")
         self.assertEqual(r.goal_id, "abc-extended")
 
+    # ----- B3: sole-session auto-bind (added 2026-05-19) ----------------
+    # UX motivation: a 40-char goal_id is impossible to type in Discord.
+    # When exactly one unbound Mini session exists, `@mini ping` should
+    # route to it without forcing the operator to name it explicitly.
+
+    def test_sole_unbound_session_auto_binds(self) -> None:
+        """One unbound session + body with no goal_id → bind to that session."""
+        _make_state_dir(self.root, "smoke-test-inbound-respond-pong-4bd0f1a4")
+        r = route_message(
+            state_root=self.root, bus_thread_id="T-new", body="@mini ping",
+        )
+        self.assertEqual(r.decision, "first_inbound_bind")
+        self.assertEqual(r.goal_id, "smoke-test-inbound-respond-pong-4bd0f1a4")
+
+    def test_sole_session_already_bound_does_not_poach_new_thread(self) -> None:
+        """A session bound to T1 must NOT auto-bind to a new thread T2.
+        Without this guard, the second user typing `@mini ping` in a
+        different Discord channel would hijack the original Mini session."""
+        _make_state_dir(self.root, "alpha", thread_id="T1")
+        r = route_message(
+            state_root=self.root, bus_thread_id="T2", body="@mini ping",
+        )
+        self.assertEqual(r.decision, "no_match")
+        self.assertIsNone(r.goal_id)
+
+    def test_two_unbound_sessions_no_body_match_stays_no_match(self) -> None:
+        """Auto-bind only fires when the unbound count is exactly 1.
+        Two unbound sessions and no body disambiguation → still no_match
+        (regression guard for the existing behavior)."""
+        _make_state_dir(self.root, "alpha")
+        _make_state_dir(self.root, "beta")
+        r = route_message(
+            state_root=self.root, bus_thread_id="T-new", body="@mini ping",
+        )
+        self.assertEqual(r.decision, "no_match")
+
+    def test_one_bound_one_unbound_routes_to_unbound_on_new_thread(self) -> None:
+        """alpha bound to T1, beta unbound. Message on T2 → bind to beta."""
+        _make_state_dir(self.root, "alpha", thread_id="T1")
+        _make_state_dir(self.root, "beta")
+        r = route_message(
+            state_root=self.root, bus_thread_id="T2", body="@mini ping",
+        )
+        self.assertEqual(r.decision, "first_inbound_bind")
+        self.assertEqual(r.goal_id, "beta")
+
+    def test_sole_session_body_names_it_still_binds(self) -> None:
+        """Naming the sole session explicitly is still valid — same outcome
+        as auto-bind, but the route_message returns it via the body-named
+        path (step 2), not the sole-session path (step 3)."""
+        _make_state_dir(self.root, "alpha")
+        r = route_message(
+            state_root=self.root, bus_thread_id="T-new",
+            body="@mini please nudge alpha",
+        )
+        self.assertEqual(r.decision, "first_inbound_bind")
+        self.assertEqual(r.goal_id, "alpha")
+
 
 class TestBindThread(unittest.TestCase):
     def setUp(self) -> None:

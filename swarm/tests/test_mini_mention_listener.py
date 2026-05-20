@@ -348,8 +348,11 @@ class TickWithFakeBusTests(unittest.TestCase):
         conn.close()
 
     def test_no_match_marks_read_no_reply_no_jsonl(self) -> None:
-        """Addressed but no goal_id named, no thread bound → silent dismissal."""
+        """Addressed but no goal_id named, no thread bound, 2+ unbound
+        sessions → silent dismissal. Two sessions ensure B3 sole-session
+        auto-bind does NOT fire."""
         _make_state_dir(self.state_root, "alpha")
+        _make_state_dir(self.state_root, "beta")  # forces no_match (2 unbound)
         conn = self._open_conn()
         _ensure_thread(conn, thread_id=99)
         msg_id = _post_msg(conn, thread_id=99,
@@ -369,6 +372,47 @@ class TickWithFakeBusTests(unittest.TestCase):
         )
         # No per-session jsonl was created (no session was identified).
         self.assertFalse((self.state_root / "alpha" / "inbound.jsonl").exists())
+        self.assertFalse((self.state_root / "beta" / "inbound.jsonl").exists())
+        conn.close()
+
+    def test_sole_session_auto_binds_and_nudges_without_goal_id_in_body(self) -> None:
+        """B3 end-to-end: one unbound session + `@mini ping` (no goal_id
+        named) → listener binds the thread and nudges. UX path for the
+        common case where the operator types in Discord without
+        remembering a 40-char goal_id."""
+        _make_state_dir(self.state_root, "smoke-test-inbound-respond-pong-4bd0f1a4")
+        conn = self._open_conn()
+        _ensure_thread(conn, thread_id=99)
+        msg_id = _post_msg(conn, thread_id=99, body="@mini ping", audience="mini")
+
+        nudges: list[tuple[str, str]] = []
+        def factory(gid: str) -> FakeMiniSession:
+            session = FakeMiniSession(gid)
+            original_nudge = session.nudge
+            def capture(message: str, **kwargs: Any) -> None:
+                nudges.append((gid, message))
+                return original_nudge(message, **kwargs)
+            session.nudge = capture  # type: ignore[method-assign]
+            return session
+
+        listener.tick(conn=conn, state_root=self.state_root, mini_session_factory=factory)
+
+        # Nudge fired with the sole session as target.
+        self.assertEqual(
+            nudges,
+            [("smoke-test-inbound-respond-pong-4bd0f1a4", "@mini ping")],
+        )
+        # Thread bound to the goal_id.
+        thread_file = self.state_root / "smoke-test-inbound-respond-pong-4bd0f1a4" / "thread_id"
+        self.assertTrue(thread_file.is_file())
+        self.assertEqual(thread_file.read_text().strip(), "99")
+        # Read mark written.
+        self.assertEqual(
+            len(conn.execute(
+                "SELECT 1 FROM reads WHERE agent_id='mini' AND message_id=?", (msg_id,)
+            ).fetchall()),
+            1,
+        )
         conn.close()
 
     def test_collision_posts_error_does_not_nudge(self) -> None:

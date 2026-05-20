@@ -64,7 +64,7 @@ def route_message(
 ) -> RouteResult:
     """Resolve a bus message to a Mini goal_id.
 
-    Resolution order (R1 + B2 from spec 039):
+    Resolution order (R1 + B2 from spec 039, B3 sole-session added 2026-05-19):
       1. If any state dir's `thread_id` matches bus_thread_id exactly:
          - one match  -> "bound"
          - 2+ matches -> "collision" (defensive; bind_thread normally
@@ -72,7 +72,13 @@ def route_message(
       2. Otherwise scan live goal_ids for token-exact occurrence in body:
          - exactly one -> "first_inbound_bind"
          - 2+          -> "ambiguous"
-         - zero        -> "no_match"
+      3. (B3) No goal_id named in body, but exactly one *unbound* live
+         session exists -> "first_inbound_bind" against the sole session.
+         The UX win: operator types `@mini ping` without remembering a
+         40-char goal_id, and the listener routes to the only Mini that
+         doesn't already own a thread.
+      4. Otherwise -> "no_match" (no live session, or 2+ unbound and
+         no disambiguation in body).
     """
     goal_dirs = _live_goal_dirs(state_root)
 
@@ -100,6 +106,15 @@ def route_message(
         return RouteResult(
             decision="ambiguous", goal_id=None, state_dir=None, candidates=names,
         )
+
+    # B3: sole-session auto-bind. Only fires when there's exactly one
+    # *unbound* live session — multiple unbound sessions stay ambiguous
+    # (no_match), and an already-bound sole session won't poach another
+    # thread.
+    unbound = [d for d in goal_dirs if _read_thread_id(d) is None]
+    if len(unbound) == 1:
+        d = unbound[0]
+        return RouteResult(decision="first_inbound_bind", goal_id=d.name, state_dir=d)
 
     return RouteResult(decision="no_match", goal_id=None, state_dir=None)
 
