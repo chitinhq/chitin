@@ -54,6 +54,25 @@ func TestLoadPolicyFileWithOptions_VerifiesSignedPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadPolicyFile_AdvisoryModeIgnoresSignatureWithoutTrustKey(t *testing.T) {
+	dir := t.TempDir()
+	policyPath, _ := writeSignedPolicy(t, dir)
+	if err := os.RemoveAll(filepath.Join(dir, ".chitin")); err != nil {
+		t.Fatalf("remove trust dir: %v", err)
+	}
+	t.Setenv("CHITIN_POLICY_PUBLIC_KEY", "")
+	t.Setenv("CHITIN_POLICY_TRUST_DIR", filepath.Join(dir, "missing-trust"))
+	t.Setenv("CHITIN_POLICY_REQUIRE_SIGNATURE", "")
+
+	p, err := LoadPolicyFile(policyPath)
+	if err != nil {
+		t.Fatalf("LoadPolicyFile advisory mode should not require an unconfigured trust key: %v", err)
+	}
+	if p.ID != "signed-policy-test" {
+		t.Fatalf("policy ID=%q", p.ID)
+	}
+}
+
 func TestLoadPolicyFileWithOptions_RejectsTamperedSignedPolicy(t *testing.T) {
 	dir := t.TempDir()
 	policyPath, opts := writeSignedPolicy(t, dir)

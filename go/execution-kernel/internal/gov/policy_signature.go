@@ -145,7 +145,8 @@ func VerifyPolicySignatureBytes(path string, data []byte, opts PolicyLoadOptions
 		return &PolicySignatureError{Code: "policy_signature_unreadable", Path: sigPath, Message: sigErr.Error()}
 	}
 
-	requireSig := opts.signatureRequired() || trustConfigured
+	signatureRequired := opts.signatureRequired()
+	requireSig := signatureRequired || trustConfigured
 	if errors.Is(sigErr, os.ErrNotExist) {
 		if requireSig {
 			return &PolicySignatureError{Code: "policy_signature_missing", Path: path, Message: "missing sidecar signature " + filepath.Base(sigPath)}
@@ -153,6 +154,9 @@ func VerifyPolicySignatureBytes(path string, data []byte, opts PolicyLoadOptions
 		return nil
 	}
 	if !trustConfigured {
+		if !signatureRequired {
+			return nil
+		}
 		return &PolicySignatureError{Code: "policy_signature_untrusted", Path: path, Message: "signature exists but no operator public key is pinned"}
 	}
 
