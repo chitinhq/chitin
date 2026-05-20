@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,11 +37,12 @@ from typing import Any, Callable
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "mini"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 
 # Locate the mini CLI relative to this file: services/mini-mcp/ -> repo root -> swarm/bin/mini
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MINI_CLI = REPO_ROOT / "swarm" / "bin" / "mini"
+SPECS_DIR = REPO_ROOT / ".specify" / "specs"
 STATE_ROOT = Path(os.environ.get("MINI_STATE_ROOT", str(Path.home() / ".swarm" / "octi")))
 
 
@@ -83,16 +85,114 @@ def _run_mini(*args: str, timeout: int = 30) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def mini_open(*, goal: str, ticket: str | None = None,
-              cwd_is_worktree: bool = False) -> dict:
-    """Spawn a new Mini session. Creates state_dir, worktree, branch,
-    opens a kitty window with Claude Code, returns the goal_id."""
+# --- spec-reference resolution (spec 050 R1/R3) -----------------------------
+
+
+def _spec_title(spec_md: Path) -> str:
+    """First `# ` heading of a spec.md, or the dir name as a fallback."""
+    for line in spec_md.read_text().splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return spec_md.parent.name
+
+
+def _resolve_one(ref: str) -> list[Path]:
+    """Resolve a single non-range spec reference to spec dir(s).
+
+    Accepts an exact directory name (full slug) or a bare 3-digit number.
+    No fuzzy/substring matching (spec 050 Q1 — exact only). Raises
+    ValueError on a missing or ambiguous reference.
+    """
+    exact = SPECS_DIR / ref
+    if exact.is_dir():
+        return [exact]
+    if re.fullmatch(r"\d{3}", ref):
+        matches = sorted(d for d in SPECS_DIR.glob(f"{ref}-*") if d.is_dir())
+        if len(matches) == 1:
+            return matches
+        if not matches:
+            raise ValueError(f"no spec directory matches number {ref!r}")
+        raise ValueError(
+            f"spec number {ref!r} is ambiguous: {[m.name for m in matches]}"
+        )
+    raise ValueError(
+        f"spec reference {ref!r} not found — expected a 3-digit number, "
+        f"an ascending NNN-NNN range, or an exact spec directory name"
+    )
+
+
+def _resolve_spec_ref(ref: str) -> list[Path]:
+    """Resolve one spec reference, expanding an ascending NNN-NNN range."""
+    ref = ref.strip()
+    if SPECS_DIR.joinpath(ref).is_dir():
+        return [SPECS_DIR / ref]  # exact dir wins even if it looks range-y
+    m = re.fullmatch(r"(\d{3})-(\d{3})", ref)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if hi < lo:
+            raise ValueError(
+                f"range {ref!r} is descending; ranges must be ascending"
+            )
+        out: list[Path] = []
+        for n in range(lo, hi + 1):
+            out.extend(_resolve_one(f"{n:03d}"))
+        return out
+    return _resolve_one(ref)
+
+
+def mini_open(*, specs: list[str], invoked_by: str | None = None,
+              ticket: str | None = None) -> dict:
+    """Spawn a new Mini session against one or more ratified specs.
+
+    `specs` is a non-empty list of references — 3-digit numbers, exact
+    spec directory names, or ascending NNN-NNN ranges. Every reference
+    is resolved BEFORE any session is created; a missing or ambiguous
+    reference is a hard error and spawns nothing (spec 050 R3).
+
+    The session's /goal is composed from the resolved specs (R2): Mini
+    is told to implement them in order, honoring each spec's acceptance
+    criteria.
+    """
+    if not specs:
+        raise ValueError("specs list cannot be empty — pass at least one spec reference")
+
+    resolved: list[Path] = []
+    for ref in specs:
+        resolved.extend(_resolve_spec_ref(ref))
+
+    # Dedupe, preserving first-seen order.
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for d in resolved:
+        if d not in seen:
+            seen.add(d)
+            unique.append(d)
+
+    # Every resolved dir must carry a spec.md (boundary case 4).
+    for d in unique:
+        if not (d / "spec.md").is_file():
+            raise ValueError(f"spec directory {d.name!r} has no spec.md")
+
+    lines = []
+    for i, d in enumerate(unique, 1):
+        rel = d.relative_to(REPO_ROOT)
+        lines.append(f"  {i}. {rel}/spec.md — {_spec_title(d / 'spec.md')}")
+    goal = (
+        "Implement the following ratified specs in one shot, in order:\n\n"
+        + "\n".join(lines)
+        + "\n\nRead each spec.md fully before starting. Honor every "
+        "acceptance criterion. Write status.json transitions per the "
+        "standard Mini contract. Do not start spec N+1 until spec N's "
+        "`verify` passes."
+    )
+
     args = ["open", "--goal", goal]
     if ticket:
         args += ["--ticket", ticket]
-    if cwd_is_worktree:
-        args.append("--cwd-is-worktree")
-    return _run_mini(*args, timeout=60)
+    result = _run_mini(*args, timeout=90)
+    result["specs"] = [d.name for d in unique]
+    result["invoked_by"] = invoked_by or os.environ.get("OCTI_OPERATOR") or "mcp"
+    return result
 
 
 def mini_nudge(*, goal_id: str, message: str,
@@ -170,19 +270,34 @@ TOOLS: list[dict] = [
     {
         "name": "mini_open",
         "description": (
-            "Spawn a new Mini session: creates a worktree under "
-            "~/workspace/chitin-octi-<slug>/, opens a kitty window with "
-            "Claude Code primed on the goal, returns the goal_id. "
-            "Use to start fresh work on a spec or task."
+            "Spawn a new Mini session against one or more ratified specs. "
+            "Creates a worktree under ~/workspace/chitin-octi-<slug>/, opens "
+            "a kitty window with Claude Code, and composes the session goal "
+            "from the named specs. Mini only runs specced work — there is no "
+            "free-form goal (constitution §1: spec before dispatch)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "goal": {"type": "string", "description": "Goal text (becomes the session's initial prompt). Free-form."},
+                "specs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": (
+                        "Spec references. Each is a 3-digit number (\"050\"), "
+                        "an exact spec directory name (\"050-mini-mcp-spec-dispatch\"), "
+                        "or an ascending range (\"039-042\"). Multiple entries are "
+                        "implemented in one session, in order. Missing or ambiguous "
+                        "references are a hard error — nothing is spawned."
+                    ),
+                },
+                "invoked_by": {
+                    "type": ["string", "null"],
+                    "description": "Identity of the invoking agent/operator. Falls back to $OCTI_OPERATOR, then 'mcp'.",
+                },
                 "ticket": {"type": ["string", "null"], "description": "Optional kanban ticket id; uses agent/octi-<ticket> branch."},
-                "cwd_is_worktree": {"type": "boolean", "default": False, "description": "Treat current dir as worktree (skip auto-create)."},
             },
-            "required": ["goal"],
+            "required": ["specs"],
         },
     },
     {

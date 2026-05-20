@@ -25,27 +25,37 @@ SWARM_ENV = "OCTI_DISCORD_SWARM_WEBHOOK_URL"
 CHANNEL_ID_ENV = "MINI_DISCORD_CHANNEL_ID"
 USER_AGENT = "DiscordBot (https://github.com/chitinhq/chitin, 1.0) Mini"
 
-_HERMES_ENV_PATH = Path.home() / ".hermes" / ".env"
-_HERMES_ENV_MTIME: float = 0.0
+# Path to the hermes dotenv. Overridable via MINI_HERMES_ENV so tests can
+# point at an isolated (or absent) file and not pick up the operator's
+# real secrets.
+HERMES_ENV_PATH_ENV = "MINI_HERMES_ENV"
+_hermes_env_cache: tuple[str, float] | None = None
+
+
+def _hermes_env_path() -> Path:
+    return Path(os.environ.get(HERMES_ENV_PATH_ENV)
+                or (Path.home() / ".hermes" / ".env"))
 
 
 def _load_hermes_env_if_changed() -> None:
-    """Merge OCTI_*/DISCORD_*/MINI_* keys from ~/.hermes/.env into os.environ.
+    """Merge OCTI_*/DISCORD_*/MINI_* keys from the hermes dotenv into os.environ.
 
-    Re-reads when the file's mtime changes; cheap when unchanged. Mirrors
-    the pattern in services/agent-bus/discord_push.py — kitty-spawned
-    sessions and cron-driven invocations don't inherit the operator's
-    interactive env, so the secret has to come from disk on every call.
+    Re-reads when the file's (path, mtime) changes; cheap when unchanged.
+    Mirrors the pattern in services/agent-bus/discord_push.py — kitty-
+    spawned sessions and cron-driven invocations don't inherit the
+    operator's interactive env, so the secret has to come from disk.
     """
-    global _HERMES_ENV_MTIME
+    global _hermes_env_cache
+    path = _hermes_env_path()
     try:
-        mtime = _HERMES_ENV_PATH.stat().st_mtime
+        mtime = path.stat().st_mtime
     except FileNotFoundError:
         return
-    if mtime == _HERMES_ENV_MTIME:
+    key = (str(path), mtime)
+    if _hermes_env_cache == key:
         return
-    _HERMES_ENV_MTIME = mtime
-    for line in _HERMES_ENV_PATH.read_text().splitlines():
+    _hermes_env_cache = key
+    for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
