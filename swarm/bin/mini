@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-# mini — slice-1 CLI for spec 038 (Octi).
+# mini — CLI for spec 038/050 (Octi).
 #
 # Persistent kitty + Claude Code session per goal-id, with status.json
-# contract, input lease, filtered Discord tailer, recovery mode.
+# contract, input lease, filtered Discord tailer, per-session threads,
+# recovery mode.
 #
 # Subcommands: open / status / nudge / watch / stop
 #
 # See: .specify/specs/038-octi-persistent-claude-session/spec.md
+# See: .specify/specs/050-mini-mcp-spec-dispatch/spec.md
 
 from __future__ import annotations
 
@@ -78,6 +80,23 @@ def _resolve_goal_id(args: argparse.Namespace) -> str:
     sys.exit(EXIT_USAGE)
 
 
+# Status-to-emoji mapping for watch event posts (S2-R3)
+_STATUS_EMOJI = {
+    "working": "✅",
+    "verifying": "✅",
+    "blocked": "🔶",
+    "done": "🏁",
+    "needs_review": "🏁",
+    "failed": "🛑",
+    "paused": "🔶",
+    "idle": "🔶",
+}
+
+
+def _status_emoji(state: str) -> str:
+    return _STATUS_EMOJI.get(state, "🔁")
+
+
 # -------- subcommand handlers --------
 
 
@@ -93,6 +112,9 @@ def cmd_open(args: argparse.Namespace) -> int:
                 goal=args.goal,
                 ticket=args.ticket,
                 cwd_is_worktree=args.cwd_is_worktree,
+                invoked_by=args.invoked_by,
+                source=args.source,
+                specs=args.specs,
             )
     except GoalIdCollisionError as e:
         sys.stderr.write(f"{e}\n")
@@ -109,7 +131,32 @@ def cmd_open(args: argparse.Namespace) -> int:
         "worktree": str(session.worktree),
         "branch": session.branch,
     }, indent=2))
+
+    # Auto-start `mini watch` for the new session (S2-R5/S2-AC6).
+    # Detached — the watch process manages its own lifecycle via watch.pid.
+    _auto_start_watch(session.goal_id)
+
     return 0
+
+
+def _auto_start_watch(goal_id: str) -> None:
+    """Launch `mini watch` as a background process for the session.
+
+    Best-effort: if we can't start it (nohup unavailable, etc.), the
+    session still works — status events just won't be posted until the
+    operator manually runs `mini watch`.
+    """
+    try:
+        import subprocess
+        mini_bin = str(Path(__file__).resolve())
+        subprocess.Popen(
+            [mini_bin, "watch", "--goal-id", goal_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass  # non-fatal
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -168,12 +215,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
     pid_file = sd / "watch.pid"
     pid_file.write_text(f"{os.getpid()}\n")
 
+    # S2-R2: read the per-session Discord thread id if present
+    thread_id = _statedir.read_discord_thread_id(goal_id)
+
     transcript_path = sd / "transcript.log"
     poll_sec = float(os.environ.get("MINI_TRANSCRIPT_POLL_SEC", "2"))
     last_state = None
     err_re = re.compile(r"^(Error:|Traceback \(most recent call last\)|FATAL:)")
 
-    _webhook.post(swarm_url, f"🐙 session.opened `{goal_id}` (watch attached)")
+    _webhook.post_to_thread(
+        swarm_url, thread_id,
+        f"🐙 watch attached `{goal_id}`",
+    )
 
     stopping = {"flag": False}
 
@@ -190,7 +243,8 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 screen = _kitty.get_screen_text(goal_id)
                 appended = _transcript.append_new_tail(transcript_path, screen)
                 if appended > 0 and args.debug_tail:
-                    _webhook.post(primary_url, f"```\n{screen[-1800:]}\n```")
+                    _webhook.post_to_thread(primary_url, thread_id,
+                                             f"```\n{screen[-1800:]}\n```")
                 if appended > 0:
                     # Scan newly appended bytes for error lines
                     with transcript_path.open("rb") as f:
@@ -198,19 +252,31 @@ def cmd_watch(args: argparse.Namespace) -> int:
                         new_chunk = f.read().decode("utf-8", "replace")
                     for line in new_chunk.splitlines():
                         if err_re.search(line):
-                            _webhook.post(primary_url, f"⚠️ transcript.error `{goal_id}` `{line[:200]}`")
+                            _webhook.post_to_thread(
+                                primary_url, thread_id,
+                                f"⚠️ transcript.error `{goal_id}` `{line[:200]}`",
+                            )
             except RuntimeError:
                 # kitty call failed; report once and back off.
-                _webhook.post(primary_url, f"⚠️ kitty unreachable for `{goal_id}`; retrying")
+                _webhook.post_to_thread(
+                    primary_url, thread_id,
+                    f"⚠️ kitty unreachable for `{goal_id}`; retrying",
+                )
 
-            # status transition
+            # S2-R3: status transition events with emoji + detail format
             try:
                 st = json.loads((sd / "status.json").read_text())
                 cur = st.get("state")
                 if cur and cur != last_state:
-                    _webhook.post(
-                        primary_url,
-                        f"🔁 state.transition `{goal_id}` {last_state or '∅'} → {cur} — {st.get('summary','')[:140]}",
+                    emoji = _status_emoji(cur)
+                    summary = st.get("summary", "")[:140]
+                    blockers = st.get("blockers", [])
+                    detail = summary
+                    if cur == "blocked" and blockers:
+                        detail = f"waiting on operator: {', '.join(str(b) for b in blockers[:3])}"
+                    _webhook.post_to_thread(
+                        primary_url, thread_id,
+                        f"{emoji} status: {cur}    — {detail}",
                     )
                     last_state = cur
                     if cur in ("done", "needs_review", "failed"):
@@ -221,7 +287,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
             time.sleep(poll_sec)
     finally:
         pid_file.unlink(missing_ok=True)
-        _webhook.post(swarm_url, f"🛑 session.stopped `{goal_id}` (watch detached, final={last_state})")
+        _webhook.post_to_thread(
+            swarm_url, thread_id,
+            f"🛑 session.stopped `{goal_id}` (watch detached, final={last_state})",
+        )
     return 0
 
 
@@ -237,7 +306,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="mini", description="Persistent kitty + Claude Code + Discord bridge (spec 038 slice 1)")
+    p = argparse.ArgumentParser(prog="mini", description="Persistent kitty + Claude Code + Discord bridge (spec 038/050)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     o = sub.add_parser("open", help="open a new session or recover an existing one")
@@ -245,6 +314,9 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--recovery", metavar="GOAL_ID", help="resume an existing goal")
     o.add_argument("--ticket", help="bind to kanban ticket id (uses agent/octi-<ticket> branch)")
     o.add_argument("--cwd-is-worktree", action="store_true", help="treat current dir as worktree (skip auto-create)")
+    o.add_argument("--invoked-by", help="identity of the invoker (agent id, operator name)")
+    o.add_argument("--source", default="cli", help="source surface (mcp/cli), default: cli")
+    o.add_argument("--specs", nargs="*", default=None, help="spec numbers to include in the opened message (S2-R1)")
     o.set_defaults(func=cmd_open)
 
     s = sub.add_parser("status", help="read status.json for a goal")
@@ -258,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--lease-seconds", type=int, default=_lease.DEFAULT_LEASE_SECONDS)
     n.set_defaults(func=cmd_nudge)
 
-    w = sub.add_parser("watch", help="long-running Discord event tailer")
+    w = sub.add_parser("watch", help="long-running Discord event tailer with per-session thread (S2-R2/S2-R3)")
     w.add_argument("--goal-id")
     w.add_argument("--debug-tail", action="store_true", help="post raw transcript to webhook")
     w.set_defaults(func=cmd_watch)

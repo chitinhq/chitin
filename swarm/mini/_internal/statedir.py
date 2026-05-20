@@ -1,15 +1,16 @@
 """State directory helpers for Mini sessions.
 
 Layout: <root>/.swarm/octi/<goal-id>/
-  - goal.txt        : raw goal text
-  - goal_id         : the goal id (for cwd-based resolution)
-  - branch          : git branch name
-  - worktree        : absolute worktree path
-  - status.json     : 6-field state contract (written by Claude)
-  - input.lock      : input lease (JSON: holder/acquired_at/expires_at)
-  - transcript.log  : append-only kitty get-text capture
-  - watch.pid       : optional PID file for `mini watch`
-  - webhook.url     : optional per-session webhook override
+  - goal.txt          : raw goal text
+  - goal_id           : the goal id (for cwd-based resolution)
+  - branch            : git branch name
+  - worktree          : absolute worktree path
+  - status.json       : 6-field state contract (written by Claude)
+  - input.lock        : input lease (JSON: holder/acquired_at/expires_at)
+  - transcript.log    : append-only kitty get-text capture
+  - watch.pid         : optional PID file for `mini watch`
+  - webhook.url       : optional per-session webhook override
+  - discord_thread.id : Discord thread id for per-session event stream (S2-R2)
 """
 
 from __future__ import annotations
@@ -72,3 +73,27 @@ def cleanup_stale_temp_files(goal_id: str, *, max_age_seconds: int = 300) -> int
         except FileNotFoundError:
             pass
     return unlinked
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 — Discord thread id persistence (S2-R2)
+# ---------------------------------------------------------------------------
+
+
+DISCORD_THREAD_ID_FILE = "discord_thread.id"
+
+
+def write_discord_thread_id(goal_id: str, thread_id: str) -> None:
+    """Persist the Discord thread id for a session to the state dir."""
+    sd = state_dir(goal_id)
+    (sd / DISCORD_THREAD_ID_FILE).write_text(thread_id + "\n")
+
+
+def read_discord_thread_id(goal_id: str) -> str | None:
+    """Read the persisted Discord thread id for a session, or None."""
+    path = state_dir(goal_id) / DISCORD_THREAD_ID_FILE
+    if path.is_file():
+        tid = path.read_text().strip()
+        if tid:
+            return tid
+    return None

@@ -18,6 +18,11 @@ Tools:
   mini_stop      — terminate a session (closes kitty window, status=failed)
   mini_list      — list all session state dirs with current status
 
+Slice 2 changes:
+  - mini_open passes invoked_by, source='mcp', and spec list through
+    to MiniSession.open so the 🐙 session.opened message names the
+    invoker, source, and specs (S2-R1).
+
 Each tool shells out to `swarm/bin/mini`. Standard CLI args, standard
 JSON stdout, errors propagated as JSON-RPC -32603.
 
@@ -37,14 +42,13 @@ from typing import Any, Callable
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "mini"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 
 # Locate the mini CLI relative to this file: services/mini-mcp/ -> repo root -> swarm/bin/mini
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MINI_CLI = REPO_ROOT / "swarm" / "bin" / "mini"
 SPECS_DIR = REPO_ROOT / ".specify" / "specs"
 STATE_ROOT = Path(os.environ.get("MINI_STATE_ROOT", str(Path.home() / ".swarm" / "octi")))
-
 
 # ---------------------------------------------------------------------------
 # CLI shell-out helpers
@@ -86,7 +90,6 @@ def _run_mini(*args: str, timeout: int = 30) -> dict:
 
 
 # --- spec-reference resolution (spec 050 R1/R3) -----------------------------
-
 
 def _spec_title(spec_md: Path) -> str:
     """First `# ` heading of a spec.md, or the dir name as a fallback."""
@@ -152,6 +155,10 @@ def mini_open(*, specs: list[str], invoked_by: str | None = None,
     The session's /goal is composed from the resolved specs (R2): Mini
     is told to implement them in order, honoring each spec's acceptance
     criteria.
+
+    S2-R1: the invoker and spec list are passed through to Mini so the
+    🐙 session.opened Discord message names the invoker, source, and
+    spec numbers.
     """
     if not specs:
         raise ValueError("specs list cannot be empty — pass at least one spec reference")
@@ -186,12 +193,19 @@ def mini_open(*, specs: list[str], invoked_by: str | None = None,
         "`verify` passes."
     )
 
-    args = ["open", "--goal", goal]
+    # S2-R1: pass invoker, source, and spec names through to the CLI
+    invoker = invoked_by or os.environ.get("OCTI_OPERATOR") or "mcp"
+    spec_names = [d.name for d in unique]
+
+    args = ["open", "--goal", goal,
+            "--invoked-by", invoker,
+            "--source", "mcp",
+            "--specs", *spec_names]
     if ticket:
         args += ["--ticket", ticket]
     result = _run_mini(*args, timeout=90)
-    result["specs"] = [d.name for d in unique]
-    result["invoked_by"] = invoked_by or os.environ.get("OCTI_OPERATOR") or "mcp"
+    result["specs"] = spec_names
+    result["invoked_by"] = invoker
     return result
 
 
@@ -239,7 +253,7 @@ def mini_list() -> dict:
         goal_file = entry / "goal.txt"
         if goal_file.is_file():
             info["goal"] = goal_file.read_text().strip()
-        thread_file = entry / "thread_id"
+        thread_file = entry / "discord_thread.id"
         if thread_file.is_file():
             info["thread_id"] = thread_file.read_text().strip()
         status_file = entry / "status.json"
@@ -417,7 +431,6 @@ def handle_request(req: dict) -> dict | None:
     if is_notification:
         return None
     return err(-32601, f"unknown method: {method}")
-
 
 def serve_stdio() -> None:  # pragma: no cover
     for raw in sys.stdin:
