@@ -261,6 +261,17 @@ JSON; AC6 below is worded to match.
    produces the same OctiEvent set with identical EventIDs.
 10. `golangci-lint` + CI gate refuses PRs that change `OctiEvent`
     field set without bumping the schema version per R9.
+11. **Backpressure (R4)**: under a forced load that drives the sink
+    buffer past 1000 unflushed events, the worker emits the
+    `octi.mirror.sink_backpressure` structured warning, and the
+    workflow continues without deadlock. e2e asserts both the
+    warning surfaces AND no workflow stalls.
+12. **Payload round-trip (R3)**: for each `EventType` in R2, an
+    event mirrored with its R3-typed payload, when read back from
+    the sink file and decoded, produces a payload struct
+    byte-identical to the original. e2e iterates all event types
+    and asserts no field is lost, reordered, or re-typed across
+    the mirror→sink→read round-trip.
 
 ## Test coverage
 
@@ -272,6 +283,10 @@ JSON; AC6 below is worded to match.
 - `swarm/octi/e2e/mirror_perf_test.go` — **e2e**: AC4 (latency)
 - `swarm/octi/e2e/mirror_shutdown_test.go` — **e2e**: AC8 (SIGTERM)
 - `swarm/octi/e2e/mirror_idempotency_test.go` — **e2e**: AC9
+- `swarm/octi/e2e/mirror_backpressure_test.go` — **e2e**: AC11
+  (forced-load backpressure warning + no-deadlock)
+- `swarm/octi/e2e/mirror_payload_roundtrip_test.go` — **e2e**: AC12
+  (per-EventType payload round-trip fidelity)
 
 All test files carry `// spec: 041-octi-event-mirror-contract`.
 
