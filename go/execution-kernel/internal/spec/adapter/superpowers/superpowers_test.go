@@ -83,6 +83,32 @@ func TestDetect_SuperpowersMarkdown(t *testing.T) {
 	}
 }
 
+func TestDetect_DirectoryRequiresSuperpowersPath(t *testing.T) {
+	a := &superpowers.Adapter{}
+	root := t.TempDir()
+	superpowersDir := filepath.Join(root, filepath.FromSlash("docs/superpowers/specs/2026-05-12-chitin-dashboard"))
+	if err := os.MkdirAll(superpowersDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(superpowersDir, "spec.md"), []byte(superpowersSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	speckitDir := filepath.Join(root, filepath.FromSlash(".specify/specs/061-unified-spec-model"))
+	if err := os.MkdirAll(speckitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(speckitDir, "spec.md"), []byte(superpowersSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !a.Detect(superpowersDir) {
+		t.Fatalf("Detect should accept Superpowers directory")
+	}
+	if a.Detect(speckitDir) {
+		t.Fatalf("Detect should reject non-Superpowers directory")
+	}
+}
+
 func TestParse_SuperpowersSpecSections(t *testing.T) {
 	a := &superpowers.Adapter{}
 	path := writeDoc(t, "docs/superpowers/specs/2026-05-12-chitin-dashboard.md", superpowersSpec)
@@ -124,6 +150,26 @@ func TestParse_SuperpowersSpecSections(t *testing.T) {
 	}
 }
 
+func TestParse_DirectoryUsesDirectorySpecID(t *testing.T) {
+	a := &superpowers.Adapter{}
+	root := t.TempDir()
+	dir := filepath.Join(root, filepath.FromSlash("docs/superpowers/specs/2026-05-12-chitin-dashboard"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "spec.md"), []byte(superpowersSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := a.Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if result.SpecID != "2026-05-12-chitin-dashboard" {
+		t.Fatalf("SpecID = %q", result.SpecID)
+	}
+}
+
 func TestParse_PlanCheckboxesAsSlices(t *testing.T) {
 	a := &superpowers.Adapter{}
 	path := writeDoc(t, "docs/superpowers/plans/2026-05-15-adopt-speckit-replace-spec-flow.md", planDoc)
@@ -153,5 +199,18 @@ func TestParse_PartialNoteDoesNotFabricateFields(t *testing.T) {
 	}
 	if len(result.Requirements) != 0 || len(result.Acceptance) != 0 || len(result.Slices) != 0 {
 		t.Fatalf("expected empty structural fields, got req=%#v ac=%#v slices=%#v", result.Requirements, result.Acceptance, result.Slices)
+	}
+}
+
+func TestParse_PreservesExplicitQuestionIDs(t *testing.T) {
+	a := &superpowers.Adapter{}
+	path := writeDoc(t, "docs/superpowers/specs/2026-05-20-question-ids.md", "# Question IDs\n\n## Open questions\n\n- **Q2 — Should this retain numbering?**\n")
+
+	result, err := a.Parse(path)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if len(result.OpenQuestions) != 1 || result.OpenQuestions[0].ID != "Q2" || result.OpenQuestions[0].Text != "Should this retain numbering?" {
+		t.Fatalf("questions = %#v", result.OpenQuestions)
 	}
 }

@@ -22,6 +22,7 @@ var explicitReq = regexp.MustCompile(`^(?:###\s+)?\*{0,2}(R\d+)\s*[—\-]+\s*(.+
 var explicitAC = regexp.MustCompile(`^\*{0,2}(AC\d+)\*{0,2}[\s:]*[—\-]?\s*(.+?)\*{0,2}$`)
 var sliceHead = regexp.MustCompile(`(?i)^#{2,3}\s+(Slice\s+\d+|Milestone\s+M\d+|M\d+)\s*[—:-]\s*(.+)$`)
 var numberItem = regexp.MustCompile(`^\d+\.\s+(.+)$`)
+var questionItem = regexp.MustCompile(`^(?:(?:[-*]|\d+\.)\s+)?\*{0,2}(?:Q(\d+)\s*[—\-])?\s*(.+?)\*{0,2}$`)
 var boldCleaner = regexp.MustCompile(`\*\*(.+?)\*\*`)
 var codeCleaner = regexp.MustCompile("`(.*?)`")
 
@@ -48,7 +49,7 @@ func (a *Adapter) Framework() spec.SourceFramework {
 func (a *Adapter) Detect(path string) bool {
 	info, err := os.Stat(path)
 	if err == nil && info.IsDir() {
-		if fileExists(filepath.Join(path, "spec.md")) || fileExists(filepath.Join(path, "plan.md")) {
+		if isSuperpowersDir(path) && (fileExists(filepath.Join(path, "spec.md")) || fileExists(filepath.Join(path, "plan.md"))) {
 			return true
 		}
 		return false
@@ -56,8 +57,7 @@ func (a *Adapter) Detect(path string) bool {
 	if strings.ToLower(filepath.Ext(path)) != ".md" {
 		return false
 	}
-	cleaned := filepath.ToSlash(filepath.Clean(path))
-	return strings.Contains(cleaned, "/docs/superpowers/") && dateStemPattern.MatchString(strings.TrimSuffix(filepath.Base(path), ".md"))
+	return isSuperpowersMarkdown(path)
 }
 
 func (a *Adapter) Parse(path string) (*spec.UnifiedSpec, error) {
@@ -73,7 +73,7 @@ func (a *Adapter) Parse(path string) (*spec.UnifiedSpec, error) {
 	doc := string(data)
 	reqs := extractRequirements(doc)
 	return &spec.UnifiedSpec{
-		SpecID:          strings.TrimSuffix(filepath.Base(source), filepath.Ext(source)),
+		SpecID:          specIDForPath(path, source),
 		Title:           extractTitle(doc),
 		Status:          extractStatus(doc),
 		SourceFramework: spec.SourceFrameworkSuperpowers,
@@ -104,6 +104,32 @@ func resolveSource(path string) (string, error) {
 		return "", &adapter.ParseError{Path: path, Section: "file-read", Err: fmt.Errorf("expected markdown file")}
 	}
 	return path, nil
+}
+
+func specIDForPath(path, source string) string {
+	info, err := os.Stat(path)
+	if err == nil && info.IsDir() {
+		return filepath.Base(path)
+	}
+	return strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+}
+
+func isSuperpowersDir(path string) bool {
+	return hasSuperpowersSegment(path) && dateStemPattern.MatchString(filepath.Base(filepath.Clean(path)))
+}
+
+func isSuperpowersMarkdown(path string) bool {
+	return hasSuperpowersSegment(path) && dateStemPattern.MatchString(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+}
+
+func hasSuperpowersSegment(path string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "docs" && parts[i+1] == "superpowers" {
+			return true
+		}
+	}
+	return false
 }
 
 func fileExists(path string) bool {
@@ -206,7 +232,15 @@ func extractQuestions(doc string) []spec.Question {
 	items := extractSectionItems(doc, map[string]bool{"open questions": true, "open items": true})
 	var questions []spec.Question
 	for i, item := range items {
-		questions = append(questions, spec.Question{ID: fmt.Sprintf("Q%d", i+1), Text: cleanMarkdown(item)})
+		id := fmt.Sprintf("Q%d", i+1)
+		text := item
+		if m := questionItem.FindStringSubmatch(item); m != nil {
+			if m[1] != "" {
+				id = "Q" + m[1]
+			}
+			text = m[2]
+		}
+		questions = append(questions, spec.Question{ID: id, Text: cleanMarkdown(text)})
 	}
 	return questions
 }

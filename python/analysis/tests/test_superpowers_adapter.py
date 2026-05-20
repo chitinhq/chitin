@@ -71,6 +71,18 @@ def test_detects_superpowers_markdown(tmp_path):
     assert detect(tmp_path / "docs/other/2026-05-12-chitin-dashboard.md") is False
 
 
+def test_detects_only_superpowers_directories(tmp_path):
+    superpowers_dir = tmp_path / "docs/superpowers/specs/2026-05-12-chitin-dashboard"
+    superpowers_dir.mkdir(parents=True)
+    (superpowers_dir / "spec.md").write_text(SUPERPOWERS_SPEC, encoding="utf-8")
+    speckit_dir = tmp_path / ".specify/specs/061-unified-spec-model"
+    speckit_dir.mkdir(parents=True)
+    (speckit_dir / "spec.md").write_text(SUPERPOWERS_SPEC, encoding="utf-8")
+
+    assert detect(superpowers_dir) is True
+    assert detect(speckit_dir) is False
+
+
 def test_parse_superpowers_spec_sections(tmp_path):
     path = _write(
         tmp_path,
@@ -97,6 +109,16 @@ def test_parse_superpowers_spec_sections(tmp_path):
     assert result.slices[1].scope == "Replay API"
     assert result.boundaries == ("No live execution from the dashboard",)
     assert result.open_questions[0].id == "Q1"
+
+
+def test_parse_superpowers_directory_uses_directory_spec_id(tmp_path):
+    root = tmp_path / "docs/superpowers/specs/2026-05-12-chitin-dashboard"
+    root.mkdir(parents=True)
+    (root / "spec.md").write_text(SUPERPOWERS_SPEC, encoding="utf-8")
+
+    result = parse(root)
+
+    assert result.spec_id == "2026-05-12-chitin-dashboard"
 
 
 def test_parse_superpowers_plan_checkboxes_as_slices(tmp_path):
@@ -130,3 +152,16 @@ def test_partial_superpowers_note_does_not_fabricate_fields(tmp_path):
     assert result.requirements == ()
     assert result.acceptance == ()
     assert result.slices == ()
+
+
+def test_parse_superpowers_preserves_explicit_question_ids(tmp_path):
+    path = _write(
+        tmp_path,
+        "docs/superpowers/specs/2026-05-20-question-ids.md",
+        "# Question IDs\n\n## Open questions\n\n- **Q2 — Should this retain numbering?**\n",
+    )
+
+    result = parse(path)
+
+    assert result.open_questions[0].id == "Q2"
+    assert result.open_questions[0].text == "Should this retain numbering?"
