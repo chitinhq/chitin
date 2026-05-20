@@ -106,12 +106,26 @@ def post_to_discord_webhook(webhook_url: str, *, content: str,
                             username: str | None = None) -> dict:
     """POST to a Discord incoming webhook. Discord caps content at 2000 chars;
     split politely if exceeded.
+
+    ticket t_a6df2cdc: @AgentName tokens in content are resolved to
+    Discord <@user_id> mention syntax and allowed_mentions is set so
+    the resulting message has structural mention entities.
     """
-    if len(content) > 2000:
-        content = content[:1990] + "\n(…continued)"
-    payload: dict = {"content": content}
+    # Import resolve_mentions from discord_push (same directory).
+    # Avoid circular import at module level; do it here at call time.
+    from discord_push import resolve_mentions
+    resolved_content, user_ids = resolve_mentions(content)
+    if len(resolved_content) > 2000:
+        resolved_content = resolved_content[:1990] + "\n(…continued)"
+    payload: dict = {"content": resolved_content}
     if username:
         payload["username"] = username
+    # ticket t_a6df2cdc: allowed_mentions so Discord parses the <@id>
+    if user_ids:
+        payload["allowed_mentions"] = {
+            "parse": ["users"],
+            "users": user_ids,
+        }
     body = json.dumps(payload).encode("utf-8")
     status, resp = http_request(
         webhook_url, method="POST",

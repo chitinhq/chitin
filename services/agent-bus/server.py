@@ -66,6 +66,14 @@ _CANONICAL_MENTIONS: dict[str, str] = {
     "copilot": "copilot",
 }
 
+# Discord user IDs for known agents (ticket t_a6df2cdc cause 3).
+# Used by _body_mentions_agent to also match Discord native <@id> format.
+_AGENT_DISCORD_IDS: dict[str, str] = {
+    "clawta": "1503438472801685565",
+    "ares": "150343848646685258",
+    "hermes": "150343848646685258",
+}
+
 # Pre-compile one regex matching any `@<name>` token (case-insensitive)
 # whose suffix is one of the canonical agents. \b at both ends avoids
 # matching `@clawta-poller` or `email@clawta.com`.
@@ -87,6 +95,41 @@ def _canonicalize_mentions(body: str) -> str:
     def _replace(m: _re.Match) -> str:
         return "@" + _CANONICAL_MENTIONS[m.group(1).lower()]
     return _MENTION_RE.sub(_replace, body)
+
+
+def _body_mentions_agent(body: str, agent_id: str) -> bool:
+    """Check whether a message body mentions a specific agent.
+
+    ticket t_a6df2cdc: matches BOTH text @AgentName patterns AND Discord
+    native <@user_id> mention format. This is the fallback for agent
+    listeners that receive messages from the bus (where the body may
+    contain either form after the outbound resolver converts @AgentName
+    to <@user_id>).
+
+    Args:
+        body: The raw message body.
+        agent_id: Lowercase agent identifier (e.g. "clawta", "ares").
+
+    Returns:
+        True if the body contains a text @AgentName mention (any case)
+        or a Discord <@user_id> / <@!user_id> mention for the agent.
+    """
+    canonical = agent_id.lower()
+    # Text @AgentName check (case-insensitive)
+    if _MENTION_RE.search(body):
+        # More precise: check if THIS specific agent is mentioned
+        specific_re = _re.compile(
+            r"(?<![A-Za-z0-9_])@(?i:" + _re.escape(canonical) + r")(?![A-Za-z0-9_-])",
+        )
+        if specific_re.search(body):
+            return True
+    # Discord native mention check
+    uid = _AGENT_DISCORD_IDS.get(canonical)
+    if uid:
+        native_re = _re.compile(r"<@!?" + _re.escape(uid) + r">")
+        if native_re.search(body):
+            return True
+    return False
 
 
 def _touch_agent(conn, agent_id: str) -> None:
