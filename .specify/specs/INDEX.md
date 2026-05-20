@@ -61,8 +61,18 @@ Capability profiles under `swarm/octi/config/capability_profiles/`:
 ares, claude, clawta, mini, copilot, codex, claudecode. Operationalize
 spec 049 §R6.
 
-PR 2/3 (critique closures) will add: 041 event-mirror-contract,
-042 agentbus-identity-contract, 047 mention-routing-workflow.
+## Octi orchestration plane (Temporal Go) — PR 2/3 (critique closures)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; this PR (2/3) = the three
+> Clawta-critique-closure specs; PR 3 = workflow migrations.
+
+| Spec | Title | Status | Closes |
+|------|-------|--------|--------|
+| **041** | octi-event-mirror-contract | draft | Clawta critique #1 — replay from telemetry alone, no Temporal-visibility dependency |
+| **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 — anchor + dedup + multi-audience fan-out (post-#swarm-deletion) |
+| **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership (narrowed: per-agent channels only) |
 
 PR 3/3 (workflow migrations) will add: 043 dispatch, 044 poller,
 045 bridge, 046 autonomous-claim, 048 ha-migration-template.
