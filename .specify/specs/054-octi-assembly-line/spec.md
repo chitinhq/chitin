@@ -17,7 +17,7 @@
 
 The swarm today produces noise: work happens async, unplanned —
 "operator posts in a channel, who knows what happens." This spec
-replaces that with a deterministic 9-stage assembly line with two
+replaces that with a deterministic 10-stage assembly line with two
 human-in-the-loop gates. Research surfaces a gap; a spec bounds it;
 review hardens it; implementation ships it; a verifier proves it;
 the operator merges it; the close emits telemetry that feeds the
@@ -46,7 +46,7 @@ Worker MAY write under:
 - `.specify/specs/054-octi-assembly-line/**`
 - `.specify/specs/INDEX.md` (add the 054 row)
 - `swarm/octi/process/` — Go package: the top-level
-  `AssemblyLineWorkflow` that sequences the 9 stages as child
+  `AssemblyLineWorkflow` that sequences the 10 stages as child
   workflows
 - `swarm/octi/process/tests/` — unit tests
 - `swarm/octi/e2e/assembly_line_e2e_test.go` — the full-pipeline
@@ -83,20 +83,26 @@ Eight non-negotiables, every stage honors all: spec-driven · SDD
 workflow · e2e tests · guardrails · determinism · telemetry ·
 replayable-from-telemetry-alone · auditable + improvable.
 
-## The pipeline — 9 stages, 2 gates
+## The pipeline — 10 stages, 2 gates
+
+Every stage is a **Temporal child workflow** of the top-level
+`AssemblyLineWorkflow` (R5). The orchestration is deterministic Go;
+the agent's actual reasoning inside a stage is a recorded Activity;
+the two gates are Signal-await points.
 
 ```
 [0] RESEARCH ──────────► Ares (autonomous)
-[1] SPEC AUTHORING ────► claude (spec-writer)
-[2] SPEC REVIEW ───────► Ares (spec-reviewer) + Copilot (signal)
+[1] INTAKE ────────────► board-groomer (conflict-routed)
+[2] SPEC AUTHORING ────► claude (spec-writer)
+[3] SPEC REVIEW ───────► Ares (spec-reviewer) + Copilot (signal)
 ═══ GATE A — OPERATOR RATIFIES SPEC ═══  red merges spec PR
-[3] BOARD GROOMING ────► Ares (board-groomer) — creates ticket
-[4] IMPLEMENTATION ────► Clawta (implementer) | Mini | driver
-[5] COPILOT REVIEW ────► github-copilot (verifier signal)
-[6] AGENT PR REVIEW ───► Ares (pr-review signal)
-[7] VERIFIER ──────────► Temporal verifier Activity + CI
+[4] BOARD GROOMING ────► Ares (board-groomer) — creates ticket
+[5] IMPLEMENTATION ────► Clawta (implementer) | Mini | driver
+[6] COPILOT REVIEW ────► github-copilot (verifier signal)
+[7] AGENT PR REVIEW ───► Ares (pr-review signal)
+[8] VERIFIER ──────────► Temporal verifier Activity + CI
 ═══ GATE B — OPERATOR MERGES PR ═══  red merges code PR
-[8] CLOSE + LOOP ──────► Ares (board-groomer) → back to [0]
+[9] CLOSE + LOOP ──────► Ares (board-groomer) → back to [0]
 ```
 
 Everything between Gate A and Gate B runs autonomously. The
@@ -110,26 +116,59 @@ Each stage has a fixed `{owner role, trigger, produces, emits}`:
 
 | # | Stage | Owner role | Produces |
 |---|---|---|---|
-| 0 | research | research | candidate ticket `{research_summary, proposed_invariants, source_citations, priority}` |
-| 1 | spec authoring | spec-writer | `.specify/specs/NNN-*/spec.md` → spec PR |
-| 2 | spec review | spec-reviewer | APPROVE / REQUEST_CHANGES on spec PR |
-| 3 | board grooming | board-groomer | kanban ticket (assignee, `Spec:` ref, invariants_and_boundaries) |
-| 4 | implementation | implementer | code PR on `agent/<driver>-<ticket>` |
-| 5 | copilot review | (verifier signal) | inline PR comments |
-| 6 | agent PR review | (verifier signal, Ares) | REVIEW / REQUEST_CHANGES |
-| 7 | verifier | verifier Activity | `octi.verifier.result` pass/fail |
-| 8 | close + loop | board-groomer | ticket → done; nightly confidence recompute |
+| 0 | research | research | candidate triage ticket `{research_summary, proposed_invariants, source_citations, priority}` |
+| 1 | intake | board-groomer (conflict-routed) | reviewed + prioritized triage queue; `triage → ready-for-spec` promotion (R2a) |
+| 2 | spec authoring | spec-writer | `.specify/specs/NNN-*/spec.md` → spec PR |
+| 3 | spec review | spec-reviewer | APPROVE / REQUEST_CHANGES on spec PR |
+| 4 | board grooming | board-groomer | kanban ticket (assignee, `Spec:` ref, invariants_and_boundaries) |
+| 5 | implementation | implementer | code PR on `agent/<driver>-<ticket>` |
+| 6 | copilot review | (verifier signal) | inline PR comments |
+| 7 | agent PR review | (verifier signal, Ares) | REVIEW / REQUEST_CHANGES |
+| 8 | verifier | verifier Activity | `octi.verifier.result` pass/fail |
+| 9 | close + loop | board-groomer | ticket → done; nightly confidence recompute |
+
+### R1a — Stage 1: Intake (review · prioritize · promote)
+
+Stage 0 (research) emits candidate triage tickets. Stage 1 closes
+the gap between raw research and spec authoring:
+
+- **Review** — is the candidate sound, non-duplicate, not already
+  covered by an existing spec or open ticket? Unsound or duplicate
+  candidates are merged or demoted with a reason.
+- **Prioritize** — rank the surviving candidates (priority +
+  dependency-unlock + age, per the spec 046 scoring family).
+- **Promote** — move a candidate `triage → ready-for-spec`. This
+  is the spec-worthiness decision (R2a).
+
+**Owner: board-groomer, conflict-routed.** Ares owns board-grooming,
+but Ares also owns research (stage 0) — so Ares grading its own
+research's spec-worthiness is a conflict. Per spec 049 `conflict_sets`,
+when the candidate under intake was produced by the *same agent*
+acting as researcher, the intake routes to a non-conflicted agent
+(**claude**, never the operator). Intake of another agent's research
+stays with Ares. The routing decision is recorded as
+`octi.routing.decision`.
 
 ### R2 — The two human-in-the-loop gates
 
-- **Gate A** (after stage 2): operator merges the spec PR. No spec
+- **Gate A** (after stage 3): operator merges the spec PR. No spec
   becomes work without it.
-- **Gate B** (after stage 7): operator merges the code PR. No code
+- **Gate B** (after stage 8): operator merges the code PR. No code
   ships without it.
 
+### R2a — Spec-worthiness is autonomous; Gate A is the backstop
+
+The intake owner promotes `triage → ready-for-spec` **autonomously**
+— there is no third operator gate. If a spec gets authored that
+should not have been, the operator rejects it at Gate A; the cost
+is one wasted authoring cycle, and the `octi.verifier.result` +
+routing telemetry surface the waste pattern so intake self-corrects.
+The operator stays at exactly two gates.
+
 Octi MUST NOT auto-cross either gate. No auto-merge, no
-auto-approval, no operator-pressure bypass code path. Stages 3-7
-run autonomously between the gates.
+auto-approval, no operator-pressure bypass code path. Stages 4-8
+run autonomously between the gates; stages 0-1 (research + intake)
+run autonomously before Gate A.
 
 ### R3 — Roles (per spec 049, soft-routed)
 
@@ -153,8 +192,16 @@ stage.
 
 ### R5 — Determinism + telemetry
 
-- The top-level `AssemblyLineWorkflow` and all stage child
-  workflows are Temporal Go — `workflowcheck`-clean (spec 040 §R2).
+- **Every stage is a Temporal workflow.** The top-level
+  `AssemblyLineWorkflow` sequences all 10 stages as Temporal child
+  workflows; all of them are Temporal Go, `workflowcheck`-clean
+  (spec 040 §R2). The workflow code (stage sequencing, routing,
+  gate-await) is deterministic; the agent's actual reasoning
+  inside a stage (research, authoring, review) is a **recorded
+  Activity** — nondeterministic work captured as a replayable
+  result. The two operator gates are `workflow.Signal`-await
+  points. Nothing in the pipeline runs outside a Temporal
+  workflow.
 - Every stage emits OctiEvents mirrored into the chitin event
   store (spec 041). The full set: `octi.research.surfaced`,
   `octi.handoff.created`, `octi.routing.decision`,
@@ -185,7 +232,7 @@ rotate to a fallback. The operator owns the throughput trade.
 
 ### R8 — The flywheel
 
-The loop self-sustains: stage 8's close emits telemetry that
+The loop self-sustains: stage 9's close emits telemetry that
 becomes a stage-0 research signal. Confidence sharpens nightly.
 Each piece builds on the last. The operator touches only the two
 gates. This is the "momentum" property — the line, once seeded,
@@ -210,8 +257,9 @@ contract.
 
 1. The full-pipeline e2e (`assembly_line_e2e_test.go`) drives a
    fixture spec idea from a stage-0 research emission through to a
-   stage-8 close, asserting each of the 9 stages fires in order
-   with the correct owner role.
+   stage-9 close, asserting each of the 10 stages fires in order
+   with the correct owner role, and that each stage runs as a
+   Temporal child workflow.
 2. The two gates are enforced: the e2e asserts the workflow blocks
    at Gate A and Gate B and does not proceed without an operator
    merge signal.
@@ -249,8 +297,11 @@ All test files carry `// spec: 054-octi-assembly-line`.
 
 ## Invariants
 
-- **I1**: the pipeline has exactly 9 stages and exactly 2 operator
+- **I1**: the pipeline has exactly 10 stages and exactly 2 operator
   gates. No stage is skippable; no gate is auto-crossable.
+- **I1a**: every stage runs as a Temporal child workflow of
+  `AssemblyLineWorkflow`. No stage executes outside a Temporal
+  workflow; agent reasoning inside a stage is a recorded Activity.
 - **I2**: every stage transition is a recorded OctiEvent — the
   full pipeline replays from telemetry alone.
 - **I3**: inter-agent work moves only through artifacts (kanban,
