@@ -44,14 +44,14 @@
 
 > Spec 054 is the **process spec** — it sequences the Octi role
 > architecture (049) and runtime (040-048) into one end-to-end
-> 9-stage, 2-gate deterministic assembly line. On ratification it
+> 10-stage, 2-gate deterministic assembly line. On ratification it
 > supersedes `workspace/claude/skills/spec-factory.md` as the
 > canonical swarm operating procedure. Awaiting Ares + Clawta
 > alignment sign-off, then operator ratification.
 
 | Spec | Title | Status | What it owns |
 |------|-------|--------|--------------|
-| **054** | octi-assembly-line | draft | The canonical 9-stage / 2-gate swarm operating procedure — ties 038 + 040-049 into one process |
+| **054** | octi-assembly-line | draft | The canonical 10-stage / 2-gate swarm operating procedure — ties 038 + 040-049 into one process |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
