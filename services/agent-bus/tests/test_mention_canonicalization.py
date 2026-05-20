@@ -41,13 +41,17 @@ class CanonicalizeMentionsTests(unittest.TestCase):
         out = server._canonicalize_mentions("@ClAwTa look at this")
         self.assertEqual(out, "@Clawta look at this")
 
-    def test_ares_stays_lowercase(self):
-        out = server._canonicalize_mentions("@Ares heads up")
-        self.assertEqual(out, "@ares heads up")
+    def test_ares_normalizes_to_capital(self):
+        # Ares' Discord display name is "Ares" — the canonical case must
+        # be capitalized or Discord won't fire the notification. Any case
+        # variant rewrites to "@Ares".
+        for variant in ("@Ares heads up", "@ares heads up", "@ARES heads up"):
+            out = server._canonicalize_mentions(variant)
+            self.assertEqual(out, "@Ares heads up")
 
     def test_multiple_mentions_in_one_body(self):
         out = server._canonicalize_mentions("@clawta and @ARES please")
-        self.assertEqual(out, "@Clawta and @ares please")
+        self.assertEqual(out, "@Clawta and @Ares please")
 
     def test_mention_in_middle_of_sentence(self):
         body = "ping @clawta on this then check with @hermes"
@@ -122,7 +126,7 @@ class BusReplyCanonicalizationTests(unittest.TestCase):
             "SELECT body FROM messages WHERE thread_id=?",
             (result["thread_id"],),
         ).fetchone()
-        self.assertEqual(row["body"], "@Clawta + @ares — review")
+        self.assertEqual(row["body"], "@Clawta + @Ares — review")
 
 
 if __name__ == "__main__":

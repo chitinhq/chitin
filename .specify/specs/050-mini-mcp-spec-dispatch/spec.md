@@ -223,5 +223,133 @@ but deferred — see Open questions Q3.
 ## Slice plan
 
 - **Slice 1** — R1, R2, R3, R4 (spec dispatch + nudge fix). AC1–AC4, AC6.
-- **Slice 2** — R5 status-transition events + per-session threads.
-  AC5, AC7, Q3, Q4.
+  **Shipped 2026-05-19, PR #795.**
+- **Slice 2** — R5 event-log shape (detailed below). AC5, AC7.
+
+---
+
+# Slice 2 — detailed specification
+
+**Status**: DRAFT 2026-05-19 — awaiting red sign-off. Expands R5 into
+implementable requirements and resolves Q3/Q4.
+
+**Resolved questions**:
+- Q3 → **yes, per-session Discord threads.** A flat feed of three
+  event types is not "read out the full details per session" (the
+  operator's words). Each session gets its own thread.
+- Q4 → **extend `mini watch`.** `mini watch` is already the
+  per-session "long-running Discord event tailer". It is the natural
+  owner of status-transition posting — per-session watcher, per-session
+  thread. `mini open` starts it (the `watch.pid` file already exists in
+  the stop path). No new standalone daemon.
+
+## Slice 2 summary
+
+Today Mini posts three flat events to #mini (`🐙 session.opened`,
+`📣 nudge.sent`, `🛑 session.stopped`) as undifferentiated channel
+messages. The operator wants: a **channel-level feed of which agent
+invoked Mini against which spec, from where**, and **per-session
+detail grouped in a thread** so a session's full activity is followable
+without SSH.
+
+## Slice 2 requirements
+
+### S2-R1 — channel feed line names invoker, source, specs
+
+The `🐙 session.opened` message posted to the #mini channel (not the
+thread) is the feed entry. It MUST carry:
+
+- the invoking identity (`invoked_by` from spec 050 R1 — agent id,
+  `$OCTI_OPERATOR`, or `mcp`),
+- the source surface (`mcp` client, or `cli` for break-glass),
+- the resolved spec list (the `specs` array — spec numbers, not the
+  composed prose),
+- the `goal_id`.
+
+Example:
+
+```
+🐙 Mini session opened — spec 037,038,039 — invoked by `ares` via mcp
+   goal_id: spec-037..039-3a1f   ·   thread ↳
+```
+
+### S2-R2 — per-session Discord thread
+
+On `session.opened`, the webhook post MUST create a Discord thread for
+that session. The thread id is persisted to the session state dir
+(e.g. `<state_dir>/discord_thread.id`). All subsequent events for that
+session — `nudge.sent`, `status.<state>`, `session.stopped` — post
+**into that thread**, not the channel.
+
+The channel feed therefore stays scannable (one line per session); the
+thread holds the session's full event stream.
+
+### S2-R3 — status-transition events
+
+`mini watch`, extended, MUST observe the session's `status.json` and
+post one `status.<state>` event into the session thread on each
+distinct state transition:
+
+```
+✅ status: working    — composing the routing module
+🔶 status: blocked    — waiting on operator: <blocker>
+✅ status: verifying  — running `verify`
+🏁 status: done       — verify passed
+```
+
+Dedupe: an unchanged state is not re-posted. The watcher tracks the
+last-posted state per `goal_id` (boundary case 6 from slice 1).
+
+### S2-R4 — degrade safely when Discord is unavailable
+
+A webhook failure (thread creation or post) MUST NOT block the session.
+Mini's existing `_webhook.post` already swallows network errors; thread
+creation gets the same treatment. If thread creation fails, events fall
+back to channel-level posts for that session (no thread, but not lost).
+
+### S2-R5 — installer for the watcher
+
+If `mini watch` becomes a process `mini open` auto-starts, its lifecycle
+(start on open, kill on stop via `watch.pid`) ships in this slice.
+Per constitution §4, any operator-box script ships its installer in the
+same PR.
+
+## Slice 2 boundary cases
+
+1. **Webhook has no thread permission** → thread creation 403s → S2-R4
+   fallback to channel posts; log once, don't spam.
+2. **Session opened, status.json never written** → no `status.*`
+   events; thread still exists with the opened + stopped bookends.
+3. **`mini watch` dies mid-session** → status events stop; the next
+   `mini open`/recovery restarts it. Not fatal — status.json on disk
+   remains the source of truth.
+4. **Rapid transitions** (N states in one watch tick) → each distinct
+   state posts once, in order; identical consecutive states deduped.
+5. **Discord thread archived/deleted by a human** → posts into a dead
+   thread 404 → S2-R4 fallback.
+
+## Slice 2 acceptance criteria
+
+- **S2-AC1** — `🐙 session.opened` in the #mini channel names the
+  invoker, source, spec list, and goal_id (supersedes slice-1 AC6).
+- **S2-AC2** — opening a session creates a Discord thread; its id is
+  persisted to the state dir.
+- **S2-AC3** — `nudge.sent`, `status.*`, and `session.stopped` post
+  into the session thread, not the channel.
+- **S2-AC4** — each `status.json` transition yields exactly one
+  `status.<state>` post; an unchanged state is not re-posted.
+- **S2-AC5** — a simulated webhook failure does not block session
+  open, nudge, or stop.
+- **S2-AC6** — the `mini watch` lifecycle (auto-start on open, kill on
+  stop) ships with its installer (constitution §4).
+
+## Slice 2 open questions
+
+- **S2-Q1 — thread creation mechanism.** Discord webhooks create
+  threads via `?thread_name=` (forum channels) or post into an
+  existing thread via `?thread_id=` (text channels). #mini is a text
+  channel — confirm the exact API path: webhook posts the headline,
+  then a thread is started off that message. Resolve in design review.
+- **S2-Q2 — watcher cadence.** `mini watch` poll interval for
+  status.json. Proposed: reuse the mention-listener's 60s, or faster
+  (5–10s) since status is local-file polling and cheap.

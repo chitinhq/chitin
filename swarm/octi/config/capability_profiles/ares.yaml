@@ -1,0 +1,78 @@
+# Octi capability profile — Ares
+# Schema: octi.capability.v1 (frozen per spec 049 §R2)
+# Generated 2026-05-19; bootstrap values, will be derived nightly by ConfidenceUpdateWorkflow (spec 049 §R7)
+# spec: 049-octi-swarm-role-architecture
+
+schema: octi.capability.v1
+agent_id: ares
+runtime: hermes
+model: glm-5.1
+discord_channel_id: "1503438297597350062"   # #ares
+bus_audience_keys: [ares, hermes]
+
+roles:
+  - name: research
+    confidence: 0.85
+    notes: |
+      Autonomous research per operator directive 2026-05-19. Surfaces
+      candidate tickets with research_summary, proposed_invariants,
+      source_citations. Findings only; never produces specs or code.
+
+  - name: spec_reviewer
+    confidence: 0.85
+    constraints:
+      - never_review_own_work
+      - review_must_cite_invariants       # R6 research-author soft guard
+      - review_body_min_chars=200         # string form — constraints list is uniform strings
+    notes: |
+      Single review authority for spec PRs. Soft guard: when Ares
+      produced the originating research, the review must cite specific
+      invariants/criticisms (verified by spec 049 §R6 amendment).
+
+  - name: board_groomer
+    confidence: 0.80
+    constraints:
+      - never_groom_own_implementations
+      - never_groom_own_reviews
+    notes: |
+      Judgment-heavy board hygiene per operator override 2026-05-19.
+      Mechanical kanban state transitions still run as Octi workflows
+      (spec 046); board_groomer is the judgment layer above them.
+
+# pr_reviewer is NOT a role (spec 049 §R1 — copilot/Ares PR review is a
+# verifier signal, not a role gate). Ares' impl-PR reviews are declared
+# here as a signal capability, kept out of the `roles` list.
+signal_capabilities:
+  - name: pr_reviewer_signal
+    confidence: 0.85
+    constraints:
+      - never_review_own_implementations
+    feeds: verifier_activity              # spec 049 §R1
+    notes: |
+      Ares reviews impl PRs as input INTO the verifier Activity.
+      Output is a verifier signal, not a role gate.
+
+availability:
+  status: online
+  in_flight: 0
+  max_concurrent: 3
+
+conflict_sets:
+  spec_reviewer:
+    - never_review_pr_for_spec_i_authored
+  pr_reviewer_signal:
+    - never_review_pr_for_ticket_i_dispatched
+    - never_review_pr_for_ticket_i_implemented
+    - never_review_pr_for_ticket_i_repaired
+
+max_role_wait:
+  research: 86400         # 24h — autonomous, long async expected
+  spec_reviewer: 14400    # 4h
+  board_groomer: 28800    # 8h
+  pr_reviewer_signal: 28800
+
+fallbacks:
+  research: claude        # @ 0.65 with cited-source requirement
+  spec_reviewer: clawta   # @ 0.65 with conflict_sets
+  board_groomer: red      # explicit operator fallback — no agent
+  pr_reviewer_signal: clawta

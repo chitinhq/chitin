@@ -40,6 +40,56 @@
 | 016 | watchdog-prompt-durability | shipped | Watchdog prompt stable across cron restarts |
 | 017 | poller-dependency-unblock-veto | shipped | Poller honors `Blocked until:` veto in bound specs |
 
+## Octi orchestration plane (Temporal Go) — PR 1/3 (foundation)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Three proposals (Ares
+> msgs 7740-7743, Clawta msg 7722, claude-code msg 7726); hybrid
+> ratified — Ares 5-role frame + Clawta conflict_sets + claude-code
+> derived confidence. Parent: spec 038. Operator override (2026-05-19):
+> Ares = research + spec-reviewer + board-groomer; #swarm + #mini +
+> #hermes deleted, only #ares + #clawta survive.
+>
+> Split across 3 PRs to honor chitin bounds:max_lines_changed (2000):
+> this PR (foundation) = 040 + 049 + 7 capability profile YAMLs.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **040** | octi-scaffolding | draft | Temporal Go module + `workflowcheck` CI gate + hello-world workflow |
+| **049** | octi-swarm-role-architecture | draft | 6 roles, capability schema, handoff packet, derived confidence — BEHAVIOR layer above 040-048 |
+
+Capability profiles under `swarm/octi/config/capability_profiles/`:
+ares, claude, clawta, mini, copilot, codex, claudecode. Operationalize
+spec 049 §R6.
+
+## Octi orchestration plane (Temporal Go) — PR 2/3 (critique closures)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; this PR (2/3) = the three
+> Clawta-critique-closure specs; PR 3 = workflow migrations.
+
+| Spec | Title | Status | Closes |
+|------|-------|--------|--------|
+| **041** | octi-event-mirror-contract | draft | Clawta critique #1 — replay from telemetry alone, no Temporal-visibility dependency |
+| **042** | octi-agentbus-identity-contract | draft | Clawta critique #2 — anchor + dedup + multi-audience fan-out (post-#swarm-deletion) |
+| **047** | octi-mention-routing-workflow | draft | Clawta critique #3 — listener ownership (narrowed: per-agent channels only) |
+
+## Octi orchestration plane (Temporal Go) — PR 3/3 (workflow migrations)
+
+> Ratified 2026-05-19 via agent-bus thread 19. Parent: spec 038.
+> Split across 3 PRs for chitin bounds:max_lines_changed (2000):
+> PR 1 = 040 + 049 + capability profiles; PR 2 = critique closures
+> (041/042/047); this PR (3/3) = the workflow migrations that port
+> today's cron/lobster sprawl onto Octi Temporal workflows.
+
+| Spec | Title | Status | Migration target |
+|------|-------|--------|------------------|
+| **043** | octi-dispatch-workflow | draft | `kanban-dispatch.lobster` (6-stage pipeline) |
+| **044** | octi-poller-workflow | draft | `swarm/bin/clawta-poller` |
+| **045** | octi-bridge-workflow | draft | `hermes-clawta-bridge.py` |
+| **046** | octi-autonomous-claim-workflow | draft | `autonomous-board-engine.sh` |
+| **048** | octi-ha-migration-template | draft (template) | tripwired `start-dev` → HA cluster |
+
 ## Octi assembly-line process spec
 
 > Spec 054 is the **process spec** — it sequences the Octi role
