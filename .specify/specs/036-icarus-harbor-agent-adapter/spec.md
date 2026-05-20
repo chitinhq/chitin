@@ -150,6 +150,9 @@ Every agent action that requires reasoning MUST enter through
 call another provider directly, synthesize canned answers, or choose a
 command from hardcoded task-pattern logic. Retry, timeout, and model
 metadata must be visible in the trajectory record for each turn.
+LiteLLM transport/provider failures still preserve IcarusAgent's
+downstream taxonomy by recording `block_reason=ollama_error`, not a new
+`llm_error` category.
 
 **INV-036-HA-3: tmux pane output is the sole observation source.**
 
@@ -229,7 +232,7 @@ loop detection → loud-fail taxonomy) by swapping two substrates:
 ## Acceptance criteria
 
 - [ ] `IcarusHarborAgent` can execute at least **10 terminal-bench@2.0
-      trials** through Harbor's runner using
+      trials** through `icarus-adapter-runner` using
       `ollama/qwen3-coder:30b-32k` via LiteLLM, with per-trial status and
       artifacts recorded even when the task fails.
 - [ ] `TmuxEnvironment.exec()` sends a command to a persistent tmux
@@ -250,7 +253,7 @@ loop detection → loud-fail taxonomy) by swapping two substrates:
       `wallclock_timeout=900s`; each exhausted budget maps to the
       expected loud-fail block reason and writes a final trajectory row.
 - [ ] Loud-fail taxonomy is preserved for downstream watcher consumers:
-      `parse_failure`, `llm_error`, `loop_detected`,
+      `parse_failure`, `ollama_error`, `loop_detected`,
       `step_budget_exceeded`, `wallclock_exceeded`, and
       `tmux_error`.
 - [ ] Failure traces are harvestable for deterministic-layer design:
