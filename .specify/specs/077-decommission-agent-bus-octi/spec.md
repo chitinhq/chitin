@@ -1,4 +1,4 @@
-# 069 — Decommission the agent-bus and Octi
+# 077 — Decommission the agent-bus and Octi
 
 > Operator directive 2026-05-20: kill the agent-bus — it is unreliable
 > and the kanban board is the proven coordination channel. The spec-068
@@ -23,7 +23,7 @@
 - `.specify/specs/INDEX.md` — mark spec 001 + the octi specs superseded
 - `.claude/worktrees/octi-spec-corpus` — remove the git worktree
 - `docs/strategy/` operating-model doc + Ares `ROLE.md` — board-only
-- `.specify/specs/069-decommission-agent-bus-octi/` (this spec)
+- `.specify/specs/077-decommission-agent-bus-octi/` (this spec)
 
 **System (done directly — not version-controlled):**
 - `~/.claude.json` — drop the `agent-bus` and `mini` MCP entries (keep `swarm-kanban`)

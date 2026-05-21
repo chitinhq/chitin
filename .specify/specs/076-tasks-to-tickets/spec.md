@@ -1,4 +1,4 @@
-# 067 — Decomposer derives kanban tickets from tasks.md
+# 076 — Decomposer derives kanban tickets from tasks.md
 
 > Operator request 2026-05-20, after the spec-061 duplication. The gateway's
 > LLM-freelance auto-decomposer was disabled (`kanban.auto_decompose: false`)
@@ -17,7 +17,7 @@
 - `hermes_cli/` CLI wiring — a `hermes kanban taskstoissues <spec-id>`
   subcommand (or an extension of `hermes kanban decompose`)
 - `tests/hermes_cli/` — unit tests for the parser and idempotency
-- `.specify/specs/067-tasks-to-tickets/spec.md` (this file)
+- `.specify/specs/076-tasks-to-tickets/spec.md` (this file)
 
 ## Goal
 

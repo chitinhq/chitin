@@ -1,6 +1,6 @@
-# 038 — IcarusHarborAgent Adapter: Thin Baseline (terminal-bench@2.0)
+# 078 — IcarusHarborAgent Adapter: Thin Baseline (terminal-bench@2.0)
 
-> **Spec:** 038-icarus-harbor-agent-adapter
+> **Spec:** 078-icarus-harbor-agent-adapter
 > **Author:** red
 > **Status:** draft — awaits Ares + Clawta peer review, then operator ratification
 > **Created:** 2026-05-19
@@ -14,7 +14,7 @@ Adapt the existing `IcarusAgent` (currently a Harbor `BaseAgent` subclass in `sw
 
 The adapter is the minimum viable bridge between Icarus's inner loop (parse → exec → observe → repeat until TASK_COMPLETE or loud-fail) and the operator's RTX 3090 running `qwen3-coder:30b-32k` through LiteLLM. No new capabilities. No deterministic router. No orchestration. Just the loop, the model, and the shell.
 
-**Spec number correction:** The root ticket title says "036" for paper-trail continuity, but the canonical spec path is `.specify/specs/038-icarus-harbor-agent-adapter/spec.md`. Two 036 specs already exist on origin/main (`036-dispatch-fault-tolerance-invariants` and `036-ic-001-icarus-local-llm-driver`), plus 037 is taken. The actual spec number is 038.
+**Spec number correction:** Originally filed as 036, then renumbered to 038, now renumbered to 078 to resolve collision with 038-octi-persistent-claude-session. The canonical spec path is `.specify/specs/078-icarus-harbor-agent-adapter/spec.md`. Spec 036 already has two directories (`036-dispatch-fault-tolerance-invariants` and the Icarus local-LLM driver, now `075-icarus-local-llm-driver`), and 038 is taken by Octi. The actual spec number is 078.
 
 ---
 
@@ -43,15 +43,15 @@ The adapter is the minimum viable bridge between Icarus's inner loop (parse → 
 
 1. **Deterministic-first lane** — no rule-based router that tries bash patterns before invoking the LLM. The thin baseline ships the LLM loop as the sole path. Deterministic layers are deferred until failure clusters emerge from observed traces (see §4 Rationale).
 
-2. **Receipts / kanban / Clawta-escalation** — the adapter produces IcarusAgent's existing trajectory + summary artifacts. It does NOT post WORKER_RECEIPT to the kanban board, does NOT escalate to Clawta, and does NOT integrate with the swarm board. Those surfaces belong to the outer icarus-watcher dispatch layer (spec 036-ic-001), not the adapter.
+2. **Receipts / kanban / Clawta-escalation** — the adapter produces IcarusAgent's existing trajectory + summary artifacts. It does NOT post WORKER_RECEIPT to the kanban board, does NOT escalate to Clawta, and does NOT integrate with the swarm board. Those surfaces belong to the outer icarus-watcher dispatch layer (spec 075), not the adapter.
 
-3. **Autofix layers** — no speculative code-fix heuristics (lint-fix, import-sort, dead-code-prune) wired into the adapter. Those belong to the skill-lane dispatch in spec 036-ic-001, layered on top of this baseline.
+3. **Autofix layers** — no speculative code-fix heuristics (lint-fix, import-sort, dead-code-prune) wired into the adapter. Those belong to the skill-lane dispatch in spec 075, layered on top of this baseline.
 
 4. **Multi-model routing** — one model (`qwen3-coder:30b-32k`). No fallback to a smaller or cloud model. The adapter loud-fails when the model is unavailable.
 
 5. **Harbor Docker harness changes** — the existing `harbor run` codepath and `IcarusAgent` for Docker-based runs are untouched. The adapter is an alternative entry point, not a replacement.
 
-6. **VRAM lease/lock** — unlike the icarus-watcher (spec 036-ic-001 §Invariant 4), this adapter does NOT manage `~/.icarus/model-lease.lock`. The operator is responsible for ensuring the model is loaded (or the adapter loud-fails on connection refused).
+6. **VRAM lease/lock** — unlike the icarus-watcher (spec 075 §Invariant 4), this adapter does NOT manage `~/.icarus/model-lease.lock`. The operator is responsible for ensuring the model is loaded (or the adapter loud-fails on connection refused).
 
 ---
 
@@ -468,7 +468,7 @@ Config parameters (temperature, seed, step budget, wallclock, etc.) are delibera
 - `swarm/icarus_harness/adapter_runner.py` — CLI entry point (`icarus-adapter-runner`)
 - `swarm/tests/test_harbor_adapter.py` — unit tests for TmuxEnvironment, LiteLLMChat, adapter wiring
 - `swarm/tests/test_harbor_adapter_e2e.py` — e2e test: one real tmux session through IcarusAgent
-- `.specify/specs/038-icarus-harbor-agent-adapter/**` — this spec directory
+- `.specify/specs/078-icarus-harbor-agent-adapter/**` — this spec directory
 
 ---
 
@@ -526,14 +526,14 @@ Config parameters (temperature, seed, step budget, wallclock, etc.) are delibera
 
 ## 16. Spec-Number Namespace Collision Note
 
-This spec lives at `.specify/specs/038-icarus-harbor-agent-adapter/` (number 038). The ticket title retains "036" for paper-trail continuity with the original ticket, but the canonical spec number is 038 because:
+This spec lives at `.specify/specs/078-icarus-harbor-agent-adapter/` (number 078). Originally filed as 036, renumbered to 038, then renumbered again to 078 to resolve collision with 038-octi-persistent-claude-session. The ticket title retains "036" for paper-trail continuity with the original ticket, but the canonical spec number is 078 because:
 
 - `.specify/specs/036-dispatch-fault-tolerance-invariants/` already exists on origin/main
-- `.specify/specs/036-ic-001-icarus-local-llm-driver/` already exists on origin/main
+- `.specify/specs/075-icarus-local-llm-driver/` already exists (renumbered from 036-ic-001)
 - `.specify/specs/037-*` is taken
 - The spec-kit entry must use the next available number: 038
 
-The spec-kit directory was already created on branch `agent/036-icarus-harbor-agent-adapter-spec` (using the old number in the branch name). When this spec is merged, the directory must be renamed to `038-icarus-harbor-agent-adapter` to match the canonical number.
+The spec-kit directory was already created on branch `agent/036-icarus-harbor-agent-adapter-spec` (using the old number in the branch name). When this spec is merged, the directory must be renamed to `078-icarus-harbor-agent-adapter` to match the canonical number.
 
 ---
 

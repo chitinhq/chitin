@@ -151,6 +151,7 @@ spec 049 §R6.
 | Spec | Layer | Slug | Status | Bound ticket |
 |------|-------|------|--------|---------------|
 | 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
+| **076** | decomposer | tasks-to-tickets | draft | `t_7017fcab` | Renumbered from 067 to resolve collision |
 
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
@@ -177,6 +178,16 @@ attended; tracking epics, research deferred, operator-audit planning
 docs, or work superseded by GitHub-archived upstreams). See
 `.specify/specs/audit-2026-05-18/INDEX.md` for the per-ticket
 triage rationale.
+
+## Icarus local-LLM driver + Harbor adapter
+
+> Originally spec 036 (collision); renumbered 2026-05-21. Spec 075 is the
+> local-LLM driver; spec 078 is the thin baseline adapter that runs on top.
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **075** | icarus-local-llm-driver | draft | — | Renumbered from 036-ic-001 collision |
+| **078** | icarus-harbor-agent-adapter | draft | — | Renumbered from 036→038→078 (triple collision) |
 
 ## Monorepo platform — spec 074
 
@@ -218,11 +229,11 @@ triage rationale.
   NNN-<slug>` reference in the body that resolves to an existing
   spec.md here.
 
-## Decommissioned (spec 069 — 2026-05-20)
+## Decommissioned (spec 069/077 — 2026-05-20)
 
 Operator directive: the kanban board is the swarm's sole coordination
 channel. The following specs are **superseded** — their subsystems are
-removed by spec `069-decommission-agent-bus-mini`:
+removed by spec `069-decommission-agent-bus-mini` and `077-decommission-agent-bus-octi`:
 
 - **001** (agent-bus) — the agent-bus is decommissioned (unreliable; the
   board replaced it).
@@ -231,3 +242,8 @@ removed by spec `069-decommission-agent-bus-mini`:
 
 Specs **040–048** ("Octi" Temporal orchestration) are **NOT** superseded —
 they are re-homed under spec `070-chitin-orchestrator` (Chitin Orchestrator).
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| 069 | decommission-agent-bus-mini | shipped | — | Decommission agent-bus + mini wrapper |
+| **077** | decommission-agent-bus-octi | draft | — | Decommission Octi (bus-native); renumbered from 069 collision |

@@ -277,7 +277,7 @@ func TestParse_SpecIDExtraction(t *testing.T) {
 		wantID  string
 	}{
 		{"020-sdd-tdd-enforcement", "020"},
-		{"036-ic-001-icarus-local-llm-driver", "036"},
+		{"075-icarus-local-llm-driver", "075"},
 		{"062-spec-build-attribution", "062"},
 		{"728-dispatch-default-branch-fix", "728"},
 	}

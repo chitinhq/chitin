@@ -1,4 +1,4 @@
-# ic-001 — Icarus: Local-LLM Driver on RTX 3090
+# 075 — Icarus: Local-LLM Driver on RTX 3090
 
 > **Tier:** spec (operator-ratification gated)
 > **Authored:** 2026-05-18, red lane

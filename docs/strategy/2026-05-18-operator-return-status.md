@@ -82,7 +82,7 @@
 - Harness: `swarm/bin/icarus-watcher` (519 LOC including round-2 additions)
 - Installer: `swarm/bin/install-icarus-cron.sh` (188 LOC, sw-009 pattern mirror)
 - Tests: `swarm/tests/test_icarus_watcher.py` (19 tests, all green)
-- Spec: `.specify/specs/036-ic-001-icarus-local-llm-driver/spec.md` (Clawta-amended)
+- Spec: `.specify/specs/075-icarus-local-llm-driver/spec.md` (Clawta-amended; renumbered from 036-ic-001)
 - Comparison: `docs/strategy/2026-05-18-swarm-perf-comparison.md`
 - Redesign: `docs/strategy/2026-05-18-swarm-redesign.md` (Week-1 amendment landed)
 - This doc: `docs/strategy/2026-05-18-operator-return-status.md`

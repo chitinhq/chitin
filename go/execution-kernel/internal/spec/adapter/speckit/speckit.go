@@ -25,7 +25,7 @@ import (
 )
 
 // specIDPattern extracts the NNN (or ic-NNN, sw-NNN) prefix from a directory
-// name like "020-sdd-tdd-enforcement" or "036-ic-001-icarus-local-llm-driver".
+// name like "020-sdd-tdd-enforcement" or "075-icarus-local-llm-driver".
 var specIDPattern = regexp.MustCompile(`^(\d{3,}|ic-\d+|sw-\d+)`)
 
 // Title extraction patterns.

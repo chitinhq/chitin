@@ -38,5 +38,5 @@
   returns only spec files; `swarm-kanban-mcp` smoke test passes; no
   bus/octi process or cron remains. Depends: T001–T009.
 
-- [ ] T011 Commit on branch `069-decommission-agent-bus-octi`, open PR,
+- [ ] T011 Commit on branch `077-decommission-agent-bus-octi`, open PR,
   merge. Depends: T010.
