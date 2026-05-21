@@ -10,6 +10,7 @@ states the invariant up front in the docstring.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest import TestCase, main
@@ -19,6 +20,7 @@ from harbor.environments.base import ExecResult
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
     LoopDetector,
+    gather_environment_bootstrap,
     _strip_provider_prefix,
     is_task_complete,
     parse_bash_block,
@@ -139,6 +141,26 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestEnvironmentBootstrap(TestCase):
+    """Invariant: the bootstrap advertises the interpreters it can find."""
+
+    def test_surfaces_perl_when_python_is_absent(self):
+        class FakeEnvironment:
+            async def exec(self, cmd: str) -> ExecResult:
+                if cmd == "uname -a":
+                    return ExecResult(stdout="Linux test\n", return_code=0)
+                if cmd == "pwd":
+                    return ExecResult(stdout="/app\n", return_code=0)
+                if cmd == "ls -la":
+                    return ExecResult(stdout="total 4\n", return_code=0)
+                if "command -v" in cmd:
+                    return ExecResult(stdout="/usr/bin/perl\n", return_code=0)
+                raise AssertionError(f"unexpected probe command: {cmd}")
+
+        bootstrap = asyncio.run(gather_environment_bootstrap(FakeEnvironment()))
+        self.assertIn("/usr/bin/perl", bootstrap)
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──
