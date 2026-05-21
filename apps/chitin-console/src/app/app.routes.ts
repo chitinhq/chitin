@@ -62,5 +62,10 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./pages/suggestions.page').then(m => m.SuggestionsPage),
     data: { title: 'Suggestions' },
   },
+  {
+    path: 'sdlc',
+    loadComponent: () => import('./pages/sdlc-diagram.page').then(m => m.SdlcDiagramPage),
+    data: { title: 'Swarm × SDLC' },
+  },
   { path: '**', redirectTo: 'overview' },
 ];

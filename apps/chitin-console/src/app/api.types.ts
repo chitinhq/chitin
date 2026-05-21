@@ -52,74 +52,6 @@ export interface Task {
   has_body: number;
 }
 
-export interface ThreadSummary {
-  id: number;
-  board: string | null;
-  task_id: string | null;
-  title: string;
-  author: string;
-  audience: string | null;
-  status: string;
-  discord_thread_id: string | null;
-  created_at: number;
-  updated_at: number;
-  message_count: number;
-  attachment_count: number;
-  last_message_author?: string | null;
-  last_message_preview?: string | null;
-}
-
-export interface ThreadMessage {
-  id: number;
-  thread_id: number;
-  parent_id: number | null;
-  author: string;
-  audience: string | null;
-  body: string;
-  kind: string;
-  discord_message_id: string | null;
-  ack_required: number;
-  created_at: number;
-}
-
-export interface ThreadAttachment {
-  id: number;
-  thread_id: number;
-  kind: 'spec' | 'pr' | 'task' | 'discord' | 'url' | 'file';
-  ref: string;
-  display: string | null;
-  created_at: number;
-}
-
-export interface ThreadListResponse {
-  threads: ThreadSummary[];
-  count: number;
-}
-
-export interface ThreadDetail {
-  thread: ThreadSummary;
-  messages: ThreadMessage[];
-  attachments: ThreadAttachment[];
-}
-
-export interface AttachmentEnrichment {
-  kind: ThreadAttachment['kind'] | string;
-  ref: string;
-  status: 'ok' | 'missing' | 'error';
-  label: string;
-  title: string;
-  subtitle: string;
-  href?: string;
-  preview?: string;
-  body?: string;
-  prNumber?: number;
-  prState?: string;
-  checks?: string;
-  taskStatus?: string;
-  assignee?: string | null;
-  error?: string;
-}
-
 export interface TaskListResponse {
   board: string;
   count: number;
@@ -266,22 +198,7 @@ export interface Policy {
 export interface SuggestionsResponse {
   enabled: boolean;
   note: string;
-  filters?: {
-    type: string;
-    target: string;
-    sort: string;
-  };
-  suggestions: AnalyzerSuggestion[];
-}
-
-export interface AnalyzerSuggestion {
-  id: string;
-  type: 'prompt_edit' | 'new_skill' | 'policy_rule' | 'route_tweak' | 'drop';
-  target: string;
-  diff: string;
-  rationale: string;
-  applied: number;
-  created_at: string;
+  suggestions: unknown[];
 }
 
 export interface ArgusInfo {
