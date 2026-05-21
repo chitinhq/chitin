@@ -76,6 +76,14 @@ type record struct {
 	Path string `json:"path"`
 	// Branch is the dedicated branch the worktree was created on.
 	Branch string `json:"branch"`
+	// BaseSHA is the commit the dedicated branch was created at — the resolved
+	// SHA of the base ref. Teardown compares the branch's tip against it: a tip
+	// still equal to BaseSHA means the work unit produced no commits, so the
+	// branch is empty litter Teardown deletes; a tip past BaseSHA is a work
+	// product (an agent node's commits, perhaps an open PR) the branch keeps.
+	// Empty for a record written before this field existed, or when the base
+	// ref could not be resolved — Teardown then conservatively keeps the branch.
+	BaseSHA string `json:"base_sha"`
 	// WorkUnitID is the work unit the worktree was created for.
 	WorkUnitID string `json:"work_unit_id"`
 	// CreatedAt is when Create produced the worktree.
@@ -197,9 +205,21 @@ func (m *Manager) Create(targetRepo, baseRef, workUnitID string) (string, error)
 			workUnitID, targetRepo, baseRef, err)
 	}
 
+	// Resolve the base ref to the concrete commit the new branch starts at.
+	// Teardown compares the branch tip against this to tell an empty worktree
+	// (delete the branch) from one carrying a work product (keep it). A ref
+	// that will not resolve leaves baseSHA empty — Teardown then keeps the
+	// branch rather than risk deleting work. This is a pure read, so it needs
+	// no per-repo lock.
+	baseSHA, baseErr := runGit(repoAbs, "rev-parse", "--verify", "--quiet", baseRef+"^{commit}")
+	if baseErr != nil {
+		baseSHA = ""
+	}
+
 	rec := record{
 		Path:       worktreePath,
 		Branch:     branch,
+		BaseSHA:    baseSHA,
 		WorkUnitID: workUnitID,
 		CreatedAt:  m.now().UTC(),
 	}
@@ -230,13 +250,16 @@ func (m *Manager) Teardown(path string) error {
 		return fmt.Errorf("worktree: resolving path %q: %w", path, err)
 	}
 
-	// Drop the active record first; this is unconditional so the registry is
-	// clean even if the worktree directory was already removed by a crash.
-	if err := m.removeActive(abs); err != nil {
+	// Take the active record first — unconditionally, so the registry is clean
+	// even if a crash already removed the worktree directory on disk. The
+	// record carries the dedicated branch and its base SHA, which drive the
+	// empty-branch cleanup below; an untracked path yields tracked=false.
+	rec, tracked, err := m.takeActive(abs)
+	if err != nil {
 		return fmt.Errorf("worktree: deregistering worktree %q: %w", abs, err)
 	}
 
-	repo, owner, err := repoForWorktree(abs)
+	owner, err := repoForWorktree(abs)
 	if err != nil {
 		// The directory is gone, or it was never a git worktree — nothing on
 		// disk to remove. Idempotent: a no-op, not an error.
@@ -253,11 +276,30 @@ func (m *Manager) Teardown(path string) error {
 	// `--force` removes the worktree even if it has local modifications — a
 	// dispatched work unit's worktree is disposable by design. A non-zero exit
 	// here means the worktree was already detached/removed; treat as a no-op.
-	_, _ = runGit(repo, "worktree", "remove", "--force", abs)
+	_, _ = runGit(owner, "worktree", "remove", "--force", abs)
 	// Defensively remove any directory remnant `git` left behind.
 	_ = os.RemoveAll(abs)
 	// Prune stale administrative entries so git's registry matches disk.
-	_, _ = runGit(repo, "worktree", "prune")
+	_, _ = runGit(owner, "worktree", "prune")
+
+	// Delete the worktree's dedicated branch IFF it carries no work product —
+	// its tip is still the base commit, so the work unit produced no commits
+	// and the branch is empty litter. A branch advanced past its base holds a
+	// work product (an agent node's commits, perhaps an open PR) and is kept.
+	// An untracked teardown — GC reclaiming an orphan with no record — has no
+	// base SHA to compare and so conservatively keeps the branch. `git branch
+	// -D` refuses to delete a branch still checked out in any worktree, so a
+	// failed `worktree remove` above cannot cause a live branch to be dropped.
+	if tracked && rec.Branch != "" && rec.BaseSHA != "" {
+		tip, tipErr := runGit(owner, "rev-parse", "--verify", "--quiet", rec.Branch+"^{commit}")
+		if tipErr == nil && tip == rec.BaseSHA {
+			// A failed delete is non-fatal: the worktree itself is already
+			// gone, and a leftover empty branch is cosmetic — a GC-class sweep
+			// can reclaim it later. Swallowed to match the best-effort handling
+			// of `worktree remove` above; the package keeps no logger.
+			_, _ = runGit(owner, "branch", "-D", rec.Branch)
+		}
+	}
 	return nil
 }
 
@@ -399,23 +441,30 @@ func (m *Manager) addActive(rec record) error {
 	return m.writeActive(recs)
 }
 
-// removeActive drops the record for path (if any) from the registry under the
-// Manager lock. Removing a path that is not registered is a no-op — Teardown
-// idempotency depends on it.
-func (m *Manager) removeActive(path string) error {
+// takeActive atomically removes the registry record for path and returns it.
+// The boolean reports whether a record existed: Teardown reads the returned
+// record's branch and base SHA to decide whether the worktree's branch is
+// empty litter to delete. Taking a path that is not registered is a no-op that
+// returns tracked=false — Teardown idempotency depends on it.
+func (m *Manager) takeActive(path string) (rec record, tracked bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	recs, err := m.readActive()
 	if err != nil {
-		return err
+		return record{}, false, err
 	}
 	kept := recs[:0]
 	for _, r := range recs {
-		if r.Path != path {
-			kept = append(kept, r)
+		if r.Path == path && !tracked {
+			rec, tracked = r, true
+			continue
 		}
+		kept = append(kept, r)
 	}
-	return m.writeActive(kept)
+	if err := m.writeActive(kept); err != nil {
+		return record{}, false, err
+	}
+	return rec, tracked, nil
 }
 
 // --- git plumbing -----------------------------------------------------------
@@ -487,29 +536,32 @@ func resolveRepo(path string) (toplevel, lockKey string, err error) {
 	return toplevel, filepath.Dir(common), nil
 }
 
-// repoForWorktree inspects the git worktree at path and returns two paths:
-// dir, the directory from which `git` commands targeting the worktree should
-// run (path itself); and owner, the toplevel of the OWNING repository — the
-// main worktree that holds the shared .git/worktrees metadata. owner is the
-// key Teardown locks on so its git mutations serialize against Create's.
+// repoForWorktree inspects the git worktree at path and returns owner, the
+// toplevel of the OWNING repository — the main worktree that holds the shared
+// .git/worktrees metadata. owner serves two roles in Teardown: it is the
+// per-repo lock key (so Teardown's git mutations serialize against Create's),
+// and it is the working directory every Teardown git command runs from. The
+// owner toplevel outlives the worktree, so a `prune`, `rev-parse`, or
+// `branch -D` issued after the worktree directory is removed still has a valid
+// directory to run in — running them from the worktree path itself would fail
+// once that path is gone.
 //
 // It returns an error if path does not exist or is not a git worktree — the
 // signal Teardown uses to no-op idempotently.
-func repoForWorktree(path string) (dir, owner string, err error) {
+func repoForWorktree(path string) (owner string, err error) {
 	if _, err := os.Stat(path); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if _, err := runGit(path, "rev-parse", "--is-inside-work-tree"); err != nil {
-		return "", "", fmt.Errorf("%q is not a git worktree: %w", path, err)
+		return "", fmt.Errorf("%q is not a git worktree: %w", path, err)
 	}
 	// --git-common-dir is the SHARED .git directory; its parent is the main
 	// worktree's toplevel — the owning repository.
 	common, err := runGit(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
-		return "", "", fmt.Errorf("resolving common dir of %q: %w", path, err)
+		return "", fmt.Errorf("resolving common dir of %q: %w", path, err)
 	}
-	owner = filepath.Dir(common)
-	return path, owner, nil
+	return filepath.Dir(common), nil
 }
 
 // runGit runs `git <args...>` with dir as the working directory and returns
