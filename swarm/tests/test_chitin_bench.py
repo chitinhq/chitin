@@ -217,5 +217,44 @@ class TestEmitterClassifier(TestCase):
         self.assertEqual(reason, "verifier_missing")
 
 
+class TestEmitterTicketBody(TestCase):
+    """Invariant: emitted bench-failure tickets point triage at the
+    current Chitin Bench surface, not stale Icarus-era paths."""
+
+    @staticmethod
+    def _load_emitter_module():
+        import importlib.util
+        from pathlib import Path
+
+        emitter_path = Path(__file__).resolve().parents[1] / "bin" / "chitin-bench-ticket-emitter"
+        loader_spec = importlib.util.spec_from_loader(
+            "chitin_bench_emitter_for_body",
+            importlib.machinery.SourceFileLoader(  # type: ignore[attr-defined]
+                "chitin_bench_emitter_for_body", str(emitter_path),
+            ),
+        )
+        mod = importlib.util.module_from_spec(loader_spec)
+        loader_spec.loader.exec_module(mod)
+        return mod
+
+    def test_ticket_body_references_current_triage_paths_and_heuristic(self):
+        mod = self._load_emitter_module()
+        body = mod.ticket_body(
+            task_name="count-dataset-tokens",
+            block_reason="verifier_failed",
+            evidence='{"rewards":{"reward":0.0}}',
+            trial_paths=["/tmp/trial/result.json"],
+            agent_info={
+                "name": "chitin-bench",
+                "version": "1.0.0",
+                "model_info": {"name": "qwen3.6:27b"},
+            },
+        )
+
+        self.assertIn("swarm.chitin_bench.agent:BenchAgent", body)
+        self.assertIn("swarm/tests/test_chitin_bench.py", body)
+        self.assertIn("treat it as a model-capability", body)
+
+
 if __name__ == "__main__":
     main(verbosity=2)

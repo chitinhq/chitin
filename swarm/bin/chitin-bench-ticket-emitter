@@ -178,9 +178,13 @@ Reproduce locally with:
 
 Then inspect the trajectory in jobs/chitin-bench/chitin-bench-repro-{task_name}/<trial>/agent/chitin-bench-trajectory.jsonl
 and decide:
-- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/chitin_bench_test.py.
+- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/test_chitin_bench.py.
 - Is this a model-capability ceiling? Note the step it stalls and file a follow-up to swap models.
 - Is this a verifier flake? Re-run; if it passes, close as flake.
+
+Heuristic: if the trajectory reaches `TASK_COMPLETE` without a harness loud-fail
+and the verifier reports only a wrong final answer, treat it as a model-capability
+miss before you patch the harness.
 
 This ticket auto-merges follow-up occurrences via idempotency-key. Comments accumulate; status stays open until you close it.
 """
