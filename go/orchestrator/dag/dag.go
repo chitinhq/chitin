@@ -94,11 +94,63 @@ func (s NodeStatus) Terminal() bool {
 	}
 }
 
+// NodeKind classifies a node by HOW its work runs — the "workflows over
+// agents" distinction made part of the DAG schema (spec 076 FR-017). It is a
+// closed enumeration of exactly two kinds:
+//
+//   - NodeKindAgent: genuinely ambiguous coding work — routed to a
+//     capability-matched driver (spec 075) and run as an agent invocation.
+//   - NodeKindDeterministic: a mappable mechanical step — gofmt, go test, a
+//     lint pass, a version bump — run as a plain Temporal activity with no
+//     driver and no token cost.
+//
+// NodeKindAgent is the zero value, so a Node — or a serialized DAG — that
+// declares no kind is an agent node; the deterministic kind is a strictly
+// backward-compatible addition (spec 076 FR-017).
+type NodeKind int
+
+const (
+	// NodeKindAgent is the zero value — the node is genuinely ambiguous
+	// coding work, routed to a driver by its Capability (spec 076 FR-007).
+	NodeKindAgent NodeKind = iota
+	// NodeKindDeterministic means the node is a mappable mechanical step; it
+	// runs as a plain Temporal activity over its Command, never a driver, and
+	// costs no agent tokens (spec 076 FR-017).
+	NodeKindDeterministic
+)
+
+// nodeKindNames is indexed by NodeKind; kept in sync with the constants
+// above. The names are the spec's wire forms.
+var nodeKindNames = [...]string{
+	NodeKindAgent:         "agent",
+	NodeKindDeterministic: "deterministic",
+}
+
+// String renders the kind as its declared spec name. An out-of-range
+// NodeKind renders as "kind(N)" rather than panicking.
+func (k NodeKind) String() string {
+	if int(k) < 0 || int(k) >= len(nodeKindNames) {
+		return "kind(" + itoa(int(k)) + ")"
+	}
+	return nodeKindNames[k]
+}
+
+// Valid reports whether k is one of the declared node kinds.
+func (k NodeKind) Valid() bool {
+	return int(k) >= 0 && int(k) < len(nodeKindNames)
+}
+
 // Node is one work unit in the DAG — the smallest dispatchable piece of work
 // (spec 076 Key Entities: DAG Node). It carries the routing inputs the
 // scheduler needs to select a driver and create a worktree, plus its
 // lifecycle status. A Node is a value; the DAG owns the canonical copy and
 // callers mutate status only through DAG.SetStatus.
+//
+// A node's Kind decides HOW it runs (spec 076 FR-017): an agent node is
+// routed by Capability to a driver; a deterministic node instead runs its
+// Command as a plain Temporal activity. The two kinds use disjoint fields —
+// Capability is the agent-node routing key, Command/Args the deterministic-
+// node step spec — though a node may carry both for telemetry context.
 type Node struct {
 	// ID is the stable, DAG-unique node identifier. It is the dependency-edge
 	// key and the final, stable tie-breaker in frontier ordering
@@ -109,10 +161,29 @@ type Node struct {
 	// TaskRef is the task within the spec — e.g. "T006"; empty if the node is
 	// not task-scoped.
 	TaskRef string `json:"task_ref"`
+	// Kind is how the node's work runs (spec 076 FR-017): NodeKindAgent —
+	// ambiguous coding work routed to a driver — or NodeKindDeterministic — a
+	// mechanical step run as a plain activity. The zero value is
+	// NodeKindAgent, so a node that omits the field is an agent node; the
+	// deterministic kind is a backward-compatible addition.
+	Kind NodeKind `json:"kind"`
 	// Capability is the capability tag a driver MUST declare to be eligible
-	// for this node (spec 076 FR-007). It is the routing key; a node whose
-	// capability no driver satisfies becomes StatusBlockedUnroutable.
+	// for this node (spec 076 FR-007). It is the routing key for an
+	// NodeKindAgent node; a node whose capability no driver satisfies becomes
+	// StatusBlockedUnroutable. It is unused for routing on a
+	// NodeKindDeterministic node (which carries Command instead) but may be
+	// set for telemetry context.
 	Capability string `json:"capability"`
+	// Command is the mechanical command an NodeKindDeterministic node runs —
+	// the program name of the deterministic step (e.g. "gofmt", "go"). It is
+	// the deterministic-node analogue of Capability and is ignored for an
+	// NodeKindAgent node. A deterministic node with an empty Command cannot
+	// run and is settled failed (spec 076 FR-017 edge case).
+	Command string `json:"command,omitempty"`
+	// Args are the arguments passed to Command for an NodeKindDeterministic
+	// node — e.g. ["test", "./..."] for `go test ./...`. Ignored for an
+	// NodeKindAgent node.
+	Args []string `json:"args,omitempty"`
 	// Priority orders the runnable frontier: higher priority is dispatched
 	// first (spec 076 FR-004). It is a declared property of the node, never
 	// inferred heuristically (spec 070 FR-015). Ties on priority are broken
@@ -134,6 +205,38 @@ type Node struct {
 	// Status is the node's lifecycle state. A freshly compiled node is
 	// StatusPending (the zero value).
 	Status NodeStatus `json:"status"`
+}
+
+// Equal reports whether two nodes are field-for-field equal. It exists because
+// the Args slice makes Node uncomparable with == (a struct containing a slice
+// is not a comparable type); Equal restores a total equality so callers — and
+// the package's own determinism tests — can compare two builds of the same
+// node. Two nodes are equal iff every scalar field matches and their Args
+// slices are element-wise equal (a nil and an empty Args are treated equal).
+func (n Node) Equal(other Node) bool {
+	if n.ID != other.ID ||
+		n.SpecRef != other.SpecRef ||
+		n.TaskRef != other.TaskRef ||
+		n.Kind != other.Kind ||
+		n.Capability != other.Capability ||
+		n.Command != other.Command ||
+		n.Priority != other.Priority ||
+		n.TierHint != other.TierHint ||
+		n.TargetRepo != other.TargetRepo ||
+		n.BaseRef != other.BaseRef ||
+		n.WorktreeRequired != other.WorktreeRequired ||
+		n.Status != other.Status {
+		return false
+	}
+	if len(n.Args) != len(other.Args) {
+		return false
+	}
+	for i := range n.Args {
+		if n.Args[i] != other.Args[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Edge is a depends_on dependency relation: the node named by From depends on

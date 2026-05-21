@@ -78,7 +78,7 @@ func TestCompileDeterministic(t *testing.T) {
 			t.Fatalf("compile %d produced a different DAG", i)
 		}
 		for j, n := range first.Nodes() {
-			if n != again.Nodes()[j] {
+			if !n.Equal(again.Nodes()[j]) {
 				t.Fatalf("compile %d node %d differs — not deterministic", i, j)
 			}
 		}

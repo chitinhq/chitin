@@ -82,9 +82,40 @@ created from the correct repo at the correct base ref.
 
 ---
 
+---
+
+### User Story 4 - Mechanical work runs as a plain activity (Priority: P2)
+
+Some work units are not genuinely ambiguous coding work — they are
+mechanical, deterministically-mappable steps: `gofmt`, `go test`, a lint
+pass, a version bump. Routing such a node to a frontier coding agent burns
+tokens on work a shell command does exactly. The scheduler distinguishes
+an **agent** node (ambiguous coding work → routed to a driver) from a
+**deterministic** node (a mappable mechanical step → a plain Temporal
+activity) and dispatches each accordingly.
+
+**Why this priority**: This is the "workflows over agents" discipline
+applied to the DAG itself — every node that *can* be a deterministic step
+*should* be one. P2 because P1's agent-node scheduling must prove out
+first; the deterministic path is a strict, backward-compatible addition.
+
+**Independent Test**: Feed the scheduler a DAG with one deterministic node
+(carrying a command spec, no capability) in the runnable frontier; confirm
+the scheduler runs it via the deterministic-step activity, never invokes
+driver selection for it, and settles the node on the command's exit code.
+
+**Acceptance Scenarios**:
+
+1. **Given** a runnable node of kind `deterministic`, **When** the tick dispatches it, **Then** it runs as a `RunDeterministicStep` activity and no driver is selected — zero token cost.
+2. **Given** a runnable node of kind `agent`, **When** the tick dispatches it, **Then** driver selection runs exactly as before — agent nodes are unchanged.
+3. **Given** a deterministic node's command exits non-zero, **When** the step settles, **Then** the node is marked `failed` and its dependents are blocked, identically to a failed agent node.
+
+---
+
 ### Edge Cases
 
 - The compiled DAG contains a cycle — compilation MUST fail with the cycle named; the scheduler never runs a cyclic graph.
+- A deterministic node carries no command spec — the scheduler MUST mark it `failed` (it can never run a mechanical step it was not given), never silently skip it or route it to a driver.
 - A node's dependency permanently fails — dependents MUST be marked blocked (dependency-failed), never left runnable or silently skipped.
 - Every remaining node is blocked — the scheduler MUST surface an explicit stalled-graph state, not spin.
 - The scheduler workflow's history approaches the limit — it MUST Continue-As-New, carrying forward the DAG + node states, losing no in-flight dispatch.
@@ -111,11 +142,14 @@ created from the correct repo at the correct base ref.
 - **FR-014**: Node state transitions MUST be projected to the Chitin Board read-model by an activity (070 FR-016) — the board reflects scheduler state, never drives it.
 - **FR-015**: The scheduler MUST emit a per-tick telemetry record — frontier, dispatches, driver selections and their reasons — to Chitin Telemetry (070 FR-008).
 - **FR-016**: A stalled graph (no runnable and no running nodes, undone nodes remain) MUST be surfaced as an explicit state, never a silent spin.
+- **FR-017**: Each node MUST declare a kind — `agent` (genuinely ambiguous coding work, routed to a capability-matched driver) or `deterministic` (a mappable mechanical step — format, test, lint, version bump — that runs as a plain Temporal activity with no driver and no token cost). A runnable `deterministic` node MUST be dispatched to a deterministic-step activity that runs its declared command in its worktree; driver selection MUST NOT run for it. A runnable `agent` node is routed and dispatched exactly as FR-007/FR-008 specify. The kind defaults to `agent`, so a DAG that declares no kind behaves as before. (Rationale: "workflows over agents" — mechanical work belongs in a deterministic workflow step, not a frontier coding agent.)
 
 ### Key Entities
 
 - **Work-Unit DAG**: the scheduler's input contract — nodes plus dependency edges, acyclic. The normalized form every spec-kit adapter (spec 077) MUST produce. Owned by this spec as the consumer contract.
-- **DAG Node**: one work unit — id, source spec/task ref, required capability tag, priority, tier hint, target repo + base ref, worktree requirement, status.
+- **DAG Node**: one work unit — id, source spec/task ref, node kind, priority, tier hint, target repo + base ref, worktree requirement, status. An `agent`-kind node also carries a required capability tag (the driver routing key); a `deterministic`-kind node instead carries a command/step spec (the mechanical step to run). Kind defaults to `agent` for backward compatibility.
+- **Node Kind**: `agent` (ambiguous coding work → a capability-matched driver) or `deterministic` (a mappable mechanical step → a plain Temporal activity, no driver, no token cost). The `agent`/`deterministic` split is the "workflows over agents" discipline made part of the DAG schema.
+- **Deterministic Step**: the command spec a `deterministic` node carries — the mechanical command (and arguments) the `RunDeterministicStep` activity runs in the node's worktree. Its exit code settles the node `done` or `failed`.
 - **Node Status**: `pending` → `runnable` → `running` → `done` | `failed` | `blocked-unroutable` | `blocked-dependency-failed`.
 - **Dependency Edge**: a `depends_on` relation; the transitive closure MUST be acyclic.
 - **Scheduler Workflow**: the durable Temporal workflow that ticks — frontier, order, dispatch, update, Continue-As-New.
@@ -140,6 +174,7 @@ created from the correct repo at the correct base ref.
 - Specs already encode dependency information (spec-kit `tasks.md` ordering and `[P]` markers, OpenSpec phases); spec 077 extracts it. Where a spec's dependencies are ambiguous, the adapter marks them `NEEDS CLARIFICATION` rather than guessing.
 - Priority is a property of the node, supplied by the spec (or a declared default); the scheduler does not infer priority heuristically (070 FR-015 — "no heuristic optimizer").
 - One operator, one box, low throughput (ticks on the order of minutes) — determinism and observability matter, not QPS.
+- "Workflows over agents" (Barry Zhang, Anthropic): an agentic LLM is the right tool only for genuinely ambiguous work; mechanical, deterministically-mappable steps belong in a plain workflow step. The scheduler therefore treats the agent-vs-deterministic distinction as a first-class node property (FR-017) — a `deterministic` node never burns a frontier coding agent on work a shell command does exactly. The spec-kit adapters (spec 077) classify each node's kind; where a node's nature is ambiguous the adapter defaults it to `agent`.
 
 ## Out of Scope
 

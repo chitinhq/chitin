@@ -78,6 +78,130 @@ func TestNodeStatus_Terminal(t *testing.T) {
 	}
 }
 
+// TestNodeKind_String proves each declared kind renders to its spec wire-form
+// name, and an out-of-range value renders without panicking.
+func TestNodeKind_String(t *testing.T) {
+	tests := []struct {
+		kind NodeKind
+		want string
+	}{
+		{NodeKindAgent, "agent"},
+		{NodeKindDeterministic, "deterministic"},
+		{NodeKind(-1), "kind(-1)"},
+		{NodeKind(99), "kind(99)"},
+	}
+	for _, tc := range tests {
+		if got := tc.kind.String(); got != tc.want {
+			t.Errorf("NodeKind(%d).String() = %q, want %q", int(tc.kind), got, tc.want)
+		}
+	}
+}
+
+// TestNodeKind_Valid proves Valid accepts exactly the declared kinds.
+func TestNodeKind_Valid(t *testing.T) {
+	tests := []struct {
+		kind NodeKind
+		want bool
+	}{
+		{NodeKindAgent, true},
+		{NodeKindDeterministic, true},
+		{NodeKind(-1), false},
+		{NodeKind(2), false},
+	}
+	for _, tc := range tests {
+		if got := tc.kind.Valid(); got != tc.want {
+			t.Errorf("NodeKind(%d).Valid() = %v, want %v", int(tc.kind), got, tc.want)
+		}
+	}
+}
+
+// TestNodeKind_AgentIsZeroValue proves NodeKindAgent is the zero value — a
+// Node (or a deserialized DAG) that declares no kind is an agent node, so the
+// deterministic kind is a strictly backward-compatible addition
+// (spec 076 FR-017).
+func TestNodeKind_AgentIsZeroValue(t *testing.T) {
+	var zero NodeKind
+	if zero != NodeKindAgent {
+		t.Errorf("zero-value NodeKind = %v, want NodeKindAgent", zero)
+	}
+	n := Node{ID: "legacy"} // a node from before FR-017 declares no kind.
+	if n.Kind != NodeKindAgent {
+		t.Errorf("Node with no declared kind has Kind = %v, want NodeKindAgent (backward compat)", n.Kind)
+	}
+}
+
+// TestNode_DeterministicCarriesCommand proves a deterministic node round-trips
+// its command/step spec through AddNode and Node — the deterministic-node
+// analogue of an agent node's capability (spec 076 Key Entities: Deterministic
+// Step).
+func TestNode_DeterministicCarriesCommand(t *testing.T) {
+	d := New()
+	want := Node{
+		ID:      "fmt",
+		SpecRef: "076",
+		Kind:    NodeKindDeterministic,
+		Command: "gofmt",
+		Args:    []string{"-l", "."},
+	}
+	if err := d.AddNode(want); err != nil {
+		t.Fatalf("AddNode: unexpected error: %v", err)
+	}
+	got, ok := d.Node("fmt")
+	if !ok {
+		t.Fatal("Node(\"fmt\"): not found after AddNode")
+	}
+	if got.Kind != NodeKindDeterministic {
+		t.Errorf("Node Kind = %v, want NodeKindDeterministic", got.Kind)
+	}
+	if got.Command != "gofmt" {
+		t.Errorf("Node Command = %q, want %q", got.Command, "gofmt")
+	}
+	if len(got.Args) != 2 || got.Args[0] != "-l" || got.Args[1] != "." {
+		t.Errorf("Node Args = %v, want [-l .]", got.Args)
+	}
+}
+
+// TestNode_Equal proves Node.Equal is a total field-for-field equality —
+// needed because the Args slice makes Node uncomparable with ==.
+func TestNode_Equal(t *testing.T) {
+	base := Node{ID: "a", SpecRef: "076", Kind: NodeKindDeterministic,
+		Command: "go", Args: []string{"test", "./..."}, Priority: 5}
+
+	t.Run("equal to itself", func(t *testing.T) {
+		if !base.Equal(base) {
+			t.Error("a node must equal itself")
+		}
+	})
+	t.Run("nil and empty Args are equal", func(t *testing.T) {
+		a := Node{ID: "x"}
+		b := Node{ID: "x", Args: []string{}}
+		if !a.Equal(b) {
+			t.Error("a nil Args and an empty Args must compare equal")
+		}
+	})
+	t.Run("differing Args are not equal", func(t *testing.T) {
+		other := base
+		other.Args = []string{"build", "./..."}
+		if base.Equal(other) {
+			t.Error("nodes with different Args must not be equal")
+		}
+	})
+	t.Run("differing Kind are not equal", func(t *testing.T) {
+		other := base
+		other.Kind = NodeKindAgent
+		if base.Equal(other) {
+			t.Error("nodes with different Kind must not be equal")
+		}
+	})
+	t.Run("differing Command are not equal", func(t *testing.T) {
+		other := base
+		other.Command = "gofmt"
+		if base.Equal(other) {
+			t.Error("nodes with different Command must not be equal")
+		}
+	})
+}
+
 // TestNew_EmptyDAG proves the empty DAG is a valid, queryable zero value:
 // zero nodes, zero edges, an empty frontier, and acyclic.
 func TestNew_EmptyDAG(t *testing.T) {
@@ -112,7 +236,7 @@ func TestAddNode(t *testing.T) {
 		if !ok {
 			t.Fatal("Node(\"a\"): not found after AddNode")
 		}
-		if got != want {
+		if !got.Equal(want) {
 			t.Errorf("Node(\"a\") = %+v, want %+v", got, want)
 		}
 	})

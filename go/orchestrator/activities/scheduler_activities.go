@@ -35,12 +35,14 @@ type SchedulerActivityDeps struct {
 //
 // The activities registered:
 //
-//   - "SelectDriver"      — capability-based driver selection (FR-007).
-//   - "CreateWorktree"    — fresh per-node worktree creation (FR-013).
-//   - "TeardownWorktree"  — worktree teardown on work-unit completion (FR-008).
-//   - "ProjectToBoard"    — node-state projection to the board (FR-014).
-//   - "EmitTickTelemetry" — per-tick telemetry emission (FR-015).
-//   - "InvokeDriver:<id>" — one per registered driver, for the driver
+//   - "SelectDriver"          — capability-based driver selection (FR-007).
+//   - "CreateWorktree"        — fresh per-node worktree creation (FR-013).
+//   - "TeardownWorktree"      — worktree teardown on work-unit completion (FR-008).
+//   - "RunDeterministicStep"  — mechanical-step execution for a deterministic
+//     node, no driver and no token cost (FR-017).
+//   - "ProjectToBoard"        — node-state projection to the board (FR-014).
+//   - "EmitTickTelemetry"     — per-tick telemetry emission (FR-015).
+//   - "InvokeDriver:<id>"     — one per registered driver, for the driver
 //     invocation inside WorkUnitWorkflow (spec 075 FR-007).
 //
 // main calls this once, after constructing deps, alongside the existing
@@ -53,6 +55,11 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	wt := NewWorktrees(deps.Worktrees)
 	w.RegisterActivityWithOptions(wt.CreateWorktree, registerAs(wt.CreateActivityName()))
 	w.RegisterActivityWithOptions(wt.TeardownWorktree, registerAs(wt.TeardownActivityName()))
+
+	// RunDeterministicStep carries no startup-bound dependency — a
+	// deterministic step is a self-contained mechanical command (FR-017).
+	step := NewDeterministicStep()
+	w.RegisterActivityWithOptions(step.Execute, registerAs(step.ActivityName()))
 
 	board := NewBoardProjection(deps.Board)
 	w.RegisterActivityWithOptions(board.Execute, registerAs(board.ActivityName()))

@@ -208,7 +208,7 @@ func dagEqual(a, b *dag.DAG) bool {
 		return false
 	}
 	for i := range an {
-		if an[i] != bn[i] {
+		if !an[i].Equal(bn[i]) {
 			return false
 		}
 	}

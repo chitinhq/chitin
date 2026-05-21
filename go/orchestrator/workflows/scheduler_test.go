@@ -3,6 +3,7 @@ package workflows
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -520,6 +521,192 @@ func TestScheduler_SurfacesStalledGraph(t *testing.T) {
 	}
 	if status.NodeStatus["c"] != "pending" && status.NodeStatus["c"] != "runnable" {
 		t.Errorf("node c status = %q, want pending/runnable — it never ran", status.NodeStatus["c"])
+	}
+}
+
+// TestScheduler_DeterministicNodeBypassesDriverSelection proves spec 076
+// FR-017 / User Story 4 acceptance scenarios 1 & 2: a runnable node of kind
+// deterministic is dispatched WITHOUT driver selection — SelectDriver never
+// runs for it, zero token cost — while an agent node in the same frontier is
+// routed to a driver exactly as before.
+//
+// The child WorkUnitWorkflow is mocked (as in every scheduler test) so this
+// test isolates the SCHEDULER's dispatch decision. That a deterministic node's
+// work unit actually runs RunDeterministicStep is proven separately, at the
+// WorkUnitWorkflow level, in work_unit_test.go.
+func TestScheduler_DeterministicNodeBypassesDriverSelection(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	// Two roots: an agent node `impl` and a deterministic node `fmt` (gofmt).
+	// `test` is a deterministic node depending on `impl` — a `go test` step
+	// that runs once the agent work lands.
+	nodes := []dag.Node{
+		{ID: "impl", SpecRef: "076", Kind: dag.NodeKindAgent, Capability: "code.implement",
+			Priority: 10, TargetRepo: "/repo/chitin", BaseRef: "main", WorktreeRequired: true},
+		{ID: "fmt", SpecRef: "076", Kind: dag.NodeKindDeterministic,
+			Command: "gofmt", Args: []string{"-l", "."}, Priority: 5,
+			TargetRepo: "/repo/chitin", BaseRef: "main", WorktreeRequired: true},
+		{ID: "test", SpecRef: "076", Kind: dag.NodeKindDeterministic,
+			Command: "go", Args: []string{"test", "./..."}, Priority: 1,
+			TargetRepo: "/repo/chitin", BaseRef: "main", WorktreeRequired: true},
+	}
+	edges := []dag.Edge{{From: "test", To: "impl"}} // test depends on impl
+
+	// selectCalls records every node SelectDriver was invoked for — a
+	// deterministic node must NEVER appear here (FR-017: no driver, no tokens).
+	var selectCalls []string
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.SelectDriverInput) (activities.SelectDriverResult, error) {
+			selectCalls = append(selectCalls, in.NodeID)
+			return activities.SelectDriverResult{DriverID: "driver-" + in.Capability,
+				Reason: "selected driver-" + in.Capability}, nil
+		},
+		activityOpts("SelectDriver"),
+	)
+
+	// dispatchedKind records, per dispatched node, whether the work unit it
+	// was handed carried a driver id (agent) or none (deterministic).
+	dispatchedDriver := map[string]string{}
+	dispatchSeen := map[string]bool{}
+	env.OnWorkflow(WorkUnitWorkflow, mock.Anything, mock.Anything).Return(
+		func(_ workflow.Context, in WorkUnitInput) (WorkUnitResult, error) {
+			dispatchedDriver[in.Node.ID] = in.DriverID
+			dispatchSeen[in.Node.ID] = true
+			return WorkUnitResult{NodeID: in.Node.ID, DriverID: in.DriverID,
+				Succeeded: true, Status: "succeeded"}, nil
+		})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
+		activityOpts("ProjectToBoard"),
+	)
+	dispatchReason := map[string]string{}
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, rec activities.TickRecord) error {
+			for _, d := range rec.Dispatched {
+				dispatchReason[d.NodeID] = d.SelectionReason
+			}
+			return nil
+		},
+		activityOpts("EmitTickTelemetry"),
+	)
+
+	env.ExecuteWorkflow(SchedulerWorkflow, SchedulerInput{
+		RunID: "det-run", Nodes: nodes, Edges: edges,
+	})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("scheduler workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("scheduler workflow errored: %v", err)
+	}
+
+	// Driver selection ran for exactly the agent node — never a deterministic
+	// one (FR-017: zero token cost for mechanical work).
+	if len(selectCalls) != 1 || selectCalls[0] != "impl" {
+		t.Errorf("SelectDriver called for %v, want exactly [impl] — deterministic nodes must not be routed",
+			selectCalls)
+	}
+
+	// All three nodes were dispatched.
+	for _, id := range []string{"impl", "fmt", "test"} {
+		if !dispatchSeen[id] {
+			t.Errorf("node %s was never dispatched", id)
+		}
+	}
+	// The agent node's work unit carries a driver id; each deterministic
+	// node's carries none — it runs a mechanical step instead.
+	if dispatchedDriver["impl"] == "" {
+		t.Error("agent node impl must be dispatched with a driver id")
+	}
+	for _, id := range []string{"fmt", "test"} {
+		if dispatchedDriver[id] != "" {
+			t.Errorf("deterministic node %s dispatched with driver %q, want empty", id, dispatchedDriver[id])
+		}
+	}
+	// The dispatch telemetry names the deterministic step rather than a driver.
+	if got := dispatchReason["fmt"]; got == "" || !strings.Contains(got, "deterministic step") {
+		t.Errorf("deterministic node fmt selection reason = %q, want it to name the deterministic step", got)
+	}
+
+	// Every node — agent and deterministic — reached done.
+	var status SchedulerStatus
+	if err := env.GetWorkflowResult(&status); err != nil {
+		t.Fatalf("decoding scheduler result: %v", err)
+	}
+	for _, id := range []string{"impl", "fmt", "test"} {
+		if status.NodeStatus[id] != "done" {
+			t.Errorf("node %s final status = %q, want done", id, status.NodeStatus[id])
+		}
+	}
+}
+
+// TestScheduler_DeterministicStepFailurePropagates proves spec 076 FR-017
+// acceptance scenario 3: a deterministic node whose work unit fails is marked
+// failed and blocks its dependents, identically to a failed agent node. The
+// child work unit is mocked to fail the deterministic node `lint`.
+func TestScheduler_DeterministicStepFailurePropagates(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	// `lint` is a deterministic node; `impl` (agent) depends on it.
+	nodes := []dag.Node{
+		{ID: "lint", SpecRef: "076", Kind: dag.NodeKindDeterministic,
+			Command: "golangci-lint", Args: []string{"run"}, Priority: 5,
+			TargetRepo: "/repo/chitin", BaseRef: "main"},
+		{ID: "impl", SpecRef: "076", Kind: dag.NodeKindAgent, Capability: "code.implement",
+			Priority: 5, TargetRepo: "/repo/chitin", BaseRef: "main"},
+	}
+	edges := []dag.Edge{{From: "impl", To: "lint"}} // impl depends on lint
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.SelectDriverInput) (activities.SelectDriverResult, error) {
+			return activities.SelectDriverResult{DriverID: "driver-" + in.Capability}, nil
+		},
+		activityOpts("SelectDriver"),
+	)
+	// The deterministic node's work unit fails — a real failed mechanical step.
+	env.OnWorkflow(WorkUnitWorkflow, mock.Anything, mock.Anything).Return(
+		func(_ workflow.Context, in WorkUnitInput) (WorkUnitResult, error) {
+			succeeded := in.Node.ID != "lint"
+			status := "succeeded"
+			if !succeeded {
+				status = "failed"
+			}
+			return WorkUnitResult{NodeID: in.Node.ID, DriverID: in.DriverID,
+				Succeeded: succeeded, Status: status}, nil
+		})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
+		activityOpts("ProjectToBoard"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.TickRecord) error { return nil },
+		activityOpts("EmitTickTelemetry"),
+	)
+
+	env.ExecuteWorkflow(SchedulerWorkflow, SchedulerInput{
+		RunID: "det-fail-run", Nodes: nodes, Edges: edges,
+	})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("scheduler workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("scheduler workflow errored: %v", err)
+	}
+
+	var status SchedulerStatus
+	if err := env.GetWorkflowResult(&status); err != nil {
+		t.Fatalf("decoding scheduler result: %v", err)
+	}
+	if status.NodeStatus["lint"] != "failed" {
+		t.Errorf("deterministic node lint status = %q, want failed", status.NodeStatus["lint"])
+	}
+	if status.NodeStatus["impl"] != "blocked-dependency-failed" {
+		t.Errorf("node impl status = %q, want blocked-dependency-failed — a failed deterministic node blocks dependents",
+			status.NodeStatus["impl"])
 	}
 }
 

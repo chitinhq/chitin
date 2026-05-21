@@ -3,6 +3,7 @@ package workflows
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -470,44 +471,67 @@ func (s *schedulerState) runTick(
 
 	// 3. Route and dispatch each runnable node, in the frontier's
 	//    deterministic order (priority desc, then node id).
+	//
+	//    A node's kind decides HOW it dispatches (spec 076 FR-017): an
+	//    NodeKindDeterministic node runs a mechanical step as a plain
+	//    activity — driver selection is SKIPPED entirely, so it costs no
+	//    agent tokens. An NodeKindAgent node is routed to a capability-
+	//    matched driver exactly as before.
 	for _, n := range frontier {
-		sel, selErr := selectDriverFor(ctx, s.runID, n)
-		if selErr != nil {
-			// A genuine activity fault (not a blocked-unroutable outcome):
-			// surface it so the workflow can retry. The frontier is ordered,
-			// so a retry resumes deterministically.
-			return activities.TickRecord{}, nil, selErr
-		}
-		if sel.Unroutable {
-			// No driver satisfies the node's capability — mark it
-			// blocked-unroutable and CONTINUE; the rest of the frontier still
-			// proceeds (spec 076 FR-010, acceptance scenario 4).
-			if err := d.SetStatus(n.ID, dag.StatusBlockedUnroutable); err != nil {
-				logger.Error("scheduler: cannot mark node blocked-unroutable", "node", n.ID, "err", err)
+		var (
+			driverID        string
+			selectionReason string
+		)
+		if n.Kind == dag.NodeKindAgent {
+			// Agent node: route it to a driver (spec 076 FR-007). A
+			// deterministic node never reaches this branch — no driver
+			// selection, no token cost (FR-017).
+			sel, selErr := selectDriverFor(ctx, s.runID, n)
+			if selErr != nil {
+				// A genuine activity fault (not a blocked-unroutable outcome):
+				// surface it so the workflow can retry. The frontier is
+				// ordered, so a retry resumes deterministically.
+				return activities.TickRecord{}, nil, selErr
+			}
+			if sel.Unroutable {
+				// No driver satisfies the node's capability — mark it
+				// blocked-unroutable and CONTINUE; the rest of the frontier
+				// still proceeds (spec 076 FR-010, acceptance scenario 4).
+				if err := d.SetStatus(n.ID, dag.StatusBlockedUnroutable); err != nil {
+					logger.Error("scheduler: cannot mark node blocked-unroutable", "node", n.ID, "err", err)
+					continue
+				}
+				record(n.ID, n.Status.String(), dag.StatusBlockedUnroutable.String())
+				tickRec.BlockedUnroutable = append(tickRec.BlockedUnroutable, n.ID)
+				logger.Warn("scheduler: node blocked-unroutable",
+					"node", n.ID, "capability", sel.MissingCapability)
 				continue
 			}
-			record(n.ID, n.Status.String(), dag.StatusBlockedUnroutable.String())
-			tickRec.BlockedUnroutable = append(tickRec.BlockedUnroutable, n.ID)
-			logger.Warn("scheduler: node blocked-unroutable",
-				"node", n.ID, "capability", sel.MissingCapability)
-			continue
+			driverID = sel.DriverID
+			selectionReason = sel.Reason
+		} else {
+			// Deterministic node: dispatched to RunDeterministicStep, no
+			// driver (spec 076 FR-017). The selection reason records that the
+			// node bypassed routing — it ran as a mechanical step.
+			selectionReason = fmt.Sprintf(
+				"deterministic step %q — no driver, no token cost", deterministicStep(n))
 		}
 
-		// Routable: mark the node running BEFORE dispatch so a later tick can
-		// never re-dispatch it (exactly-once — spec 076 FR-009), then start
-		// the child work unit.
+		// Mark the node running BEFORE dispatch so a later tick can never
+		// re-dispatch it (exactly-once — spec 076 FR-009), then start the
+		// child work unit.
 		if err := d.SetStatus(n.ID, dag.StatusRunning); err != nil {
 			logger.Error("scheduler: cannot mark node running", "node", n.ID, "err", err)
 			continue
 		}
 		record(n.ID, n.Status.String(), dag.StatusRunning.String())
 
-		future := dispatchWorkUnit(ctx, s.runID, n, sel.DriverID)
+		future := dispatchWorkUnit(ctx, s.runID, n, driverID)
 		running[n.ID] = future
 		tickRec.Dispatched = append(tickRec.Dispatched, activities.DispatchRecord{
 			NodeID:          n.ID,
-			DriverID:        sel.DriverID,
-			SelectionReason: sel.Reason,
+			DriverID:        driverID,
+			SelectionReason: selectionReason,
 		})
 	}
 
@@ -709,9 +733,26 @@ func selectDriverFor(
 	return res, nil
 }
 
+// deterministicStep renders a deterministic node's command and args as a
+// single readable string for the tick telemetry's selection reason. A node
+// with no command renders as "(none)" — the work unit settles it failed
+// (spec 076 FR-017 edge case).
+func deterministicStep(n dag.Node) string {
+	if n.Command == "" {
+		return "(none)"
+	}
+	if len(n.Args) == 0 {
+		return n.Command
+	}
+	return n.Command + " " + strings.Join(n.Args, " ")
+}
+
 // dispatchWorkUnit starts the per-node child WorkUnitWorkflow. The child
 // workflow id is deterministic — runID plus node id — so the dispatch is
 // idempotent under replay and an operator can find the child by id.
+//
+// driverID is empty for a NodeKindDeterministic node — the work unit runs the
+// node's mechanical step instead of invoking a driver (spec 076 FR-017).
 func dispatchWorkUnit(
 	ctx workflow.Context, runID string, n dag.Node, driverID string,
 ) workflow.ChildWorkflowFuture {

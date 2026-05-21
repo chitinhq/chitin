@@ -140,6 +140,152 @@ func TestWorkUnit_TwoRepoIsolation(t *testing.T) {
 	}
 }
 
+// TestWorkUnit_DeterministicNodeRunsStep proves spec 076 FR-017 / User Story 4
+// acceptance scenario 1 at the WorkUnitWorkflow level: a NodeKindDeterministic
+// node's work unit creates a worktree, runs its mechanical command via the
+// RunDeterministicStep activity in that worktree — NOT a driver — and tears
+// the worktree down. The work unit carries no driver id.
+func TestWorkUnit_DeterministicNodeRunsStep(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	const fakeWorktreePath = "/worktrees/wu-det"
+	tornDown := false
+	var gotStep activities.DeterministicStepInput
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.CreateWorktreeInput) (activities.CreateWorktreeResult, error) {
+			return activities.CreateWorktreeResult{Path: fakeWorktreePath}, nil
+		},
+		activityOpts("CreateWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.TeardownWorktreeInput) error {
+			if in.Path == fakeWorktreePath {
+				tornDown = true
+			}
+			return nil
+		},
+		activityOpts("TeardownWorktree"),
+	)
+	// Mock RunDeterministicStep: capture the step the work unit asked to run.
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.DeterministicStepInput) (activities.DeterministicStepResult, error) {
+			gotStep = in
+			return activities.DeterministicStepResult{
+				NodeID: in.NodeID, Succeeded: true, ExitCode: 0,
+				Output: "formatted", Explanation: "gofmt ran clean",
+			}, nil
+		},
+		activityOpts("RunDeterministicStep"),
+	)
+
+	node := dag.Node{
+		ID: "fmt", SpecRef: "076", Kind: dag.NodeKindDeterministic,
+		Command: "gofmt", Args: []string{"-w", "."},
+		TargetRepo: "/repos/chitin", BaseRef: "main", WorktreeRequired: true,
+	}
+	// A deterministic node's work unit carries NO driver id.
+	env.ExecuteWorkflow(WorkUnitWorkflow, WorkUnitInput{
+		Node: node, SchedulerRunID: "wu-det-run",
+	})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("work-unit workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("deterministic work unit errored: %v", err)
+	}
+	var res WorkUnitResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("decoding result: %v", err)
+	}
+
+	// The step ran the node's command in the fresh worktree.
+	if gotStep.Command != "gofmt" {
+		t.Errorf("RunDeterministicStep command = %q, want gofmt", gotStep.Command)
+	}
+	if len(gotStep.Args) != 2 || gotStep.Args[0] != "-w" || gotStep.Args[1] != "." {
+		t.Errorf("RunDeterministicStep args = %v, want [-w .]", gotStep.Args)
+	}
+	if gotStep.WorktreePath != fakeWorktreePath {
+		t.Errorf("RunDeterministicStep worktree = %q, want %q", gotStep.WorktreePath, fakeWorktreePath)
+	}
+	if gotStep.NodeID != "fmt" {
+		t.Errorf("RunDeterministicStep node id = %q, want fmt", gotStep.NodeID)
+	}
+	if !res.Succeeded {
+		t.Errorf("deterministic work unit result not successful: %+v", res)
+	}
+	if res.DriverID != "" {
+		t.Errorf("deterministic work unit carried driver id %q, want empty", res.DriverID)
+	}
+	if !tornDown {
+		t.Error("deterministic work unit did not tear its worktree down")
+	}
+}
+
+// TestWorkUnit_DeterministicStepFailure proves a deterministic node whose
+// mechanical step exits non-zero settles the work unit unsuccessful, and the
+// worktree is still torn down (spec 076 FR-017 acceptance scenario 3).
+func TestWorkUnit_DeterministicStepFailure(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	const fakeWorktreePath = "/worktrees/wu-det-fail"
+	tornDown := false
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.CreateWorktreeInput) (activities.CreateWorktreeResult, error) {
+			return activities.CreateWorktreeResult{Path: fakeWorktreePath}, nil
+		},
+		activityOpts("CreateWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.TeardownWorktreeInput) error {
+			if in.Path == fakeWorktreePath {
+				tornDown = true
+			}
+			return nil
+		},
+		activityOpts("TeardownWorktree"),
+	)
+	// The mechanical step exits non-zero — a real failed step, not a fault.
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.DeterministicStepInput) (activities.DeterministicStepResult, error) {
+			return activities.DeterministicStepResult{
+				NodeID: in.NodeID, Succeeded: false, ExitCode: 1,
+				Explanation: "go test: 2 failures",
+			}, nil
+		},
+		activityOpts("RunDeterministicStep"),
+	)
+
+	env.ExecuteWorkflow(WorkUnitWorkflow, WorkUnitInput{
+		Node: dag.Node{ID: "test", SpecRef: "076", Kind: dag.NodeKindDeterministic,
+			Command: "go", Args: []string{"test", "./..."},
+			TargetRepo: "/repos/chitin", BaseRef: "main", WorktreeRequired: true},
+		SchedulerRunID: "wu-det-fail-run",
+	})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("work-unit workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("a failed deterministic step must not fault the workflow: %v", err)
+	}
+	var res WorkUnitResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("decoding result: %v", err)
+	}
+	if res.Succeeded {
+		t.Error("work unit result must be unsuccessful when the deterministic step fails")
+	}
+	if !tornDown {
+		t.Error("work unit must tear its worktree down even when the deterministic step fails")
+	}
+}
+
 // TestWorkUnit_TeardownOnDriverFailure proves the worktree is torn down even
 // when the driver invocation reports a failure — a failed work unit never
 // leaks its worktree (spec 070 FR-013/14).
