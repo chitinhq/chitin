@@ -26,6 +26,9 @@ type SchedulerActivityDeps struct {
 	// Telemetry is the write-only per-tick telemetry sink for
 	// EmitTickTelemetry. A nil Telemetry falls back to the logging sink.
 	Telemetry TickTelemetrySink
+	// Notifier is the write-only human-notification sink for DiscordNotify
+	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
+	Notifier Notifier
 }
 
 // RegisterSchedulerActivities wires the Spec-DAG Scheduler's activities into
@@ -42,6 +45,8 @@ type SchedulerActivityDeps struct {
 //     node, no driver and no token cost (FR-017).
 //   - "DeliverWorkProduct"    — commit, push, and open a PR for a completed
 //     agent work unit's worktree (spec 070 PR-out gate).
+//   - "DiscordNotify"         — post a work event to the human notification
+//     channel (spec 080 US2).
 //   - "ProjectToBoard"        — node-state projection to the board (FR-014).
 //   - "EmitTickTelemetry"     — per-tick telemetry emission (FR-015).
 //   - "InvokeDriver:<id>"     — one per registered driver, for the driver
@@ -67,6 +72,11 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	// pushing, and opening a PR is a self-contained sequence over the worktree.
 	deliver := NewDeliverWorkProduct()
 	w.RegisterActivityWithOptions(deliver.Execute, registerAs(deliver.ActivityName()))
+
+	// DiscordNotify posts work events to the human notification channel
+	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
+	notify := NewDiscordNotify(deps.Notifier)
+	w.RegisterActivityWithOptions(notify.Execute, registerAs(notify.ActivityName()))
 
 	board := NewBoardProjection(deps.Board)
 	w.RegisterActivityWithOptions(board.Execute, registerAs(board.ActivityName()))

@@ -89,6 +89,11 @@ func main() {
 	// configured (OTEL_EXPORTER_OTLP_* unset); Emit then logs and drops.
 	telemetrySink := activities.NewOTLPTickTelemetrySinkFromEnv()
 
+	// Build the spec-080 human notification surface — the Discord webhook
+	// notifier. It is write-only and no-ops when CHITIN_DISCORD_WEBHOOK_URL is
+	// unset, so the orchestrator runs notification-disabled rather than failing.
+	notifier := activities.NewDiscordNotifierFromEnv()
+
 	w := worker.New(c, TaskQueue, worker.Options{})
 	workflows.Register(w)
 	activities.Register(w)
@@ -97,6 +102,7 @@ func main() {
 		Worktrees: worktrees,
 		Board:     board,
 		Telemetry: telemetrySink,
+		Notifier:  notifier,
 	})
 
 	// Register the spec-078 self-improvement loop — the ImprovementLoopWorkflow

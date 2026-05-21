@@ -53,6 +53,8 @@ const DIAGRAM = `flowchart TB
     D3["hermes"]
     D4["openclaw"]
     D5["local LLM"]
+    D6["gemini"]
+    D7["copilot"]
   end
   SEL --> DRV
   INV --> DRV
@@ -80,7 +82,17 @@ const DIAGRAM = `flowchart TB
   CHN --> LOOP
   INGEST -.->|curated knowledge| LOOP
   LOOP -.->|proposed specs → human gate| SK
-  PR -->|merge → main| TLM
+
+  subgraph HUMAN["6 · Human surfaces — review and observe, never dispatch"]
+    DISCORD["Discord channels<br/>notifications — posted out, never in"]
+    CONSOLE["chitin-console<br/>board · KPIs · this diagram"]
+    REVIEW["GitHub PR review<br/>a human reads and merges"]
+  end
+  SCHED -.->|work events| DISCORD
+  WUW -.->|work events| DISCORD
+  BRD --> CONSOLE
+  PR --> REVIEW
+  REVIEW -->|merge → main| TLM
 `;
 
 @Component({

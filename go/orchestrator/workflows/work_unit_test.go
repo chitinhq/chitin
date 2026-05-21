@@ -207,6 +207,67 @@ func TestWorkUnit_TwoRepoIsolation(t *testing.T) {
 // node's work unit creates a worktree, runs its mechanical command via the
 // RunDeterministicStep activity in that worktree — NOT a driver — and tears
 // the worktree down. The work unit carries no driver id.
+// TestWorkUnit_EmitsSettledNotification proves WorkUnitWorkflow posts a
+// work-unit-settled event to the human notification channel via the
+// DiscordNotify activity (spec 080 US2).
+func TestWorkUnit_EmitsSettledNotification(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	var events []activities.NotificationEvent
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.CreateWorktreeInput) (activities.CreateWorktreeResult, error) {
+			return activities.CreateWorktreeResult{Path: "/worktrees/wu-notify"}, nil
+		},
+		activityOpts("CreateWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.TeardownWorktreeInput) error { return nil },
+		activityOpts("TeardownWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in activities.DeterministicStepInput) (activities.DeterministicStepResult, error) {
+			return activities.DeterministicStepResult{NodeID: in.NodeID, Succeeded: true}, nil
+		},
+		activityOpts("RunDeterministicStep"),
+	)
+	// Capture every notification the workflow emits.
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, ev activities.NotificationEvent) error {
+			events = append(events, ev)
+			return nil
+		},
+		activityOpts("DiscordNotify"),
+	)
+
+	node := dag.Node{
+		ID: "n-notify", SpecRef: "080", Kind: dag.NodeKindDeterministic,
+		Command: "true", TargetRepo: "/repos/x", BaseRef: "main", WorktreeRequired: true,
+	}
+	env.ExecuteWorkflow(WorkUnitWorkflow, WorkUnitInput{Node: node, SchedulerRunID: "notify-run"})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("work-unit workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("work-unit workflow errored: %v", err)
+	}
+
+	var settled *activities.NotificationEvent
+	for i := range events {
+		if events[i].Kind == activities.NotifyWorkUnitSettled {
+			settled = &events[i]
+		}
+	}
+	if settled == nil {
+		t.Fatalf("no work-unit-settled notification emitted; got %v", events)
+	}
+	if settled.RunID != "notify-run" || settled.NodeID != "n-notify" {
+		t.Errorf("settled event = %+v, want run notify-run / node n-notify", *settled)
+	}
+}
+
 func TestWorkUnit_DeterministicNodeRunsStep(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
