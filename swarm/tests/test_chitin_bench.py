@@ -10,18 +10,23 @@ states the invariant up front in the docstring.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import TestCase, main
 
 from harbor.environments.base import ExecResult
 
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
+    BenchAgent,
     LoopDetector,
     _strip_provider_prefix,
     is_task_complete,
     parse_bash_block,
+    wrap_command_with_timeout,
 )
 
 
@@ -139,6 +144,50 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestCommandTimeoutWrapper(TestCase):
+    """Invariant: timed commands are wrapped in-container so a Python
+    await timeout does not leak the child process into later turns."""
+
+    def test_wraps_with_timeout_and_quoted_bash_command(self):
+        wrapped = wrap_command_with_timeout("apt-get install -y opam", 60)
+        self.assertEqual(
+            wrapped,
+            "timeout --kill-after=5s 60s bash -lc 'apt-get install -y opam'",
+        )
+
+    def test_agent_executes_wrapped_command(self):
+        class FakeEnvironment:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            async def exec(self, cmd: str) -> ExecResult:
+                self.commands.append(cmd)
+                if cmd.startswith("timeout --kill-after=5s 60s bash -lc "):
+                    return ExecResult(stdout="ok", stderr="", return_code=0)
+                return ExecResult(stdout="", stderr="", return_code=0)
+
+        env = FakeEnvironment()
+        context = SimpleNamespace(metadata=None)
+        responses = iter(["```bash\napt-get install -y opam\n```", "TASK_COMPLETE"])
+
+        from swarm.chitin_bench import agent as agent_module
+
+        original_ollama_chat = agent_module.ollama_chat
+        try:
+            agent_module.ollama_chat = lambda *args, **kwargs: next(responses)
+            with TemporaryDirectory() as tmpdir:
+                agent = BenchAgent(logs_dir=Path(tmpdir), model_name="ollama/test")
+                asyncio.run(agent.run("install opam", env, context))
+        finally:
+            agent_module.ollama_chat = original_ollama_chat
+
+        self.assertGreaterEqual(len(env.commands), 1)
+        self.assertTrue(
+            env.commands[-1].startswith("timeout --kill-after=5s 60s bash -lc "),
+            env.commands[-1],
+        )
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──
