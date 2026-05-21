@@ -19,6 +19,8 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/hermes"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 	"github.com/chitinhq/chitin/go/orchestrator/worktree"
 )
@@ -38,14 +40,16 @@ func main() {
 	}
 	defer c.Close()
 
-	// Build the spec-075 driver registry and register the three concrete
-	// agent drivers. Registration is a startup-time act; the registry is
+	// Build the spec-075 driver registry and register the concrete agent
+	// drivers. Registration is a startup-time act; the registry is
 	// read-only once the worker host is up.
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
 		codex.New(),
 		hermes.New(),
+		openclaw.New(),
+		local.New(),
 	} {
 		if err := registry.Register(d); err != nil {
 			log.Fatalf("chitin-orchestrator: registering driver %q: %v", d.ID(), err)

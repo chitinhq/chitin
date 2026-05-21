@@ -1,9 +1,10 @@
-// Package openclaw will hold the OpenClaw agent driver (spec 075, task
-// T015) — an ACP runtime behind the AgentDriver contract.
+// Package openclaw holds the OpenClaw agent driver (spec 075, task T015) —
+// an ACP (Agent Client Protocol) runtime behind the spec-075 AgentDriver
+// contract.
 //
-// TODO(spec-075 Phase 3, US1): implement driver.go — an AgentDriver whose
-// Invoke drives OpenClaw (Clawta) over the Agent Client Protocol,
-// publishing a CapabilityCard and reporting readiness from the ACP
-// connection. Left as a documented stub by the Phase 0 foundation slice
-// (T001–T011).
+// The driver wraps the `openclaw agent` invocation: the orchestrator hands
+// it a typed WorkUnit, the driver drives OpenClaw (Clawta) in the work
+// unit's dedicated worktree under chitin kernel governance, and returns a
+// typed Result. ACP is just one more runtime kind behind the one interface
+// (FR-013) — the orchestrator never names it.
 package openclaw
