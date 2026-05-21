@@ -1,4 +1,4 @@
-"""Tests for icarus-bench-runner — emit_gov_decision and _extract_tick_metadata.
+"""Tests for chitin-bench-runner — emit_gov_decision and _extract_tick_metadata.
 
 Covers the gov-decision row emission that this ticket (t_bb2a1575)
 introduced. These tests do NOT require harbor/ollama/docker; they
@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -191,6 +191,42 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["block_reason"], "stuck_in_loop")
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
+
+    def test_extracts_current_metadata_keys(self):
+        """Invariant: the current chitin_bench metadata keys are
+        preferred, including steps_used stored under metadata rather
+        than agent_result.steps."""
+        self._write_trial_result("chitin-bench-test", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "ollama_error",
+                    "chitin_bench_steps_used": 11,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "chitin-bench-test"}
+        meta = _runner["_extract_tick_metadata"](result, "chitin-bench-test")
+        self.assertEqual(meta["block_reason"], "ollama_error")
+        self.assertEqual(meta["reward"], 0.0)
+        self.assertEqual(meta["steps_used"], 11)
+
+    def test_extracts_legacy_steps_used_metadata_key(self):
+        """Invariant: legacy icarus_steps_used metadata still parses so
+        archived icarus jobs keep emitting accurate chain rows."""
+        self._write_trial_result("icarus-legacy", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "icarus_block_reason": "ollama_error",
+                    "icarus_steps_used": 14,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "icarus-legacy"}
+        meta = _runner["_extract_tick_metadata"](result, "icarus-legacy")
+        self.assertEqual(meta["block_reason"], "ollama_error")
+        self.assertEqual(meta["steps_used"], 14)
 
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward
