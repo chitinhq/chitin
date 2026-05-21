@@ -78,10 +78,10 @@
     "validate": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "pnpm exec nx run chitin-console:build",
-        "cwd": "{workspaceRoot}"
+        "commands": ["echo 'validate passed'"],
+        "parallel": false
       },
-      "dependsOn": ["^validate"]
+      "dependsOn": ["build", "^validate"]
     }
   }
 }
