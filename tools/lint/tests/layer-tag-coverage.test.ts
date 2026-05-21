@@ -1,11 +1,16 @@
+// spec: 074-polyglot-monorepo-layout
 import { describe, expect, it } from 'vitest';
 import {
   extractDepConstraintScopeTags,
   extractDepConstraintLayerTags,
   extractLayerTagsFromPackageJson,
   extractScopeTagsFromPackageJson,
+  findConventionViolations,
   findCoverageGaps,
+  findNxFieldPackageJsons,
+  toProjectShape,
   type PackageJsonShape,
+  type ProjectShape,
 } from '../layer-tag-coverage.ts';
 
 describe('extractLayerTagsFromPackageJson', () => {
@@ -260,5 +265,253 @@ describe('findCoverageGaps — partition invariant', () => {
     const missing = new Set(gaps.missing.map((m) => m.tag));
     const accountedFor = new Set([...matched, ...missing]);
     expect(accountedFor).toEqual(allInputTags);
+  });
+});
+
+// ── spec 074 Phase 2: project convention gate ──────────────────────
+
+describe('toProjectShape', () => {
+  it('returns null for a package.json path', () => {
+    expect(
+      toProjectShape({ path: 'libs/a/package.json', json: { name: 'a' } }),
+    ).toBeNull();
+  });
+
+  it('extracts name, tags, and target names from a project.json', () => {
+    expect(
+      toProjectShape({
+        path: 'libs/run-sdk/project.json',
+        json: {
+          name: '@chitin/run-sdk',
+          tags: ['type:lib', 'lang:ts'],
+          targets: { test: {}, validate: {} },
+        },
+      }),
+    ).toEqual({
+      path: 'libs/run-sdk/project.json',
+      name: '@chitin/run-sdk',
+      tags: ['type:lib', 'lang:ts'],
+      targetNames: ['test', 'validate'],
+    });
+  });
+
+  it('falls back to the directory path when name is absent', () => {
+    expect(
+      toProjectShape({
+        path: 'go/run-sdk/project.json',
+        json: { tags: [], targets: {} },
+      })?.name,
+    ).toBe('go/run-sdk');
+  });
+
+  it('treats missing or non-array tags as []', () => {
+    expect(
+      toProjectShape({ path: 'a/project.json', json: {} })?.tags,
+    ).toEqual([]);
+    expect(
+      toProjectShape({ path: 'a/project.json', json: { tags: 'type:lib' } })
+        ?.tags,
+    ).toEqual([]);
+  });
+
+  it('filters non-string tag entries', () => {
+    expect(
+      toProjectShape({
+        path: 'a/project.json',
+        json: { tags: ['type:lib', 42, null] },
+      })?.tags,
+    ).toEqual(['type:lib']);
+  });
+
+  it('treats missing or non-object targets as []', () => {
+    expect(
+      toProjectShape({ path: 'a/project.json', json: { tags: [] } })
+        ?.targetNames,
+    ).toEqual([]);
+  });
+
+  it('handles a non-object json without crashing', () => {
+    expect(toProjectShape({ path: 'a/project.json', json: null })).toEqual({
+      path: 'a/project.json',
+      name: 'a',
+      tags: [],
+      targetNames: [],
+    });
+  });
+});
+
+describe('findConventionViolations', () => {
+  function project(
+    over: Partial<ProjectShape> & Pick<ProjectShape, 'path'>,
+  ): ProjectShape {
+    return {
+      path: over.path,
+      name: over.name ?? over.path,
+      tags: over.tags ?? [
+        'type:lib',
+        'scope:analytics',
+        'layer:contracts',
+        'lang:ts',
+      ],
+      targetNames: over.targetNames ?? ['validate'],
+    };
+  }
+
+  it('no projects → no violations', () => {
+    expect(findConventionViolations([])).toEqual([]);
+  });
+
+  it('a fully compliant project → no violation', () => {
+    expect(
+      findConventionViolations([project({ path: 'libs/a/project.json' })]),
+    ).toEqual([]);
+  });
+
+  it('extra tags beyond the required set are fine', () => {
+    expect(
+      findConventionViolations([
+        project({
+          path: 'a/project.json',
+          tags: [
+            'type:app',
+            'scope:kernel',
+            'layer:kernel',
+            'lang:go',
+            'runtime:local',
+          ],
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('flags a missing tag namespace', () => {
+    expect(
+      findConventionViolations([
+        project({
+          path: 'a/project.json',
+          name: 'a',
+          tags: ['type:lib', 'scope:analytics', 'layer:contracts'],
+        }),
+      ]),
+    ).toEqual([
+      {
+        project: 'a',
+        path: 'a/project.json',
+        missingTagNamespaces: ['lang:'],
+        missingTargets: [],
+      },
+    ]);
+  });
+
+  it('flags an empty tag set as all four namespaces missing', () => {
+    expect(
+      findConventionViolations([
+        project({ path: 'a/project.json', name: 'a', tags: [] }),
+      ])[0]?.missingTagNamespaces,
+    ).toEqual(['type:', 'scope:', 'layer:', 'lang:']);
+  });
+
+  it('flags a missing validate target', () => {
+    expect(
+      findConventionViolations([
+        project({
+          path: 'a/project.json',
+          name: 'a',
+          targetNames: ['build', 'test'],
+        }),
+      ]),
+    ).toEqual([
+      {
+        project: 'a',
+        path: 'a/project.json',
+        missingTagNamespaces: [],
+        missingTargets: ['validate'],
+      },
+    ]);
+  });
+
+  it('sorts violations by project path (deterministic output)', () => {
+    const v = findConventionViolations([
+      project({ path: 'z/project.json', tags: [] }),
+      project({ path: 'a/project.json', tags: [] }),
+      project({ path: 'm/project.json', tags: [] }),
+    ]);
+    expect(v.map((x) => x.path)).toEqual([
+      'a/project.json',
+      'm/project.json',
+      'z/project.json',
+    ]);
+  });
+
+  // Knuth-style: a project is in the result IFF it is missing something,
+  // and every returned violation lists at least one concrete gap.
+  it('partition invariant — compliant projects never appear', () => {
+    const v = findConventionViolations([
+      project({ path: 'good/project.json' }),
+      project({ path: 'bad/project.json', tags: [], targetNames: [] }),
+    ]);
+    expect(v.map((x) => x.path)).toEqual(['bad/project.json']);
+    for (const violation of v) {
+      expect(
+        violation.missingTagNamespaces.length +
+          violation.missingTargets.length,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('findNxFieldPackageJsons', () => {
+  it('flags a package.json declaring an nx field', () => {
+    expect(
+      findNxFieldPackageJsons([
+        {
+          path: 'apps/cli/package.json',
+          json: { name: 'cli', nx: { tags: [] } },
+        },
+      ]),
+    ).toEqual(['apps/cli/package.json']);
+  });
+
+  it('ignores a package.json with no nx field', () => {
+    expect(
+      findNxFieldPackageJsons([
+        { path: 'apps/cli/package.json', json: { name: 'cli' } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('ignores project.json files — the single allowed mechanism', () => {
+    expect(
+      findNxFieldPackageJsons([
+        { path: 'apps/cli/project.json', json: { nx: { tags: [] } } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('ignores an nx field that is null or not an object', () => {
+    expect(
+      findNxFieldPackageJsons([
+        { path: 'a/package.json', json: { nx: null } },
+        { path: 'b/package.json', json: { nx: 'yes' } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('skips malformed json without crashing', () => {
+    expect(
+      findNxFieldPackageJsons([
+        { path: 'a/package.json', json: null },
+        { path: 'b/package.json', json: 'not an object' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('returns sorted paths (deterministic output)', () => {
+    expect(
+      findNxFieldPackageJsons([
+        { path: 'z/package.json', json: { nx: {} } },
+        { path: 'a/package.json', json: { nx: {} } },
+      ]),
+    ).toEqual(['a/package.json', 'z/package.json']);
   });
 });
