@@ -21,6 +21,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/hermes"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
+	"github.com/chitinhq/chitin/go/orchestrator/loop"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 	"github.com/chitinhq/chitin/go/orchestrator/worktree"
 )
@@ -95,6 +96,17 @@ func main() {
 		Worktrees: worktrees,
 		Board:     board,
 		Telemetry: telemetrySink,
+	})
+
+	// Register the spec-078 self-improvement loop — the ImprovementLoopWorkflow
+	// and its IngestTelemetry / ProjectProposalQueue activities. Every loop.Deps
+	// field is optional and degrades to a safe log-based default: a nil Readers
+	// slice yields empty cycles (every telemetry layer unreachable) and a nil
+	// ProposalQueue logs each proposal. main supplies the concrete telemetry
+	// readers and the proposal-queue sink once those surfaces exist.
+	loop.Register(w, loop.Deps{
+		Readers:       nil,
+		ProposalQueue: nil,
 	})
 
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d drivers, worktrees at %s",
