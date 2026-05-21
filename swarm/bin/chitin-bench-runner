@@ -49,7 +49,7 @@ CHITIN_DIR = Path(os.environ.get("CHITIN_HOME", str(Path.home() / ".chitin")))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
 
-DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3.6:27b")
+DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3-coder:30b-32k")
 DEFAULT_N_TASKS = int(os.environ.get("CHITIN_BENCH_N_TASKS", "1"))
 DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("CHITIN_BENCH_PER_TASK_WALLCLOCK", "1800"))
 EMITTER = REPO_ROOT / "swarm" / "bin" / "chitin-bench-ticket-emitter"
@@ -223,12 +223,16 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
             except (json.JSONDecodeError, OSError):
                 return meta
 
-            # block_reason: agent_result.metadata.icarus_block_reason
+            # block_reason: prefer current chitin-bench metadata, but
+            # keep reading legacy icarus keys so old trials still classify.
             agent_result = trial.get("agent_result") or {}
             metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
-            icarus_reason = metadata.get("icarus_block_reason")
-            if icarus_reason:
-                meta["block_reason"] = icarus_reason
+            chitin_bench_reason = metadata.get("chitin_bench_block_reason")
+            legacy_icarus_reason = metadata.get("icarus_block_reason")
+            if chitin_bench_reason:
+                meta["block_reason"] = chitin_bench_reason
+            elif legacy_icarus_reason:
+                meta["block_reason"] = legacy_icarus_reason
             elif trial.get("exception_info"):
                 exc_info = trial["exception_info"]
                 meta["block_reason"] = f"harness_exception:{exc_info.get('exception_type', 'unknown')}"
@@ -249,9 +253,14 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
                     except (TypeError, ValueError, KeyError):
                         pass
 
-            # steps_used: agent_result.steps or agent_result.step_count
+            # steps_used: prefer current context metadata, then legacy agent_result keys.
             if isinstance(agent_result, dict):
-                steps = agent_result.get("steps") or agent_result.get("step_count")
+                steps = (
+                    metadata.get("chitin_bench_steps_used")
+                    or metadata.get("icarus_steps_used")
+                    or agent_result.get("steps")
+                    or agent_result.get("step_count")
+                )
                 if steps is not None:
                     try:
                         meta["steps_used"] = int(steps)

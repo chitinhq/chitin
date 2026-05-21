@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -177,12 +177,13 @@ class TestExtractTickMetadata(TestCase):
         (trial_dir / "result.json").write_text(json.dumps(data))
 
     def test_extracts_reward_and_block_reason(self):
-        """Invariant: icarus_block_reason and reward are extracted from
-        the harbor result.json."""
+        """Invariant: current chitin-bench metadata is extracted first."""
         self._write_trial_result("icarus-test", "trial-0", {
             "agent_result": {
-                "metadata": {"icarus_block_reason": "stuck_in_loop"},
-                "steps": 12,
+                "metadata": {
+                    "chitin_bench_block_reason": "stuck_in_loop",
+                    "chitin_bench_steps_used": 12,
+                },
             },
             "verifier_result": {"reward": 0.75},
         })
@@ -191,6 +192,23 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["block_reason"], "stuck_in_loop")
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
+
+    def test_extracts_legacy_icarus_metadata_for_backcompat(self):
+        """Invariant: legacy icarus metadata still classifies old trials."""
+        self._write_trial_result("icarus-legacy", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "icarus_block_reason": "legacy_loop",
+                    "icarus_steps_used": 7,
+                },
+            },
+            "verifier_result": {"reward": 0.5},
+        })
+        result = {"status": "ran", "job_name": "icarus-legacy"}
+        meta = _runner["_extract_tick_metadata"](result, "icarus-legacy")
+        self.assertEqual(meta["block_reason"], "legacy_loop")
+        self.assertEqual(meta["reward"], 0.5)
+        self.assertEqual(meta["steps_used"], 7)
 
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward
