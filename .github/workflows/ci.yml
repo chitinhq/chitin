@@ -36,7 +36,9 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
-          cache-dependency-path: go/execution-kernel/go.sum
+          cache-dependency-path: |
+            go/execution-kernel/go.sum
+            go/orchestrator/go.sum
 
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
@@ -69,6 +71,15 @@ jobs:
       - name: Go vet
         run: go vet ./...
         working-directory: go/execution-kernel
+
+      - name: Temporal workflow determinism gate
+        run: |
+          # Static analysis gate over workflow definitions. This fails on
+          # known non-deterministic constructs like wall-clock time,
+          # randomness, goroutines/channels, and map iteration in workflow
+          # code or anything workflow code calls.
+          go tool workflowcheck ./workflows/...
+        working-directory: go/orchestrator
 
       - name: Verify signed governance policy
         env:
