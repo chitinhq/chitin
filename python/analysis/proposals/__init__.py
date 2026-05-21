@@ -10,6 +10,7 @@ from analysis.proposals.models import (
 )
 from analysis.proposals.queue import InvalidTransition, ProposalQueue
 from analysis.proposals.review import operator_approve
+from analysis.proposals.versioned_policy import PolicyVersion, PolicyVersionError, VersionedPolicyLog
 
 __all__ = [
     "Attribution",
@@ -21,4 +22,7 @@ __all__ = [
     "SpecAmendment",
     "ThresholdStatus",
     "operator_approve",
+    "PolicyVersion",
+    "PolicyVersionError",
+    "VersionedPolicyLog",
 ]
