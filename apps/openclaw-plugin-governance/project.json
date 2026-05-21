@@ -1,21 +1,21 @@
 {
-  "name": "chitin-console-api",
+  "name": "@chitinhq/openclaw-plugin-governance",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/openclaw-plugin-governance/src",
   "projectType": "application",
-  "sourceRoot": "apps/chitin-console-api/src",
-  "tags": ["type:app", "scope:app", "layer:console", "lang:ts"],
+  "tags": ["type:plugin", "scope:plugin", "layer:plugin", "lang:ts", "runtime:openclaw"],
   "targets": {
-    "serve": {
+    "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node apps/chitin-console-api/src/server.mjs",
+        "command": "pnpm exec vitest run apps/openclaw-plugin-governance/test",
         "cwd": "{workspaceRoot}"
       }
     },
     "validate": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node --check apps/chitin-console-api/src/server.mjs",
+        "command": "pnpm exec vitest run apps/openclaw-plugin-governance/test",
         "cwd": "{workspaceRoot}"
       },
       "dependsOn": ["^validate"]

@@ -1,21 +1,21 @@
 {
-  "name": "chitin-console-api",
+  "name": "@chitin/run-sdk",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "application",
-  "sourceRoot": "apps/chitin-console-api/src",
-  "tags": ["type:app", "scope:app", "layer:console", "lang:ts"],
+  "sourceRoot": "libs/run-sdk/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:sdk", "layer:sdk", "lang:ts"],
   "targets": {
-    "serve": {
+    "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node apps/chitin-console-api/src/server.mjs",
+        "command": "pnpm exec vitest run libs/run-sdk/tests",
         "cwd": "{workspaceRoot}"
       }
     },
     "validate": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node --check apps/chitin-console-api/src/server.mjs",
+        "command": "pnpm exec tsc -b libs/run-sdk/tsconfig.lib.json && pnpm exec vitest run libs/run-sdk/tests",
         "cwd": "{workspaceRoot}"
       },
       "dependsOn": ["^validate"]
