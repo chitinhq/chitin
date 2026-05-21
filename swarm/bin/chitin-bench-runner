@@ -49,7 +49,7 @@ CHITIN_DIR = Path(os.environ.get("CHITIN_HOME", str(Path.home() / ".chitin")))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
 
-DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3.6:27b")
+DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3-coder:30b-32k")
 DEFAULT_N_TASKS = int(os.environ.get("CHITIN_BENCH_N_TASKS", "1"))
 DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("CHITIN_BENCH_PER_TASK_WALLCLOCK", "1800"))
 EMITTER = REPO_ROOT / "swarm" / "bin" / "chitin-bench-ticket-emitter"

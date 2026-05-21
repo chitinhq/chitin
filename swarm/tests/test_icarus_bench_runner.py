@@ -1,4 +1,4 @@
-"""Tests for icarus-bench-runner — emit_gov_decision and _extract_tick_metadata.
+"""Tests for chitin-bench-runner — emit_gov_decision and _extract_tick_metadata.
 
 Covers the gov-decision row emission that this ticket (t_bb2a1575)
 introduced. These tests do NOT require harbor/ollama/docker; they
@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -156,6 +156,17 @@ class TestEmitGovDecision(TestCase):
         # If fsync worked, the line is durable. We just verify it's readable.
         row = json.loads(jsonl_files[0].read_text().strip())
         self.assertEqual(row["action_target"], "sync-test")
+
+
+class TestBenchRunnerDefaults(TestCase):
+    """Invariant: the bench runner defaults to the stronger coder model
+    used by the current harness and watcher surfaces."""
+
+    def test_default_model_matches_current_chitin_bench_default(self):
+        self.assertEqual(
+            _runner["DEFAULT_MODEL"],
+            "ollama/qwen3-coder:30b-32k",
+        )
 
 
 class TestExtractTickMetadata(TestCase):
