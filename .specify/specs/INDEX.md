@@ -142,6 +142,16 @@ spec 049 §R6.
 |------|-------|------|--------|---------------|
 | 066 | 8→0 | grooming-telemetry | draft | `t_70a085ab` |
 
+## CLAWTA_IMPLEMENTER_LANES — spec 067
+
+> Spec 067 defines the two-path routing split for assignee=clawta
+> tickets: routing (→ terminal worker via _pick_driver) vs. implementer
+> (→ Clawta directly when Stage 5 handoff present). Parent: specs 049, 054.
+
+| Spec | Layer | Slug | Status | Bound ticket |
+|------|-------|------|--------|---------------|
+| 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
+
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
 > Filed during the overnight goal's Ares-lane audit. Cross-lane

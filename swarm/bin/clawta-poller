@@ -103,6 +103,22 @@ ROUTING_LANES = tuple(
     ).split(",") if s.strip()
 )
 ROUTING_LANE = ROUTING_LANES[0] if ROUTING_LANES else "clawta"
+# spec 067: implementer lanes — subset of ROUTING_LANES that can serve as
+# Stage 5 implementer when carrying a handoff marker. Defaults to ("clawta",).
+# Non-subset entries are logged as warnings and silently dropped.
+_raw_implementer_lanes = tuple(
+    s.strip()
+    for s in os.environ.get("CLAWTA_IMPLEMENTER_LANES", "clawta").split(",")
+    if s.strip()
+)
+CLAWTA_IMPLEMENTER_LANES = tuple(l for l in _raw_implementer_lanes if l in ROUTING_LANES)
+_DROPPED_IMPLEMENTER_LANES = set(_raw_implementer_lanes) - set(CLAWTA_IMPLEMENTER_LANES)
+# Stage 5 handoff detection regex (spec 067 R2).
+# Matches a line "Stage-5-handoff: clawta" (case-sensitive, plain text).
+STAGE5_HANDOFF_RE = re.compile(
+    r"^Stage-5-handoff:\s*clawta\s*$",
+    re.MULTILINE,
+)
 CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
 # Direct openclaw client for the sequencer LLM call. The `clawta` wrapper
 # has unanchored regex pattern detection — any prompt containing a
@@ -177,6 +193,10 @@ def log(msg: str) -> None:
             f.write(line + "\n")
     except OSError:
         pass
+
+# spec 067: Emit deferred warning for non-subset CLAWTA_IMPLEMENTER_LANES entries.
+if _DROPPED_IMPLEMENTER_LANES:
+    log(f"warning: CLAWTA_IMPLEMENTER_LANES contains non-ROUTING_LANES entries, dropped: {_DROPPED_IMPLEMENTER_LANES}")
 
 
 def parse_invariants_and_boundaries_field(body: str | None) -> str | None:
@@ -378,12 +398,46 @@ def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def fetch_routable() -> list[dict[str, Any]]:
-    """Return ready/todo tickets assigned to a routing lane.
+def fetch_stage5_handoff_comments(task_id: str) -> list[str]:
+    """Return comment bodies from handoff authors on the task.
 
-    These tickets need their assignee resolved to a terminal lane via the
-    LLM router (/_pick_driver) before they can be dispatched. The poller
-    routes them and reassigns to the chosen terminal lane.
+    A handoff author is any author whose name ends with '-handoff'.
+    Ordered most-recent first. Used by ticket_has_stage5_handoff().
+    """
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT body
+              FROM task_comments
+             WHERE task_id = ?
+               AND author LIKE '%-handoff'
+             ORDER BY created_at DESC, id DESC
+            """,
+            (task_id,),
+        ).fetchall()
+    return [str(row["body"]) for row in rows]
+
+
+def ticket_has_stage5_handoff(ticket_id: str) -> bool:
+    """True when the ticket carries a Stage 5 handoff marker.
+
+    A Stage 5 handoff marker is a line matching
+    ``Stage-5-handoff: clawta`` in a comment from a ``*-handoff``
+    author. See spec 067 R2.
+    """
+    for body in fetch_stage5_handoff_comments(ticket_id):
+        if STAGE5_HANDOFF_RE.search(body):
+            return True
+    return False
+
+
+def fetch_routable_for_routing() -> list[dict[str, Any]]:
+    """Return ready/todo tickets assigned to a routing lane that do NOT
+    carry a Stage 5 handoff for that lane (spec 067 R3 Path B).
+
+    These tickets need their assignee resolved to a terminal lane via
+    the LLM router (/_pick_driver) before they can be dispatched.
     """
     if not ROUTING_LANES:
         return []
@@ -397,11 +451,61 @@ def fetch_routable() -> list[dict[str, Any]]:
               FROM tasks
              WHERE status IN ({status_placeholders})
                AND assignee IN ({routing_placeholders})
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM task_comments c
+                  WHERE c.task_id = tasks.id
+                    AND c.author LIKE '%-handoff'
+                    AND c.body LIKE '%Stage-5-handoff: clawta%'
+                    AND tasks.assignee = 'clawta'
+               )
              ORDER BY priority DESC, created_at ASC
             """,
             (*DISPATCHABLE_STATUSES, *ROUTING_LANES),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def fetch_routable_for_implementer() -> list[dict[str, Any]]:
+    """Return ready/todo tickets assigned to clawta that carry a Stage 5
+    handoff marker (spec 067 R3 Path A).
+
+    These tickets should be dispatched directly to Clawta as the
+    implementer — the poller treats Clawta as a terminal lane for
+    these tickets only.
+    """
+    if "clawta" not in ROUTING_LANES:
+        return []
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+               AND assignee = 'clawta'
+               AND EXISTS (
+                 SELECT 1
+                   FROM task_comments c
+                  WHERE c.task_id = tasks.id
+                    AND c.author LIKE '%-handoff'
+                    AND c.body LIKE '%Stage-5-handoff: clawta%'
+               )
+             ORDER BY priority DESC, created_at ASC
+            """,
+            (*DISPATCHABLE_STATUSES,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_routable() -> list[dict[str, Any]]:
+    """Return all routable tickets (routing + implementer).
+
+    Composition of fetch_routable_for_routing() and
+    fetch_routable_for_implementer() for callers that need the union.
+    """
+    return fetch_routable_for_routing() + fetch_routable_for_implementer()
 
 
 def fetch_poller_owned_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
@@ -997,14 +1101,22 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         return None
 
 
-def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
+def route_clawta_assigned(dry_run: bool, limit: int | None = None,
+                          routing_only: bool = False) -> list[str]:
     """Route a bounded batch of clawta-assigned tickets through _pick_driver.
 
     Routing can involve slow LLM calls. Keep each cron tick bounded so
     terminal-lane ready tickets do not starve behind a large clawta routing
     backlog. Returns ticket IDs successfully routed.
+
+    When routing_only=True, only tickets WITHOUT a Stage 5 handoff marker
+    are considered (spec 067 R4). Implementer-lane tickets are excluded so
+    they are not incorrectly routed through _pick_driver.
     """
-    routable = fetch_routable()
+    if routing_only:
+        routable = fetch_routable_for_routing()
+    else:
+        routable = fetch_routable()
     if not routable:
         return []
     total = len(routable)
@@ -1184,11 +1296,26 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         remaining = max_dispatch - len(dispatched)
         routed: list[str] = []
         if remaining > 0:
-            routed = route_clawta_assigned(dry_run, limit=remaining)
+            routed = route_clawta_assigned(dry_run, limit=remaining,
+                                          routing_only=True)
             more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
             dispatched.extend(more_dispatched)
             demoted.extend(more_demoted)
             queue_size = max(queue_size, queue_size_after_route)
+        # Step 5b for multi-board: dispatch implementer-lane tickets.
+        implementer_tickets = fetch_routable_for_implementer()
+        implementer_tickets, skipped_impl = \
+            filter_tickets_with_incomplete_runs(implementer_tickets)
+        for tid in skipped_impl:
+            log(f"tick: skipping {tid} — incomplete task_run on "
+                "implementer-lane ticket")
+        impl_remaining = max_dispatch - len(dispatched)
+        for t in implementer_tickets[:impl_remaining]:
+            reason = ("Stage 5 implementer-lane ticket; dispatching "
+                      "directly to Clawta per spec 067 R4")
+            if dispatch_ticket(t["id"], "clawta", reason, dry_run):
+                dispatched.append(t["id"])
+                log(f"clawta-poller implementer-dispatch: ticket={t['id']}")
         if not dispatched and not demoted and not routed:
             log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
         return {
@@ -1229,15 +1356,33 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     demoted = spec_demoted + demoted
 
     # Step 5: If dispatch capacity remains, route only enough clawta-assigned
-    # tickets to fill that capacity, then immediately dispatch them.
+    # routing-lane tickets to fill that capacity, then immediately dispatch.
     remaining = max_dispatch - len(dispatched)
     routed: list[str] = []
     if remaining > 0:
-        routed = route_clawta_assigned(dry_run, limit=remaining)
+        routed = route_clawta_assigned(dry_run, limit=remaining,
+                                        routing_only=True)
         more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
         dispatched.extend(more_dispatched)
         demoted.extend(more_demoted)
         queue_size = max(queue_size, queue_size_after_route)
+
+    # Step 5b: Dispatch implementer-lane tickets directly to Clawta
+    # (spec 067 R4). These tickets carry a Stage 5 handoff marker and
+    # bypass _pick_driver — Clawta is the designated implementer.
+    implementer_tickets = fetch_routable_for_implementer()
+    implementer_tickets, skipped_impl = \
+        filter_tickets_with_incomplete_runs(implementer_tickets)
+    for tid in skipped_impl:
+        log(f"tick: skipping {tid} — incomplete task_run on "
+            "implementer-lane ticket")
+    impl_remaining = max_dispatch - len(dispatched)
+    for t in implementer_tickets[:impl_remaining]:
+        reason = ("Stage 5 implementer-lane ticket; dispatching "
+                  "directly to Clawta per spec 067 R4")
+        if dispatch_ticket(t["id"], "clawta", reason, dry_run):
+            dispatched.append(t["id"])
+            log(f"clawta-poller implementer-dispatch: ticket={t['id']}")
 
     if (
         not dispatched

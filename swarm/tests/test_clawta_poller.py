@@ -1323,5 +1323,236 @@ class ClawtaPollerRoutingTests(unittest.TestCase):
         self.assertEqual(driver, "codex")
 
 
+class ClawtaPollerSpec067Tests(unittest.TestCase):
+    # spec: 067-clawta-implementer-lanes
+
+    def test_fetch_routable_for_routing_excludes_stage5_handoff(self) -> None:
+        """AC1: routing path excludes clawta tickets with handoff."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_impl001', 'implementer ticket', '', 'ready', 'clawta', NULL, 50, 1),
+                  ('t_route001', 'routing ticket', '', 'ready', 'clawta', NULL, 40, 2);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_impl001', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                routing = module.fetch_routable_for_routing()
+                routing_ids = [t["id"] for t in routing]
+            self.assertIn("t_route001", routing_ids)
+            self.assertNotIn("t_impl001", routing_ids)
+
+    def test_fetch_routable_for_implementer_includes_stage5_handoff(self) -> None:
+        """AC2: implementer path includes clawta tickets with handoff."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_impl002', 'implementer ticket', '', 'ready', 'clawta', NULL, 50, 1),
+                  ('t_route002', 'routing ticket', '', 'ready', 'clawta', NULL, 40, 2);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_impl002', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+            self.assertIn("t_impl002", impl_ids)
+            self.assertNotIn("t_route002", impl_ids)
+
+    def test_fetch_routable_backward_compat_no_handoff(self) -> None:
+        """AC3: existing clawta tickets without handoff stay in routing path."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_worker03', 'worker ticket', '', 'ready', 'chitin-worker', NULL, 50, 1),
+                  ('t_claw03', 'clawta routing', '', 'ready', 'clawta', NULL, 40, 2);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                all_routable = module.fetch_routable()
+                all_ids = [t["id"] for t in all_routable]
+                routing_ids = [t["id"] for t in module.fetch_routable_for_routing()]
+            self.assertIn("t_worker03", all_ids)
+            self.assertIn("t_claw03", all_ids)
+            self.assertIn("t_worker03", routing_ids)
+            self.assertIn("t_claw03", routing_ids)
+
+    def test_clawta_implementer_lanes_env_var(self) -> None:
+        """AC4: non-subset entries are warned and dropped."""
+        with mock.patch.dict(
+            os.environ,
+            {"CLAWTA_IMPLEMENTER_LANES": "clawta,codex", "ROUTING_LANES": "clawta,chitin-worker"},
+            clear=False,
+        ):
+            module = load_module()
+        self.assertEqual(module.CLAWTA_IMPLEMENTER_LANES, ("clawta",))
+
+    def test_tick_step5b_dispatches_implementer_lane(self) -> None:
+        """AC5: tick() dispatches implementer-lane tickets to Clawta."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_impl005', 'impl ticket', '', 'ready', 'clawta', NULL, 50, 1);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_impl005', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), \
+                 mock.patch.object(module, "dispatch_ticket", return_value=True) as mock_dispatch, \
+                 mock.patch.object(module, "filter_tickets_with_incomplete_runs",
+                                   side_effect=lambda x: (x, [])), \
+                 mock.patch.object(module, "route_clawta_assigned", return_value=[]), \
+                 mock.patch.object(module, "fetch_routable_for_routing", return_value=[]), \
+                 mock.patch.object(module, "fetch_routable_for_implementer",
+                                   return_value=[{"id": "t_impl005", "title": "impl", "body": "",
+                                                  "assignee": "clawta", "priority": 50,
+                                                  "created_at": 1}]), \
+                 mock.patch.object(module, "dispatch_ready_batch",
+                                   return_value=([], [], 0)), \
+                 mock.patch.object(module, "run_invariant_repairs", return_value=[]), \
+                 mock.patch.object(module, "auto_unblock_dependency_tickets", return_value=[]), \
+                 mock.patch.object(module, "apply_dependency_gate", return_value=[]), \
+                 mock.patch.object(module, "demote_missing_spec_kit_entries", return_value=[]):
+                result = module.tick(max_dispatch=5, dry_run=True)
+
+            # dispatch_ticket should have been called for the implementer ticket
+            dispatch_calls = [c for c in mock_dispatch.call_args_list
+                              if c[0][0] == "t_impl005"]
+            self.assertTrue(len(dispatch_calls) > 0,
+                            "dispatch_ticket should be called for implementer-lane ticket")
+            # Verify dispatch target is clawta
+            self.assertEqual(dispatch_calls[0][0][1], "clawta")
+
+    def test_route_clawta_assigned_routing_only_skips_implementer(self) -> None:
+        """AC6: routing_only=True skips implementer-lane tickets from _pick_driver."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_impl006', 'implementer', '', 'ready', 'clawta', NULL, 50, 1),
+                  ('t_route006', 'routing', '', 'ready', 'clawta', NULL, 40, 2);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_impl006', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path), \
+                 mock.patch.object(module, "route_ticket", return_value="codex") as mock_route:
+                module.route_clawta_assigned(dry_run=True, routing_only=True)
+                routed_ids = [c[0][0]["id"] for c in mock_route.call_args_list]
+            self.assertNotIn("t_impl006", routed_ids)
+            self.assertIn("t_route006", routed_ids)
+
+    def test_conflicting_handoff_comments_implementer_wins(self) -> None:
+        """AC7/R7.2: conflicting handoff comments — implementer path wins."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_conflict1', 'conflict ticket', '', 'ready', 'clawta', NULL, 50, 1);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_conflict1', 'octi-handoff', 'Stage-5-handoff: codex', 90),
+                  ('t_conflict1', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+            # At least one clawta handoff exists, so the implementer path matches
+            self.assertIn("t_conflict1", impl_ids)
+
+    def test_handoff_on_chitin_worker_ignored(self) -> None:
+        """AC8/R7.3: handoff on chitin-worker ticket has no effect."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_cw008', 'worker with stray handoff', '', 'ready', 'chitin-worker', NULL, 50, 1);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_cw008', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                impl = module.fetch_routable_for_implementer()
+                routing = module.fetch_routable_for_routing()
+                impl_ids = [t["id"] for t in impl]
+                routing_ids = [t["id"] for t in routing]
+            self.assertNotIn("t_cw008", impl_ids)
+            self.assertIn("t_cw008", routing_ids)
+
+    def test_ticket_has_stage5_handoff_regex(self) -> None:
+        """STAGE5_HANDOFF_RE matches exactly the right patterns."""
+        module = load_module()
+        # Should match
+        self.assertTrue(module.STAGE5_HANDOFF_RE.search("Stage-5-handoff: clawta"))
+        self.assertTrue(module.STAGE5_HANDOFF_RE.search("Stage-5-handoff:  clawta "))
+        self.assertTrue(module.STAGE5_HANDOFF_RE.search(
+            "Some context\nStage-5-handoff: clawta\nMore text"
+        ))
+        # Should NOT match
+        self.assertFalse(module.STAGE5_HANDOFF_RE.search("stage-5-handoff: clawta"))  # case
+        self.assertFalse(module.STAGE5_HANDOFF_RE.search("Stage-5-handoff: codex"))
+        self.assertFalse(module.STAGE5_HANDOFF_RE.search("**Stage-5-handoff: clawta**"))
+
+
 if __name__ == "__main__":
     unittest.main()
