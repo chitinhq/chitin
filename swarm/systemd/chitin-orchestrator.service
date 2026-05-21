@@ -6,7 +6,7 @@ Wants=temporal-dev.service
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/chitin-orchestrator
-Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.vite-plus/bin:%h/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
 TimeoutStopSec=30

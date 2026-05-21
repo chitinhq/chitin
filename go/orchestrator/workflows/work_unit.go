@@ -64,6 +64,10 @@ type WorkUnitResult struct {
 const (
 	worktreeActivityTimeout = 5 * time.Minute
 	invokeActivityTimeout   = 2 * time.Hour
+	// deliverActivityTimeout bounds the PR-out-gate delivery — a commit, a
+	// branch push, and a `gh pr create`; network I/O, but far shorter than an
+	// agent invocation.
+	deliverActivityTimeout = 10 * time.Minute
 )
 
 // WorkUnitWorkflow is the per-node child workflow (spec 076 FR-008): it
@@ -157,7 +161,15 @@ func WorkUnitWorkflow(ctx workflow.Context, in WorkUnitInput) (WorkUnitResult, e
 	if deterministic {
 		return runDeterministicStep(ctx, logger, node, created.Path)
 	}
-	return invokeDriver(ctx, logger, node, in.DriverID, created.Path)
+	res, err := invokeDriver(ctx, logger, node, in.DriverID, created.Path)
+	if err == nil && res.Succeeded {
+		// The agent's work succeeded — commit it, push the dedicated branch,
+		// and open a PR (spec 070 PR-out gate) before the deferred teardown
+		// reclaims the worktree. Delivery degrades gracefully and never
+		// un-succeeds the work; it only enriches the result.
+		res = deliverWorkProduct(ctx, logger, node, created.Path, res)
+	}
+	return res, err
 }
 
 // invokeDriver runs the agent-node middle leg: it invokes the scheduler-
@@ -213,6 +225,57 @@ func invokeDriver(
 		OutputRef:   res.OutputRef,
 		Explanation: res.Explanation,
 	}, nil
+}
+
+// deliverWorkProduct runs the PR-out gate for a successful agent work unit
+// (spec 070): it commits the worktree, pushes the dedicated branch, and opens
+// a pull request via the DeliverWorkProduct activity, then folds the result
+// into the WorkUnitResult — OutputRef becomes the PR URL, or the commit SHA
+// when no PR could be opened.
+//
+// Delivery degrades gracefully and is never fatal: a delivery fault leaves the
+// work unit succeeded (the agent's work did complete) with the shortfall
+// recorded in Explanation. It runs before the deferred worktree teardown, so
+// the committed branch is preserved (an empty branch, when the agent produced
+// no changes, is still reclaimed by teardown).
+func deliverWorkProduct(
+	ctx workflow.Context, logger log.Logger,
+	node dag.Node, worktreePath string, res WorkUnitResult,
+) WorkUnitResult {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: deliverActivityTimeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			// Delivery is not blindly retried — `gh pr create` is not
+			// idempotent, so a retry could double-open a PR.
+			MaximumAttempts: 1,
+		},
+	})
+
+	var d activities.DeliverWorkProductResult
+	err := workflow.ExecuteActivity(actx, "DeliverWorkProduct", activities.DeliverWorkProductInput{
+		WorkUnitID:   node.ID,
+		SpecRef:      node.SpecRef,
+		TaskRef:      node.TaskRef,
+		Description:  node.Description,
+		WorktreePath: worktreePath,
+		BaseRef:      node.BaseRef,
+	}).Get(ctx, &d)
+	if err != nil {
+		logger.Error("work unit: work-product delivery faulted", "node", node.ID, "err", err)
+		res.Explanation += fmt.Sprintf("; work-product delivery faulted: %v", err)
+		return res
+	}
+
+	// OutputRef is the work product reference: the PR URL when one opened, else
+	// the delivered commit, else left as the driver supplied it.
+	switch {
+	case d.PRURL != "":
+		res.OutputRef = d.PRURL
+	case d.CommitSHA != "":
+		res.OutputRef = d.CommitSHA
+	}
+	res.Explanation += "; " + d.Explanation
+	return res
 }
 
 // runDeterministicStep runs the deterministic-node middle leg: it executes the

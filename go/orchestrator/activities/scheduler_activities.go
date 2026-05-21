@@ -40,6 +40,8 @@ type SchedulerActivityDeps struct {
 //   - "TeardownWorktree"      — worktree teardown on work-unit completion (FR-008).
 //   - "RunDeterministicStep"  — mechanical-step execution for a deterministic
 //     node, no driver and no token cost (FR-017).
+//   - "DeliverWorkProduct"    — commit, push, and open a PR for a completed
+//     agent work unit's worktree (spec 070 PR-out gate).
 //   - "ProjectToBoard"        — node-state projection to the board (FR-014).
 //   - "EmitTickTelemetry"     — per-tick telemetry emission (FR-015).
 //   - "InvokeDriver:<id>"     — one per registered driver, for the driver
@@ -60,6 +62,11 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	// deterministic step is a self-contained mechanical command (FR-017).
 	step := NewDeterministicStep()
 	w.RegisterActivityWithOptions(step.Execute, registerAs(step.ActivityName()))
+
+	// DeliverWorkProduct carries no startup-bound dependency — committing,
+	// pushing, and opening a PR is a self-contained sequence over the worktree.
+	deliver := NewDeliverWorkProduct()
+	w.RegisterActivityWithOptions(deliver.Execute, registerAs(deliver.ActivityName()))
 
 	board := NewBoardProjection(deps.Board)
 	w.RegisterActivityWithOptions(board.Execute, registerAs(board.ActivityName()))
