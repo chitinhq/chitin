@@ -21,6 +21,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/hermes"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
+	"github.com/chitinhq/chitin/go/orchestrator/ingest"
 	"github.com/chitinhq/chitin/go/orchestrator/loop"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 	"github.com/chitinhq/chitin/go/orchestrator/worktree"
@@ -107,6 +108,18 @@ func main() {
 	loop.Register(w, loop.Deps{
 		Readers:       nil,
 		ProposalQueue: nil,
+	})
+
+	// Register the spec-079 ingestion pipeline — the IngestionWorkflow and its
+	// FetchAndRead / SurfaceKnowledgeItem activities. Every ingest.RegisterDeps
+	// field is optional and degrades to a documented dev fallback: a nil Egress
+	// gets the development allow-all gate, a nil KnowledgeBase logs surfaced
+	// items. Production must bind the real kernel egress gate and knowledge base
+	// (ingest/fetch.go, ingest/knowledge_base.go TODOs).
+	ingest.Register(w, ingest.RegisterDeps{
+		Egress:        nil,
+		HTTP:          nil,
+		KnowledgeBase: nil,
 	})
 
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d drivers, worktrees at %s",
