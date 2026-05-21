@@ -10,6 +10,7 @@ states the invariant up front in the docstring.
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from unittest import TestCase, main
@@ -18,6 +19,7 @@ from harbor.environments.base import ExecResult
 
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
+    BenchAgent,
     LoopDetector,
     _strip_provider_prefix,
     is_task_complete,
@@ -139,6 +141,15 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestLegacyIcarusImports(TestCase):
+    """Invariant: historical Icarus import paths still resolve after
+    the harness rename to Chitin Bench."""
+
+    def test_legacy_agent_import_path_is_still_valid(self):
+        mod = importlib.import_module("swarm.icarus_harness.agent")
+        self.assertTrue(issubclass(mod.IcarusAgent, BenchAgent))
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──
