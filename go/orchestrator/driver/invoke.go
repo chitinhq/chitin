@@ -68,12 +68,17 @@ func (a *InvokeDriver) Execute(ctx context.Context, wu WorkUnit) (Result, error)
 	// shorter HeartbeatTimeout — governs liveness. A single heartbeat would let
 	// any invocation longer than the HeartbeatTimeout be killed mid-run. A
 	// background ticker beats while AgentDriver.Invoke blocks and stops the
-	// instant Invoke returns. activity.RecordHeartbeat is a no-op outside a
-	// Temporal activity context, so Execute remains callable directly in tests.
+	// instant Invoke returns.
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
 	go func() {
+		// beat records one heartbeat. activity.RecordHeartbeat PANICS when ctx
+		// is not a Temporal activity context — e.g. a direct call to Execute
+		// from a unit test. A heartbeat is strictly best-effort, so recover:
+		// a non-activity context makes beat a silent no-op rather than
+		// crashing the process from this goroutine.
 		beat := func() {
+			defer func() { _ = recover() }()
 			activity.RecordHeartbeat(ctx, fmt.Sprintf("invoking %s on work unit %s", a.driver.ID(), wu.ID))
 		}
 		beat() // an immediate first beat — never wait a full interval to be seen.
