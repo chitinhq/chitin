@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { registerGuard } from './commands/guard.js';
 import { registerStatus } from './commands/status.js';
+import { registerWiki } from './commands/wiki.js';
 
 const program = new Command();
 program.name('chitin').description('Observability-first substrate for AI coding agents');
@@ -67,6 +68,7 @@ program.command('replay <session_id>')
 }
 registerGuard(program);
 registerStatus(program);
+registerWiki(program);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);

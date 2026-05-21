@@ -1,0 +1,716 @@
+#!/usr/bin/env python3
+"""swarm-controller — deterministic dispatch controller for the swarm.
+
+Replaces the single-lane clawta-poller with a two-tier event router:
+
+  Tier 1 — Dispatch Controller (this script, no LLM):
+    - Owns the board state machine (triage → ready → in_progress → done/blocked)
+    - Promotes triage tickets meeting 3 gates (AC, no blockers, spec-kit entry)
+    - Claims ready→in_progress atomically
+    - Routes to driver lanes via _pick_driver (with ELO consultation)
+    - Auto-retries up to SWARM_MAX_RETRIES before escalating to red
+    - Posts receipts to #swarm on every state change
+
+  Tier 2 — Workers (dispatched worktrees):
+    - Receive dispatched tickets, work in isolated branches
+    - MUST post WORKER_RECEIPT on exit (success: PR URL, failure: error summary)
+    - Silent death detected by heartbeat timeout (controller reclaims after STALE_SECONDS)
+
+Usage:
+  swarm-controller --once              Print board state and exit
+  swarm-controller --dry-run           Print proposed actions, no side effects
+  swarm-controller --loop              Run continuously every TICK_SECONDS
+  swarm-controller --board chitin      Target a specific board
+
+Env:
+  KANBAN_BOARDS_DIR   default: ~/.hermes/kanban/boards
+  KANBAN_BOARD        default: chitin
+  SWARM_MAX_RETRIES   default: 3
+  STALE_SECONDS       default: 1200 (20 min)
+  COOLING_HOURS       default: 4
+  HERMES_CHANNEL_ID   Discord channel for #hermes (forbidden target)
+  SWARM_CHANNEL_ID    Discord channel for #swarm (coordination)
+  CLAWTA_CHANNEL_ID   Discord channel for #clawta (ops)
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db, resolve_board
+
+# ── Paths ────────────────────────────────────────────────────────────
+
+BOARDS_DIR = Path(os.environ.get(
+    "KANBAN_BOARDS_DIR",
+    str(Path.home() / ".hermes" / "kanban" / "boards"),
+))
+CHITIN_REPO = Path(os.environ.get(
+    "CHITIN_REPO",
+    str(Path.home() / "workspace" / "chitin"),
+))
+LOG_DIR = Path.home() / ".openclaw" / "logs"
+LOG_FILE = LOG_DIR / "swarm-controller.log"
+
+# ── Lane contract ───────────────────────────────────────────────────
+
+ROUTING_LANE = "clawta"
+TERMINAL_LANES = frozenset(os.environ.get(
+    "TERMINAL_LANES", "copilot,codex,claude-code,gemini"
+).split(","))
+OBSERVER_LANES = frozenset(["hermes", "red"])
+VALID_ASSIGNEES = TERMINAL_LANES | OBSERVER_LANES | {ROUTING_LANE}
+
+# ── Retry / cooling ─────────────────────────────────────────────────
+
+SWARM_MAX_RETRIES = int(os.environ.get("SWARM_MAX_RETRIES", "3"))
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "1200"))
+COOLING_HOURS = int(os.environ.get("COOLING_HOURS", "4"))
+DISPATCH_TIMEOUT = int(os.environ.get("DISPATCH_TIMEOUT", "300"))
+
+# ── Discord channel IDs (pos-002 routing contract) ─────────────────
+
+HERMES_CHANNEL_ID = os.environ.get("HERMES_CHANNEL_ID", "1503438297597350062")  # FORBIDDEN
+SWARM_CHANNEL_ID = os.environ.get("SWARM_CHANNEL_ID", "1505613628286701588")
+CLAWTA_CHANNEL_ID = os.environ.get("CLAWTA_CHANNEL_ID", "1503439202719760405")
+
+# ── External tools ──────────────────────────────────────────────────
+
+KANBAN_FLOW_BIN = os.environ.get("KANBAN_FLOW_BIN", "kanban-flow")
+PICK_DRIVER_SCRIPT = Path(os.environ.get(
+    "PICK_DRIVER_SCRIPT",
+    str(Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"),
+))
+CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN",
+    str(Path.home() / ".vite-plus" / "bin" / "openclaw"),
+)
+
+AUTHOR = "swarm-controller"
+
+
+# ── Board-aware command helpers (sw-008 Bug 1 fix) ───────────────────
+# Every kanban-flow / hermes kanban call MUST receive the board name
+# via KANBAN_BOARD env var. Previously --board was only used for
+# connect() but NOT propagated to state-transition commands — so
+# running against the swarm board would silently mutate chitin (DANGEROUS).
+
+def _env_with_board(board: str) -> dict[str, str]:
+    """Return os.environ copy with KANBAN_BOARD set for subprocess calls."""
+    env = dict(os.environ)
+    env["KANBAN_BOARD"] = board
+    return env
+
+
+def _kanban_flow(args: list[str], board: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run kanban-flow with KANBAN_BOARD set."""
+    kwargs.setdefault("timeout", 15)
+    return subprocess.run(
+        [KANBAN_FLOW_BIN] + args,
+        env=_env_with_board(board),
+        **kwargs,
+    )
+
+
+def _hermes_kanban(subcmd: str, args: list[str], board: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run hermes kanban with --board flag."""
+    kwargs.setdefault("timeout", 15)
+    return subprocess.run(
+        ["hermes", "kanban", "--board", board, subcmd] + args,
+        **kwargs,
+    )
+
+
+# ── Logging ─────────────────────────────────────────────────────────
+
+def log(msg: str) -> None:
+    """Timestamped log to stderr + logfile."""
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    line = f"[{AUTHOR}] {ts} {msg}"
+    print(line, file=sys.stderr)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+# ── Receipt posting (pos-002 compliant) ──────────────────────────────
+
+def post_receipt(channel_id: str, text: str) -> bool:
+    """Post a receipt to Discord via openclaw. Always uses --target (pos-002)."""
+    # pos-002 invariant: NEVER post to #hermes from swarm automation
+    if channel_id == HERMES_CHANNEL_ID:
+        log(f"POS-002 VIOLATION: attempted receipt to forbidden #hermes channel. Redirecting to #swarm.")
+        channel_id = SWARM_CHANNEL_ID
+
+    try:
+        subprocess.run(
+            [
+                OPENCLAW_BIN, "message", "send",
+                "--channel", "discord",
+                "--account", "default",
+                "--target", f"channel:{channel_id}",
+                "--message", text,
+            ],
+            timeout=15,
+            capture_output=True,
+            check=False,  # receipt is best-effort, don't fail the tick
+        )
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"receipt failed: {e}")
+        return False
+
+
+def receipt_state_change(board: str, task_id: str, title: str,
+                         old_status: str, new_status: str,
+                         assignee: str | None = None,
+                         reason: str = "") -> None:
+    """Post a state-change receipt to #swarm."""
+    assignee_str = f" → {assignee}" if assignee else ""
+    reason_str = f" ({reason})" if reason else ""
+    text = f"📋 {task_id} {old_status}→{new_status}{assignee_str}{reason_str}: {title[:80]}"
+    post_receipt(SWARM_CHANNEL_ID, text)
+
+
+def receipt_escalate(task_id: str, title: str, failures: int, reason: str) -> None:
+    """Post an escalation receipt to #swarm (operator-visible)."""
+    text = f"🚨 ESCALATE {task_id} ({failures} failures): {title[:60]} — {reason[:100]}"
+    post_receipt(SWARM_CHANNEL_ID, text)
+
+
+# ── Data ────────────────────────────────────────────────────────────
+
+@dataclass
+class Task:
+    """Minimal task representation from kanban.db."""
+    id: str
+    title: str
+    status: str
+    assignee: str | None
+    priority: int = 50
+    block_reason: str | None = None
+    dispatch_failure_count: int = 0
+    body: str | None = None   # sw-008 Bug 5: body can be NULL from DB
+
+
+# ── Board reads ──────────────────────────────────────────────────────
+
+def connect(board: str) -> sqlite3.Connection:
+    """Open a read-write connection to the kanban board."""
+    db_path = resolve_db(board)
+    if not db_path.exists():
+        log(f"FATAL: board db not found: {db_path}")
+        sys.exit(1)
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def load_active_tasks(con: sqlite3.Connection) -> list[Task]:
+    """Load all non-terminal tasks from the kanban board.
+
+    Handles both chitin and swarm board schemas — swarm lacks
+    block_reason, so we COALESCE it to NULL.
+    """
+    # Detect which columns exist
+    cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+
+    block_col = "block_reason" if "block_reason" in cols else "NULL AS block_reason"
+    body_col = "body" if "body" in cols else "NULL AS body"
+    
+    # When column exists, sqlite3.Row already names it correctly.
+    # When it doesn't, the alias gives us a consistent key.
+
+    cur = con.execute(
+        "SELECT id, title, status, priority, assignee, "
+        f"{block_col}, {body_col} "
+        "FROM tasks "
+        "WHERE status NOT IN ('done', 'archived') "
+        "ORDER BY priority ASC, id ASC"
+    )
+    tasks = []
+    for row in cur.fetchall():
+        # Count dispatch failures from task_runs
+        failure_count = 0
+        try:
+            fc = con.execute(
+                "SELECT COUNT(*) FROM task_runs "
+                "WHERE task_id = ? AND status = 'failed'",
+                (row["id"],)
+            ).fetchone()
+            failure_count = fc[0] if fc else 0
+        except sqlite3.OperationalError:
+            pass  # task_runs may not have the right schema yet
+
+        body_val = row["body"]
+        # sw-008 Bug 5: body can be None from DB — never slice None
+        if body_val is None:
+            body_val = ""
+
+        tasks.append(Task(
+            id=row["id"],
+            title=row["title"],
+            status=row["status"],
+            assignee=row["assignee"],
+            priority=row["priority"],
+            block_reason=row["block_reason"] or None,
+            dispatch_failure_count=failure_count,
+            body=body_val,
+        ))
+    return tasks
+
+
+def fetch_current_status(con: sqlite3.Connection, ticket_id: str) -> str | None:
+    """Fresh-read ticket status to prevent race conditions."""
+    row = con.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (ticket_id,)
+    ).fetchone()
+    return row["status"] if row else None
+
+
+# ── Classification ────────────────────────────────────────────────────
+
+def classify(task: Task) -> str:
+    """Classify a task's lane health."""
+    if task.assignee and task.assignee not in VALID_ASSIGNEES:
+        return "misassigned"
+    if task.status == "blocked" and task.dispatch_failure_count >= SWARM_MAX_RETRIES:
+        return "escalate"
+    if task.status == "blocked" and task.dispatch_failure_count < SWARM_MAX_RETRIES:
+        return "retry"
+    if task.status in ("ready", "todo") and task.assignee == ROUTING_LANE:
+        return "dispatchable"
+    if task.status == "triage":
+        return "triage"
+    if task.status == "in_progress" and task.assignee in TERMINAL_LANES:
+        return "in_flight"
+    if task.status == "in_progress" and task.assignee == ROUTING_LANE:
+        return "stale_dispatch"  # routing lane but in_progress = stuck
+    return "other"
+
+
+# ── Driver selection ─────────────────────────────────────────────────
+
+def pick_driver(board: str, ticket_id: str, title: str, body: str | None) -> str | None:
+    """Route a dispatchable ticket to a terminal driver via _pick_driver.
+
+    sw-008 Bug 4: _pick_driver.py reads JSON classification from STDIN,
+    not CLI args. Previously passed --board/--ticket-id/--title/--body
+    flags which the script ignores — always fell through to copilot.
+    Now pipes a classify JSON object on stdin, matching poller contract.
+    """
+    if not PICK_DRIVER_SCRIPT.exists():
+        log(f"_pick_driver not found at {PICK_DRIVER_SCRIPT}, defaulting to copilot")
+        return "copilot"
+
+    # Build the classify JSON that _pick_driver.py expects on stdin
+    classify_input = json.dumps({
+        "title": title[:200],
+        "body": (body or "")[:500],
+        "capabilities": [],
+    })
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(PICK_DRIVER_SCRIPT)],
+            input=classify_input,
+            capture_output=True,
+            text=True,
+            timeout=PICK_DRIVER_TIMEOUT_SECONDS,
+            env=_env_with_board(board),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            # _pick_driver outputs JSON: {"driver": "...", "reasoning": "..."}
+            try:
+                pick = json.loads(proc.stdout.strip())
+                driver = pick.get("driver")
+            except json.JSONDecodeError:
+                # Fallback: last non-empty line as raw driver name
+                driver = proc.stdout.strip().split("\n")[-1].strip()
+            if driver in TERMINAL_LANES:
+                return driver
+        log(f"_pick_driver rc={proc.returncode}: {(proc.stderr or '')[:200]}")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"_pick_driver error: {e}")
+
+    return "copilot"
+
+
+PICK_DRIVER_TIMEOUT_SECONDS = int(os.environ.get("PICK_DRIVER_TIMEOUT_SECONDS", "75"))
+
+
+# ── State transitions ────────────────────────────────────────────────
+
+def dispatch_worktree_path(driver: str, ticket_id: str) -> Path:
+    return Path.home() / ".cache" / "chitin" / "swarm-worktrees" / f"{driver}-{ticket_id}"
+
+
+def dispatch_ticket(con: sqlite3.Connection, board: str,
+                    ticket: Task, driver: str, dry_run: bool) -> bool:
+    """Transition ready→in_progress and spawn dispatch."""
+    if dry_run:
+        log(f"[dry-run] would dispatch {ticket.id} to {driver}")
+        return True
+
+    # Pre-flight: fresh read to prevent races
+    current = fetch_current_status(con, ticket.id)
+    if current not in ("ready", "todo"):
+        log(f"dispatch {ticket.id}: status flipped to {current!r}, aborting")
+        return False
+
+    # sw-008 Bug 1: pass board via _kanban_flow helper (sets KANBAN_BOARD env)
+    worktree_path = dispatch_worktree_path(driver, ticket.id)
+    try:
+        _kanban_flow(
+            ["start", ticket.id, "--author", AUTHOR, "--worktree", str(worktree_path)],
+            board=board, check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"dispatch {ticket.id}: kanban-flow start failed: {e}")
+        return False
+
+    # sw-008 Bug 3: hermes kanban comment uses --author; assign does not
+    comment = f"{AUTHOR} dispatching to {driver}"
+    _hermes_kanban(
+        "comment",
+        [ticket.id, "--author", AUTHOR, comment],
+        board=board, capture_output=True,
+    )
+
+    # Spawn dispatcher in background
+    log_path = LOG_DIR / f"dispatch-{ticket.id}.log"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a") as out:
+            subprocess.Popen(
+                [CLAWTA_BIN, f"dispatch ticket {ticket.id} to {driver}"],
+                stdout=out, stderr=out,
+                start_new_session=True,
+                env=_env_with_board(board),
+            )
+    except FileNotFoundError as e:
+        log(f"dispatch {ticket.id}: {CLAWTA_BIN} not found: {e}")
+        return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         "ready", "in_progress", assignee=driver,
+                         reason="dispatch")
+    log(f"dispatched {ticket.id} → {driver} (log: {log_path})")
+    return True
+
+
+def retry_ticket(con: sqlite3.Connection, board: str,
+                 ticket: Task, dry_run: bool) -> bool:
+    """Auto-retry a blocked ticket: unblock then ready.
+
+    sw-008 Bug 2: previously used kanban-flow demote which goes
+    down one status level (in_progress->ready, ready->triage). For
+    blocked tickets the correct path is unblock (blocked->ready).
+    Using demote on a blocked ticket is wrong — blocked isn't on
+    the promote/demote ladder.
+    """
+    if dry_run:
+        log(f"[dry-run] would retry {ticket.id} (failures: {ticket.dispatch_failure_count})")
+        return True
+
+    # Pick a different driver
+    driver = pick_driver(board, ticket.id, ticket.title, ticket.body)
+
+    # sw-008 Bug 2: unblock (not demote) for blocked->ready
+    try:
+        _kanban_flow(
+            ["unblock", ticket.id, "--author", AUTHOR, "--assignee", ROUTING_LANE],
+            board=board, check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        # If unblock fails (ticket might not be in blocked state after race),
+        # try ready as fallback
+        log(f"retry {ticket.id}: unblock failed: {e}, trying ready")
+        try:
+            _kanban_flow(
+                ["ready", ticket.id, "--author", AUTHOR, "--assignee", ROUTING_LANE],
+                board=board, check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
+            log(f"retry {ticket.id}: ready also failed: {e2}")
+            return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         "blocked", "ready",
+                         assignee=ROUTING_LANE,
+                         reason=f"auto-retry {ticket.dispatch_failure_count + 1}/{SWARM_MAX_RETRIES}")
+    log(f"retrying {ticket.id} → ready (attempt {ticket.dispatch_failure_count + 1})")
+    return True
+
+
+def escalate_ticket(con: sqlite3.Connection, board: str,
+                    ticket: Task, dry_run: bool) -> bool:
+    """Escalate exhausted-retry ticket to operator (red lane)."""
+    if dry_run:
+        log(f"[dry-run] would escalate {ticket.id} to red")
+        return True
+
+    # sw-008 Bug 3: hermes kanban assign takes positional args (task_id profile),
+    # no --author flag. --author is only for hermes kanban comment.
+    try:
+        _hermes_kanban(
+            "assign",
+            [ticket.id, "red"],
+            board=board, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass  # assign failure is non-fatal
+
+    comment = (f"🚨 ESCALATED to operator: {SWARM_MAX_RETRIES} dispatch failures. "
+               f"Block reason: {ticket.block_reason or 'unknown'}. "
+               f"Requires human decision.")
+    _hermes_kanban(
+        "comment",
+        [ticket.id, "--author", AUTHOR, comment],
+        board=board, capture_output=True,
+    )
+
+    receipt_escalate(ticket.id, ticket.title, ticket.dispatch_failure_count,
+                     ticket.block_reason or "exhausted retries")
+    log(f"escalated {ticket.id} → red ({ticket.dispatch_failure_count} failures)")
+    return True
+
+
+def fix_misassigned(con: sqlite3.Connection, board: str,
+                    ticket: Task, dry_run: bool) -> bool:
+    """Reassign misassigned tickets back to routing lane."""
+    if dry_run:
+        log(f"[dry-run] would reassign {ticket.id} from {ticket.assignee} to {ROUTING_LANE}")
+        return True
+
+    # sw-008 Bug 3: hermes kanban assign positional args (task_id profile), no --author
+    try:
+        _hermes_kanban(
+            "assign",
+            [ticket.id, ROUTING_LANE],
+            board=board, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"fix_misassigned {ticket.id}: assign failed: {e}")
+        return False
+
+    receipt_state_change(board, ticket.id, ticket.title,
+                         ticket.status, ticket.status,
+                         assignee=ROUTING_LANE,
+                         reason=f"fixed misassignment from {ticket.assignee}")
+    log(f"fixed misassignment: {ticket.id} {ticket.assignee} → {ROUTING_LANE}")
+    return True
+
+
+# ── Tick ──────────────────────────────────────────────────────────────
+
+def tick(board: str, max_dispatch: int, dry_run: bool) -> dict:
+    """One controller tick: classify, act, report."""
+    con = connect(board)
+    try:
+        tasks = load_active_tasks(con)
+
+        by_class: dict[str, list[Task]] = {}
+        for t in tasks:
+            cls = classify(t)
+            by_class.setdefault(cls, []).append(t)
+
+        actions = {"dispatched": [], "retried": [], "escalated": [], "fixed": [], "skipped": []}
+
+        # 1. Fix misassigned
+        for t in by_class.get("misassigned", []):
+            if fix_misassigned(con, board, t, dry_run):
+                actions["fixed"].append(t.id)
+            else:
+                actions["skipped"].append(f"fix:{t.id}")
+
+        # 2. Escalate exhausted retries
+        for t in by_class.get("escalate", []):
+            if escalate_ticket(con, board, t, dry_run):
+                actions["escalated"].append(t.id)
+            else:
+                actions["skipped"].append(f"escalate:{t.id}")
+
+        # 3. Retry blocked tickets (up to max)
+        for t in by_class.get("retry", []):
+            if retry_ticket(con, board, t, dry_run):
+                actions["retried"].append(t.id)
+            else:
+                actions["skipped"].append(f"retry:{t.id}")
+
+        # 4. Dispatch ready tickets (up to max_dispatch)
+        dispatched = 0
+        for t in by_class.get("dispatchable", []):
+            if dispatched >= max_dispatch:
+                actions["skipped"].append(f"dispatch:{t.id} (max_dispatch)")
+                continue
+            driver = pick_driver(board, t.id, t.title, t.body)
+            if dispatch_ticket(con, board, t, driver, dry_run):
+                actions["dispatched"].append(f"{t.id}→{driver}")
+                dispatched += 1
+            else:
+                actions["skipped"].append(f"dispatch:{t.id}")
+
+        # 5. Log in-flight and triage counts
+        in_flight = by_class.get("in_flight", [])
+        stale_dispatch = by_class.get("stale_dispatch", [])
+        triage = by_class.get("triage", [])
+
+        if stale_dispatch:
+            for t in stale_dispatch:
+                log(f"stale_dispatch: {t.id} in_progress but still on {ROUTING_LANE}")
+
+        summary = {
+            "board": board,
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "active": len(tasks),
+            "by_class": {k: len(v) for k, v in by_class.items()},
+            "actions": actions,
+            "in_flight": [t.id for t in in_flight],
+        }
+
+        # Log receipt
+        log(f"Board: {board} | Active: {len(tasks)}")
+        for cls, items in by_class.items():
+            log(f"  {cls}: {len(items)}")
+        if actions["dispatched"] or actions["retried"] or actions["escalated"]:
+            log(f"  Actions: dispatched={len(actions['dispatched'])} "
+                f"retried={len(actions['retried'])} escalated={len(actions['escalated'])}")
+
+        return summary
+
+    finally:
+        con.close()
+
+
+# ── State report (for --once / --dry-run) ────────────────────────────
+
+def report(board: str, tasks: list[Task]) -> dict:
+    """Print board state to stderr and return a summary dict."""
+    by_class: dict[str, list[Task]] = {}
+    for t in tasks:
+        cls = classify(t)
+        by_class.setdefault(cls, []).append(t)
+
+    summary = {
+        "board": board,
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "total_active": len(tasks),
+        "by_class": {k: len(v) for k, v in by_class.items()},
+        "escalate": [
+            {"id": t.id, "title": t.title, "failures": t.dispatch_failure_count}
+            for t in by_class.get("escalate", [])
+        ],
+        "retry": [
+            {"id": t.id, "title": t.title, "failures": t.dispatch_failure_count}
+            for t in by_class.get("retry", [])
+        ],
+        "dispatchable": [
+            {"id": t.id, "title": t.title, "assignee": t.assignee}
+            for t in by_class.get("dispatchable", [])
+        ],
+    }
+
+    log(f"Board: {board} | Active: {len(tasks)}")
+    for cls, items in by_class.items():
+        log(f"  {cls}: {len(items)}")
+        for t in items[:5]:
+            log(f"    - {t.id} [{t.priority}] {t.title[:60]}")
+
+    if summary["escalate"]:
+        log(f"⚠ ESCALATE: {len(summary['escalate'])} tickets need operator")
+
+    return summary
+
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="swarm-controller: deterministic dispatch controller"
+    )
+    parser.add_argument("--once", action="store_true",
+                        help="Single tick, print state, exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print proposed actions, no side effects")
+    parser.add_argument("--loop", action="store_true",
+                        help="Run continuously every TICK_SECONDS")
+    parser.add_argument("--board", default=os.environ.get("KANBAN_BOARD", "chitin"),
+                        help="Target board (default: chitin)")
+    parser.add_argument("--max-dispatch", type=int, default=5,
+                        help="Max tickets to dispatch per tick (default: 5)")
+    parser.add_argument("--tick-seconds", type=int,
+                        default=int(os.environ.get("TICK_SECONDS", "60")),
+                        help="Seconds between ticks in --loop mode (default: 60)")
+    args = parser.parse_args()
+
+    if not args.once and not args.loop and not args.dry_run:
+        args.once = True  # default: single tick
+
+    board = args.board
+
+    if args.dry_run:
+        con = connect(board)
+        try:
+            tasks = load_active_tasks(con)
+            summary = report(board, tasks)
+            print(json.dumps({"dry_run": True, "proposed": summary}, indent=2))
+        finally:
+            con.close()
+        return 0
+
+    if args.once:
+        con = connect(board)
+        try:
+            tasks = load_active_tasks(con)
+            summary = report(board, tasks)
+            print(json.dumps(summary, indent=2))
+        finally:
+            con.close()
+        return 0
+
+    # ── Continuous loop ───────────────────────────────────────────
+    log(f"Starting continuous loop: board={board}, tick={args.tick_seconds}s, max_dispatch={args.max_dispatch}")
+    tick_num = 0
+    while True:
+        tick_num += 1
+        try:
+            summary = tick(board, args.max_dispatch, dry_run=False)
+
+            # Periodic heartbeat receipt to #swarm (every 5 ticks)
+            if tick_num % 5 == 0:
+                text = (f"💓 swarm-controller tick #{tick_num}: board={board} "
+                        f"active={summary['active']} "
+                        f"dispatched={len(summary['actions']['dispatched'])} "
+                        f"retried={len(summary['actions']['retried'])} "
+                        f"escalated={len(summary['actions']['escalated'])}")
+                post_receipt(SWARM_CHANNEL_ID, text)
+
+        except Exception as e:
+            log(f"tick error: {e}")
+            post_receipt(SWARM_CHANNEL_ID, f"⚠ swarm-controller tick error: {e}")
+
+        time.sleep(args.tick_seconds)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

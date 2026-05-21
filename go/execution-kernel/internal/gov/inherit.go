@@ -94,6 +94,19 @@ func mergePolicies(parent, child Policy) Policy {
 	if child.Mode != "" {
 		out.Mode = child.Mode
 	}
+	if len(child.Drivers) > 0 {
+		parentByID := make(map[string]int, len(out.Drivers))
+		for i, driver := range out.Drivers {
+			parentByID[driver.ID] = i
+		}
+		for _, driver := range child.Drivers {
+			if idx, ok := parentByID[driver.ID]; ok {
+				out.Drivers[idx] = driver
+			} else {
+				out.Drivers = append(out.Drivers, driver)
+			}
+		}
+	}
 	if child.Bounds.MaxFilesChanged > 0 {
 		out.Bounds.MaxFilesChanged = child.Bounds.MaxFilesChanged
 	}

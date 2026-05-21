@@ -1,0 +1,130 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /overview
+      - img [ref=e6]
+      - generic [ref=e10]:
+        - generic [ref=e11]: chitin
+        - generic [ref=e12]: console
+    - navigation "Primary" [ref=e13]:
+      - link "Overview" [ref=e14] [cursor=pointer]:
+        - /url: /overview
+        - generic [ref=e16]: Overview
+      - link "Sessions" [ref=e17] [cursor=pointer]:
+        - /url: /sessions
+        - generic [ref=e19]: Sessions
+      - link "Tickets" [ref=e20] [cursor=pointer]:
+        - /url: /tickets
+        - generic [ref=e22]: Tickets
+      - link "Swarm ELO" [ref=e23] [cursor=pointer]:
+        - /url: /elo
+        - generic [ref=e25]: Swarm ELO
+      - link "Argus" [ref=e26] [cursor=pointer]:
+        - /url: /argus
+        - generic [ref=e28]: Argus
+      - link "Policy" [ref=e29] [cursor=pointer]:
+        - /url: /policy
+        - generic [ref=e31]: Policy
+      - link "Suggestions" [ref=e32] [cursor=pointer]:
+        - /url: /suggestions
+        - generic [ref=e34]: Suggestions
+    - generic "API connected · board chitin" [ref=e36]:
+      - generic [ref=e38]: chitin
+  - main [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - heading "Tickets" [level=1] [ref=e43]
+          - paragraph [ref=e44]: 4 tickets · filters live below
+        - generic [ref=e45]:
+          - combobox "Status filter" [ref=e46]:
+            - option "active (default)" [selected]
+            - option "in_progress"
+            - option "triage"
+            - option "ready"
+            - option "todo"
+            - option "done"
+            - option "archived"
+            - option "all"
+          - combobox "Assignee filter" [ref=e47]:
+            - option "all assignees" [selected]
+            - option "red (86)"
+            - option "programmer (82)"
+            - option "codex (33)"
+            - option "clawta (27)"
+            - option "claude-code (26)"
+            - option "architect (9)"
+            - option "copilot (8)"
+            - option "operator (7)"
+            - option "chitin-worker (6)"
+            - option "gemini (5)"
+            - option "analyst (4)"
+            - option "hermes (3)"
+            - option "tech-writer (2)"
+            - option "hermes-user (1)"
+            - option "researcher (1)"
+            - option "user (1)"
+          - textbox "Search tickets" [ref=e48]:
+            - /placeholder: search title / body / id…
+          - button "filter" [ref=e49] [cursor=pointer]
+      - table [ref=e52]:
+        - rowgroup [ref=e53]:
+          - row "id title status assignee priority age" [ref=e54]:
+            - columnheader "id" [ref=e55]
+            - columnheader "title" [ref=e56]
+            - columnheader "status" [ref=e57]
+            - columnheader "assignee" [ref=e58]
+            - columnheader "priority" [ref=e59]
+            - columnheader "age" [ref=e60]
+        - rowgroup [ref=e61]:
+          - 'row "t_e157b4c6 Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints in_progress hermes 50 1h" [ref=e62] [cursor=pointer]':
+            - cell "t_e157b4c6" [ref=e63]
+            - 'cell "Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints" [ref=e64]':
+              - generic [ref=e65]: "Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints"
+            - cell "in_progress" [ref=e66]:
+              - generic [ref=e70]: in_progress
+            - cell "hermes" [ref=e71]:
+              - generic [ref=e72]: hermes
+            - cell "50" [ref=e73]:
+              - generic "priority 50" [ref=e74]:
+                - generic [ref=e76]: "50"
+            - cell "1h" [ref=e77]
+          - 'row "t_18ffbbb3 Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges) in_progress codex 40 1h" [ref=e78] [cursor=pointer]':
+            - cell "t_18ffbbb3" [ref=e79]
+            - 'cell "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)" [ref=e80]':
+              - generic [ref=e81]: "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)"
+            - cell "in_progress" [ref=e82]:
+              - generic [ref=e86]: in_progress
+            - cell "codex" [ref=e87]:
+              - generic [ref=e88]: codex
+            - cell "40" [ref=e89]:
+              - generic "priority 40" [ref=e90]:
+                - generic [ref=e92]: "40"
+            - cell "1h" [ref=e93]
+          - row "t_7c9d02b7 Router heuristic allowlist for chitin-kernel subcommands in_progress codex 3 2d" [ref=e94] [cursor=pointer]:
+            - cell "t_7c9d02b7" [ref=e95]
+            - cell "Router heuristic allowlist for chitin-kernel subcommands" [ref=e96]:
+              - generic [ref=e97]: Router heuristic allowlist for chitin-kernel subcommands
+            - cell "in_progress" [ref=e98]:
+              - generic [ref=e102]: in_progress
+            - cell "codex" [ref=e103]:
+              - generic [ref=e104]: codex
+            - cell "3" [ref=e105]:
+              - generic "priority 3" [ref=e106]:
+                - generic [ref=e108]: "3"
+            - cell "2d" [ref=e109]
+          - 'row "t_elo_rati…loop Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards ready codex 40 19h" [ref=e110] [cursor=pointer]':
+            - cell "t_elo_rati…loop" [ref=e111]
+            - 'cell "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards" [ref=e112]':
+              - generic [ref=e113]: "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards"
+            - cell "ready" [ref=e114]:
+              - generic [ref=e118]: ready
+            - cell "codex" [ref=e119]:
+              - generic [ref=e120]: codex
+            - cell "40" [ref=e121]:
+              - generic "priority 40" [ref=e122]:
+                - generic [ref=e124]: "40"
+            - cell "19h" [ref=e125]
+  - contentinfo [ref=e126]:
+    - generic [ref=e127]: chitin-console · local · read-only
+    - generic [ref=e128]: port 4200 → 7878

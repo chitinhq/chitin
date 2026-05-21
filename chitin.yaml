@@ -3,6 +3,14 @@ name: Chitin v2 baseline governance
 description: Block classes of actions that the 2026-04-21 hermes autonomy incident demonstrated were dangerous.
 mode: enforce
 
+drivers:
+  - id: copilot
+    identities: [copilot]
+  - id: gemini
+    identities: [gemini]
+  - id: codex
+    identities: [codex]
+
 bounds:
   # Default ceilings — applied to push-shaped actions whose action_type
   # has no per_action override. Calibrated for code commits (the

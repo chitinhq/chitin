@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "sqlite3 $*" >> "$STUB_LOG"
+
+query="${*:2}"
+if [[ "$query" == *"FROM agent_state WHERE locked=1"* ]]; then
+  printf '%s\n' "${STUB_LOCKED_ROWS:-}"
+  exit 0
+fi
+
+if [[ "$query" == *"SUM(count)"* ]]; then
+  printf '%s\n' "${STUB_TOTAL_POLICY_DENIALS:-0}"
+  exit 0
+fi
+
+exit 0

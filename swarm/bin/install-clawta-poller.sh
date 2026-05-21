@@ -88,7 +88,7 @@ install_openclaw_cron() {
     "clawta-kanban-poller" \
     "2m" \
     "Autonomous kanban dispatch tick. Reads ready terminal-lane tickets, sequences via LLM, dispatches top-N via lobster. See chitin swarm/bin/clawta-poller." \
-    "TERMINAL_LANES=codex,copilot,gemini CLAWTA_MAX_ACTIVE_WORKERS=1 CLAWTA_MAX_LOAD=12 CLAWTA_MAX_DISPATCH=1 CLAWTA_ROUTER_MODE=deterministic flock -n /tmp/clawta-kanban-poller.lock clawta-poller-safe-tick"
+    "TERMINAL_LANES=codex,copilot,gemini CLAWTA_POLLER_BOARDS=all CLAWTA_MAX_ACTIVE_WORKERS=1 CLAWTA_MAX_LOAD=12 CLAWTA_MAX_DISPATCH=1 CLAWTA_ROUTER_MODE=deterministic flock -n /tmp/clawta-kanban-poller.lock clawta-poller-safe-tick"
   ensure_openclaw_cron_job \
     "clawta-blocked-escalator" \
     "10m" \

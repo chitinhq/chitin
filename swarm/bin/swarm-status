@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""swarm-status — one-shot operator dashboard for the swarm.
+
+Replaces "grep clawta-poller.log + hermes kanban ls + gh pr list + check
+dispatch logs" with a single read. Designed for the moments when red
+wants to know "what's the swarm doing right now" without paging through
+five tools.
+
+Output (default):
+  - Per-board summary (chitin, readybench): triage / ready / in_progress
+    / blocked / done counts
+  - Open PRs targeting protected branches across known repos
+  - Last 5 dispatch attempts (status + ticket + driver)
+  - Workers currently in flight (status=in_progress with active claim)
+  - Recent failures: tickets demoted or crashed in last 6 hours
+
+Flags:
+  --board <slug>      restrict to one board
+  --since <hours>     change the recent-activity window (default 6)
+  --json              machine-readable
+  --pr-only           skip everything except PR list
+  --tickets-only      skip everything except ticket list
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import board_config
+
+BOARDS = ("chitin", "readybench")
+KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
+DISPATCH_LOG_DIR = Path.home() / ".openclaw" / "logs"
+
+
+def configured_repos(boards: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Return unique repo/base pairs from board config.
+
+    Keeps swarm-status aligned with board configuration instead of embedding
+    canonical repo literals that drift when boards are renamed or added. Extra
+    operator-local repos can be supplied as
+    ``SWARM_STATUS_EXTRA_REPOS=owner/repo:branch,owner2/repo2:branch``.
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(repo: str | None, base: str | None) -> None:
+        if not repo:
+            return
+        pair = (repo, base or "main")
+        if pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+
+    for board in boards:
+        cfg = board_config(board)
+        add(cfg.get("repo"), cfg.get("default_branch"))
+
+    for item in os.environ.get("SWARM_STATUS_EXTRA_REPOS", "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        repo, sep, base = item.partition(":")
+        add(repo.strip(), base.strip() if sep else "main")
+
+    return pairs
+
+
+def fetch_board_counts(board: str) -> dict[str, int]:
+    db = KANBAN_ROOT / board / "kanban.db"
+    if not db.is_file():
+        return {}
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def fetch_recent_failures(board: str, since_hours: int) -> list[dict]:
+    """Tickets that hit a non-success terminal state in the recent window."""
+    db = KANBAN_ROOT / board / "kanban.db"
+    if not db.is_file():
+        return []
+    since = int((datetime.now(timezone.utc) - timedelta(hours=since_hours)).timestamp())
+    out: list[dict] = []
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT te.task_id, te.kind, te.created_at, te.payload,
+                   t.title, t.status, t.block_reason
+              FROM task_events te
+              JOIN tasks t ON t.id = te.task_id
+             WHERE te.created_at >= ?
+               AND te.kind IN ('demoted', 'crashed', 'blocked', 'status_transition')
+             ORDER BY te.created_at DESC
+             LIMIT 20
+            """,
+            (since,),
+        ).fetchall()
+    for r in rows:
+        # Only surface failure-shaped status_transitions
+        if r["kind"] == "status_transition":
+            payload = r["payload"] or "{}"
+            if "blocked" not in payload and "crashed" not in payload:
+                continue
+        actor = "?"
+        if r["payload"]:
+            try:
+                p = json.loads(r["payload"])
+                actor = p.get("by") or p.get("author") or p.get("actor") or "?"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        out.append({
+            "task_id": r["task_id"],
+            "kind": r["kind"],
+            "actor": actor,
+            "ts": datetime.fromtimestamp(r["created_at"], timezone.utc).strftime("%H:%M"),
+            "title": r["title"][:60],
+            "status": r["status"],
+            "block_reason": (r["block_reason"] or "")[:80],
+        })
+    return out
+
+
+def fetch_in_progress(board: str) -> list[dict]:
+    db = KANBAN_ROOT / board / "kanban.db"
+    if not db.is_file():
+        return []
+    out: list[dict] = []
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, title, assignee FROM tasks WHERE status='in_progress' "
+            "ORDER BY COALESCE(started_at, created_at) DESC LIMIT 20"
+        ).fetchall()
+    for r in rows:
+        out.append({
+            "task_id": r["id"],
+            "title": r["title"][:60],
+            "assignee": r["assignee"] or "?",
+        })
+    return out
+
+
+def fetch_recent_dispatches(limit: int = 10) -> list[dict]:
+    """Parse recent dispatch-t_*.log files for status snapshots."""
+    if not DISPATCH_LOG_DIR.is_dir():
+        return []
+    logs = sorted(
+        DISPATCH_LOG_DIR.glob("dispatch-t_*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+    out: list[dict] = []
+    for log_path in logs:
+        ticket = log_path.stem.replace("dispatch-", "")
+        try:
+            content = log_path.read_text(errors="ignore")
+        except OSError:
+            continue
+        # Each log may have multiple JSON entries. Take the last "ok" or "error" line we can parse.
+        status = "unknown"
+        if '"ok": true' in content:
+            status = "ok"
+        elif '"ok": false' in content:
+            # Look for spawn_worker status= or exit_reason=
+            for kw in ("scope_violation", "session-error", "session-timeout", "model-concluded-nothing"):
+                if kw in content:
+                    status = kw
+                    break
+            if status == "unknown":
+                status = "error"
+        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, timezone.utc).strftime("%H:%M")
+        out.append({"ts": mtime, "ticket": ticket, "status": status})
+    return out
+
+
+def fetch_open_prs(repo: str, base: str) -> list[dict]:
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--repo", repo, "--state", "open", "--base", base,
+             "--json", "number,title,headRefName,createdAt,mergeStateStatus"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        prs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    out: list[dict] = []
+    for pr in prs:
+        out.append({
+            "number": pr["number"],
+            "head": pr["headRefName"][:40],
+            "title": pr["title"][:60],
+            "state": pr.get("mergeStateStatus", "?"),
+        })
+    return out
+
+
+def render_text(data: dict) -> str:
+    parts: list[str] = []
+    if "boards" in data:
+        parts.append("BOARDS")
+        for board, info in data["boards"].items():
+            counts = info["counts"]
+            count_str = " · ".join(
+                f"{v} {k}" for k, v in sorted(counts.items())
+            ) or "(empty)"
+            parts.append(f"  {board}: {count_str}")
+            if info["in_progress"]:
+                parts.append(f"    in flight:")
+                for t in info["in_progress"]:
+                    parts.append(f"      {t['task_id']} ({t['assignee']}) {t['title']}")
+            if info["failures"]:
+                parts.append(f"    recent failures ({len(info['failures'])}):")
+                for f in info["failures"][:5]:
+                    parts.append(f"      [{f['ts']}] {f['task_id']} {f['kind']}: {f['block_reason'] or f['title']}")
+    if "prs" in data:
+        parts.append("")
+        parts.append("OPEN PRs (protected branches)")
+        for repo, prs in data["prs"].items():
+            parts.append(f"  {repo}:")
+            if not prs:
+                parts.append(f"    (none)")
+            for pr in prs[:8]:
+                parts.append(f"    #{pr['number']} [{pr['state']}] {pr['head']}: {pr['title']}")
+    if "dispatches" in data:
+        parts.append("")
+        parts.append("RECENT DISPATCHES (last 10)")
+        for d in data["dispatches"]:
+            parts.append(f"  [{d['ts']}] {d['ticket']} → {d['status']}")
+    return "\n".join(parts)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="One-shot swarm status dashboard.")
+    ap.add_argument("--board", help="Restrict to one board (default: all known)")
+    ap.add_argument("--since", type=int, default=6,
+                    help="Recent-failure window in hours (default 6)")
+    ap.add_argument("--json", action="store_true", help="Machine-readable output")
+    ap.add_argument("--pr-only", action="store_true")
+    ap.add_argument("--tickets-only", action="store_true")
+    args = ap.parse_args()
+
+    boards = (args.board,) if args.board else BOARDS
+
+    data: dict = {}
+
+    if not args.pr_only:
+        data["boards"] = {}
+        for board in boards:
+            data["boards"][board] = {
+                "counts": fetch_board_counts(board),
+                "in_progress": fetch_in_progress(board),
+                "failures": fetch_recent_failures(board, args.since),
+            }
+
+    if not args.tickets_only:
+        data["prs"] = {}
+        for repo, base in configured_repos(boards):
+            data["prs"][repo] = fetch_open_prs(repo, base)
+
+    if not args.tickets_only and not args.pr_only:
+        data["dispatches"] = fetch_recent_dispatches(10)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(render_text(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

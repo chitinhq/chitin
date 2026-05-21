@@ -13,9 +13,10 @@ in `ready` forever.
 What it does. On each tick:
   1. Route any ready/todo tickets assigned to the routing lane (clawta)
      through _pick_driver, reassigning to a terminal lane.
-  2. Demote any remaining ready/todo ticket whose assignee is NULL or
-     not a terminal lane — these are grooming-step gaps; surfacing them
-     is loud-by-design so they can't pile up silently.
+  2. Leave unassigned ready/todo tickets alone — they are the open
+     pool that agents claim from (see docs/strategy/
+     chitin-kanban-operating-model.md). The poller never demotes a
+     ticket merely for lacking an assignee.
   3. SELECT remaining ready/todo tickets WHERE assignee IN {codex,
      copilot, claude-code, gemini}
   4. Sequence them via a frontier-LLM call (openclaw agent). The LLM
@@ -33,11 +34,12 @@ Invocation:
   clawta-poller --boards chitin,readybench   tick multiple boards sequentially
 
 Configured via env:
-  KANBAN_DB                 default: resolved from KANBAN_BOARD
-  KANBAN_BOARD              default: chitin (comma-separated for multi-board)
+  KANBAN_DB                 explicit single-board DB override
+  KANBAN_BOARD              comma-separated board list override
   POLL_SEC                  default: 120
   TERMINAL_LANES            comma list, default: codex,copilot,claude-code,gemini
-  ROUTING_LANE              assignee for routing-level tickets, default: clawta
+  ROUTING_LANES             comma list for routing-level tickets, default: clawta,chitin-worker
+  ROUTING_LANE              legacy single routing lane override
   CLAWTA_BIN                default: clawta (must be on PATH)
   KANBAN_FLOW_BIN           default: kanban-flow
   CLAWTA_ROUTER_MODE        passed to _pick_driver as ROUTER_MODE when set
@@ -63,19 +65,30 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    BOARDS_DIR,
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    spec_dir_for_board,
+)
 
+apply_board_cli_override()
 
 DB_PATH: Path = resolve_db()
 BOARD: str = resolve_board()
+MULTI_BOARD_MODE = False
 
 
 def _set_board(slug: str) -> None:
     """Recompute module globals for the given board slug."""
-    global DB_PATH, BOARD
+    global DB_PATH, BOARD, DEFAULT_GH_REPO
     os.environ["KANBAN_BOARD"] = slug
-    DB_PATH = resolve_db(slug)
+    DB_PATH = BOARDS_DIR / slug / "kanban.db" if MULTI_BOARD_MODE else resolve_db(slug)
     BOARD = slug
+    DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO") or board_repo(slug)
     log(f"board context: {slug} (db={DB_PATH})")
 POLL_SEC = int(os.environ.get("POLL_SEC", "120"))
 TERMINAL_LANES = tuple(
@@ -83,7 +96,29 @@ TERMINAL_LANES = tuple(
         "TERMINAL_LANES", "codex,copilot,claude-code,gemini"
     ).split(",") if s.strip()
 )
-ROUTING_LANE = os.environ.get("ROUTING_LANE", "clawta")
+ROUTING_LANES = tuple(
+    s.strip() for s in os.environ.get(
+        "ROUTING_LANES",
+        os.environ.get("ROUTING_LANE", "clawta,chitin-worker"),
+    ).split(",") if s.strip()
+)
+ROUTING_LANE = ROUTING_LANES[0] if ROUTING_LANES else "clawta"
+# spec 067: implementer lanes — subset of ROUTING_LANES that can serve as
+# Stage 5 implementer when carrying a handoff marker. Defaults to ("clawta",).
+# Non-subset entries are logged as warnings and silently dropped.
+_raw_implementer_lanes = tuple(
+    s.strip()
+    for s in os.environ.get("CLAWTA_IMPLEMENTER_LANES", "clawta").split(",")
+    if s.strip()
+)
+CLAWTA_IMPLEMENTER_LANES = tuple(l for l in _raw_implementer_lanes if l in ROUTING_LANES)
+_DROPPED_IMPLEMENTER_LANES = set(_raw_implementer_lanes) - set(CLAWTA_IMPLEMENTER_LANES)
+# Stage 5 handoff detection regex (spec 067 R2).
+# Matches a line "Stage-5-handoff: clawta" (case-sensitive, plain text).
+STAGE5_HANDOFF_RE = re.compile(
+    r"^Stage-5-handoff:\s*clawta\s*$",
+    re.MULTILINE,
+)
 CLAWTA_BIN = os.environ.get("CLAWTA_BIN", "clawta")
 # Direct openclaw client for the sequencer LLM call. The `clawta` wrapper
 # has unanchored regex pattern detection — any prompt containing a
@@ -107,13 +142,27 @@ PICK_DRIVER = Path.home() / ".openclaw" / "workflows" / "_pick_driver.py"
 CLAWTA_DECISIONS = Path.home() / ".openclaw" / "workflows" / "clawta_decisions.py"
 CLAWTA_ROUTER_MODE = os.environ.get("CLAWTA_ROUTER_MODE", "").strip().lower()
 CLAWTA_FORCE_DRIVER = os.environ.get("CLAWTA_FORCE_DRIVER", "").strip()
+
+
+def parse_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"{name}={raw!r} is not an integer; using {default}", file=sys.stderr)
+        return default
+
+
+PICK_DRIVER_TIMEOUT_SECONDS = parse_int_env("CLAWTA_PICK_DRIVER_TIMEOUT_SECONDS", 75)
 INVARIANT_BIN = Path(os.environ.get(
     "CLAWTA_INVARIANT_BIN",
-    str(Path.home() / "workspace/chitin/swarm/bin/clawta-invariants"),
+    str(board_workspace() / "swarm" / "bin" / "clawta-invariants"),
 ))
 AUTHOR = "clawta-poller"
-BOARD = os.environ.get("KANBAN_BOARD", "chitin")
-DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO", "chitinhq/chitin")
+BOARD = resolve_board()
+DEFAULT_GH_REPO = os.environ.get("CHITIN_GH_REPO") or board_repo()
 DEPENDENCY_BLOCK_PREFIX = "dependency gate:"
 PR_SHORT_RE = re.compile(r"\bPR\s*#(?P<number>\d+)\b", re.IGNORECASE)
 PR_REPO_RE = re.compile(r"\b(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)\b")
@@ -122,12 +171,17 @@ TICKET_REF_RE = re.compile(r"\bt_[a-f0-9]+\b")
 INVARIANTS_FIELD_RE = re.compile(
     r"(?ims)^invariants_and_boundaries:\s*(?P<value>.+?)(?=^[A-Za-z0-9_-]+:\s|\Z)"
 )
+SPEC_KIT_REF_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_.~/-]*/)?\.specify/specs/"
+    r"(?P<slug>[0-9A-Za-z][0-9A-Za-z_.-]*)/spec\.md)"
+)
 # Tracking-epic marker: a body line that opts a ticket out of auto-promotion
 # and out of the demote/stale-flag gates. Matches `Tracking-epic: true|yes|1`
 # at start of line, case-insensitive. See ticket t_6eba6ad2.
 TRACKING_EPIC_RE = re.compile(
     r"(?im)^tracking-epic:\s*(true|yes|1)\s*$"
 )
+LOOP_DETECTED_RE = re.compile(r"loop_detected\s*=\s*true|promote-demote loop detected", re.IGNORECASE)
 
 
 def log(msg: str) -> None:
@@ -139,6 +193,10 @@ def log(msg: str) -> None:
             f.write(line + "\n")
     except OSError:
         pass
+
+# spec 067: Emit deferred warning for non-subset CLAWTA_IMPLEMENTER_LANES entries.
+if _DROPPED_IMPLEMENTER_LANES:
+    log(f"warning: CLAWTA_IMPLEMENTER_LANES contains non-ROUTING_LANES entries, dropped: {_DROPPED_IMPLEMENTER_LANES}")
 
 
 def parse_invariants_and_boundaries_field(body: str | None) -> str | None:
@@ -176,6 +234,22 @@ def extract_named_boundaries(field_value: str | None) -> list[str]:
     return boundaries
 
 
+def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
+    """Legacy validator kept for reviewer/test callers; dispatch uses spec-kit."""
+    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
+    if not field_value:
+        return (
+            "missing invariants_and_boundaries: field — triage must name the "
+            "preserved invariant and explicit boundary list before promotion to ready"
+        )
+    if not extract_named_boundaries(field_value):
+        return (
+            "invariants_and_boundaries: missing explicit boundary list — "
+            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
+        )
+    return None
+
+
 def is_tracking_epic(body: str | None) -> bool:
     """True when the body opts the ticket out of auto-promotion + demote gates.
 
@@ -195,19 +269,63 @@ def is_parent_hierarchy_prefix(prefix: str) -> bool:
     return normalized.endswith("parent:")
 
 
-def missing_invariants_reason(ticket: dict[str, Any]) -> str | None:
-    field_value = parse_invariants_and_boundaries_field(ticket.get("body"))
-    if not field_value:
-        return (
-            "missing invariants_and_boundaries: field — triage must name the "
-            "preserved invariant and explicit boundary list before promotion to ready"
-        )
-    if not extract_named_boundaries(field_value):
-        return (
-            "invariants_and_boundaries: missing explicit boundary list — "
-            "name concrete cases like empty, whitespace, duplicate, max, or out-of-order"
-        )
-    return None
+def spec_kit_entry_paths(body: str | None, *, board: str | None = None) -> list[Path]:
+    """Return referenced spec-kit `spec.md` paths that stay under this board's spec root."""
+    if not body:
+        return []
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in SPEC_KIT_REF_RE.finditer(body):
+        candidate = (spec_root / match.group("slug") / "spec.md").resolve()
+        try:
+            candidate.relative_to(spec_root)
+        except ValueError:
+            continue
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
+    return paths
+
+
+def spec_kit_entry_paths_for_ticket(tid: str | None, *, board: str | None = None) -> list[Path]:
+    """Return board-appropriate spec.md files that explicitly bind to this ticket id."""
+    if not tid:
+        return []
+    spec_root = spec_dir_for_board(board or BOARD).expanduser().resolve()
+    if not spec_root.is_dir():
+        return []
+    needle = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(tid)}(?![A-Za-z0-9_])")
+    paths: list[Path] = []
+    for spec_path in spec_root.glob("*/spec.md"):
+        try:
+            if needle.search(spec_path.read_text(errors="ignore")):
+                paths.append(spec_path)
+        except OSError:
+            continue
+    return paths
+
+
+def spec_kit_entry_mentions_ticket(tid: str | None, *, board: str | None = None) -> bool:
+    """True when any board-appropriate spec.md explicitly binds to this ticket id."""
+    return bool(spec_kit_entry_paths_for_ticket(tid, board=board))
+
+
+def has_spec_kit_entry(ticket: dict[str, Any], *, board: str | None = None) -> bool:
+    """True when ticket/spec content has an existing board-appropriate spec binding."""
+    if any(path.is_file() for path in spec_kit_entry_paths(ticket.get("body"), board=board)):
+        return True
+    return spec_kit_entry_mentions_ticket(ticket.get("id"), board=board)
+
+
+def missing_spec_kit_reason(ticket: dict[str, Any]) -> str | None:
+    if has_spec_kit_entry(ticket, board=BOARD):
+        return None
+    spec_root = spec_dir_for_board(BOARD)
+    return (
+        "missing spec-kit entry — dispatch/re-dispatch requires an existing "
+        f".specify/specs/NNN-<slug>/spec.md under {spec_root} before promotion to ready"
+    )
 
 
 @dataclass(frozen=True)
@@ -280,65 +398,122 @@ def fetch_ready_for_terminal_lanes() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def fetch_stage5_handoff_comments(task_id: str) -> list[str]:
+    """Return comment bodies from handoff authors on the task.
+
+    A handoff author is any author whose name ends with '-handoff'.
+    Ordered most-recent first. Used by ticket_has_stage5_handoff().
+    """
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT body
+              FROM task_comments
+             WHERE task_id = ?
+               AND author LIKE '%-handoff'
+             ORDER BY created_at DESC, id DESC
+            """,
+            (task_id,),
+        ).fetchall()
+    return [str(row["body"]) for row in rows]
+
+
+def ticket_has_stage5_handoff(ticket_id: str) -> bool:
+    """True when the ticket carries a Stage 5 handoff marker.
+
+    A Stage 5 handoff marker is a line matching
+    ``Stage-5-handoff: clawta`` in a comment from a ``*-handoff``
+    author. See spec 067 R2.
+    """
+    for body in fetch_stage5_handoff_comments(ticket_id):
+        if STAGE5_HANDOFF_RE.search(body):
+            return True
+    return False
+
+
+def fetch_routable_for_routing() -> list[dict[str, Any]]:
+    """Return ready/todo tickets assigned to a routing lane that do NOT
+    carry a Stage 5 handoff for that lane (spec 067 R3 Path B).
+
+    These tickets need their assignee resolved to a terminal lane via
+    the LLM router (/_pick_driver) before they can be dispatched.
+    """
+    if not ROUTING_LANES:
+        return []
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    routing_placeholders = ",".join("?" * len(ROUTING_LANES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+               AND assignee IN ({routing_placeholders})
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM task_comments c
+                  WHERE c.task_id = tasks.id
+                    AND c.author LIKE '%-handoff'
+                    AND c.body LIKE '%Stage-5-handoff: clawta%'
+                    AND tasks.assignee = 'clawta'
+               )
+             ORDER BY priority DESC, created_at ASC
+            """,
+            (*DISPATCHABLE_STATUSES, *ROUTING_LANES),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_routable_for_implementer() -> list[dict[str, Any]]:
+    """Return ready/todo tickets assigned to clawta that carry a Stage 5
+    handoff marker (spec 067 R3 Path A).
+
+    These tickets should be dispatched directly to Clawta as the
+    implementer — the poller treats Clawta as a terminal lane for
+    these tickets only.
+    """
+    if "clawta" not in ROUTING_LANES:
+        return []
+    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, assignee, priority, created_at
+              FROM tasks
+             WHERE status IN ({status_placeholders})
+               AND assignee = 'clawta'
+               AND EXISTS (
+                 SELECT 1
+                   FROM task_comments c
+                  WHERE c.task_id = tasks.id
+                    AND c.author LIKE '%-handoff'
+                    AND c.body LIKE '%Stage-5-handoff: clawta%'
+               )
+             ORDER BY priority DESC, created_at ASC
+            """,
+            (*DISPATCHABLE_STATUSES,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def fetch_routable() -> list[dict[str, Any]]:
-    """Return ready/todo tickets assigned to the routing lane (clawta by default).
+    """Return all routable tickets (routing + implementer).
 
-    These tickets need their assignee resolved to a terminal lane via the
-    LLM router (/_pick_driver) before they can be dispatched. The poller
-    routes them and reassigns to the chosen terminal lane.
+    Composition of fetch_routable_for_routing() and
+    fetch_routable_for_implementer() for callers that need the union.
     """
+    return fetch_routable_for_routing() + fetch_routable_for_implementer()
+
+
+def fetch_poller_owned_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
+    assignees = tuple(dict.fromkeys((*TERMINAL_LANES, *ROUTING_LANES)))
+    if not assignees:
+        return []
     status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT id, title, body, assignee, priority, created_at
-              FROM tasks
-             WHERE status IN ({status_placeholders})
-               AND assignee = ?
-             ORDER BY priority DESC, created_at ASC
-            """,
-            (*DISPATCHABLE_STATUSES, ROUTING_LANE),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def fetch_ungroomed_ready() -> list[dict[str, Any]]:
-    """Return ready/todo tickets that grooming missed — no assignee, or assignee
-    in a non-terminal, non-routing lane the poller can't dispatch.
-
-    Hermes is the groomer and is supposed to attach a terminal-lane assignee
-    (or the routing lane) when promoting triage→ready; tickets that show up
-    here bypassed that step (most often because they were created directly
-    with --status ready instead of going through triage). Demoting them back
-    to triage with a specific reason keeps kanban honest about where work
-    actually stands.
-
-    IMPORTANT: tickets assigned to the routing lane (clawta) are NOT
-    considered ungroomed — they go through route_ticket() instead.
-    """
-    placeholders = ",".join("?" * len(TERMINAL_LANES))
-    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT id, title, body, assignee, priority, created_at
-              FROM tasks
-             WHERE status IN ({status_placeholders})
-               AND (assignee IS NULL
-                    OR assignee = ''
-                    OR (assignee NOT IN ({placeholders})
-                        AND assignee != ?))
-             ORDER BY priority DESC, created_at ASC
-            """,
-            (*DISPATCHABLE_STATUSES, *TERMINAL_LANES, ROUTING_LANE),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
-    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
+    assignee_placeholders = ",".join("?" * len(assignees))
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -346,27 +521,16 @@ def fetch_ready_or_todo_with_bodies() -> list[dict[str, Any]]:
             SELECT id, title, body, assignee, priority, created_at, status
               FROM tasks
              WHERE status IN ({status_placeholders})
+               AND assignee IN ({assignee_placeholders})
              ORDER BY priority DESC, created_at ASC
             """,
-            DISPATCHABLE_STATUSES,
+            (*DISPATCHABLE_STATUSES, *assignees),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def fetch_dispatchable_with_bodies() -> list[dict[str, Any]]:
-    status_placeholders = ",".join("?" * len(DISPATCHABLE_STATUSES))
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT id, title, body, assignee, priority, created_at, status
-              FROM tasks
-             WHERE status IN ({status_placeholders})
-             ORDER BY priority DESC, created_at ASC
-            """,
-            DISPATCHABLE_STATUSES,
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return fetch_poller_owned_ready_or_todo_with_bodies()
 
 
 def filter_tickets_with_incomplete_runs(
@@ -409,25 +573,57 @@ def filter_tickets_with_incomplete_runs(
     return filtered, sorted(blocked_ids)
 
 
+def ticket_has_loop_detected_marker(ticket_id: str) -> bool:
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "block_reason" in columns:
+                row = conn.execute("SELECT block_reason FROM tasks WHERE id = ?", (ticket_id,)).fetchone()
+                if row and row["block_reason"] and LOOP_DETECTED_RE.search(str(row["block_reason"])):
+                    return True
+            rows = conn.execute(
+                """
+                SELECT body
+                  FROM task_comments
+                 WHERE task_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 20
+                """,
+                (ticket_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return False
+    return any(LOOP_DETECTED_RE.search(str(row["body"])) for row in rows)
+
+
 def fetch_blocked_dependency_gate_tickets() -> list[dict[str, Any]]:
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tasks)")}
+        block_reason_expr = "t.block_reason" if "block_reason" in columns else "NULL"
+        block_reason_predicate = "t.block_reason LIKE ? OR" if "block_reason" in columns else ""
         rows = conn.execute(
-            """
-            SELECT t.id, t.title, t.body, t.assignee, t.priority, t.created_at, t.status
-              FROM tasks t
-             WHERE t.status = 'blocked'
-               AND (
+            f"""
+            SELECT t.id, t.title, t.body, t.assignee, t.priority, t.created_at, t.status,
+                   {block_reason_expr} AS block_reason,
+                   (
                     SELECT c.body
                       FROM task_comments c
                      WHERE c.task_id = t.id
                        AND c.body LIKE 'Blocked:%'
                      ORDER BY c.created_at DESC, c.id DESC
                      LIMIT 1
-                  ) LIKE ?
+                  ) AS latest_block_comment
+              FROM tasks t
+             WHERE t.status = 'blocked'
+               AND (
+                    {block_reason_predicate}
+                    latest_block_comment LIKE ?
+               )
              ORDER BY t.priority DESC, t.created_at ASC
             """,
-            (f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%",),
+            ((f"{DEPENDENCY_BLOCK_PREFIX}%", f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%") if "block_reason" in columns else (f"Blocked: {DEPENDENCY_BLOCK_PREFIX}%",)),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -613,6 +809,77 @@ def block_for_unresolved_dependencies(ticket_id: str, unresolved: list[str], dry
     return True
 
 
+BLOCKED_UNTIL_RE = re.compile(r"^\s*(?:[-*]\s*)?Blocked until:\s*(?P<condition>.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def explicit_spec_blockers(ticket: dict[str, Any]) -> list[str]:
+    """Return unsatisfied explicit blockers declared in bound spec-kit entries.
+
+    Spec presence is necessary but not sufficient. A spec may include a
+    human-readable `Blocked until:` capability/dependency condition; when that
+    condition is still false, dependency auto-unblock must fail closed.
+    """
+    blockers: list[str] = []
+    paths = list(spec_kit_entry_paths(ticket.get("body"), board=BOARD))
+    paths.extend(spec_kit_entry_paths_for_ticket(ticket.get("id"), board=BOARD))
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        for match in BLOCKED_UNTIL_RE.finditer(text):
+            condition = match.group("condition").strip()
+            if not blocked_until_condition_satisfied(condition):
+                blockers.append(f"{path.parent.name}: Blocked until: {condition}")
+    return blockers
+
+
+def blocked_until_condition_satisfied(condition: str) -> bool:
+    """Best-effort evaluator for explicit spec `Blocked until:` conditions."""
+    # The driver allowlist spec gates on a concrete kernel capability. Treat
+    # command failure or non-JSON error payload as still blocked.
+    if "chitin-kernel drivers list --json" in condition:
+        try:
+            result = subprocess.run(
+                ["chitin-kernel", "drivers", "list", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"dependency probe: explicit blocker still active ({condition}): {e}")
+            return False
+        if result.returncode != 0:
+            log(f"dependency probe: explicit blocker still active ({condition}): rc={result.returncode} stderr={result.stderr[-200:]}")
+            return False
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            log(f"dependency probe: explicit blocker returned non-json for {condition}: {result.stdout[-200:]!r}")
+            return False
+        if isinstance(payload, dict) and payload.get("error"):
+            log(f"dependency probe: explicit blocker returned error for {condition}: {payload.get('error')}")
+            return False
+        return True
+    # Unknown explicit blockers are operator-authored gates. Fail closed rather
+    # than converting spec presence into readiness.
+    log(f"dependency probe: explicit blocker has no evaluator; leaving blocked: {condition}")
+    return False
+
+
+def stale_dependency_gate_reason(ticket: dict[str, Any]) -> str | None:
+    reason = str(ticket.get("block_reason") or "")
+    comment = str(ticket.get("latest_block_comment") or "")
+    for text in (reason, comment):
+        if DEPENDENCY_BLOCK_PREFIX in text and "currently unknown_subcommand" in text:
+            return text
+    return None
+
+
 def unblock_dependency_ticket(ticket_id: str, resolved: list[str], dry_run: bool) -> bool:
     if dry_run:
         log(f"[dry-run] would unblock {ticket_id}: {', '.join(resolved)}")
@@ -655,11 +922,23 @@ def auto_unblock_dependency_tickets(
     ticket_cache = {} if ticket_cache is None else ticket_cache
     unblocked: list[str] = []
     for ticket in fetch_blocked_dependency_gate_tickets():
+        ticket_id = str(ticket.get("id"))
+        if ticket_has_loop_detected_marker(ticket_id):
+            log(f"dependency probe: leaving {ticket_id} blocked because loop_detected=true")
+            continue
         refs = extract_dependency_refs(ticket.get("body"), self_ticket_id=ticket.get("id"))
         if not refs:
             continue
         unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
         if unresolved:
+            continue
+        explicit_blockers = explicit_spec_blockers(ticket)
+        if explicit_blockers:
+            log(f"dependency probe: leaving {ticket_id} blocked due to explicit spec blocker(s): {', '.join(explicit_blockers)}")
+            continue
+        stale_reason = stale_dependency_gate_reason(ticket)
+        if stale_reason:
+            log(f"dependency probe: leaving {ticket_id} blocked due to unresolved dependency gate reason: {stale_reason[:200]}")
             continue
         resolved_labels = [ref.label for ref in refs]
         if unblock_dependency_ticket(ticket["id"], resolved_labels, dry_run):
@@ -676,7 +955,7 @@ def apply_dependency_gate(
     pr_cache = {} if pr_cache is None else pr_cache
     ticket_cache = {} if ticket_cache is None else ticket_cache
     blocked: list[str] = []
-    for ticket in fetch_ready_or_todo_with_bodies():
+    for ticket in fetch_poller_owned_ready_or_todo_with_bodies():
         unresolved = unresolved_dependencies(ticket, pr_cache=pr_cache, ticket_cache=ticket_cache)
         if not unresolved:
             continue
@@ -763,7 +1042,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             input=classify_json,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=PICK_DRIVER_TIMEOUT_SECONDS,
             env=pick_driver_env,
         )
         if result.returncode != 0:
@@ -782,7 +1061,7 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
         # ticket stays visible for a later retry instead of being counted as
         # routed when kanban did not actually change.
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "assign",
+            ["hermes", "kanban", "--board", BOARD, "assign",
              ticket["id"], driver],
             timeout=15,
             check=True,
@@ -807,34 +1086,43 @@ def route_ticket(ticket: dict[str, Any], dry_run: bool) -> str | None:
             timeout=15,
             check=True,
         )
+        from_lane = str(ticket.get("assignee") or ROUTING_LANE)
         subprocess.run(
-            ["hermes", "kanban", "--board", "chitin", "comment",
+            ["hermes", "kanban", "--board", BOARD, "comment",
              ticket["id"], "--author", AUTHOR,
-             f"Routed by clawta-poller: {ROUTING_LANE} -> {driver}. Reasoning: {reasoning}"],
+             f"Routed by clawta-poller: {from_lane} -> {driver}. Reasoning: {reasoning}"],
             timeout=15,
             check=True,
         )
-        log(f"routed {ticket['id']} {ROUTING_LANE} -> {driver} ({reasoning[:60]})")
+        log(f"routed {ticket['id']} {from_lane} -> {driver} ({reasoning[:60]})")
         return driver
     except Exception as e:
         log(f"route_ticket({ticket['id']}): routing failed: {e}")
         return None
 
 
-def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
+def route_clawta_assigned(dry_run: bool, limit: int | None = None,
+                          routing_only: bool = False) -> list[str]:
     """Route a bounded batch of clawta-assigned tickets through _pick_driver.
 
     Routing can involve slow LLM calls. Keep each cron tick bounded so
     terminal-lane ready tickets do not starve behind a large clawta routing
     backlog. Returns ticket IDs successfully routed.
+
+    When routing_only=True, only tickets WITHOUT a Stage 5 handoff marker
+    are considered (spec 067 R4). Implementer-lane tickets are excluded so
+    they are not incorrectly routed through _pick_driver.
     """
-    routable = fetch_routable()
+    if routing_only:
+        routable = fetch_routable_for_routing()
+    else:
+        routable = fetch_routable()
     if not routable:
         return []
     total = len(routable)
     if limit is not None and limit > 0:
         routable = routable[:limit]
-    log(f"tick: routing {len(routable)}/{total} routing-lane ({ROUTING_LANE}) ticket(s)")
+    log(f"tick: routing {len(routable)}/{total} routing-lane ticket(s) ({','.join(ROUTING_LANES)})")
     routed: list[str] = []
     for t in routable:
         driver = route_ticket(t, dry_run)
@@ -849,16 +1137,59 @@ def route_clawta_assigned(dry_run: bool, limit: int | None = None) -> list[str]:
 # Dispatch + demote actions
 # ---------------------------------------------------------------------------
 
+def fetch_current_status(ticket_id: str) -> str | None:
+    """Fresh-read the ticket status from the kanban DB. Returns None if
+    the ticket doesn't exist or the read fails.
+
+    Used as a pre-dispatch race guard: between the poller's snapshot fetch
+    and the moment it tries to flip ready → in_progress, an operator or
+    Ares/Clawta may have blocked the ticket. Without this guard, the
+    poller would race past the block, flip status, and spawn a worker
+    against a ticket the operator already pulled offline. See
+    chitinhq/workspace#418 day-0 retro tiger-team task C3.
+    """
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (ticket_id,)
+            ).fetchone()
+    except sqlite3.Error as e:
+        log(f"fetch_current_status({ticket_id}): {e}")
+        return None
+    return row[0] if row else None
+
+
+def dispatch_worktree_path(assignee: str, ticket_id: str) -> Path:
+    return Path.home() / ".cache" / "chitin" / "swarm-worktrees" / f"{assignee}-{ticket_id}"
+
+
 def dispatch_ticket(ticket_id: str, assignee: str, reason: str, dry_run: bool) -> bool:
-    """Flip ready→in_progress, then spawn clawta dispatch in background."""
+    """Flip ready→in_progress, then spawn clawta dispatch in background.
+
+    Pre-flight: fresh-read the ticket status. If it has slipped out of a
+    dispatchable status (blocked, demoted to triage, claimed by another
+    process, etc.), abort. Without this guard the poller can race past
+    an operator block (chitinhq/workspace#418 day-0 retro, tiger C3).
+    """
     if dry_run:
         log(f"[dry-run] would dispatch {ticket_id} to {assignee}: {reason[:80]}")
         return True
 
+    current_status = fetch_current_status(ticket_id)
+    if current_status not in DISPATCHABLE_STATUSES:
+        log(
+            f"dispatch_ticket({ticket_id}): aborting — status flipped to "
+            f"{current_status!r} between fetch and dispatch (was expected "
+            f"to be one of {DISPATCHABLE_STATUSES}). Likely operator/agent "
+            f"blocked or demoted in the dispatcher window. Not racing."
+        )
+        return False
+
     comment = f"clawta-poller dispatching to {assignee}. Sequence reason: {reason}"
+    worktree_path = dispatch_worktree_path(assignee, ticket_id)
     try:
         subprocess.run(
-            [KANBAN_FLOW_BIN, "start", ticket_id, "--author", AUTHOR],
+            [KANBAN_FLOW_BIN, "start", ticket_id, "--author", AUTHOR, "--worktree", str(worktree_path)],
             check=True, timeout=15,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -902,47 +1233,8 @@ def demote_ticket(ticket_id: str, reason: str, dry_run: bool) -> bool:
     return True
 
 
-def demote_ungroomed(dry_run: bool) -> list[str]:
-    """Demote any ready/todo ticket whose assignee isn't a terminal lane
-    and isn't the routing lane.
-
-    Hermes is the groomer; clawta is the enforcer. A ticket in `ready` or
-    `todo` with no dispatchable assignee is a grooming-step output we can't
-    act on, so we surface the gap by sending it back to triage with a comment
-    that names the exact missing piece. This is loud-by-design — better a
-    noisy triage backlog than tickets silently aging in `ready`.
-
-    Tickets assigned to the routing lane (clawta) are NOT demoted — they
-    go through route_clawta_assigned() instead.
-    """
-    ungroomed = fetch_ungroomed_ready()
-    if not ungroomed:
-        return []
-    log(f"tick: {len(ungroomed)} ungroomed ready ticket(s) to demote")
-    demoted: list[str] = []
-    lanes = "/".join(TERMINAL_LANES)
-    for t in ungroomed:
-        tid = t["id"]
-        if is_tracking_epic(t.get("body")):
-            continue
-        if not t["assignee"]:
-            reason = (
-                f"missing assignee — grooming step must route to a terminal "
-                f"lane ({lanes}) or the routing lane ({ROUTING_LANE}) before "
-                f"clawta-poller can dispatch"
-            )
-        else:
-            reason = (
-                f"assignee={t['assignee']!r} is not a terminal lane — "
-                f"grooming must route to one of: {lanes}"
-            )
-        if demote_ticket(tid, reason, dry_run):
-            demoted.append(tid)
-    return demoted
-
-
-def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
-    """Demote ready/todo tickets that skipped the boundary-naming triage field."""
+def demote_missing_spec_kit_entries(dry_run: bool) -> list[str]:
+    """Demote ready/todo tickets that lack an existing spec-kit spec.md."""
     candidates = fetch_dispatchable_with_bodies()
     if not candidates:
         return []
@@ -950,7 +1242,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     for ticket in candidates:
         if is_tracking_epic(ticket.get("body")):
             continue
-        reason = missing_invariants_reason(ticket)
+        reason = missing_spec_kit_reason(ticket)
         if not reason:
             continue
         if demote_ticket(ticket["id"], reason, dry_run):
@@ -958,7 +1250,7 @@ def demote_missing_invariants_and_boundaries(dry_run: bool) -> list[str]:
     if demoted:
         log(
             "tick: demoted "
-            f"{len(demoted)} ticket(s) missing invariants_and_boundaries"
+            f"{len(demoted)} ticket(s) missing spec-kit entries"
         )
     return demoted
 
@@ -996,6 +1288,46 @@ def dispatch_ready_batch(max_dispatch: int, dry_run: bool) -> tuple[list[str], l
 
 
 def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
+    # Multi-board ticks are intentionally dispatch-only. Boards have different
+    # grooming semantics; broad demotion/blocking across every board is too
+    # destructive for the global poller.
+    if MULTI_BOARD_MODE:
+        dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
+        remaining = max_dispatch - len(dispatched)
+        routed: list[str] = []
+        if remaining > 0:
+            routed = route_clawta_assigned(dry_run, limit=remaining,
+                                          routing_only=True)
+            more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
+            dispatched.extend(more_dispatched)
+            demoted.extend(more_demoted)
+            queue_size = max(queue_size, queue_size_after_route)
+        # Step 5b for multi-board: dispatch implementer-lane tickets.
+        implementer_tickets = fetch_routable_for_implementer()
+        implementer_tickets, skipped_impl = \
+            filter_tickets_with_incomplete_runs(implementer_tickets)
+        for tid in skipped_impl:
+            log(f"tick: skipping {tid} — incomplete task_run on "
+                "implementer-lane ticket")
+        impl_remaining = max_dispatch - len(dispatched)
+        for t in implementer_tickets[:impl_remaining]:
+            reason = ("Stage 5 implementer-lane ticket; dispatching "
+                      "directly to Clawta per spec 067 R4")
+            if dispatch_ticket(t["id"], "clawta", reason, dry_run):
+                dispatched.append(t["id"])
+                log(f"clawta-poller implementer-dispatch: ticket={t['id']}")
+        if not dispatched and not demoted and not routed:
+            log(f"tick: empty queue (terminal lanes: {','.join(TERMINAL_LANES)})")
+        return {
+            "dispatched": dispatched,
+            "demoted": demoted,
+            "routed": routed,
+            "dependency_blocked": [],
+            "dependency_unblocked": [],
+            "invariants": [],
+            "queue_size": queue_size,
+        }
+
     # Step 0: Self-heal safe board/finalize invariants before starting new work.
     invariants = run_invariant_repairs(dry_run)
 
@@ -1007,36 +1339,50 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
-    # Step 2: Reject tickets that reached ready/todo without the mandatory
-    # invariants_and_boundaries triage field. This is the poller's enforcement
-    # point for the triage -> ready contract.
-    invariants_demoted = demote_missing_invariants_and_boundaries(dry_run)
-
-    # Step 3: Block ready/todo tickets with unresolved cross-ticket / cross-PR
+    # Step 2: Block ready/todo tickets with unresolved cross-ticket / cross-PR
     # dependencies so they don't get dispatched before their prerequisites land.
     dependency_blocked = apply_dependency_gate(
         dry_run, pr_cache=pr_cache, ticket_cache=ticket_cache
     )
 
+    # Step 3: Reject remaining ready/todo tickets without the mandatory
+    # spec-kit entry. This is the poller's enforcement point for the
+    # triage -> ready contract.
+    spec_demoted = demote_missing_spec_kit_entries(dry_run)
+
     # Step 4: Dispatch already-routed terminal-lane work first so visible
     # ready→in_progress movement is not starved by a large clawta routing queue.
     dispatched, demoted, queue_size = dispatch_ready_batch(max_dispatch, dry_run)
-    demoted = invariants_demoted + demoted
+    demoted = spec_demoted + demoted
 
-    # Step 5: Demote ungroomed tickets (no assignee or non-dispatchable).
-    ungroomed_demoted = demote_ungroomed(dry_run)
-    demoted.extend(ungroomed_demoted)
-
-    # Step 6: If dispatch capacity remains, route only enough clawta-assigned
-    # tickets to fill that capacity, then immediately dispatch them.
+    # Step 5: If dispatch capacity remains, route only enough clawta-assigned
+    # routing-lane tickets to fill that capacity, then immediately dispatch.
     remaining = max_dispatch - len(dispatched)
     routed: list[str] = []
     if remaining > 0:
-        routed = route_clawta_assigned(dry_run, limit=remaining)
+        routed = route_clawta_assigned(dry_run, limit=remaining,
+                                        routing_only=True)
         more_dispatched, more_demoted, queue_size_after_route = dispatch_ready_batch(remaining, dry_run)
         dispatched.extend(more_dispatched)
         demoted.extend(more_demoted)
         queue_size = max(queue_size, queue_size_after_route)
+
+    # Step 5b: Dispatch implementer-lane tickets directly to Clawta
+    # (spec 067 R4). These tickets carry a Stage 5 handoff marker and
+    # bypass _pick_driver — Clawta is the designated implementer.
+    implementer_tickets = fetch_routable_for_implementer()
+    implementer_tickets, skipped_impl = \
+        filter_tickets_with_incomplete_runs(implementer_tickets)
+    for tid in skipped_impl:
+        log(f"tick: skipping {tid} — incomplete task_run on "
+            "implementer-lane ticket")
+    impl_remaining = max_dispatch - len(dispatched)
+    for t in implementer_tickets[:impl_remaining]:
+        reason = ("Stage 5 implementer-lane ticket; dispatching "
+                  "directly to Clawta per spec 067 R4")
+        if dispatch_ticket(t["id"], "clawta", reason, dry_run):
+            dispatched.append(t["id"])
+            log(f"clawta-poller implementer-dispatch: ticket={t['id']}")
 
     if (
         not dispatched
@@ -1058,14 +1404,44 @@ def tick(max_dispatch: int, dry_run: bool) -> dict[str, Any]:
     }
 
 
+def _discover_boards() -> list[str]:
+    """Return configured board slugs with kanban DBs, in stable order."""
+    if not BOARDS_DIR.exists():
+        return []
+    boards = []
+    for path in BOARDS_DIR.glob("*/kanban.db"):
+        if not path.is_file():
+            continue
+        slug = path.parent.name
+        config_path = BOARDS_DIR / slug / "config.json"
+        if not config_path.is_file():
+            continue
+        workspace = board_workspace(slug)
+        if not workspace.exists():
+            continue
+        boards.append(slug)
+    return sorted(set(boards))
+
+
+def _parse_boards(value: str) -> list[str]:
+    boards = [s.strip() for s in value.split(",") if s.strip()]
+    if any(board.lower() == "all" for board in boards):
+        discovered = _discover_boards()
+        return discovered or ["chitin"]
+    return boards
+
+
 def _resolve_boards(boards_arg: str | None) -> list[str]:
-    """Parse --boards arg or fall back to KANBAN_BOARD env."""
+    """Parse board overrides, otherwise poll every board with a kanban DB."""
     if boards_arg:
-        return [s.strip() for s in boards_arg.split(",") if s.strip()]
+        return _parse_boards(boards_arg)
     env = os.environ.get("KANBAN_BOARD", "").strip()
     if env:
-        return [s.strip() for s in env.split(",") if s.strip()]
-    return ["chitin"]
+        return _parse_boards(env)
+    if os.environ.get("KANBAN_DB"):
+        return [resolve_board()]
+    discovered = _discover_boards()
+    return discovered or ["chitin"]
 
 
 def main() -> int:
@@ -1076,10 +1452,12 @@ def main() -> int:
     g.add_argument("--loop", action="store_true", help=f"loop every POLL_SEC ({POLL_SEC}s)")
     ap.add_argument("--max-dispatch", type=int, default=5, help="max tickets to dispatch per tick (default 5)")
     ap.add_argument("--boards", type=str, default=None,
-                    help="comma-separated board slugs (default: KANBAN_BOARD env or 'chitin')")
+                    help="comma-separated board slugs, or 'all' (default: discover all boards)")
     args = ap.parse_args()
 
     boards = _resolve_boards(args.boards)
+    global MULTI_BOARD_MODE
+    MULTI_BOARD_MODE = len(boards) > 1
     log(f"boards: {','.join(boards)}")
 
     results: dict[str, Any] = {}
@@ -1103,7 +1481,7 @@ def main() -> int:
         return 0
 
     if args.loop:
-        log(f"loop start (boards={','.join(boards)}, poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lane={ROUTING_LANE})")
+        log(f"loop start (boards={','.join(boards)}, poll_sec={POLL_SEC}, lanes={','.join(TERMINAL_LANES)}, routing_lanes={','.join(ROUTING_LANES)})")
         while True:
             for slug in boards:
                 _set_board(slug)

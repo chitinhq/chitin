@@ -27,12 +27,21 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 DB_PATH = resolve_db()
 BOARD = resolve_board()
 AUTHOR = "clawta-invariants"
-REPO = Path(os.environ.get("CHITIN_REPO", str(Path.home() / "workspace/chitin")))
+REPO = Path(os.environ.get("CHITIN_REPO", str(board_workspace())))
 LOG_DIR = Path.home() / ".openclaw" / "logs"
 LOG_FILE = LOG_DIR / "clawta-invariants.log"
 
@@ -102,7 +111,7 @@ def pr_from_comments(comments: list[str]) -> str | None:
 
 
 def existing_pr_for_branch(branch: str) -> str | None:
-    out = run(["gh", "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url // empty"], timeout=30)
+    out = run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty"], timeout=30)
     if out.returncode != 0:
         log(f"{branch}: gh pr list failed: {out.stderr[:200]}")
         return None
@@ -113,6 +122,42 @@ def existing_pr_for_branch(branch: str) -> str | None:
 def remote_branch_exists(branch: str) -> bool:
     out = run(["git", "ls-remote", "--heads", "origin", branch], timeout=30)
     return out.returncode == 0 and bool(out.stdout.strip())
+
+
+def pr_liveness(pr_url: str, expected_branch: str) -> tuple[bool, str]:
+    """Return whether ``pr_url`` is an open PR for ``expected_branch``.
+
+    A prior invariant repair bug treated any historical PR URL in comments as
+    proof that finalize recovered. Closed/unmerged PRs must not resurrect a
+    blocked ticket: the repair is only safe when GitHub says the PR is OPEN and
+    its head branch still matches the branch whose finalize failed.
+    """
+    out = run(
+        [
+            "gh",
+            "pr",
+            "view",
+            pr_url,
+            "--json",
+            "state,headRefName,baseRefName,mergedAt,url",
+        ],
+        timeout=30,
+    )
+    if out.returncode != 0:
+        return False, f"gh pr view failed: {out.stderr.strip()[:200]}"
+    try:
+        data = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return False, "gh pr view returned invalid JSON"
+
+    state = str(data.get("state") or "").upper()
+    head = str(data.get("headRefName") or "")
+    expected_head = expected_branch.split("/", 1)[1] if expected_branch.startswith("origin/") else expected_branch
+    if state != "OPEN":
+        return False, f"PR is {state or 'unknown'} (not OPEN)"
+    if head != expected_head:
+        return False, f"PR head {head or '<none>'} does not match {expected_head}"
+    return True, "open matching PR"
 
 
 def create_pr(branch: str, ticket_id: str, assignee: str | None) -> str | None:
@@ -150,7 +195,7 @@ def record_pr(ticket_id: str, pr_url: str, dry_run: bool) -> bool:
             return False
 
     msg = f"🦞 invariant repaired: transient PR finalize recovered. PR: {pr_url}"
-    run(["hermes", "kanban", "--board", BOARD, "comment", ticket_id, "--author", AUTHOR, msg], timeout=20)
+    run(["kanban-flow", "comment", ticket_id, "--author", AUTHOR, msg], timeout=20)
     log(f"repaired {ticket_id}: {pr_url}")
     return True
 
@@ -178,6 +223,10 @@ def repair_transient_pr_failure(ticket: dict[str, Any], dry_run: bool) -> str | 
         pr_url = create_pr(branch, ticket_id, ticket.get("assignee"))
 
     if not pr_url:
+        return None
+    live, reason = pr_liveness(pr_url, branch)
+    if not live:
+        log(f"{ticket_id}: refusing PR repair for {pr_url}: {reason}")
         return None
     if record_pr(ticket_id, pr_url, dry_run):
         return pr_url

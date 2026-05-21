@@ -18,7 +18,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
@@ -51,11 +51,13 @@ const CHITIN_BOARD_DB = path.join(CHITIN_KANBAN_ROOT, CURRENT_BOARD, 'kanban.db'
 const HERMES_BOARD_DB = path.join(HERMES_KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
 const BOARD_DB = fs.existsSync(CHITIN_BOARD_DB) ? CHITIN_BOARD_DB : HERMES_BOARD_DB;
 const BOARD_DB_SOURCE = BOARD_DB === CHITIN_BOARD_DB ? 'chitin' : 'hermes';
+const BUS_DB = process.env.AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
 const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
 const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
+const ANALYZER_DB = process.env.CHITIN_ANALYZER_DB || path.join(CHAIN_LEDGER_DIR, 'analyzer.db');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
 const BUS_DB_PATH = process.env.CHITIN_AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 
@@ -120,13 +122,30 @@ const STATIC_MIME = {
 };
 
 let kanbanDB = null;
+let busDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
-let busDB = null;
+let analyzerDB = null;
 // Per-board kanban DB cache. Lets ?board=<slug> swap data sources
 // per request without thrashing connections.
 const boardDBCache = new Map();
+
+const ANALYZER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS analyzer_suggestions (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  target TEXT NOT NULL,
+  diff TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_created_at
+  ON analyzer_suggestions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_type_target
+  ON analyzer_suggestions(type, target);
+`;
 
 function openIfExists(p, readonly = true) {
   try {
@@ -179,16 +198,30 @@ function listBoards() {
   return { boards: [...boards.values()], current: CURRENT_BOARD };
 }
 
+function openAnalyzerDB() {
+  try {
+    fs.mkdirSync(path.dirname(ANALYZER_DB), { recursive: true });
+    const db = new Database(ANALYZER_DB);
+    db.exec(ANALYZER_SCHEMA);
+    return db;
+  } catch (e) {
+    console.warn(`[console-api] could not open ${ANALYZER_DB}: ${e.message}`);
+    return null;
+  }
+}
+
 function reopen() {
-  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); busDB?.close();
+  kanbanDB?.close(); busDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); analyzerDB?.close();
   for (const db of boardDBCache.values()) { try { db?.close(); } catch { /* ignore */ } }
   boardDBCache.clear();
   kanbanDB           = openIfExists(BOARD_DB);
+  busDB              = openIfExists(BUS_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
   // bus.db needs read+write since the threads page lets you reply.
-  busDB              = openIfExists(BUS_DB_PATH, false);
+  busDB              = openIfExists(BUS_DB, false);
+  analyzerDB         = openAnalyzerDB();
 }
 reopen();
 
@@ -204,13 +237,15 @@ function json(res, status, body) {
 }
 const notFound  = (res) => json(res, 404, { error: 'not_found' });
 const serverErr = (res, e) => json(res, 500, { error: 'server_error', detail: String(e?.message || e) });
+const ATTACHMENT_CACHE_TTL_MS = 60_000;
+const attachmentCache = new Map();
 
 // ---------- Helpers ----------
 function* readJsonl(file) {
   const raw = fs.readFileSync(file, 'utf8');
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
-    try { yield JSON.parse(line); } catch {}
+    try { yield JSON.parse(line); } catch { continue; }
   }
 }
 
@@ -787,6 +822,95 @@ function listLedgerFiles({ maxDays = 14 } = {}) {
   } catch { return []; }
 }
 
+function slugify(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function previewText(value, max = 140) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function safeRepoPath(relPath) {
+  if (!relPath) return null;
+  const resolved = path.resolve(REPO_ROOT, relPath);
+  const relative = path.relative(REPO_ROOT, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return resolved;
+}
+
+function parseMarkdownPreview(content) {
+  const lines = String(content || '').split(/\r?\n/);
+  let title = '';
+  let i = 0;
+  while (i < lines.length && !title) {
+    const line = lines[i].trim();
+    if (line.startsWith('# ')) title = line.replace(/^# /, '').trim();
+    i += 1;
+  }
+  const bodyLines = [];
+  let inFence = false;
+  for (; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (!line) {
+      if (bodyLines.length) break;
+      continue;
+    }
+    bodyLines.push(line);
+  }
+  return {
+    title: title || '(untitled spec)',
+    preview: bodyLines.join(' '),
+  };
+}
+
+function currentRepoInfo() {
+  try {
+    const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = remote.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2], remote };
+  } catch {
+    return null;
+  }
+}
+
+const repoInfo = currentRepoInfo();
+
+function ghApi(route, extraArgs = []) {
+  const args = ['api', route, ...extraArgs];
+  const raw = execFileSync('gh', args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return JSON.parse(raw);
+}
+
+function withAttachmentCache(key, loader) {
+  const now = Date.now();
+  const hit = attachmentCache.get(key);
+  if (hit && now - hit.at < ATTACHMENT_CACHE_TTL_MS) return hit.value;
+  const value = loader();
+  attachmentCache.set(key, { at: now, value });
+  return value;
+}
+
 // ---------- Endpoints ----------
 function percentile(sorted, p) {
   if (!sorted.length) return null;
@@ -854,7 +978,9 @@ function getStats(query) {
       FROM task_runs WHERE ended_at IS NOT NULL AND ended_at > strftime('%s','now') - 86400
     `).get();
     runsLast24 = r24.total; runsCompleted24 = r24.ok;
-  } catch {}
+  } catch {
+    // Stats endpoints stay available even when task_runs is absent.
+  }
   return {
     board,
     lanes,
@@ -932,16 +1058,18 @@ function getTask(id, board) {
     'SELECT id, profile, step_key, status, started_at, ended_at, outcome, summary, error FROM task_runs WHERE task_id = ? ORDER BY started_at DESC'
   ).all(id);
   let comments = [];
-  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch { comments = []; }
   let links = [];
-  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
+  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch { links = []; }
   let clawtaDecisions = [];
   if (clawtaDecisionsDB) {
     try {
       clawtaDecisions = clawtaDecisionsDB.prepare(
         'SELECT id, driver, model, selection_mode, reasoning, ts FROM clawta_decisions WHERE ticket_id = ? ORDER BY ts DESC LIMIT 25'
       ).all(id);
-    } catch {}
+    } catch {
+      clawtaDecisions = [];
+    }
   }
   return { task, runs, events, comments, links, clawtaDecisions };
 }
@@ -958,6 +1086,252 @@ function listAssignees(query) {
     ORDER BY n DESC
   `).all();
   return { assignees: rows };
+}
+
+function getTaskAttachment(ref) {
+  if (!kanbanDB) {
+    return {
+      kind: 'task',
+      ref,
+      status: 'missing',
+      label: ref,
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  const task = kanbanDB.prepare('SELECT id, title, status, assignee FROM tasks WHERE id = ?').get(ref);
+  if (!task) {
+    return {
+      kind: 'task',
+      ref,
+      status: 'missing',
+      label: ref,
+      title: ref,
+      subtitle: '(missing)',
+      href: `/tickets?id=${encodeURIComponent(ref)}`,
+    };
+  }
+  return {
+    kind: 'task',
+    ref,
+    status: 'ok',
+    label: task.id,
+    title: task.title,
+    subtitle: task.assignee ? `${task.status} · ${task.assignee}` : task.status,
+    taskStatus: task.status,
+    assignee: task.assignee,
+    href: `/tickets?id=${encodeURIComponent(task.id)}`,
+  };
+}
+
+function getSpecAttachment(ref) {
+  const absPath = safeRepoPath(ref);
+  if (!absPath || !fs.existsSync(absPath)) {
+    return {
+      kind: 'spec',
+      ref,
+      status: 'missing',
+      label: 'spec',
+      title: path.basename(ref),
+      subtitle: '(missing)',
+    };
+  }
+  const content = fs.readFileSync(absPath, 'utf8');
+  const preview = parseMarkdownPreview(content);
+  return {
+    kind: 'spec',
+    ref,
+    status: 'ok',
+    label: 'spec',
+    title: preview.title,
+    subtitle: previewText(preview.preview, 180),
+    preview: preview.preview,
+    body: content,
+    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
+  };
+}
+
+function normalizePrRef(ref) {
+  const raw = String(ref || '').trim();
+  const simple = raw.match(/^#?(\d+)$/);
+  if (simple && repoInfo) return { ...repoInfo, number: Number(simple[1]), crossRepo: false };
+  const qualified = raw.match(/^([^/]+)\/([^#]+)#(\d+)$/);
+  if (qualified) {
+    return {
+      owner: qualified[1],
+      repo: qualified[2],
+      number: Number(qualified[3]),
+      crossRepo: !repoInfo || qualified[1] !== repoInfo.owner || qualified[2] !== repoInfo.repo,
+    };
+  }
+  return null;
+}
+
+function ciBucketFromState(state) {
+  switch (state) {
+    case 'success': return 'passing';
+    case 'failure':
+    case 'error': return 'failing';
+    case 'pending': return 'pending';
+    default: return 'unknown';
+  }
+}
+
+function getPrAttachment(ref) {
+  const parsed = normalizePrRef(ref);
+  if (!parsed) {
+    return {
+      kind: 'pr',
+      ref,
+      status: 'missing',
+      label: 'PR',
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  if (parsed.crossRepo) {
+    return {
+      kind: 'pr',
+      ref,
+      status: 'missing',
+      label: `PR #${parsed.number}`,
+      title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
+      subtitle: '(missing)',
+    };
+  }
+  return withAttachmentCache(`pr:${parsed.owner}/${parsed.repo}#${parsed.number}`, () => {
+    try {
+      const pr = ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}`);
+      const combined = ghApi(`repos/${parsed.owner}/${parsed.repo}/commits/${pr.head.sha}/status`);
+      const merged = pr.merged_at ? 'merged' : pr.state;
+      const ciBucket = ciBucketFromState(combined.state);
+      return {
+        kind: 'pr',
+        ref,
+        status: 'ok',
+        label: `PR #${pr.number}`,
+        title: pr.title,
+        subtitle: `${merged} · CI ${ciBucket}`,
+        prNumber: pr.number,
+        prState: merged,
+        checks: ciBucket,
+        href: pr.html_url,
+      };
+    } catch (e) {
+      return {
+        kind: 'pr',
+        ref,
+        status: 'error',
+        label: `PR #${parsed.number}`,
+        title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
+        subtitle: '(missing)',
+        error: e.message,
+      };
+    }
+  });
+}
+
+function discordHref(ref) {
+  if (/^https?:\/\//.test(ref)) return ref;
+  const cleaned = String(ref || '').trim().replace(/^discord:\/\//, '').replace(/^\/+/, '');
+  return `discord://-/channels/${cleaned}`;
+}
+
+function getDiscordAttachment(ref, display) {
+  const label = display || `#${slugify(ref).replace(/-/g, '-') || 'discord'}`;
+  return {
+    kind: 'discord',
+    ref,
+    status: ref ? 'ok' : 'missing',
+    label: 'discord',
+    title: label,
+    subtitle: ref ? previewText(ref, 80) : '(missing)',
+    href: ref ? discordHref(ref) : undefined,
+  };
+}
+
+function getUrlAttachment(ref, display) {
+  return {
+    kind: 'url',
+    ref,
+    status: ref ? 'ok' : 'missing',
+    label: display || 'url',
+    title: display || ref,
+    subtitle: ref ? previewText(ref, 90) : '(missing)',
+    href: ref || undefined,
+  };
+}
+
+function getFileAttachment(ref) {
+  const absPath = safeRepoPath(ref);
+  if (!absPath || !fs.existsSync(absPath)) {
+    return {
+      kind: 'file',
+      ref,
+      status: 'missing',
+      label: 'file',
+      title: ref,
+      subtitle: '(missing)',
+    };
+  }
+  let firstLine = '';
+  try {
+    firstLine = fs.readFileSync(absPath, 'utf8').split(/\r?\n/, 1)[0] || '';
+  } catch {
+    firstLine = '';
+  }
+  return {
+    kind: 'file',
+    ref,
+    status: 'ok',
+    label: 'file',
+    title: ref,
+    subtitle: previewText(firstLine || 'open file', 120),
+    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
+  };
+}
+
+function getAttachmentEnrichment(threadId, attachmentId) {
+  if (!busDB) return null;
+  const attachment = busDB.prepare(`
+    SELECT id, thread_id, kind, ref, display, created_at
+    FROM attachments
+    WHERE thread_id = ? AND id = ?
+  `).get(threadId, attachmentId);
+  if (!attachment) return null;
+  switch (attachment.kind) {
+    case 'spec':
+      return getSpecAttachment(attachment.ref);
+    case 'pr':
+      return getPrAttachment(attachment.ref);
+    case 'task':
+      return getTaskAttachment(attachment.ref);
+    case 'discord':
+      return getDiscordAttachment(attachment.ref, attachment.display);
+    case 'url':
+      return getUrlAttachment(attachment.ref, attachment.display);
+    case 'file':
+      return getFileAttachment(attachment.ref);
+    default:
+      return {
+        kind: attachment.kind,
+        ref: attachment.ref,
+        status: 'missing',
+        label: attachment.kind,
+        title: attachment.display || attachment.ref,
+        subtitle: '(missing)',
+      };
+  }
+}
+
+function getRepoFile(query) {
+  const relPath = query.get('path');
+  const absPath = safeRepoPath(relPath);
+  if (!absPath || !fs.existsSync(absPath)) return null;
+  return {
+    path: relPath,
+    content: fs.readFileSync(absPath, 'utf8'),
+  };
 }
 
 function listRunsRecent(query) {
@@ -987,7 +1361,7 @@ function listArgusFindings(query) {
   ];
   for (const sql of candidates) {
     try { return { findings: argusDB.prepare(sql).all(limit) }; }
-    catch {}
+    catch { continue; }
   }
   try {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
@@ -1001,7 +1375,7 @@ function argusInfo() {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
     const counts = {};
     for (const t of tables) {
-      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch {}
+      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch { counts[t] = 0; }
     }
     return { available: true, tables, counts };
   } catch (e) { return { available: true, error: e.message }; }
@@ -1131,13 +1505,84 @@ function getPolicy() {
   } catch (e) { return { path: POLICY_FILE, error: e.message }; }
 }
 
-function getAnalyzerSuggestions() {
+function getAnalyzerSuggestions(query) {
+  if (!analyzerDB) {
+    return {
+      enabled: false,
+      note: `analyzer db unavailable at ${ANALYZER_DB}`,
+      suggestions: [],
+      filters: { type: '', target: '', sort: 'created_at_desc' },
+    };
+  }
+  const type = (query.get('type') || '').trim();
+  const target = (query.get('target') || '').trim().toLowerCase();
+  const sort = (query.get('sort') || 'created_at_desc').trim();
+  const clauses = [];
+  const params = {};
+  if (type) {
+    clauses.push('type = @type');
+    params.type = type;
+  }
+  if (target) {
+    clauses.push('LOWER(target) LIKE @target');
+    params.target = `%${target}%`;
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const order = sort === 'created_at_asc' ? 'created_at ASC' : 'created_at DESC';
+  const suggestions = analyzerDB.prepare(`
+    SELECT id, type, target, diff, rationale, applied, created_at
+    FROM analyzer_suggestions
+    ${where}
+    ORDER BY ${order}, id ASC
+    LIMIT 500
+  `).all(params);
   return {
-    enabled: false,
-    note: 'Analyzer cron (slice 5 of the dashboard epic) not yet implemented. ' +
-          'Once `analyzer-cron.lobster` ships, this endpoint will read from ' +
-          'analyzer_suggestions(id, type, target, diff, rationale, applied, created_at).',
-    suggestions: [],
+    enabled: true,
+    note: suggestions.length ? '' : 'No suggestions yet. Run the analyzer to generate a fresh batch.',
+    suggestions,
+    filters: { type, target, sort },
+  };
+}
+
+function runAnalyzer(body) {
+  const window = String(body?.window || '24h').trim() || '24h';
+  const args = [
+    '-m', 'analysis.analyzer',
+    '--window', window,
+    '--db-path', ANALYZER_DB,
+    '--policy-file', POLICY_FILE,
+  ];
+  if (body?.skip_llm === true) args.push('--skip-llm');
+  const proc = spawnSync('python3', args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, PYTHONPATH: 'python' },
+  });
+  reopen();
+  let summary = null;
+  try {
+    summary = JSON.parse(proc.stdout || '{}');
+  } catch {}
+  if (proc.status !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: 'analyzer_failed',
+        exit: proc.status,
+        stdout: (proc.stdout || '').slice(-2000),
+        stderr: (proc.stderr || '').slice(-2000),
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      summary,
+      suggestions: getAnalyzerSuggestions(new URLSearchParams()).suggestions,
+    },
   };
 }
 
@@ -1175,6 +1620,7 @@ const handlers = [
   [/^\/api\/stats$/,                 (req, q) => getStats(q)],
   [/^\/api\/tasks$/,                 (req, q) => listTasks(q)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1], q.get('board'))],
+  [/^\/api\/threads\/(\d+)\/attachments\/(\d+)$/, (req, q, m) => getAttachmentEnrichment(Number(m[1]), Number(m[2]))],
   [/^\/api\/assignees$/,             (req, q) => listAssignees(q)],
   [/^\/api\/runs\/recent$/,          (req, q) => listRunsRecent(q)],
   [/^\/api\/boards$/,                () => listBoards()],
@@ -1184,7 +1630,7 @@ const handlers = [
   [/^\/api\/sessions$/,              (req, q) => listSessions(q)],
   [/^\/api\/sessions\/([a-zA-Z0-9_\-:.]+)$/, (req, q, m) => getSession(decodeURIComponent(m[1]))],
   [/^\/api\/policy$/,                () => getPolicy()],
-  [/^\/api\/suggestions$/,           () => getAnalyzerSuggestions()],
+  [/^\/api\/suggestions$/,           (req, q) => getAnalyzerSuggestions(q)],
   [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
   [/^\/api\/reports\/industry-scan$/, () => parseIndustryScan()],
@@ -1207,6 +1653,7 @@ const writeHandlers = [
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/,   (req, body, m) => postTaskStatus(m[1], body)],
   [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/comment$/,  (req, body, m) => postTaskComment(m[1], body)],
   [/^\/api\/threads\/(\d+)\/reply$/,             (req, body, m) => postThreadReply(Number(m[1]), body)],
+  [/^\/api\/analyze$/,                           (req, body) => runAnalyzer(body)],
 ];
 
 function createTask(body) {
@@ -1428,6 +1875,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
+
+  if (url.pathname === '/api/repo-file') {
+    const file = getRepoFile(url.searchParams);
+    if (!file) return notFound(res);
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(file.content);
+    return;
+  }
   for (const [re, fn] of handlers) {
     const m = url.pathname.match(re);
     if (m) {
@@ -1520,9 +1979,11 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
   console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
   console.log(`[chitin-console-api] kanban=${BOARD_DB} source=${BOARD_DB_SOURCE} (${kanbanDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] bus=${BUS_DB} (${busDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
+  console.log(`[chitin-console-api] analyzer=${ANALYZER_DB} (${analyzerDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
   console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
   console.log(`[chitin-console-api] reports_root=${REPORTS_ROOT || '(none)'}`);

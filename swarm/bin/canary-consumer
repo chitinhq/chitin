@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""canary-consumer — chain consumer that forwards lockdown_loop_detected events to the Argus canary.
+
+Polls chain events (JSONL files and/or session_events table) for events with
+event_type='lockdown_loop_detected' and persists them as Argus Findings in
+the findings database.
+
+Design:
+- Polls at a configurable interval (default: 30s, well within the 60s SLA).
+- Reads events from two sources in order of preference:
+  1. session_events table in chain_index.sqlite (if indexed by session_indexer)
+  2. JSONL event files in ~/.chitin/ (direct scan, fallback)
+- Tracks last-processed position in a state table (canary_consumer_state)
+  within chain_index.sqlite to avoid re-firing.
+- Persists each new lockdown_loop_detected event as a Finding in the Argus
+  findings database via findings_store.persist().
+- Logs each invocation at INFO level.
+
+Usage:
+  canary-consumer [--once] [--interval SECONDS] [--chitin-dir DIR] [--dry-run]
+
+  --once       Process new events once and exit (no polling loop)
+  --interval   Polling interval in seconds (default: 30)
+  --chitin-dir Path to chitin home directory (default: $CHITIN_HOME or ~/.chitin)
+  --dry-run    Log findings without persisting to the database
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sqlite3
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+)
+log = logging.getLogger("canary-consumer")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+CONSUMER_ID = "canary_lockdown_loop_detected"
+SESSION_EVENTS_QUERY = """
+    SELECT id, event_type, ts, ts_unix, agent, action_type, payload_json
+    FROM session_events
+    WHERE event_type = 'lockdown_loop_detected'
+      AND id > ?
+    ORDER BY id ASC
+"""
+
+# ---------------------------------------------------------------------------
+# State tracking
+# ---------------------------------------------------------------------------
+
+
+def _ensure_state_table(conn: sqlite3.Connection) -> None:
+    """Create the canary_consumer_state table if it doesn't exist."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS canary_consumer_state (
+            consumer_id  TEXT PRIMARY KEY,
+            last_rowid   INTEGER NOT NULL DEFAULT 0,
+            last_jsonl_offset TEXT NOT NULL DEFAULT '',
+            updated_at   REAL NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.commit()
+
+
+def _get_last_rowid(conn: sqlite3.Connection, consumer_id: str) -> int:
+    """Return the last-processed rowid for this consumer."""
+    row = conn.execute(
+        "SELECT last_rowid FROM canary_consumer_state WHERE consumer_id = ?",
+        (consumer_id,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _update_last_rowid(conn: sqlite3.Connection, consumer_id: str, rowid: int) -> None:
+    """Update the last-processed rowid for this consumer."""
+    now = time.time()
+    conn.execute(
+        """
+        INSERT INTO canary_consumer_state (consumer_id, last_rowid, last_jsonl_offset, updated_at)
+        VALUES (?, ?, '', ?)
+        ON CONFLICT(consumer_id) DO UPDATE SET last_rowid = ?, updated_at = ?
+        """,
+        (consumer_id, rowid, now, rowid, now),
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# JSONL fallback
+# ---------------------------------------------------------------------------
+
+
+def _scan_jsonl_files(
+    chitin_dir: Path, last_offset: dict[str, int]
+) -> list[dict]:
+    """Scan event JSONL files for lockdown_loop_detected events.
+
+    Returns a list of event dicts with at least: agent, reason, ts, payload.
+    """
+    events = []
+    for jsonl_path in sorted(chitin_dir.glob("events-*.jsonl")):
+        name = jsonl_path.name
+        offset = last_offset.get(name, 0)
+        with open(jsonl_path, "r") as f:
+            for i, line in enumerate(f):
+                if i < offset:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if evt.get("event_type") == "lockdown_loop_detected":
+                    payload = evt.get("payload", {})
+                    events.append(
+                        {
+                            "source": f"jsonl:{name}:{i}",
+                            "agent": payload.get("agent", evt.get("agent_instance_id", "")),
+                            "reason": payload.get("rationale", ""),
+                            "ts": evt.get("ts", ""),
+                            "lockdown_count": payload.get("lockdown_count", 0),
+                            "window_sec": payload.get("window_sec", 0),
+                            "action": payload.get("action", ""),
+                            "threshold": payload.get("threshold", 0),
+                            "payload": payload,
+                        }
+                    )
+            last_offset[name] = i + 1
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Finding creation
+# ---------------------------------------------------------------------------
+
+
+def _make_finding(event: dict) -> "Finding":
+    """Convert a lockdown_loop_detected event into an Argus Finding."""
+    # Import here to avoid circular imports; argus is on PYTHONPATH
+    from argus.detectors import Finding
+
+    agent = event.get("agent") or "unknown"
+    reason = event.get("reason") or "lockdown loop detected"
+    lockdown_count = event.get("lockdown_count", 0)
+
+    # Parse timestamp
+    ts_str = event.get("ts", "")
+    try:
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        ts = datetime.now(timezone.utc)
+
+    title = f"lockdown_loop_detected: agent={agent}, count={lockdown_count}"
+    details = {
+        "agent": agent,
+        "reason": reason,
+        "lockdown_count": lockdown_count,
+        "window_sec": event.get("window_sec", 0),
+        "threshold": event.get("threshold", 0),
+        "action": event.get("action", ""),
+        "source": event.get("source", ""),
+    }
+    # Merge any extra payload fields
+    if isinstance(event.get("payload"), dict):
+        for k, v in event["payload"].items():
+            if k not in details:
+                details[k] = v
+
+    return Finding(
+        detector="canary_lockdown_loop_detected",
+        ts=ts,
+        severity="critical",
+        title=title,
+        details=details,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main consumer
+# ---------------------------------------------------------------------------
+
+
+def process_events(
+    chain_db: sqlite3.Connection,
+    findings_db: sqlite3.Connection,
+    chitin_dir: Path,
+    consumer_id: str = CONSUMER_ID,
+    dry_run: bool = False,
+) -> int:
+    """Process new lockdown_loop_detected events and persist findings.
+
+    Returns the number of new events processed.
+    """
+    _ensure_state_table(chain_db)
+    last_rowid = _get_last_rowid(chain_db, consumer_id)
+    new_count = 0
+
+    # Try session_events table first
+    try:
+        rows = chain_db.execute(SESSION_EVENTS_QUERY, (last_rowid,)).fetchall()
+        if rows:
+            findings = []
+            for row in rows:
+                (rowid, event_type, ts, ts_unix, agent, action_type, payload_json) = row
+                payload = {}
+                if payload_json:
+                    try:
+                        payload = json.loads(payload_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                event = {
+                    "source": f"session_events:{rowid}",
+                    "agent": agent or payload.get("agent", ""),
+                    "reason": payload.get("rationale", ""),
+                    "ts": ts or "",
+                    "lockdown_count": payload.get("lockdown_count", 0),
+                    "window_sec": payload.get("window_sec", 0),
+                    "action": payload.get("action", ""),
+                    "threshold": payload.get("threshold", 0),
+                    "payload": payload,
+                }
+                f = _make_finding(event)
+                findings.append(f)
+                log.info(
+                    "Processing lockdown_loop_detected event: rowid=%d agent=%s count=%s",
+                    rowid,
+                    agent,
+                    payload.get("lockdown_count", "?"),
+                )
+                new_count += 1
+
+            if findings and not dry_run:
+                from argus.findings_store import persist
+
+                inserted, skipped = persist(findings_db, findings)
+                log.info(
+                    "Persisted %d findings (%d inserted, %d duplicates skipped)",
+                    len(findings),
+                    inserted,
+                    skipped,
+                )
+            elif findings and dry_run:
+                log.info(
+                    "DRY RUN: would persist %d lockdown_loop_detected findings",
+                    len(findings),
+                )
+
+            # Update last-processed rowid
+            max_rowid = max(r[0] for r in rows)
+            _update_last_rowid(chain_db, consumer_id, max_rowid)
+            return new_count
+    except sqlite3.OperationalError:
+        # session_events table doesn't exist yet — fall back to JSONL scan
+        log.debug("session_events table not found, falling back to JSONL scan")
+
+    # JSONL fallback
+    last_offset_str = ""
+    row = chain_db.execute(
+        "SELECT last_jsonl_offset FROM canary_consumer_state WHERE consumer_id = ?",
+        (consumer_id,),
+    ).fetchone()
+    if row and row[0]:
+        last_offset_str = row[0]
+
+    # Parse offset map from stored string
+    import re
+
+    last_offset = {}
+    if last_offset_str:
+        for pair in last_offset_str.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                last_offset[k] = int(v)
+
+    events = _scan_jsonl_files(chitin_dir, last_offset)
+    if events:
+        findings = []
+        for event in events:
+            f = _make_finding(event)
+            findings.append(f)
+            log.info(
+                "Processing lockdown_loop_detected event from JSONL: agent=%s source=%s",
+                event.get("agent", "?"),
+                event.get("source", "?"),
+            )
+            new_count += 1
+
+        if findings and not dry_run:
+            from argus.findings_store import persist
+
+            inserted, skipped = persist(findings_db, findings)
+            log.info(
+                "Persisted %d findings (%d inserted, %d duplicates skipped)",
+                len(findings),
+                inserted,
+                skipped,
+            )
+        elif findings and dry_run:
+            log.info(
+                "DRY RUN: would persist %d lockdown_loop_detected findings",
+                len(findings),
+            )
+
+    # Update stored offsets
+    offset_str = ",".join(f"{k}={v}" for k, v in last_offset.items())
+    now = time.time()
+    chain_db.execute(
+        """
+        INSERT INTO canary_consumer_state (consumer_id, last_rowid, last_jsonl_offset, updated_at)
+        VALUES (?, 0, ?, ?)
+        ON CONFLICT(consumer_id) DO UPDATE SET last_jsonl_offset = ?, updated_at = ?
+        """,
+        (consumer_id, offset_str, now, offset_str, now),
+    )
+    chain_db.commit()
+
+    return new_count
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Canary consumer for lockdown_loop_detected events")
+    parser.add_argument(
+        "--once", action="store_true", help="Process new events once and exit"
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=30,
+        help="Polling interval in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--chitin-dir",
+        default=os.environ.get("CHITIN_HOME", os.path.expanduser("~/.chitin")),
+        help="Path to chitin home directory",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log findings without persisting to the database",
+    )
+    args = parser.parse_args()
+
+    chitin_dir = Path(args.chitin_dir)
+    chain_db_path = chitin_dir / "chain_index.sqlite"
+    findings_db_path = chitin_dir / "analysis" / "findings.db"
+
+    # Ensure chain_index exists
+    if not chain_db_path.exists():
+        log.error("chain_index.sqlite not found at %s", chain_db_path)
+        return 1
+
+    # Ensure findings DB directory exists
+    findings_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Ensure findings table exists
+    from argus import migrations
+
+    findings_conn = sqlite3.connect(str(findings_db_path))
+    migrations.apply_pending(findings_conn)
+
+    chain_conn = sqlite3.connect(str(chain_db_path))
+    chain_conn.row_factory = sqlite3.Row
+
+    interval = args.interval
+
+    if args.once:
+        count = process_events(
+            chain_conn, findings_conn, chitin_dir, dry_run=args.dry_run
+        )
+        log.info("Processed %d new events (single pass)", count)
+        chain_conn.close()
+        findings_conn.close()
+        return 0
+
+    # Continuous polling loop
+    log.info("Starting canary consumer (interval=%ds, chitin_dir=%s)", interval, chitin_dir)
+    try:
+        while True:
+            try:
+                count = process_events(
+                    chain_conn, findings_conn, chitin_dir, dry_run=args.dry_run
+                )
+                if count > 0:
+                    log.info("Processed %d new lockdown_loop_detected events", count)
+            except Exception:
+                log.exception("Error processing events, will retry")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        log.info("Shutting down canary consumer")
+    finally:
+        chain_conn.close()
+        findings_conn.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""swarm-invoker — agent-invocation-on-ticket-event for hermes.
+
+Polls the swarm board for ready tickets assigned to hermes (or wildcard)
+and outputs prompt text for each uninvoked ticket. Designed to run as a
+hermes cron --script (NOT --no-agent): stdout gets injected into the
+agent's prompt as context, and the agent reasons over it.
+
+Dedup: tracks invoked ticket IDs in ~/.hermes/sw009/invocation-log.json
+so subsequent ticks don't re-invoke. Tickets move out of 'ready' or get
+marked invoked; either way, no duplicate prompts.
+
+Usage:
+  python3 swarm-invoker                     # check all boards
+  python3 swarm-invoker --board swarm       # specific board
+  python3 swarm-invoker --dry-run            # show what would be invoked
+
+Output: one block per actionable ticket, e.g.:
+  [INVOCATION] Ticket t_abc123 is ready on swarm board.
+  Title: sw-010 — Fix the frobnicator
+  Body: The frobnicator is broken because...
+  Please action this ticket and post progress to #swarm.
+"""
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── Config ──────────────────────────────────────────────────────────
+
+AGENT_NAME = os.environ.get("HERMES_AGENT", "hermes")
+ASSIGNABLE_AGENTS = {"hermes", "*"}  # * = wildcard, any agent can take
+
+# Boards to poll (env override or default list)
+DEFAULT_BOARDS = ["swarm"]
+
+DEDUP_DIR = Path.home() / ".hermes" / "sw009"
+DEDUP_FILE = DEDUP_DIR / "invocation-log.json"
+
+# Board DB paths
+KANBAN_ROOT = Path.home() / ".hermes" / "kanban" / "boards"
+
+# ── Dedup log ──────────────────────────────────────────────────────
+
+def load_invocation_log() -> dict:
+    """Load the invocation log: {ticket_id: {"invoked_at": ISO, "board": str}}."""
+    if DEDUP_FILE.exists():
+        try:
+            return json.loads(DEDUP_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_invocation_log(log: dict) -> None:
+    DEDUP_DIR.mkdir(parents=True, exist_ok=True)
+    # Prune entries older than 7 days to keep log small.
+    # Keys are composite (tid:status:assignee:latest_ts) per Clawta gate 4.
+    now = datetime.now(timezone.utc)
+    cutoff = (now.timestamp() - 7 * 86400)
+    pruned = {
+        key: entry for key, entry in log.items()
+        if datetime.fromisoformat(entry["invoked_at"]).timestamp() > cutoff
+    }
+    DEDUP_FILE.write_text(json.dumps(pruned, indent=2, sort_keys=True))
+
+
+# ── Board queries ──────────────────────────────────────────────────
+
+def find_actionable_tickets(board: str) -> list[dict]:
+    """Find ready/triage tickets assigned to this agent on the board.
+
+    Joins on kanban_mutations_log to surface the latest mutation timestamp
+    per task — used by the composite dedup key so that a ticket cycling
+    back to 'ready' after work re-invokes (per Clawta sw-009 gate 4)."""
+    db_path = KANBAN_ROOT / board / "kanban.db"
+    if not db_path.exists():
+        print(f"[swarm-invoker] board DB not found: {db_path}", file=sys.stderr)
+        return []
+
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+
+    # Query: READY-only, assigned to hermes or wildcard.
+    # Per Clawta sw-009 round 2: triage tickets do NOT have specs yet and
+    # must not trigger agent invocation (would violate spec-kit promotion
+    # gate). Only 'ready' tickets — i.e. tickets that have passed the
+    # invariants_and_boundaries gate — are actionable for the agent.
+    #
+    # latest_ts derives from MAX(ts) on kanban_mutations_log as a proxy
+    # for tasks.updated_at (the tasks table has no updated_at column).
+    cur = con.execute("""
+        SELECT t.id, t.title, t.status, t.assignee, t.priority, t.body,
+               COALESCE(
+                 (SELECT MAX(ts) FROM kanban_mutations_log m
+                   WHERE m.table_name='tasks' AND m.task_id=t.id),
+                 t.created_at
+               ) AS latest_ts
+        FROM tasks t
+        WHERE t.status = 'ready'
+          AND t.assignee IN (?, '*')
+        ORDER BY t.priority DESC, t.rowid ASC
+    """, (AGENT_NAME,))
+
+    tickets = []
+    for row in cur.fetchall():
+        tickets.append({
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+            "priority": row["priority"] or 0,
+            "body": row["body"] or "",
+            "latest_ts": row["latest_ts"],
+        })
+
+    con.close()
+    return tickets
+
+
+def dedup_key(ticket: dict) -> str:
+    """Composite dedup key per Clawta sw-009 gate 4: not just ticket id.
+
+    Includes status + assignee + latest mutation ts so that a ticket
+    going ready -> in_progress -> ready (e.g. retry after failure) gets
+    re-invoked rather than silently swallowed by stale id-only lookup."""
+    return f"{ticket['id']}:{ticket['status']}:{ticket['assignee']}:{ticket['latest_ts']}"
+
+
+# ── Invocation ──────────────────────────────────────────────────────
+
+def format_invocation(ticket: dict, board: str) -> str:
+    """Format a prompt block for one actionable ticket."""
+    body_preview = ticket["body"][:500] if ticket["body"] else "(no body)"
+    assignee_note = f" (assigned to {ticket['assignee']})" if ticket["assignee"] != "*" else " (wildcard — any agent)"
+    return (
+        f"[INVOCATION] Ticket {ticket['id']} is {ticket['status']} on {board} board{assignee_note}.\n"
+        f"Title: {ticket['title']}\n"
+        f"Body: {body_preview}\n"
+        f"Please action this ticket and post progress to #swarm."
+    )
+
+
+# ── Main ────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="swarm-invoker: agent-invocation-on-ticket-event")
+    parser.add_argument("--board", action="append", dest="boards",
+                        help="Board(s) to poll (default: swarm)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show what would be invoked without recording")
+    args = parser.parse_args()
+
+    boards = args.boards or DEFAULT_BOARDS
+    inv_log = load_invocation_log()
+    invoked_any = False
+
+    for board in boards:
+        tickets = find_actionable_tickets(board)
+        if not tickets:
+            continue
+
+        for ticket in tickets:
+            key = dedup_key(ticket)
+
+            # Skip if this exact (id, status, assignee, latest_ts) tuple
+            # has already been invoked. Composite key per Clawta gate 4 —
+            # a ticket cycling back to 'ready' produces a new key and
+            # re-invokes, which is the desired behavior.
+            if key in inv_log:
+                continue
+
+            prompt = format_invocation(ticket, board)
+
+            if args.dry_run:
+                print(f"[DRY-RUN] would invoke: {ticket['id']} — {ticket['title']}")
+                print(prompt)
+                print()
+            else:
+                # Record invocation with composite key
+                inv_log[key] = {
+                    "invoked_at": datetime.now(timezone.utc).isoformat(),
+                    "board": board,
+                    "ticket_id": ticket["id"],
+                    "title": ticket["title"],
+                }
+                # Output the prompt (agent will see this via --script injection)
+                print(prompt)
+                print()
+                print(f"[swarm-invoker] invoked {ticket['id']} on {board}", file=sys.stderr)
+                invoked_any = True
+
+    if not args.dry_run and invoked_any:
+        save_invocation_log(inv_log)
+
+    # Exit 0 always — empty stdout = no invocation = silent cron delivery
+    # Non-empty stdout = agent gets prompted
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "jq $*" >> "$STUB_LOG"
+
+if [[ " $* " == *" -cn "* ]]; then
+  printf '{}\n'
+  exit 0
+fi
+
+if [[ " $* " == *" -n "* ]]; then
+  printf '{}\n'
+  exit 0
+fi
+
+if [[ "$*" == *"closed_at == null"* ]]; then
+  input=$(cat)
+  id=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "id" ]]; then
+      id="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  if [[ -n "$id" && "$input" == *"\"id\":\"$id\""* && "$input" == *"\"closed_at\":null"* ]]; then
+    printf 'true\n'
+    exit 0
+  fi
+  exit 1
+fi
+
+count=0
+if [[ "$*" == *"index(\$rid) == null"* ]]; then
+  count="${STUB_JQ_POLICY_COUNT:-0}"
+elif [[ "$*" == *"index(\$rid) != null"* ]]; then
+  count="${STUB_JQ_INFRA_COUNT:-0}"
+fi
+
+for _ in $(seq 1 "$count"); do
+  printf '{}\n'
+done

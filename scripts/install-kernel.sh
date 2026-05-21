@@ -32,7 +32,8 @@
 
 set -euo pipefail
 
-REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="${CHITIN_REPO:-$(python3 "$REPO_ROOT/swarm/bin/board_resolver.py" workspace)}"
 BIN="${CHITIN_KERNEL_BIN:-$HOME/.local/bin/chitin-kernel}"
 PREV="$BIN.prev"
 LOG="${CHITIN_INSTALL_KERNEL_LOG:-$HOME/.cache/chitin/install-kernel.jsonl}"
@@ -49,13 +50,17 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$BIN")"
 # instead of a generic exit-2.
 ensure_go_on_path() {
   if command -v go >/dev/null 2>&1; then return 0; fi
-  for candidate in /usr/local/go/bin "$HOME/go/bin"; do
+  local candidate_dirs="${CHITIN_GO_CANDIDATES:-/usr/local/go/bin:$HOME/go/bin}"
+  local IFS=:
+  local candidates=()
+  read -r -a candidates <<< "$candidate_dirs"
+  for candidate in "${candidates[@]}"; do
     if [[ -x "$candidate/go" ]]; then
       export PATH="$candidate:$PATH"
       return 0
     fi
   done
-  emit fail go-not-found "searched=PATH,/usr/local/go/bin,$HOME/go/bin"
+  emit fail go-not-found "searched=PATH,$candidate_dirs"
   return 1
 }
 ensure_go_on_path || exit 2

@@ -24,6 +24,7 @@ def make_db(root: Path) -> Path:
           body TEXT,
           assignee TEXT,
           status TEXT NOT NULL,
+          block_reason TEXT,
           priority INTEGER DEFAULT 0,
           created_by TEXT,
           created_at INTEGER NOT NULL,
@@ -37,7 +38,9 @@ def make_db(root: Path) -> Path:
           max_runtime_seconds INTEGER,
           last_heartbeat_at INTEGER,
           current_run_id INTEGER,
-          current_step_key TEXT
+          current_step_key TEXT,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          last_failure_error TEXT
         );
         CREATE TABLE task_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +267,32 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
         self.assertIsNotNone(runs[0]["ended_at"])
         self.assertIsNone(runs[1]["ended_at"])
 
+    def test_block_finalizes_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_b10c0ed0")
+
+            self.run_flow(tmp, "start", "t_b10c0ed0", "--author", "tester")
+            self.run_flow(tmp, "block", "t_b10c0ed0", "operator hold", "--author", "tester")
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            task = conn.execute(
+                "SELECT status, current_run_id FROM tasks WHERE id='t_b10c0ed0'"
+            ).fetchone()
+            run = conn.execute(
+                "SELECT status, outcome, ended_at, error FROM task_runs WHERE task_id='t_b10c0ed0'"
+            ).fetchone()
+            conn.close()
+
+        self.assertEqual(task["status"], "blocked")
+        self.assertIsNone(task["current_run_id"])
+        self.assertEqual(run["status"], "blocked")
+        self.assertEqual(run["outcome"], "blocked")
+        self.assertEqual(run["error"], "operator hold")
+        self.assertIsNotNone(run["ended_at"])
+
     def test_pr_hash_is_preserved_until_done_and_crash_finalizes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -413,6 +442,73 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
             conn.close()
 
         self.assertIsNone(event_chain_hash)
+
+    def test_start_records_audited_mutations_for_tasks_comments_and_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_a11d1001")
+
+            self.run_flow(tmp, "start", "t_a11d1001", "--author", "tester")
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT table_name, op, task_id, application_id, pid
+                  FROM kanban_mutations_log
+                 WHERE task_id = 't_a11d1001'
+                   AND table_name IN ('tasks', 'task_comments', 'task_events')
+                """
+            ).fetchall()
+            conn.close()
+
+        by_table = {row["table_name"] for row in rows}
+        self.assertEqual(by_table, {"tasks", "task_comments", "task_events"})
+        for row in rows:
+            self.assertEqual(row["op"], "INSERT" if row["table_name"] != "tasks" else "UPDATE")
+            self.assertEqual(row["application_id"], 1262894167)
+            self.assertGreater(row["pid"], 0)
+
+    def test_metadata_verbs_route_through_kanban_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_0abc0001")
+
+            self.run_flow(tmp, "comment", "t_0abc0001", "--author", "tester", "hello from flow")
+            self.run_flow(tmp, "assign", "t_0abc0001", "red")
+            self.run_flow(tmp, "set-block-reason", "t_0abc0001", "needs_spec")
+            self.run_flow(
+                tmp,
+                "record-failure",
+                "t_0abc0001",
+                "silent_worker_death",
+                "worker disappeared",
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            task = conn.execute(
+                """
+                SELECT assignee, block_reason, consecutive_failures, last_failure_error
+                  FROM tasks
+                 WHERE id = 't_0abc0001'
+                """
+            ).fetchone()
+            comment = conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = 't_0abc0001' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            conn.close()
+
+        self.assertEqual(task["assignee"], "red")
+        self.assertEqual(task["block_reason"], "needs_spec")
+        self.assertEqual(task["consecutive_failures"], 1)
+        self.assertEqual(
+            task["last_failure_error"],
+            "[silent_worker_death] worker disappeared",
+        )
+        self.assertEqual(comment, "hello from flow")
 
 
 if __name__ == "__main__":

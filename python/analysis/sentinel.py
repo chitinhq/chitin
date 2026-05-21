@@ -19,6 +19,14 @@ from typing import Any
 from analysis.detect import detect_patterns
 from analysis.draft import draft_for_pattern, reason_no_template
 from analysis.loaders import load_gov_decisions, parse_window_str
+from analysis.proposals.models import (
+    Attribution,
+    BuildEvidence,
+    DispatchPolicyUpdate,
+    ProposalStatus,
+    ThresholdStatus,
+    new_proposal_id,
+)
 from analysis.writers import build_finding, write_json, write_markdown_from_json
 import analysis.templates.all  # noqa: F401  (registers all templates)
 
@@ -39,6 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("HOME", "/") + "/.chitin",
         help="Directory containing gov-decisions-*.jsonl",
     )
+    p.add_argument("--config", default="chitin.yaml", help="Path to chitin.yaml")
     p.add_argument("--now", default=None, help="ISO-8601 to fix the clock")
     return p.parse_args(argv)
 
@@ -52,38 +61,119 @@ def _now(value: str | None) -> datetime:
     return parsed
 
 
-def _promotion_metadata(findings) -> dict[str, Any]:
+def _promotion_threshold(config_path: Path) -> tuple[int, list[str]]:
+    default = 5
+    warnings: list[str] = []
+    if not config_path.exists():
+        return default, warnings
+    try:
+        config_text = config_path.read_text()
+    except OSError as exc:
+        warnings.append(f"Warning: could not read sentinel.promotion_threshold from {config_path}: {exc}")
+        return default, warnings
+
+    value: str | int = default
+    in_sentinel = False
+    for raw_line in config_text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith((" ", "\t")):
+            in_sentinel = line.strip() == "sentinel:"
+            continue
+        if in_sentinel:
+            key, sep, raw_value = line.strip().partition(":")
+            if sep and key == "promotion_threshold":
+                value = raw_value.strip().strip("'\"")
+                break
+
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError):
+        warnings.append(f"Warning: invalid sentinel.promotion_threshold={value!r}; using default {default}")
+        return default, warnings
+    if threshold < 3:
+        warnings.append(
+            f"Warning: sentinel.promotion_threshold={threshold} below minimum 3; clamped to 3"
+        )
+        return 3, warnings
+    return threshold, warnings
+
+
+def _proposal_for_finding(finding, *, threshold: int, now: datetime) -> dict[str, Any] | None:
+    draft = finding.draft
+    if draft is None or not draft.rule_yaml.strip():
+        return None
+    pattern = finding.pattern
+    threshold_status = (
+        ThresholdStatus.ABOVE_THRESHOLD
+        if pattern.count >= threshold
+        else ThresholdStatus.BELOW_THRESHOLD
+    )
+    status = (
+        ProposalStatus.PROPOSED
+        if threshold_status == ThresholdStatus.ABOVE_THRESHOLD
+        else ProposalStatus.BELOW_THRESHOLD
+    )
+    impact = draft.predicted_impact
+    proposal = DispatchPolicyUpdate(
+        id=new_proposal_id("sentinel"),
+        attribution=Attribution(
+            spec_provenance="spec:062-attribution TBD",
+            sentinel_source=f"analysis.sentinel:{now.date().isoformat()}",
+        ),
+        evidence=BuildEvidence(build_grounding="spec:063-build TBD"),
+        threshold_status=threshold_status,
+        status=status,
+        policy_path=PROPOSAL_PATH,
+        update_summary=f"Candidate invariant for {pattern.rule_id}/{pattern.action_type}",
+    )
+    return {
+        "id": proposal.id,
+        "kind": proposal.kind,
+        "rank": finding.rank,
+        "rule_id": pattern.rule_id,
+        "action_type": pattern.action_type,
+        "agent_id": pattern.agent_id,
+        "count": pattern.count,
+        "confidence": draft.confidence,
+        "proposal_path": proposal.policy_path,
+        "threshold_status": str(proposal.threshold_status),
+        "status": str(proposal.status),
+        "attribution": {
+            "spec_provenance": proposal.attribution.spec_provenance,
+            "sentinel_source": proposal.attribution.sentinel_source,
+        },
+        "evidence": {
+            "build_grounding": proposal.evidence.build_grounding,
+        },
+        "predicted_impact": None if impact is None else {
+            "samples_evaluated": impact.samples_evaluated,
+            "would_allow": impact.would_allow,
+            "would_still_deny": impact.would_still_deny,
+            "method": impact.method,
+        },
+    }
+
+
+def _promotion_metadata(findings, *, threshold: int, now: datetime) -> dict[str, Any]:
     proposals: list[dict[str, Any]] = []
     for finding in findings:
-        draft = finding.draft
-        if draft is None or not draft.rule_yaml.strip():
-            continue
-        impact = draft.predicted_impact
-        proposals.append(
-            {
-                "rank": finding.rank,
-                "rule_id": finding.pattern.rule_id,
-                "action_type": finding.pattern.action_type,
-                "agent_id": finding.pattern.agent_id,
-                "count": finding.pattern.count,
-                "confidence": draft.confidence,
-                "proposal_path": PROPOSAL_PATH,
-                "predicted_impact": None if impact is None else {
-                    "samples_evaluated": impact.samples_evaluated,
-                    "would_allow": impact.would_allow,
-                    "would_still_deny": impact.would_still_deny,
-                    "method": impact.method,
-                },
-            }
-        )
+        proposal = _proposal_for_finding(finding, threshold=threshold, now=now)
+        if proposal is not None:
+            proposals.append(proposal)
 
+    review_queue = [p for p in proposals if p["threshold_status"] == str(ThresholdStatus.ABOVE_THRESHOLD)]
     status = "candidate" if proposals else "no-candidate"
     return {
         "promotion": {
             "proposal_path": PROPOSAL_PATH,
             "proposal_count": len(proposals),
+            "review_queue_count": len(review_queue),
+            "min_evidence_threshold": threshold,
             "status": status,
             "proposals": proposals,
+            "review_queue": review_queue,
         }
     }
 
@@ -95,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     now = _now(args.now)
+    threshold, threshold_warnings = _promotion_threshold(Path(args.config))
+    for warning in threshold_warnings:
+        print(warning, file=sys.stderr)
     decisions_dir = Path(args.decisions_dir)
     if not decisions_dir.exists():
         print(f"Error: decisions-dir does not exist: {decisions_dir}", file=sys.stderr)
@@ -157,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     date_str = now.date().isoformat()
     json_path = out_dir / f"sentinel-{date_str}.json"
     md_path = out_dir / f"sentinel-{date_str}.md"
-    metadata = _promotion_metadata(findings)
+    metadata = _promotion_metadata(findings, threshold=threshold, now=now)
 
     try:
         write_json(

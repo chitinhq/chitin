@@ -1,0 +1,207 @@
+exclude_patterns:
+  - scripts/MANIFEST.yaml
+  - scripts/hermes/MIGRATION.md
+  - scripts/hermes/README.md
+  - scripts/hermes/plan-schema.json
+  - scripts/hermes/prompt-act.md
+  - scripts/hermes/prompt-code.md
+  - scripts/hermes/prompt-plan.md
+  - scripts/hermes/tests/fixtures/**
+  - scripts/hermes/tests/stubs/**
+  - scripts/hermes/tests/tick.bats
+  - scripts/swarm-sessionstart-hook/README.md
+  - scripts/swarm-sessionstart-hook/tests/**
+  - scripts/tests/**
+
+entries:
+  - path: scripts/bootstrap-worktree.sh
+    category: operator
+    purpose: hydrate a fresh git worktree with local dependencies from the shared pnpm store
+
+  - path: scripts/check-governance-boundary.sh
+    category: ci
+    purpose: enforce the Go-only governance authority boundary against repo drift
+
+  - path: scripts/check-hermes-clawta-contract.py
+    category: ci
+    purpose: statically verify the Hermes and Clawta collaboration contract stays wired
+
+  - path: scripts/check-no-chitin-hardcodes.sh
+    category: ci
+    purpose: block repo and workspace literals from creeping back into swarm/bin and script entrypoints after board-config migration
+
+  - path: scripts/check-spec-frontmatter.py
+    category: ci
+    purpose: validate required YAML frontmatter on docs superpowers specs
+
+  - path: scripts/check-spec-index-sync.sh
+    category: ci
+    purpose: assert the specs index matches regen-spec-index.py output
+
+  - path: scripts/check-scripts-manifest.sh
+    category: ci
+    purpose: lint the scripts manifest for coverage, runtime-critical ownership, and migration TTLs
+
+  - path: scripts/check-swarm-deployed-sync.sh
+    category: ci
+    purpose: detect drift between repo swarm files and the deployed OpenClaw runtime mirror
+
+  - path: scripts/check-swarm-kanban-isolation.sh
+    category: ci
+    purpose: reject direct swarm-side writes to kanban tables; enforce single mutation choke point per spec 003
+
+  - path: scripts/check-worktree-naming.sh
+    category: ci
+    purpose: verify git worktrees follow the repo naming convention
+
+  - path: scripts/chitin-agent-unlock.sh
+    category: runtime-critical
+    purpose: auto-recover agents locked down by infrastructure-only failures
+    port_ticket: t_6bcf5081
+
+  - path: scripts/chitin-budget
+    category: operator
+    purpose: show per-driver usage and remaining budget from local usage feeds
+
+  - path: scripts/chitin-chain-watch.sh
+    category: runtime-critical
+    purpose: detect runaway denial loops in the governance decision chain
+    port_ticket: t_95c9ee4a
+
+  - path: scripts/chitin-envelope-rotate.sh
+    category: runtime-critical
+    purpose: rotate the active budget envelope before envelope-closed denies cascade
+    port_ticket: t_5c4f6d38
+
+  - path: scripts/chitin-status
+    category: operator
+    purpose: render an operator-facing health snapshot for the chitin host
+
+  - path: scripts/copy-governance-sidecars.sh
+    category: runtime-critical
+    purpose: copy gitignored governance sidecars (chitin.yaml.sig) into dispatched worktrees so workers do not deadlock on policy_signature_missing
+    port_ticket: t_5b665efe
+
+  - path: scripts/create-worktree.sh
+    category: operator
+    purpose: create a task-scoped git worktree with the repo naming and path conventions
+
+  - path: scripts/governance-boundary.allow
+    category: ci
+    purpose: allowlist approved non-Go governance-adjacent files for the boundary check
+
+  - path: scripts/hermes/tests/validate-plans.sh
+    category: ci
+    purpose: validate hermes staged-tick plan fixtures against the JSON schema
+
+  - path: scripts/hermes/tick.sh
+    category: runtime-critical
+    purpose: run the staged Hermes autonomous tick from cron
+    tested_by: scripts/hermes/tests/tick.bats
+
+  - path: scripts/install-claude-code-hook.sh
+    category: ci
+    purpose: install the chitin governance hook into Claude Code settings
+
+  - path: scripts/install-clawta-judge-backfill.sh
+    category: ci
+    purpose: install the clawta judge backfill systemd units on an operator host
+
+  - path: scripts/install-codex-hook.sh
+    category: ci
+    purpose: install the chitin governance hook into Codex CLI settings
+
+  - path: scripts/install-gemini-hook.sh
+    category: ci
+    purpose: install the chitin governance hook into Gemini CLI settings
+
+  - path: scripts/install-governance-policy-signing-hook.sh
+    category: ci
+    purpose: install the local pre-commit hook that signs staged chitin policy files
+
+  - path: scripts/install-pre-push-protected-branch-guard.sh
+    category: operator
+    purpose: install the local pre-push guard that blocks direct pushes to protected branches
+
+  - path: scripts/install-hermes-hook.sh
+    category: ci
+    purpose: install the chitin governance hook into Hermes pre_tool_call settings
+
+  - path: scripts/install-hermes-plugin.sh
+    category: ci
+    purpose: copy the chitin governance Hermes plugin into the operator plugin directory
+
+  - path: scripts/install-kernel-symlink.sh
+    category: ci
+    purpose: place the built chitin-kernel binary on the operator PATH via symlink
+
+  - path: scripts/install-kernel.sh
+    category: runtime-critical
+    purpose: rebuild and reinstall chitin-kernel during the redeploy timer tick
+    port_ticket: t_a96ed4dd
+
+  - path: scripts/install-swarm.sh
+    category: ci
+    purpose: install the canonical chitin swarm files into the operator OpenClaw runtime directory
+
+  - path: scripts/install-systemd-units.sh
+    category: ci
+    purpose: link and enable chitin user-mode systemd units on an operator host
+
+  - path: scripts/kanban-flow
+    category: runtime-critical
+    purpose: perform audited kanban lifecycle transitions on the shared Hermes board
+    tested_by: swarm/tests/test_kanban_flow.py
+
+  - path: scripts/migrate-ready-assignees-to-clawta.py
+    category: migration
+    purpose: one-shot reassignment of ready tickets from legacy assignees to clawta
+    added_on: 2026-05-13
+    expires_on: 2026-08-11
+
+  - path: scripts/mine-default-deny-bash.sh
+    category: migration
+    purpose: derive candidate Bash allowlist prefixes from replayed default-deny hook captures
+    added_on: 2026-05-06
+    expires_on: 2026-08-04
+
+  - path: scripts/regen-spec-index.py
+    category: operator
+    purpose: regenerate the superpowers spec index from frontmatter metadata
+
+  - path: scripts/regression-gate.sh
+    category: ci
+    purpose: run every registered check and warn invariant under scripts
+
+  - path: scripts/replay-hook-captures.sh
+    category: operator
+    purpose: replay captured hook payloads through the gate for offline policy analysis
+
+  - path: scripts/pre-push-protected-branch-guard.sh
+    category: operator
+    purpose: reject direct pushes to protected branches from local worktrees
+
+  - path: scripts/smoke-hermes-clawta-chain.sh
+    category: ci
+    purpose: exercise the hermes to clawta to lobster dispatch chain with seeded smoke tickets
+
+  - path: scripts/swarm-bus
+    category: operator
+    purpose: thin CLI over agent-bus MCP tools (bus_reply, bus_post_thread, bus_inbox, etc.) so any agent can post to threads via shell
+
+  - path: scripts/swarm-sessionstart-hook/install.sh
+    category: operator
+    purpose: install the swarm SessionStart hook into the operator claude-code settings
+
+  - path: scripts/swarm-sessionstart-hook/swarm-tickets-for.sh
+    category: runtime-critical
+    purpose: render assigned-ticket inbox for an agent at claude-code session start
+    tested_by: scripts/swarm-sessionstart-hook/tests/test_swarm_tickets_for.sh
+
+  - path: scripts/sync-kanban-dispatch.sh
+    category: ci
+    purpose: verify the mirrored kanban-dispatch lobster workflow matches the canonical source
+
+  - path: scripts/trace-lifecycle.sh
+    category: operator
+    purpose: print kanban lifecycle events and matching chain activity for a task

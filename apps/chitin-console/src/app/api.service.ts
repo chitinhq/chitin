@@ -5,7 +5,7 @@ import type {
   Stats, TaskListResponse, TaskDetail, AssigneeRow,
   RecentRun, EloRow, SessionSummary, SessionDetail,
   Policy, SuggestionsResponse, ArgusInfo, ArgusFindingsResponse,
-  CostHistogram, ClawtaDecision,
+  CostHistogram, ClawtaDecision, ThreadListResponse, ThreadDetail, AttachmentEnrichment,
 } from './api.types';
 import { BoardService, type Board } from './board.service';
 
@@ -42,6 +42,21 @@ export class ApiService {
   task(id: string): Observable<TaskDetail> {
     return this.http.get<TaskDetail>(`${API_BASE}/tasks/${encodeURIComponent(id)}`, { params: this.withBoard() });
   }
+  threads(opts: { board?: string; status?: string; audience?: string; q?: string; limit?: number } = {}): Observable<ThreadListResponse> {
+    let params = new HttpParams();
+    if (opts.board) params = params.set('board', opts.board);
+    if (opts.status) params = params.set('status', opts.status);
+    if (opts.audience) params = params.set('audience', opts.audience);
+    if (opts.q) params = params.set('q', opts.q);
+    if (opts.limit) params = params.set('limit', String(opts.limit));
+    return this.http.get<ThreadListResponse>(`${API_BASE}/threads`, { params });
+  }
+  thread(id: number): Observable<ThreadDetail> {
+    return this.http.get<ThreadDetail>(`${API_BASE}/threads/${id}`);
+  }
+  attachmentEnrichment(threadId: number, attachmentId: number): Observable<AttachmentEnrichment> {
+    return this.http.get<AttachmentEnrichment>(`${API_BASE}/threads/${threadId}/attachments/${attachmentId}`);
+  }
   assignees(): Observable<{ assignees: AssigneeRow[] }> {
     return this.http.get<{ assignees: AssigneeRow[] }>(`${API_BASE}/assignees`, { params: this.withBoard() });
   }
@@ -64,8 +79,27 @@ export class ApiService {
   policy(): Observable<Policy> {
     return this.http.get<Policy>(`${API_BASE}/policy`);
   }
-  suggestions(): Observable<SuggestionsResponse> {
-    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`);
+  suggestions(opts: { type?: string; target?: string; sort?: string } = {}): Observable<SuggestionsResponse> {
+    let params = new HttpParams();
+    if (opts.type) params = params.set('type', opts.type);
+    if (opts.target) params = params.set('target', opts.target);
+    if (opts.sort) params = params.set('sort', opts.sort);
+    return this.http.get<SuggestionsResponse>(`${API_BASE}/suggestions`, { params });
+  }
+  analyze(body: { window?: string; skip_llm?: boolean } = {}): Observable<{
+    ok: boolean;
+    summary?: Record<string, unknown>;
+    suggestions?: unknown[];
+    error?: string;
+    stderr?: string;
+  }> {
+    return this.http.post<{
+      ok: boolean;
+      summary?: Record<string, unknown>;
+      suggestions?: unknown[];
+      error?: string;
+      stderr?: string;
+    }>(`${API_BASE}/analyze`, body);
   }
   argusInfo(): Observable<ArgusInfo> {
     return this.http.get<ArgusInfo>(`${API_BASE}/argus/info`);

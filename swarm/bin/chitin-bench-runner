@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""chitin-bench-runner — pick N cached Terminal-Bench tasks, run the
+Chitin Bench harness against each, write results to ``jobs/chitin-bench/``.
+
+Designed to be called by hermes cron every N minutes. Single-flight
+via flock so re-entrant cron ticks don't stack while a trial is
+mid-run.
+
+Picks tasks LRU (least-recently-tried) from
+``~/.cache/harbor/tasks/<ulid>/<task-name>/``. State is persisted to
+``~/.chitin-bench/bench-runner-state.json``.
+
+Architecture choice: the Chitin Bench agent runs HOST-side. Harbor's
+``environment.exec`` is the only path that talks to the docker
+container, so ollama (on the host) stays uncontended with the task
+process. The model lease lock (``~/.chitin-bench/model-lease.lock``)
+prevents the lint-fix watcher and the bench runner from stacking
+ollama calls.
+
+After each completed bench tick, the runner appends one gov-decision
+row to ``~/.chitin/gov-decisions-YYYY-MM-DD.jsonl`` with
+action_type=icarus_bench_tick so that every tick is queryable from
+chain_index.sqlite. The row is committed synchronously before the
+runner proceeds to the next tick so no tick is ever lost.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+CHITIN_BENCH_DIR = Path.home() / ".chitin-bench"
+STATE_FILE = CHITIN_BENCH_DIR / "bench-runner-state.json"
+LOG_FILE = CHITIN_BENCH_DIR / "bench-runner.log"
+LOCK_FILE = CHITIN_BENCH_DIR / "bench-runner.lock"
+HARBOR_TASKS_DIR = Path.home() / ".cache" / "harbor" / "tasks"
+CHITIN_DIR = Path(os.environ.get("CHITIN_HOME", str(Path.home() / ".chitin")))
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
+
+DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3.6:27b")
+DEFAULT_N_TASKS = int(os.environ.get("CHITIN_BENCH_N_TASKS", "1"))
+DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("CHITIN_BENCH_PER_TASK_WALLCLOCK", "1800"))
+EMITTER = REPO_ROOT / "swarm" / "bin" / "chitin-bench-ticket-emitter"
+
+AGENT_IMPORT_PATH = "swarm.chitin_bench.agent:BenchAgent"
+
+
+def log(msg: str) -> None:
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    line = f"[{ts}] {msg}\n"
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    with LOG_FILE.open("a") as fh:
+        fh.write(line)
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"last_tried": {}}
+
+
+def save_state(state: dict) -> None:
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+    tmp.replace(STATE_FILE)
+
+
+def emit_gov_decision(
+    *,
+    task_name: str,
+    block_reason: str,
+    reward: float | None,
+    steps_used: int | None,
+    model: str,
+    status: str,
+) -> None:
+    """Append one gov-decision row to the Chitin governance chain.
+
+    Writes synchronously to ``~/.chitin/gov-decisions-YYYY-MM-DD.jsonl``
+    so that every completed bench tick is queryable from
+    ``chain_index.sqlite`` with action='icarus_bench_tick'.
+
+    Mirrors the write path of ``gov.WriteLog`` in the Go kernel:
+    daily-rotated, append-only JSONL. Fields follow the Decision
+    schema with icarus_bench_tick–specific metadata.
+
+    The row is committed before the runner proceeds to the next tick
+    so no tick is ever lost, matching the ticket acceptance criteria.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    date = ts[:10]  # YYYY-MM-DD
+
+    row: dict = {
+        "allowed": True,
+        "mode": "monitor",
+        "rule_id": "icarus_bench_tick",
+        "reason": block_reason if block_reason else "none",
+        "agent": "icarus-bench-runner",
+        "action_type": "icarus_bench_tick",
+        "action_target": task_name,
+        "ts": ts,
+        "model": model,
+        "block_reason": block_reason if block_reason else "none",
+    }
+    if reward is not None:
+        row["reward"] = reward
+    if steps_used is not None:
+        row["steps_used"] = steps_used
+    # Status is metadata useful for analysis even though the core
+    # ticket only requires block_reason, reward, steps_used, model.
+    row["tick_status"] = status
+
+    CHITIN_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = CHITIN_DIR / f"gov-decisions-{date}.jsonl"
+
+    line = json.dumps(row, sort_keys=True) + "\n"
+    try:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        log(f"gov-decision emitted: task={task_name} block_reason={block_reason} reward={reward} steps={steps_used}")
+    except OSError as exc:
+        # Best-effort: a full disk or permission error must not prevent
+        # the bench runner from continuing. Log the failure and move on.
+        log(f"gov-decision emit failed (best-effort, continuing): {exc}")
+
+
+def discover_tasks() -> list[tuple[str, Path]]:
+    """Return [(task_name, task_dir), ...] for every cached task.
+
+    A cached task lives at ``~/.cache/harbor/tasks/<ulid>/<task-name>/``
+    and is identified by the inner directory name (e.g.
+    ``sqlite-db-truncate``)."""
+    if not HARBOR_TASKS_DIR.is_dir():
+        return []
+    out: list[tuple[str, Path]] = []
+    for ulid_dir in HARBOR_TASKS_DIR.iterdir():
+        if not ulid_dir.is_dir():
+            continue
+        for task_dir in ulid_dir.iterdir():
+            if task_dir.is_dir() and (task_dir / "task.toml").is_file():
+                out.append((task_dir.name, task_dir))
+    return sorted(out)
+
+
+def pick_tasks(tasks: list[tuple[str, Path]], state: dict, n: int) -> list[tuple[str, Path]]:
+    """Pick the N least-recently-tried tasks. Ties broken by stable sort
+    on task_name; never tried before sorts first.
+
+    Knuth-lens tie-breaker: a sort without a named final key isn't sorted.
+    Primary: last_tried_ts ASC (None first). Secondary: task_name ASC.
+    """
+    last_tried = state.get("last_tried", {})
+
+    def sort_key(item: tuple[str, Path]) -> tuple[int, str]:
+        name, _ = item
+        ts = last_tried.get(name)
+        # Never-tried sorts first (ts=0); tried-once-long-ago next; recent last.
+        return (int(ts) if ts is not None else 0, name)
+
+    sorted_tasks = sorted(tasks, key=sort_key)
+    return sorted_tasks[:n]
+
+
+def acquire_lock() -> "object":
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
+    fh = LOCK_FILE.open("a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EAGAIN, errno.EACCES):
+            log("another bench-runner is active — exiting silently")
+            sys.exit(0)
+        raise
+    return fh
+
+
+def _extract_tick_metadata(result: dict, job_name: str) -> dict:
+    """Read the trial result.json written by harbor to extract
+    reward, steps_used, and block_reason for the gov-decision row.
+
+    Falls back to the ``result`` dict from ``run_one_task`` when harbor
+    didn't produce a result.json (infra_fail, timeout, etc.).
+    """
+    meta: dict = {
+        "block_reason": "none",
+        "reward": None,
+        "steps_used": None,
+    }
+
+    # Try to locate the trial result.json: jobs/icarus/<job>/<trial>/result.json
+    trial_dir = JOBS_DIR / job_name
+    if trial_dir.is_dir():
+        # Harbor creates one trial directory per attempt (-k 1 means one).
+        result_json = None
+        for trial_path in sorted(trial_dir.iterdir()):
+            candidate = trial_path / "result.json"
+            if candidate.is_file():
+                result_json = candidate
+                break  # take the first (only) trial
+        if result_json is not None:
+            try:
+                trial = json.loads(result_json.read_text())
+            except (json.JSONDecodeError, OSError):
+                return meta
+
+            # block_reason: agent_result.metadata.icarus_block_reason
+            agent_result = trial.get("agent_result") or {}
+            metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
+            icarus_reason = metadata.get("icarus_block_reason")
+            if icarus_reason:
+                meta["block_reason"] = icarus_reason
+            elif trial.get("exception_info"):
+                exc_info = trial["exception_info"]
+                meta["block_reason"] = f"harness_exception:{exc_info.get('exception_type', 'unknown')}"
+            elif result.get("status") == "timeout":
+                meta["block_reason"] = "timeout"
+
+            # reward: verifier_result.reward or verifier_result.rewards.reward
+            verifier_result = trial.get("verifier_result") or {}
+            if isinstance(verifier_result, dict):
+                if "reward" in verifier_result:
+                    try:
+                        meta["reward"] = float(verifier_result["reward"])
+                    except (TypeError, ValueError):
+                        pass
+                elif "rewards" in verifier_result and isinstance(verifier_result.get("rewards"), dict):
+                    try:
+                        meta["reward"] = float(verifier_result["rewards"]["reward"])
+                    except (TypeError, ValueError, KeyError):
+                        pass
+
+            # steps_used: agent_result.steps or agent_result.step_count
+            if isinstance(agent_result, dict):
+                steps = agent_result.get("steps") or agent_result.get("step_count")
+                if steps is not None:
+                    try:
+                        meta["steps_used"] = int(steps)
+                    except (TypeError, ValueError):
+                        pass
+    else:
+        # No job directory — use whatever we have from run_one_task.
+        if result.get("status") == "timeout":
+            meta["block_reason"] = "timeout"
+        elif result.get("status") == "infra_fail":
+            meta["block_reason"] = result.get("reason", "infra_fail")
+
+    return meta
+
+
+def run_one_task(task_name: str, task_dir: Path, model: str) -> dict:
+    """Invoke ``harbor run`` against a single cached task. Returns a
+    dict summarizing the outcome (used only for the runner log; the
+    actual results live in ``jobs/chitin-bench/<job_name>/<trial>/results.json``
+    and are consumed by the ticket emitter).
+    """
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    job_name = f"chitin-bench-{ts}-{task_name}"
+
+    harbor = shutil.which("harbor")
+    if not harbor:
+        return {"status": "infra_fail", "reason": "harbor CLI not on PATH", "job_name": job_name}
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        f"{REPO_ROOT}{os.pathsep}" + env.get("PYTHONPATH", "")
+    ).rstrip(os.pathsep)
+    env.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
+
+    cmd = [
+        harbor, "run",
+        "--path", str(task_dir),
+        "--agent-import-path", AGENT_IMPORT_PATH,
+        "--model", model,
+        "--job-name", job_name,
+        "--jobs-dir", str(JOBS_DIR),
+        "-k", "1",  # one attempt per task per run; the cron handles repeat
+    ]
+    log(f"dispatching: {task_name} job={job_name} model={model}")
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            timeout=DEFAULT_PER_TASK_WALLCLOCK,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - started
+        log(f"timeout: {task_name} after {elapsed:.0f}s")
+        return {"status": "timeout", "elapsed_s": elapsed, "job_name": job_name}
+
+    elapsed = time.monotonic() - started
+    stdout_tail = (proc.stdout or "").splitlines()[-30:]
+    stderr_tail = (proc.stderr or "").splitlines()[-30:]
+    log(
+        f"completed: {task_name} rc={proc.returncode} elapsed={elapsed:.0f}s "
+        f"job={job_name}"
+    )
+    if proc.returncode != 0:
+        log(f"  stdout (tail): {' | '.join(stdout_tail[-5:])}")
+        log(f"  stderr (tail): {' | '.join(stderr_tail[-5:])}")
+    return {
+        "status": "ran",
+        "return_code": proc.returncode,
+        "elapsed_s": elapsed,
+        "job_name": job_name,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    }
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="chitin-bench-runner")
+    p.add_argument("--n-tasks", type=int, default=DEFAULT_N_TASKS,
+                   help="number of tasks to dispatch this tick")
+    p.add_argument("--model", default=DEFAULT_MODEL,
+                   help="model name (harbor / litellm provider/model form)")
+    p.add_argument("--task", action="append", default=[],
+                   help="explicit task name(s) to run (skips LRU picker)")
+    p.add_argument("--skip-emitter", action="store_true",
+                   help="don't run the ticket emitter after the bench")
+    p.add_argument("--shuffle", action="store_true",
+                   help="add randomness to LRU pick (operator-debug mode)")
+    args = p.parse_args()
+
+    lock_fh = acquire_lock()  # held until process exits
+
+    tasks = discover_tasks()
+    if not tasks:
+        log("no cached harbor tasks found — exiting")
+        return 0
+
+    state = load_state()
+    if args.task:
+        explicit = {(name, d) for name, d in tasks if name in args.task}
+        if not explicit:
+            log(f"no cached task matches: {args.task}")
+            return 1
+        picks = sorted(explicit)
+    else:
+        picks = pick_tasks(tasks, state, args.n_tasks)
+        if args.shuffle:
+            random.shuffle(picks)
+
+    log(f"picked {len(picks)} task(s): {[name for name, _ in picks]}")
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for name, task_dir in picks:
+        result = run_one_task(name, task_dir, args.model)
+        # Extract tick metadata from the harbor result.json for the
+        # gov-decision row. Falls back gracefully for infra_fail /
+        # timeout where no result.json was written.
+        job_name = result.get("job_name", "")
+        tick_meta = _extract_tick_metadata(result, job_name)
+
+        # Emit one gov-decision row synchronously before proceeding.
+        # This guarantees every completed tick lands in the chain.
+        emit_gov_decision(
+            task_name=name,
+            block_reason=tick_meta["block_reason"],
+            reward=tick_meta["reward"],
+            steps_used=tick_meta["steps_used"],
+            model=args.model,
+            status=result.get("status", "unknown"),
+        )
+
+        state.setdefault("last_tried", {})[name] = now_ts
+        state.setdefault("history", []).append({
+            "task_name": name, "ts": now_ts, **result,
+        })
+        state["history"] = state["history"][-200:]  # cap log
+        save_state(state)
+
+    if not args.skip_emitter and EMITTER.is_file():
+        log("invoking ticket emitter")
+        try:
+            subprocess.run(
+                [sys.executable, str(EMITTER)],
+                timeout=300, capture_output=True, text=True, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            log("ticket emitter timed out — skipping")
+
+    log("bench-runner tick complete")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

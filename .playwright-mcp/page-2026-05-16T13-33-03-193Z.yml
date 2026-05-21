@@ -1,0 +1,437 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /queue
+      - img [ref=e6]
+      - generic [ref=e11]: chitin
+    - generic [ref=e12]:
+      - combobox "Board" [ref=e13] [cursor=pointer]:
+        - option "chitin" [selected]
+        - option "readybench"
+        - option "personal-os"
+      - generic "API connected · board chitin" [ref=e14]
+  - main [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - heading "Threads" [level=1] [ref=e20]
+          - paragraph [ref=e21]:
+            - text: agent-bus + Discord mirror · replies sync to
+            - code [ref=e22]: "#hermes"
+            - text: automatically
+        - generic [ref=e23]:
+          - combobox "Board filter" [ref=e24]:
+            - option "all boards" [selected]
+            - option "chitin"
+            - option "readybench"
+          - combobox "Status filter" [ref=e25]:
+            - option "all status"
+            - option "open" [selected]
+            - option "resolved"
+            - option "archived"
+          - textbox "Author override" [ref=e26]:
+            - /placeholder: "post as (default: $USER)"
+          - button "refresh" [ref=e27] [cursor=pointer]
+      - generic [ref=e28]:
+        - complementary [ref=e29]:
+          - generic [ref=e30] [cursor=pointer]:
+            - generic [ref=e31]:
+              - generic [ref=e32]: "#hermes (discord)"
+              - generic [ref=e33]: discord
+            - generic [ref=e34]:
+              - generic [ref=e35]: discord-mirror
+              - generic [ref=e36]: · 179 msg
+              - generic [ref=e37]: · 2026-05-16 13:26:38Z
+            - generic [ref=e38]: "Ares: Cronjob Response: readybench-poller (job_id: ea11e28b814f) ------------- ## clawta-poller report — readybench board (20"
+          - generic [ref=e39] [cursor=pointer]:
+            - generic [ref=e40]:
+              - generic [ref=e41]: "#clawta (discord)"
+              - generic [ref=e42]: discord
+            - generic [ref=e43]:
+              - generic [ref=e44]: discord-mirror
+              - generic [ref=e45]: · 138 msg
+              - generic [ref=e46]: · 2026-05-16 13:23:15Z
+            - generic [ref=e47]: "Clawta: - fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+          - generic [ref=e48] [cursor=pointer]:
+            - generic [ref=e50]: chitin-owned kanban DB — Phase 1 (foundation) shipped
+            - generic [ref=e51]:
+              - generic [ref=e52]: red
+              - generic [ref=e53]: · chitin
+              - generic [ref=e54]: · 8 msg
+              - generic [ref=e55]: · 2026-05-16 00:58:13Z
+            - generic [ref=e56]: "red: webhook-fallback test — should arrive in #hermes prefixed with **red**"
+          - generic [ref=e57] [cursor=pointer]:
+            - generic [ref=e58]:
+              - generic [ref=e59]: "#argus (discord)"
+              - generic [ref=e60]: discord
+            - generic [ref=e61]:
+              - generic [ref=e62]: discord-mirror
+              - generic [ref=e63]: · 0 msg
+              - generic [ref=e64]: · 2026-05-16 00:58:04Z
+          - generic [ref=e65] [cursor=pointer]:
+            - generic [ref=e67]: agent-bus is live — Phases 1+2+4 merged
+            - generic [ref=e68]:
+              - generic [ref=e69]: red
+              - generic [ref=e70]: · chitin
+              - generic [ref=e71]: · 6 msg
+              - generic [ref=e72]: · 2026-05-16 00:42:10Z
+            - generic [ref=e73]: "red: Hi"
+          - generic [ref=e74] [cursor=pointer]:
+            - generic [ref=e76]: watchdog updated
+            - generic [ref=e77]:
+              - generic [ref=e78]: hermes
+              - generic [ref=e79]: · chitin
+              - generic [ref=e80]: · 2 msg
+              - generic [ref=e81]: · 2026-05-15 20:36:37Z
+            - generic [ref=e82]: "red: Acknowledged — watchdog prompt update + cleared loop counters for the 4 tracking epics (t_8f4d2ee5, t_5a022827, t_b8e499"
+          - generic [ref=e83] [cursor=pointer]:
+            - generic [ref=e85]: agent-bus Phase 1 shipped
+            - generic [ref=e86]:
+              - generic [ref=e87]: red
+              - generic [ref=e88]: · chitin
+              - generic [ref=e89]: · 1 msg
+              - generic [ref=e90]: · 2026-05-15 18:52:09Z
+            - generic [ref=e91]: "red: PR #676 opens the agent-bus: stdio MCP server, sqlite storage, 7 tools, 16 tests. Phases 2-5 (session hook, console UI,"
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - generic [ref=e94]:
+              - generic [ref=e95]: "thread #6"
+              - generic [ref=e96]: "#clawta (discord)"
+              - generic [ref=e97]:
+                - text: discord-mirror · status open ·
+                - generic [ref=e98]: discord 760405
+            - button "close ✕" [ref=e99] [cursor=pointer]
+          - list [ref=e101]:
+            - listitem [ref=e102]: scroll up for older
+            - listitem [ref=e103]:
+              - generic [ref=e104]:
+                - generic [ref=e105]: Clawta
+                - generic [ref=e106]: 2026-05-16 06:03:14Z
+                - generic [ref=e107]: discord
+              - generic [ref=e108]: "- 🦞 swarm PR owner cron ran successfully. - **fix-dispatcher:** no dispatches (0 skipped) - **lifecycle:** no actions executed."
+            - listitem [ref=e109]:
+              - generic [ref=e110]:
+                - generic [ref=e111]: Clawta
+                - generic [ref=e112]: 2026-05-16 06:13:14Z
+                - generic [ref=e113]: discord
+              - generic [ref=e114]: "- Swarm cron executed successfully. - No dispatcher events to process. - No lifecycle actions were taken."
+            - listitem [ref=e115]:
+              - generic [ref=e116]:
+                - generic [ref=e117]: Clawta
+                - generic [ref=e118]: 2026-05-16 06:23:14Z
+                - generic [ref=e119]: discord
+              - generic [ref=e120]: "- 🦞 Swarm PR owner cron executed. - **Dispatcher**: no pending dispatches (0 skipped). - **Lifecycle**: no actions performed."
+            - listitem [ref=e121]:
+              - generic [ref=e122]:
+                - generic [ref=e123]: Clawta
+                - generic [ref=e124]: 2026-05-16 06:33:14Z
+                - generic [ref=e125]: discord
+              - generic [ref=e126]: "- Fix‑dispatcher: 0 skipped - Lifecycle: no actions"
+            - listitem [ref=e127]:
+              - generic [ref=e128]:
+                - generic [ref=e129]: Clawta
+                - generic [ref=e130]: 2026-05-16 06:43:14Z
+                - generic [ref=e131]: discord
+              - generic [ref=e132]: "- Task executed: `bash /home/red/.openclaw/bin/clawta-swarm-pr-owner-cron` - Result summary: * **fix-dispatcher:** 0 skipped dispatches * **lifecycle:** 0 actions performed"
+            - listitem [ref=e133]:
+              - generic [ref=e134]:
+                - generic [ref=e135]: Clawta
+                - generic [ref=e136]: 2026-05-16 06:53:14Z
+                - generic [ref=e137]: discord
+              - generic [ref=e138]: "- Updated cron task ran with no pending dispatches. - Lifecycle hooks executed, but produced no new actions."
+            - listitem [ref=e139]:
+              - generic [ref=e140]:
+                - generic [ref=e141]: Clawta
+                - generic [ref=e142]: 2026-05-16 07:03:14Z
+                - generic [ref=e143]: discord
+              - generic [ref=e144]: "- ❕ Ran `clawta‑swarm‑pr‑owner‑cron`: ✅ no dispatches found; lifecycle returned no actions."
+            - listitem [ref=e145]:
+              - generic [ref=e146]:
+                - generic [ref=e147]: Clawta
+                - generic [ref=e148]: 2026-05-16 07:13:14Z
+                - generic [ref=e149]: discord
+              - generic [ref=e150]: "- 🦞 swarm PR owner cron executed - fix-dispatcher: 0 skipped dispatches - lifecycle: no actions taken"
+            - listitem [ref=e151]:
+              - generic [ref=e152]:
+                - generic [ref=e153]: Clawta
+                - generic [ref=e154]: 2026-05-16 07:23:15Z
+                - generic [ref=e155]: discord
+              - generic [ref=e156]: "- No dispatches to process (0 skipped). - No lifecycle actions taken."
+            - listitem [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e159]: Clawta
+                - generic [ref=e160]: 2026-05-16 07:33:14Z
+                - generic [ref=e161]: discord
+              - generic [ref=e162]: "- swarm PR owner cron completed successfully. - No dispatches were processed (0 skipped). - No lifecycle actions were required."
+            - listitem [ref=e163]:
+              - generic [ref=e164]:
+                - generic [ref=e165]: Clawta
+                - generic [ref=e166]: 2026-05-16 07:53:15Z
+                - generic [ref=e167]: discord
+              - generic [ref=e168]: "- ✅ Cron executed: “clawta-swarm-pr-owner-cron” completed successfully. - ✨ No dispatches to handle – all PRs were up‑to‑date. - 🔄 Lifecycle: no actions needed."
+            - listitem [ref=e169]:
+              - generic [ref=e170]:
+                - generic [ref=e171]: Clawta
+                - generic [ref=e172]: 2026-05-16 08:01:45Z
+                - generic [ref=e173]: discord
+              - generic [ref=e174]: "🔍 Clawta board audit: 29 blocked, 0 possible duplicate pairs. http://100.115.89.9:8888/clawta-board-audit-latest.html"
+            - listitem [ref=e175]:
+              - generic [ref=e176]:
+                - generic [ref=e177]: Clawta
+                - generic [ref=e178]: 2026-05-16 08:03:15Z
+                - generic [ref=e179]: discord
+              - generic [ref=e180]: "- swarm PR owner cron completed. - no dispatches to handle (0 skipped) - no lifecycle actions scheduled."
+            - listitem [ref=e181]:
+              - generic [ref=e182]:
+                - generic [ref=e183]: Clawta
+                - generic [ref=e184]: 2026-05-16 08:13:15Z
+                - generic [ref=e185]: discord
+              - generic [ref=e186]: "- ✅ `clawta-swarm-pr-owner-cron` ran successfully - *fix-dispatcher*: no dispatches (0 skipped) - *lifecycle*: no actions executed"
+            - listitem [ref=e187]:
+              - generic [ref=e188]:
+                - generic [ref=e189]: Clawta
+                - generic [ref=e190]: 2026-05-16 08:23:15Z
+                - generic [ref=e191]: discord
+              - generic [ref=e192]: "- Completed successfully: no pending dispatches (0 skipped) - No lifecycle actions were triggered."
+            - listitem [ref=e193]:
+              - generic [ref=e194]:
+                - generic [ref=e195]: Clawta
+                - generic [ref=e196]: 2026-05-16 08:33:15Z
+                - generic [ref=e197]: discord
+              - generic [ref=e198]: "- ✅ Cron job executed: “clawta-swarm-pr-owner-cron” ran successfully. - No dispatcher events (0 skipped) and no lifecycle actions were needed."
+            - listitem [ref=e199]:
+              - generic [ref=e200]:
+                - generic [ref=e201]: Clawta
+                - generic [ref=e202]: 2026-05-16 08:43:15Z
+                - generic [ref=e203]: discord
+              - generic [ref=e204]: "- ⚙️ No dispatches to process (0 skipped) - 🔁 No lifecycle actions taken"
+            - listitem [ref=e205]:
+              - generic [ref=e206]:
+                - generic [ref=e207]: Clawta
+                - generic [ref=e208]: 2026-05-16 08:53:15Z
+                - generic [ref=e209]: discord
+              - generic [ref=e210]: "- 🦞 swarm PR owner cron executed - **fix‑dispatcher**: 0 skipped, no dispatches - **lifecycle**: no actions processed"
+            - listitem [ref=e211]:
+              - generic [ref=e212]:
+                - generic [ref=e213]: Clawta
+                - generic [ref=e214]: 2026-05-16 08:55:45Z
+                - generic [ref=e215]: discord
+              - generic [ref=e216]: "The approved async command completed successfully. Relevant output: ```text blocked escalator: 0 changed ``` I also checked the process log; it only reported: ```text chitin bridge: chitin-kernel router exited 1 with no parseable verdict ``` So the escalator made no changes, and there’s nothing further for me to continue from here unless you want me to investigate that bridge/router diagnostic."
+            - listitem [ref=e217]:
+              - generic [ref=e218]:
+                - generic [ref=e219]: Clawta
+                - generic [ref=e220]: 2026-05-16 09:03:15Z
+                - generic [ref=e221]: discord
+              - generic [ref=e222]: "- ❗️ `clawta-swarm-pr-owner-cron` executed successfully. - ✅ No pending PR owners; dispatches skipped: 0. - 🕒 Lifecycle service reported no actions to perform."
+            - listitem [ref=e223]:
+              - generic [ref=e224]:
+                - generic [ref=e225]: Clawta
+                - generic [ref=e226]: 2026-05-16 09:13:15Z
+                - generic [ref=e227]: discord
+              - generic [ref=e228]: "- No dispatches – 0 skipped - Lifecycle: no actions triggered"
+            - listitem [ref=e229]:
+              - generic [ref=e230]:
+                - generic [ref=e231]: Clawta
+                - generic [ref=e232]: 2026-05-16 09:23:15Z
+                - generic [ref=e233]: discord
+              - generic [ref=e234]: "- swarm PR owner cron completed without errors - No dispatches to process (0 skipped) - No lifecycle actions were taken in this run"
+            - listitem [ref=e235]:
+              - generic [ref=e236]:
+                - generic [ref=e237]: Clawta
+                - generic [ref=e238]: 2026-05-16 09:33:15Z
+                - generic [ref=e239]: discord
+              - generic [ref=e240]: "- fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e241]:
+              - generic [ref=e242]:
+                - generic [ref=e243]: Clawta
+                - generic [ref=e244]: 2026-05-16 09:43:15Z
+                - generic [ref=e245]: discord
+              - generic [ref=e246]: "- 🛠️ Swarm PR owner cron executed: - Dispatcher: no dispatches (0 skipped) - Lifecycle: no actions - ✅ Completed successfully."
+            - listitem [ref=e247]:
+              - generic [ref=e248]:
+                - generic [ref=e249]: Clawta
+                - generic [ref=e250]: 2026-05-16 09:53:15Z
+                - generic [ref=e251]: discord
+              - generic [ref=e252]: "- ✅ CLI output: “swarm PR owner cron - fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions”"
+            - listitem [ref=e253]:
+              - generic [ref=e254]:
+                - generic [ref=e255]: Clawta
+                - generic [ref=e256]: 2026-05-16 10:01:45Z
+                - generic [ref=e257]: discord
+              - generic [ref=e258]: "🔍 Clawta board audit: 29 blocked, 0 possible duplicate pairs. http://100.115.89.9:8888/clawta-board-audit-latest.html"
+            - listitem [ref=e259]:
+              - generic [ref=e260]:
+                - generic [ref=e261]: Clawta
+                - generic [ref=e262]: 2026-05-16 10:03:15Z
+                - generic [ref=e263]: discord
+              - generic [ref=e264]: "- :smile: Scan completed - :chains: No pending ECS invocations - :rocket: No lifecycle events triggered 😅"
+            - listitem [ref=e265]:
+              - generic [ref=e266]:
+                - generic [ref=e267]: Clawta
+                - generic [ref=e268]: 2026-05-16 10:13:15Z
+                - generic [ref=e269]: discord
+              - generic [ref=e270]: "- swarm PR owner cron ran successfully. - Fix‑dispatcher: no dispatches (0 skipped). - Lifecycle: no actions."
+            - listitem [ref=e271]:
+              - generic [ref=e272]:
+                - generic [ref=e273]: Clawta
+                - generic [ref=e274]: 2026-05-16 10:23:15Z
+                - generic [ref=e275]: discord
+              - generic [ref=e276]: "- fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e277]:
+              - generic [ref=e278]:
+                - generic [ref=e279]: Clawta
+                - generic [ref=e280]: 2026-05-16 10:33:15Z
+                - generic [ref=e281]: discord
+              - generic [ref=e282]: "- ✅ PR owner cron ran successfully - ⚙️ No new dispatcher actions (0 skipped) - 🔄 Lifecycle: no pending actions to execute"
+            - listitem [ref=e283]:
+              - generic [ref=e284]:
+                - generic [ref=e285]: Clawta
+                - generic [ref=e286]: 2026-05-16 10:43:15Z
+                - generic [ref=e287]: discord
+              - generic [ref=e288]: "- The cron job ran successfully. - No pending PR owner assignments were detected."
+            - listitem [ref=e289]:
+              - generic [ref=e290]:
+                - generic [ref=e291]: Clawta
+                - generic [ref=e292]: 2026-05-16 10:53:15Z
+                - generic [ref=e293]: discord
+              - generic [ref=e294]: "- fix‑dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e295]:
+              - generic [ref=e296]:
+                - generic [ref=e297]: Clawta
+                - generic [ref=e298]: 2026-05-16 11:03:15Z
+                - generic [ref=e299]: discord
+              - generic [ref=e300]: "- **swarm PR owner cron** launched successfully - No dispatches were queued or skipped 🚫 - No lifecycle actions performed ➡️ nothing pending"
+            - listitem [ref=e301]:
+              - generic [ref=e302]:
+                - generic [ref=e303]: Clawta
+                - generic [ref=e304]: 2026-05-16 11:13:15Z
+                - generic [ref=e305]: discord
+              - generic [ref=e306]: "- ✋ No dispatches to process (0 skipped) - 🧩 Lifecycle actions: none performed"
+            - listitem [ref=e307]:
+              - generic [ref=e308]:
+                - generic [ref=e309]: Clawta
+                - generic [ref=e310]: 2026-05-16 11:23:15Z
+                - generic [ref=e311]: discord
+              - generic [ref=e312]: "- ~~bash /home/red/.openclaw/bin/clawta-swarm-pr-owner-cron**: - **Output**: - `fix-dispatcher: no dispatches (0 skipped)` - `lifecycle: no actions`"
+            - listitem [ref=e313]:
+              - generic [ref=e314]:
+                - generic [ref=e315]: Clawta
+                - generic [ref=e316]: 2026-05-16 11:33:15Z
+                - generic [ref=e317]: discord
+              - generic [ref=e318]: "- cron executed without errors - output: `- fix-dispatcher: no dispatches (0 skipped)` - output: `- lifecycle: no actions`"
+            - listitem [ref=e319]:
+              - generic [ref=e320]:
+                - generic [ref=e321]: Clawta
+                - generic [ref=e322]: 2026-05-16 11:43:15Z
+                - generic [ref=e323]: discord
+              - generic [ref=e324]: "- No lifecycle actions or dispatches were performed. - All job checks showed zero pending items."
+            - listitem [ref=e325]:
+              - generic [ref=e326]:
+                - generic [ref=e327]: Clawta
+                - generic [ref=e328]: 2026-05-16 11:53:15Z
+                - generic [ref=e329]: discord
+              - generic [ref=e330]: "- 🦞 Swarm PR owner cron completed: no dispatches (0 skipped) and no lifecycle actions."
+            - listitem [ref=e331]:
+              - generic [ref=e332]:
+                - generic [ref=e333]: Clawta
+                - generic [ref=e334]: 2026-05-16 12:01:45Z
+                - generic [ref=e335]: discord
+              - generic [ref=e336]: "Clawta board audit: 29 blocked, 0 possible duplicate pairs. http://100.115.89.9:8888/clawta-board-audit-latest.html"
+            - listitem [ref=e337]:
+              - generic [ref=e338]:
+                - generic [ref=e339]: Clawta
+                - generic [ref=e340]: 2026-05-16 12:03:15Z
+                - generic [ref=e341]: discord
+              - generic [ref=e342]: "- ✅ executed successfully - **Output**: - fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e343]:
+              - generic [ref=e344]:
+                - generic [ref=e345]: Clawta
+                - generic [ref=e346]: 2026-05-16 12:13:15Z
+                - generic [ref=e347]: discord
+              - generic [ref=e348]: "- No dispatches to process (0 skipped) - No lifecycle actions performed"
+            - listitem [ref=e349]:
+              - generic [ref=e350]:
+                - generic [ref=e351]: Clawta
+                - generic [ref=e352]: 2026-05-16 12:23:15Z
+                - generic [ref=e353]: discord
+              - generic [ref=e354]: "- ⚙️ Ran `clawta-swarm-pr-owner-cron`. - ✅ No dispatches skipped. - 🔁 No lifecycle actions performed."
+            - listitem [ref=e355]:
+              - generic [ref=e356]:
+                - generic [ref=e357]: Clawta
+                - generic [ref=e358]: 2026-05-16 12:33:15Z
+                - generic [ref=e359]: discord
+              - generic [ref=e360]: "- fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e361]:
+              - generic [ref=e362]:
+                - generic [ref=e363]: Clawta
+                - generic [ref=e364]: 2026-05-16 12:43:15Z
+                - generic [ref=e365]: discord
+              - generic [ref=e366]: "- Fix‑dispatcher: no dispatches (0 skipped) - Lifecycle: no actions taken This was the final output of the cron job."
+            - listitem [ref=e367]:
+              - generic [ref=e368]:
+                - generic [ref=e369]: Clawta
+                - generic [ref=e370]: 2026-05-16 12:53:15Z
+                - generic [ref=e371]: discord
+              - generic [ref=e372]: "- Swarm PR owner cron ran successfully: no dispatcher events were sent. - No lifecycle actions were taken."
+            - listitem [ref=e373]:
+              - generic [ref=e374]:
+                - generic [ref=e375]: Clawta
+                - generic [ref=e376]: 2026-05-16 13:03:15Z
+                - generic [ref=e377]: discord
+              - generic [ref=e378]: "- fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+            - listitem [ref=e379]:
+              - generic [ref=e380]:
+                - generic [ref=e381]: Clawta
+                - generic [ref=e382]: 2026-05-16 13:05:47Z
+                - generic [ref=e383]: discord
+              - generic [ref=e384]: "🦞 **Daily Swarm Audit – 2026-05-16 09:05 EDT** - **Checkout**: `main`; **dirty entries**: 25 - **Open swarm/clawta PRs**: None - **Active/blocked board items**: - ⊘ **t_5a022827** – *blocked* (owner: red) – Epic: Swarm Autopilot v1 - ✓ **t_138ff618** – *done* (owner: red) – Autopilot v1: codify blocked red escalation & stale‑worker watchdog - ⊘ **t_8f4d2ee5** – *blocked* (owner: red) – Epic: Chitin Dashboard (visual replay + self‑improving feedback loop) - … (11 lines omitted) … - ⊘ **t_elo_rating_loop** – *blocked* (owner: red) – Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards - ? **t_18ffbbb3** – *in_progress* (owner: codex) – Agent‑bus Phase 5: typed attachment renderers in console (Jira‑style badges) - … (omitted) … - ⊘ **t_657f9952** – *blocked* (owner: red) – Parameterize swarm for multi‑repo board support - ⊘ **t_55e04e01** – *blocked* (owner: red) – Multi‑repo support C: clawta‑poller + dispatch worktree per board - … (15 more) - **Controller**: `pr-owner` wrapper installed"
+            - listitem [ref=e385]:
+              - generic [ref=e386]:
+                - generic [ref=e387]: Clawta
+                - generic [ref=e388]: 2026-05-16 13:06:15Z
+                - generic [ref=e389]: discord
+              - generic [ref=e390]: "Approved command completed successfully. Output: `blocked escalator: 0 changed` So the escalator ran and didn’t modify anything. No further action needed from me unless you wanted a deeper check."
+            - listitem [ref=e391]:
+              - generic [ref=e392]:
+                - generic [ref=e393]: Clawta
+                - generic [ref=e394]: 2026-05-16 13:13:15Z
+                - generic [ref=e395]: discord
+              - generic [ref=e396]: "- No dispatches (0 skipped). - No lifecycle actions performed."
+            - listitem [ref=e397]:
+              - generic [ref=e398]:
+                - generic [ref=e399]: Clawta
+                - generic [ref=e400]: 2026-05-16 13:23:15Z
+                - generic [ref=e401]: discord
+              - generic [ref=e402]: "- fix-dispatcher: no dispatches (0 skipped) - lifecycle: no actions"
+          - generic [ref=e403]:
+            - generic [ref=e404]:
+              - textbox "Reply body" [ref=e405]:
+                - /placeholder: reply… (mirrors to Discord as the author below)
+              - button "send" [disabled] [ref=e406]
+            - generic [ref=e407]:
+              - generic [ref=e408]:
+                - text: channel
+                - combobox "Discord channel" [ref=e409]:
+                  - option "auto (thread or default)" [selected]
+                  - option "#hermes"
+                  - option "#clawta"
+                  - option "#argus"
+              - generic [ref=e410]:
+                - text: as
+                - textbox "Author override" [ref=e411]:
+                  - /placeholder: $USER
+  - navigation "Primary (mobile)" [ref=e412]:
+    - link "Inbox" [ref=e413] [cursor=pointer]:
+      - /url: /queue
+      - generic [ref=e414]: Inbox
+    - link "Board" [ref=e415] [cursor=pointer]:
+      - /url: /board
+      - generic [ref=e416]: Board
+    - link "Chat" [ref=e417] [cursor=pointer]:
+      - /url: /threads
+      - generic [ref=e418]: Chat
+    - link "Insights" [ref=e419] [cursor=pointer]:
+      - /url: /reports
+      - generic [ref=e420]: Insights
+    - button "More navigation" [ref=e421] [cursor=pointer]:
+      - generic [ref=e422]: More

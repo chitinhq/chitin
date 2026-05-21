@@ -157,6 +157,38 @@ Hermes runs orchestration (kanban, cron, approvals). OpenClaw
 runs the personal-AI gateway. Chitin gates every tool call from
 both, plus the standalone CLI drivers, against one policy.
 
+## Swarm and dispatch posture (2026-05-17)
+
+The Chitin swarm is transitional runtime/tooling that still lives in
+this repo. Treat it as operator infrastructure, not kernel product
+surface.
+
+- **Branch convention:** current worker branches use `agent/*`.
+  Older `swarm/*` and `clawta/*` branches are legacy/controller
+  conventions. Reviewers and lifecycle tooling must include `agent/*`
+  when scanning worker PRs.
+- **No primary-checkout edits:** branch work happens in sibling
+  worktrees under `~/workspace/chitin-<slug>`. The primary checkout at
+  `~/workspace/chitin` stays on `main` for read/controller operations.
+- **Spec before dispatch:** triage → ready promotion requires a
+  merged/tracked spec-kit entry at `.specify/specs/NNN-<slug>/spec.md`
+  for Chitin-owned work. Untracked local spec files do not count.
+- **Spec gate is bidirectional:** dispatch gates accept either an
+  explicit ticket-body spec path or a spec file that references the
+  ticket id. Keep ticket/spec reverse bindings exact (`t_1234abcd`).
+- **Empty-branch gate:** worker finalize must prove
+  `git rev-list --count origin/$DEFAULT_BRANCH..HEAD > 0` before push.
+  Empty branches fail closed with `failure-kind=empty_branch`.
+- **Board-aware scripts:** swarm scripts must resolve board/repo/default
+  branch from board config or explicit flags (`--board`, `KANBAN_BOARD`),
+  not hard-coded Chitin paths.
+- **Watchdog prompt is tracked:** board-watchdog prompt/runtime config is
+  installed from tracked source via `swarm/bin/install-*.sh`; deployed
+  prompt drift is a bug, not an operator memory exercise.
+- **Lifecycle closure is exact-match:** PR lifecycle closes tickets only
+  on branch-derived close intent or explicit `Closes/Fixes/Resolves
+  t_...`; `Refs t_...` only links.
+
 ## When you're stuck
 
 - Check `docs/decisions/` for the most recent dated decision —
@@ -165,8 +197,26 @@ both, plus the standalone CLI drivers, against one policy.
 - Read `chitin.yaml` and `internal/gov/action.go` to see the
   policy surface.
 - For build/test/lint, `.github/copilot-instructions.md`.
+- For swarm dispatch/lifecycle behavior, read
+  `docs/runbooks/dispatch-pipeline.md` and the current
+  `.specify/specs/*/spec.md` entry for the ticket.
 
 If a feature seems missing, the substrate probably has it. Look
 in hermes (`tools/approval.py`, `kanban_*`, plugin hooks) and
 openclaw (`before_tool_call`, exec-approvals.json) before
 proposing a chitin-side build.
+
+<!-- SPECKIT START -->
+This repo is a spec-kit project. For spec-driven work, use the Codex
+skills under `.agents/skills/speckit-*`:
+
+- `$speckit-specify` for a new or revised spec in `.specify/specs/`.
+- `$speckit-plan` and `$speckit-tasks` before implementation work.
+- `$speckit-implement` only after a spec, plan, and tasks exist.
+- `$speckit-analyze` or `$speckit-checklist` when consistency or
+  requirements quality is uncertain.
+
+For kanban-driven work, read the bound `.specify/specs/*/spec.md`,
+`plan.md`, and `tasks.md` before editing. If a ticket lacks a reviewed
+spec-kit binding, do not implement it; route it back through grooming.
+<!-- SPECKIT END -->

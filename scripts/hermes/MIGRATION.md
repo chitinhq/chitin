@@ -27,7 +27,7 @@ mv ~/.hermes/scripts/autonomous-worker-orders.txt \
 ## 3. Pull the merged branch
 
 ```bash
-cd ~/workspace/chitin
+cd <workspace_root>
 git pull origin main
 ```
 
@@ -53,7 +53,7 @@ are required — cron's default env lacks the dirs where `hermes` and
 (crontab -l 2>/dev/null; cat <<'CRONEOF'
 PATH=/home/red/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
 HOME=/home/red
-*/10 * * * * /home/red/workspace/chitin/scripts/hermes/tick.sh >> /home/red/chitin-sink/cron-tick.log 2>&1
+*/10 * * * * <workspace_root>/scripts/hermes/tick.sh >> /home/red/chitin-sink/cron-tick.log 2>&1
 CRONEOF
 ) | crontab -
 ```
@@ -71,7 +71,7 @@ systemctl is-active cron        # expected: active
 ## 5. Dry-run before letting cron fire
 
 ```bash
-cd ~/workspace/chitin
+cd <workspace_root>
 ./scripts/hermes/tick.sh --dry-run
 ```
 

@@ -19,7 +19,8 @@
 
 set -euo pipefail
 
-REPO="${CHITIN_REPO:-$HOME/workspace/chitin}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="${CHITIN_REPO:-$(python3 "$REPO_ROOT/swarm/bin/board_resolver.py" workspace)}"
 PLUGIN_SRC_DIR="$REPO/docs/governance-setup-extras"
 PLUGIN_DST_DIR="${HERMES_PLUGINS_DIR:-$HOME/.hermes/plugins}/chitin-governance"
 

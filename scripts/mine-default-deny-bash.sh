@@ -12,8 +12,22 @@
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CAPTURE_DIR="${CAPTURE_DIR:-$HOME/.chitin/hook-capture}"
-POLICY_FILE="${POLICY_FILE:-$HOME/workspace/chitin/chitin.yaml}"
+DEFAULT_POLICY_PATH="$(python3 - <<'PY' "$REPO_ROOT"
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "swarm" / "bin"))
+from board_resolver import board_config, board_workspace
+
+cfg = board_config()
+value = cfg.get("chitin_yaml", "chitin.yaml")
+print(Path(board_workspace()) / value)
+PY
+)"
+POLICY_FILE="${POLICY_FILE:-$DEFAULT_POLICY_PATH}"
 OUT="${OUT:-/tmp/default-deny-bash-commands.txt}"
 FREQ="${FREQ:-/tmp/default-deny-bash-frequency.txt}"
 

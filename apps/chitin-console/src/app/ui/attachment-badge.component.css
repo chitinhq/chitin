@@ -1,0 +1,99 @@
+:host {
+  display: block;
+}
+
+.attachment {
+  padding: 12px;
+  min-height: 88px;
+}
+
+.attachment.pending {
+  opacity: 0.78;
+}
+
+.attachment.missing {
+  border-color: rgba(239,68,68,0.24);
+}
+
+.attachment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.attachment-kind,
+.attachment-link,
+.attachment-toggle,
+.attachment-open {
+  color: var(--glow);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.attachment-toggle {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.attachment-title {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bone);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.attachment-subtitle {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.attachment-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ci-bucket {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--chitin);
+  background: rgba(212,165,116,0.08);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.attachment-body {
+  margin: 10px 0 0;
+  padding: 10px;
+  max-height: 300px;
+  overflow: auto;
+  background: rgba(10,14,21,0.62);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.missing-note {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 11px;
+}

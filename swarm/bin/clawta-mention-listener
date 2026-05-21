@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""clawta-mention-listener — route inbound @Clawta agent-bus messages to the decision engine.
+
+Clawta is otherwise cron-driven (8 scheduled crons emitting status/audit
+output). She has no Discord listener — so peer-review pings and inbound
+mentions just sit in the agent-bus DB unread. This listener closes that
+gap with a 60s poll that:
+
+  1. Reads bus.db for unread messages addressed to clawta (via @Clawta
+     mention in body OR audience='clawta' field).
+  2. For each, invokes `openclaw agent --agent clawta --message <prompt>`
+     so her existing decision engine handles it (same path as
+     clawta-pr-reviewer at swarm/bin/).
+  3. Posts the response back to the originating thread via bus_reply.
+  4. Marks the source message read so we don't re-process.
+
+Operator pain quote (2026-05-18) motivating this script:
+  "Clawta isn't responding to anything what's going on."
+
+Root cause: no listener existed. This is the listener.
+
+Installer: swarm/bin/install-clawta-mention-listener.sh.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+BUS_DB = Path(os.environ.get(
+    "AGENT_BUS_DB",
+    str(Path.home() / ".chitin" / "agent-bus" / "bus.db"),
+))
+OPENCLAW_BIN = os.environ.get(
+    "OPENCLAW_BIN", str(Path.home() / ".vite-plus/bin/openclaw")
+)
+AGENT = "clawta"
+SELF_AUTHOR = "Clawta"  # what Clawta writes as
+# Clawta's Discord user ID — operator + other bots use Discord's native
+# <@id> mention format, not the text @clawta form. Both must trigger.
+CLAWTA_DISCORD_USER_ID = "1503438472801685565"
+
+# Per Clawta self-review (msg 5392): addressed-detection must include
+# raw Discord mention ID, display-name forms, direct leading "Clawta,"
+# mention, AND peer-review/status phrasing.
+_MENTION_PATTERNS = [
+    # Text @clawta (any case)
+    re.compile(r"(?<![A-Za-z0-9_])@clawta(?![A-Za-z0-9_-])", re.IGNORECASE),
+    # Discord native <@id> or <@!id>
+    re.compile(r"<@!?" + CLAWTA_DISCORD_USER_ID + r">"),
+    # Leading direct address ("Clawta — ...", "Clawta, ...", "Clawta: ...")
+    re.compile(r"^\s*Clawta\b[\s,:\-—]", re.MULTILINE),
+    # Peer-review phrasing — directed when posted in #clawta context
+    re.compile(r"\b(peer\s+review|review\s+request|REQUEST_CHANGES|LGTM)\b", re.IGNORECASE),
+    # Status query phrasing aimed at her
+    re.compile(r"\bwhat\s*[\'’]?\s*s\s+(up|happening)\s+(with\s+)?(you|clawta)\b", re.IGNORECASE),
+]
+LOG_FILE = Path.home() / ".openclaw" / "logs" / "clawta-mention-listener.log"
+# Bumped default to 10 per Clawta msg 5392 — backlog catch-up matters.
+# Operator can override via env if a tick floods.
+LIMIT_PER_TICK = int(os.environ.get("CLAWTA_LISTENER_LIMIT_PER_TICK", "10"))
+
+
+def _log(msg: str) -> None:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with LOG_FILE.open("a") as f:
+        f.write(f"{ts} {msg}\n")
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(BUS_DB))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _addressed_to_clawta(row: sqlite3.Row) -> bool:
+    """True iff this message addresses Clawta.
+
+    Five-way detection per Clawta msg 5392 + a quoted-context guard:
+    if a body is mostly historical quotes (>50% lines start with '>'),
+    only explicit Discord/text mentions count — phrasing patterns
+    suppressed to avoid responding to old quoted peer-review requests
+    bouncing through a thread.
+    """
+    if row["author"] == SELF_AUTHOR:
+        return False
+    body = row["body"] or ""
+
+    # Audience-field membership — strongest signal, always wins.
+    audience = row["audience"] or ""
+    members = {m.strip() for m in audience.split(",") if m.strip()}
+    if AGENT in members or SELF_AUTHOR in members:
+        return True
+
+    lines = [l for l in body.split("\n") if l.strip()]
+    quote_lines = sum(1 for l in lines if l.lstrip().startswith(">"))
+    is_mostly_quote = lines and quote_lines / len(lines) > 0.5
+    # When mostly-quote, only explicit @-mention or <@id> counts.
+    active = _MENTION_PATTERNS[:2] if is_mostly_quote else _MENTION_PATTERNS
+    return any(p.search(body) for p in active)
+
+
+def _unread_messages(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Messages not yet ack'd by clawta. Joins reads."""
+    return conn.execute(
+        """
+        SELECT m.id, m.thread_id, m.author, m.body, m.audience,
+               m.created_at, t.title AS thread_title
+        FROM messages m
+        JOIN threads t ON t.id = m.thread_id
+        WHERE m.author != ?
+          AND NOT EXISTS (
+              SELECT 1 FROM reads r
+              WHERE r.message_id = m.id AND r.agent_id = ?
+          )
+        ORDER BY m.id ASC
+        LIMIT ?
+        """,
+        (SELF_AUTHOR, AGENT, LIMIT_PER_TICK * 4),
+    ).fetchall()
+
+
+def _mark_read(conn: sqlite3.Connection, message_id: int) -> None:
+    now = int(time.time())
+    conn.execute(
+        "INSERT OR IGNORE INTO reads(agent_id, message_id, read_at) "
+        "VALUES(?, ?, ?)",
+        (AGENT, message_id, now),
+    )
+    conn.commit()
+
+
+def _build_prompt(row: sqlite3.Row) -> str:
+    """Per Clawta msg 5392: include thread/channel id, author, exact
+    message body, and explicit output constraints. The prompt is the
+    only context Clawta sees — every field she needs to route the
+    reply correctly must be inline.
+    """
+    return (
+        f"You are Clawta, a dispatch-readiness reviewer agent.\n\n"
+        f"## Inbound context\n"
+        f"- thread_id: {row['thread_id']}\n"
+        f"- thread_title: {row['thread_title']!r}\n"
+        f"- message_id: {row['id']}\n"
+        f"- author: {row['author']}\n"
+        f"- created_at: {row['created_at']} (unix epoch)\n\n"
+        f"## Message body (verbatim)\n"
+        f"{row['body']}\n\n"
+        f"## Output constraints\n"
+        f"- Respond as Clawta speaking directly to the author.\n"
+        f"- For peer-review requests: start with EXACTLY one of:\n"
+        f"  REVIEW (LGTM), REQUEST_CHANGES, or COMMENT.\n"
+        f"- For status/availability queries: answer in 1-2 sentences.\n"
+        f"- For dispatch-readiness checks: cite the specific spec gap or\n"
+        f"  invariant that fails, not generic concerns.\n"
+        f"- Max 500 words. Plain text. No code fences around the reply.\n"
+        f"- Do not echo this prompt or repeat the inbound message body.\n"
+    )
+
+
+def _invoke_clawta(prompt: str) -> str | None:
+    """Call openclaw agent. Returns the agent's text response or None on error."""
+    try:
+        result = subprocess.run(
+            [OPENCLAW_BIN, "agent", "--agent", AGENT, "--message", prompt],
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        _log(f"invoke_failed: {type(exc).__name__}: {exc}")
+        return None
+    if result.returncode != 0:
+        _log(f"invoke_nonzero: rc={result.returncode} stderr={result.stderr[:400]!r}")
+        return None
+    return result.stdout.strip() or None
+
+
+def _post_reply(conn: sqlite3.Connection, thread_id: int, parent_id: int,
+                body: str) -> int | None:
+    """Insert a reply into bus.db (Discord push happens via server side)."""
+    now = int(time.time())
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO messages(thread_id, parent_id, author, body, kind, created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (thread_id, parent_id, SELF_AUTHOR, body, "message", now),
+    )
+    message_id = cur.lastrowid
+    cur.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
+    conn.commit()
+    return message_id
+
+
+def tick() -> dict:
+    """One poll cycle. Returns counts for telemetry."""
+    if not BUS_DB.is_file():
+        _log(f"bus_db_missing: {BUS_DB}")
+        return {"unread": 0, "addressed": 0, "responded": 0, "errors": 0}
+
+    conn = _connect()
+    try:
+        rows = _unread_messages(conn)
+        addressed = [r for r in rows if _addressed_to_clawta(r)]
+        responded = 0
+        errors = 0
+
+        for row in addressed[:LIMIT_PER_TICK]:
+            _log(f"processing msg {row['id']} from {row['author']} in thread {row['thread_id']}")
+            prompt = _build_prompt(row)
+            response = _invoke_clawta(prompt)
+            if response is None:
+                errors += 1
+                _log(f"  no_response for msg {row['id']}")
+                continue
+            reply_id = _post_reply(conn, row["thread_id"], row["id"], response)
+            _log(f"  responded with msg {reply_id}")
+            _mark_read(conn, row["id"])
+            responded += 1
+
+        # Mark non-addressed messages read too so we don't re-scan forever.
+        for row in rows:
+            if not _addressed_to_clawta(row):
+                _mark_read(conn, row["id"])
+
+        return {
+            "unread": len(rows), "addressed": len(addressed),
+            "responded": responded, "errors": errors,
+        }
+    finally:
+        conn.close()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="clawta-mention-listener")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="List addressed messages without invoking clawta or posting replies")
+    args = ap.parse_args()
+
+    if args.dry_run:
+        conn = _connect()
+        try:
+            rows = _unread_messages(conn)
+            addressed = [r for r in rows if _addressed_to_clawta(r)]
+            print(json.dumps({
+                "unread": len(rows),
+                "addressed": [
+                    {"id": r["id"], "author": r["author"],
+                     "thread_id": r["thread_id"],
+                     "body": (r["body"] or "")[:120]}
+                    for r in addressed
+                ],
+            }, indent=2))
+        finally:
+            conn.close()
+        return 0
+
+    result = tick()
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

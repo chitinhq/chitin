@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-15
 
-**Status**: Draft
+**Status**: shipped (cde3bea, #676)
 
 **Input**: User description: "build it fully integrated back and forth within our swarm, so it can post messages, show essentially the message threads from discord as well as add agent to agent communication, queue up messages or briefs to read when i go into claude code as human in the loop, and have an mcp server for all agents to also interact with it"
 

@@ -1,0 +1,381 @@
+- generic [active] [ref=e1]:
+  - banner:
+    - generic [ref=e2]:
+      - link "Skip to main content":
+        - /url: "#main"
+      - generic [ref=e4]:
+        - link "OpenAI Home" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - img [ref=e7]
+        - generic [ref=e9]:
+          - navigation "Main Navigation" [ref=e11]:
+            - list [ref=e12]:
+              - listitem [ref=e13]:
+                - link "Research" [ref=e14] [cursor=pointer]:
+                  - /url: /research/index/
+                  - generic [ref=e16]: Research
+                - button "Research menu"
+              - listitem [ref=e17]:
+                - button "Products" [ref=e18] [cursor=pointer]:
+                  - generic [ref=e20]: Products
+                - button "Products menu"
+              - listitem [ref=e21]:
+                - link "Business" [ref=e22] [cursor=pointer]:
+                  - /url: /business/
+                  - generic [ref=e24]: Business
+                - button "Business menu"
+              - listitem [ref=e25]:
+                - link "Developers" [ref=e26] [cursor=pointer]:
+                  - /url: /api/
+                  - generic [ref=e28]: Developers
+                - button "Developers menu"
+              - listitem [ref=e29]:
+                - link "Company" [ref=e30] [cursor=pointer]:
+                  - /url: /about/
+                  - generic [ref=e32]: Company
+                - button "Company menu"
+              - listitem [ref=e33]:
+                - link "Foundation (opens in a new window)" [ref=e34] [cursor=pointer]:
+                  - /url: https://openaifoundation.org/
+                  - generic [ref=e36]: Foundation
+                  - generic [ref=e37]: (opens in a new window)
+          - generic [ref=e39]:
+            - button "Open Search" [ref=e333] [cursor=pointer]:
+              - img [ref=e334]
+            - button "Close Search" [ref=e336] [cursor=pointer]:
+              - img [ref=e337]
+          - generic [ref=e48]:
+            - button "Log in" [ref=e49] [cursor=pointer]:
+              - text: Log in
+              - img [ref=e50]
+            - link "Try ChatGPT (opens in a new window)" [ref=e52] [cursor=pointer]:
+              - /url: https://chatgpt.com/?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+              - text: Try ChatGPT
+              - img [ref=e53]
+              - generic [ref=e55]: (opens in a new window)
+  - generic [ref=e56]:
+    - main [ref=e57]:
+      - generic [ref=e58]: Forward Deployed Engineer (FDE) - NYC | OpenAI
+      - generic [ref=e59]:
+        - generic [ref=e62]:
+          - paragraph [ref=e63]: Careers
+          - heading "Forward Deployed Engineer (FDE) - NYC" [level=2] [ref=e64]
+          - paragraph [ref=e66]: Model Deployment for Business - New York City
+        - link "Apply now (opens in a new window)" [ref=e68] [cursor=pointer]:
+          - /url: https://jobs.ashbyhq.com/openai/cf31f5f6-4e67-4695-808c-9cdd2e1fa3b1/application
+          - text: Apply now
+          - img [ref=e69]
+          - generic [ref=e71]: (opens in a new window)
+        - generic [ref=e73]:
+          - paragraph [ref=e74]:
+            - strong [ref=e75]: About the team
+          - paragraph [ref=e76]: OpenAI’s Forward Deployed Engineering team partners with customers to turn research breakthroughs into production systems. We operate at the intersection of customer delivery and core platform development.
+          - paragraph [ref=e77]:
+            - strong [ref=e78]: About the role
+          - paragraph [ref=e79]: Forward Deployed Engineers (FDEs) lead complex end-to-end deployments of frontier models in production alongside our most strategic customers. You will own discovery, technical scoping, system design, build, and production rollout, partnering directly with customer engineering and domain teams.
+          - paragraph [ref=e80]: You will measure success through production adoption, measurable workflow impact, and eval-driven feedback that changes product and model roadmaps. You’ll work closely with our Product, Research, Partnerships, GRC, Security, and GTM teams.
+          - paragraph [ref=e81]: This role is based in NYC. We use a hybrid work model of 3 days in the office per week. We offer relocation assistance. Travel up to 50% is required.
+          - paragraph [ref=e82]:
+            - strong [ref=e83]: In this role you will
+          - list [ref=e84]:
+            - listitem [ref=e85]:
+              - paragraph [ref=e86]: Own technical delivery across multiple deployments from first prototype to stable production
+            - listitem [ref=e87]:
+              - paragraph [ref=e88]: Build full-stack systems that deliver customer value and sharpen how we learn
+            - listitem [ref=e89]:
+              - paragraph [ref=e90]: Embed closely with customer teams, understand their needs, and guide adoption of what you build
+            - listitem [ref=e91]:
+              - paragraph [ref=e92]: Scope work, sequence delivery, and remove blockers early
+            - listitem [ref=e93]:
+              - paragraph [ref=e94]: Make trade-offs between scope, speed, and quality; adjust plans to protect delivery
+            - listitem [ref=e95]:
+              - paragraph [ref=e96]: Contribute directly in the code when progress or clarity depends on it
+            - listitem [ref=e97]:
+              - paragraph [ref=e98]: Codify working patterns into tools, playbooks, or building blocks that others can use
+            - listitem [ref=e99]:
+              - paragraph [ref=e100]: Share field feedback that helps Research and Product understand where the models succeed and where they can improve
+            - listitem [ref=e101]:
+              - paragraph [ref=e102]: Keep teams moving through clarity and follow-through
+          - paragraph [ref=e103]:
+            - strong [ref=e104]: You might thrive in this role if you
+          - list [ref=e105]:
+            - listitem [ref=e106]:
+              - paragraph [ref=e107]: Bring 5+ years of engineering or technical deployment experience that includes customer-facing work
+            - listitem [ref=e108]:
+              - paragraph [ref=e109]: Have scoped and delivered complex systems in fast-moving or ambiguous environments
+            - listitem [ref=e110]:
+              - paragraph [ref=e111]: Write and review production-grade code across frontend and backend using Python, JavaScript, or comparable stacks
+            - listitem [ref=e112]:
+              - paragraph [ref=e113]: Have built or deployed systems powered by LLMs or generative models and understand how model behaviour affects product experience
+            - listitem [ref=e114]:
+              - paragraph [ref=e115]: Simplify complexity and make fast, sound decisions under pressure
+            - listitem [ref=e116]:
+              - paragraph [ref=e117]: Communicate clearly with engineers, product teams, and customer stakeholders
+            - listitem [ref=e118]:
+              - paragraph [ref=e119]: Spot risks early and adjust without slowing down
+            - listitem [ref=e120]:
+              - paragraph [ref=e121]: Model calm and judgment when the stakes are high
+          - paragraph [ref=e122]:
+            - strong [ref=e123]: About OpenAI
+          - paragraph [ref=e124]: OpenAI is an AI research and deployment company dedicated to ensuring that general-purpose artificial intelligence benefits all of humanity. We push the boundaries of the capabilities of AI systems and seek to safely deploy them to the world through our products. AI is an extremely powerful tool that must be created with safety and human needs at its core, and to achieve our mission, we must encompass and value the many different perspectives, voices, and experiences that form the full spectrum of humanity.
+          - paragraph [ref=e125]: We are an equal opportunity employer, and we do not discriminate on the basis of race, religion, color, national origin, sex, sexual orientation, age, veteran status, disability, genetic information, or other applicable legally protected characteristic.
+          - paragraph [ref=e126]:
+            - text: For additional information, please see
+            - link "OpenAI’s Affirmative Action and Equal Employment Opportunity Policy Statement" [ref=e127] [cursor=pointer]:
+              - /url: https://cdn.openai.com/policies/eeo-policy-statement.pdf
+            - text: .
+          - paragraph [ref=e128]: "Background checks for applicants will be administered in accordance with applicable law, and qualified applicants with arrest or conviction records will be considered for employment consistent with those laws, including the San Francisco Fair Chance Ordinance, the Los Angeles County Fair Chance Ordinance for Employers, and the California Fair Chance Act, for US-based candidates. For unincorporated Los Angeles County workers: we reasonably believe that criminal history may have a direct, adverse and negative relationship with the following job duties, potentially resulting in the withdrawal of a conditional offer of employment: protect computer hardware entrusted to you from theft, loss or damage; return all computer hardware in your possession (including the data contained therein) upon termination of employment or end of assignment; and maintain the confidentiality of proprietary, confidential, and non-public information. In addition, job duties require access to secure and protected information technology systems and related data security obligations."
+          - paragraph [ref=e129]:
+            - text: To notify OpenAI that you believe this job posting is non-compliant, please submit a report through
+            - link "this form" [ref=e130] [cursor=pointer]:
+              - /url: https://form.asana.com/?d=57018692298241&k=5MqR40fZd7jlxVUh5J-UeA
+            - text: . No response will be provided to inquiries unrelated to job posting compliance.
+          - paragraph [ref=e131]:
+            - text: We are committed to providing reasonable accommodations to applicants with disabilities, and requests can be made via this
+            - link "link" [ref=e132] [cursor=pointer]:
+              - /url: https://form.asana.com/?k=bQ7w9h3iexRlicUdWRiwvg&d=57018692298241
+            - text: .
+          - paragraph [ref=e133]:
+            - link "OpenAI Global Applicant Privacy Policy" [ref=e134] [cursor=pointer]:
+              - /url: https://cdn.openai.com/policies/global-employee-and-contractor-privacy-policy.pdf
+          - paragraph [ref=e135]: At OpenAI, we believe artificial intelligence has the potential to help people solve immense global challenges, and we want the upside of AI to be widely shared. Join us in shaping the future of technology.
+        - generic [ref=e137]:
+          - paragraph [ref=e138]:
+            - strong [ref=e139]: Compensation
+          - paragraph [ref=e140]: $162K – $280K + Offers Equity
+        - link "Apply now (opens in a new window)" [ref=e142] [cursor=pointer]:
+          - /url: https://jobs.ashbyhq.com/openai/cf31f5f6-4e67-4695-808c-9cdd2e1fa3b1/application
+          - text: Apply now
+          - img [ref=e143]
+          - generic [ref=e145]: (opens in a new window)
+    - contentinfo [ref=e146]:
+      - generic [ref=e148]:
+        - generic [ref=e149]:
+          - generic [ref=e150]:
+            - heading "Our Research" [level=2] [ref=e151]
+            - list [ref=e152]:
+              - listitem [ref=e153]:
+                - link "Research Index" [ref=e154] [cursor=pointer]:
+                  - /url: /research/index/
+              - listitem [ref=e155]:
+                - link "Research Overview" [ref=e156] [cursor=pointer]:
+                  - /url: /research/
+              - listitem [ref=e157]:
+                - link "Research Residency" [ref=e158] [cursor=pointer]:
+                  - /url: /residency/
+              - listitem [ref=e159]:
+                - link "Economic Research" [ref=e160] [cursor=pointer]:
+                  - /url: /signals/
+          - generic [ref=e161]:
+            - heading "Latest Advancements" [level=2] [ref=e162]
+            - list [ref=e163]:
+              - listitem [ref=e164]:
+                - link "GPT-5.5" [ref=e165] [cursor=pointer]:
+                  - /url: /index/introducing-gpt-5-5/
+              - listitem [ref=e166]:
+                - link "GPT-5.4" [ref=e167] [cursor=pointer]:
+                  - /url: /index/introducing-gpt-5-4/
+              - listitem [ref=e168]:
+                - link "GPT-5.3 Instant" [ref=e169] [cursor=pointer]:
+                  - /url: /index/gpt-5-3-instant/
+              - listitem [ref=e170]:
+                - link "GPT-5.3-Codex" [ref=e171] [cursor=pointer]:
+                  - /url: /index/introducing-gpt-5-3-codex/
+          - generic [ref=e172]:
+            - heading "Safety" [level=2] [ref=e173]
+            - list [ref=e174]:
+              - listitem [ref=e175]:
+                - link "Safety Approach" [ref=e176] [cursor=pointer]:
+                  - /url: /safety/
+              - listitem [ref=e177]:
+                - link "Security & Privacy" [ref=e178] [cursor=pointer]:
+                  - /url: /security-and-privacy/
+              - listitem [ref=e179]:
+                - link "Trust & Transparency" [ref=e180] [cursor=pointer]:
+                  - /url: /trust-and-transparency/
+        - generic [ref=e181]:
+          - generic [ref=e182]:
+            - heading "ChatGPT" [level=2] [ref=e183]
+            - list [ref=e184]:
+              - listitem [ref=e185]:
+                - link "Explore ChatGPT (opens in a new window)" [ref=e186] [cursor=pointer]:
+                  - /url: https://chatgpt.com/overview?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+                  - text: Explore ChatGPT
+                  - img [ref=e187]
+                  - generic [ref=e189]: (opens in a new window)
+              - listitem [ref=e190]:
+                - link "Business" [ref=e191] [cursor=pointer]:
+                  - /url: https://chatgpt.com/business/business-plan?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+              - listitem [ref=e192]:
+                - link "Enterprise" [ref=e193] [cursor=pointer]:
+                  - /url: https://chatgpt.com/business/enterprise?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+              - listitem [ref=e194]:
+                - link "Education" [ref=e195] [cursor=pointer]:
+                  - /url: https://chatgpt.com/business/education?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+              - listitem [ref=e196]:
+                - link "Pricing (opens in a new window)" [ref=e197] [cursor=pointer]:
+                  - /url: https://chatgpt.com/pricing?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+                  - text: Pricing
+                  - img [ref=e198]
+                  - generic [ref=e200]: (opens in a new window)
+              - listitem [ref=e201]:
+                - link "Download (opens in a new window)" [ref=e202] [cursor=pointer]:
+                  - /url: https://chatgpt.com/download?openaicom-did=a5e1c6fa-1426-4f7e-b264-61771dccef2a&openaicom_referred=true
+                  - text: Download
+                  - img [ref=e203]
+                  - generic [ref=e205]: (opens in a new window)
+          - generic [ref=e206]:
+            - heading "API Platform" [level=2] [ref=e207]
+            - list [ref=e208]:
+              - listitem [ref=e209]:
+                - link "Platform Overview" [ref=e210] [cursor=pointer]:
+                  - /url: /api/
+              - listitem [ref=e211]:
+                - link "Pricing" [ref=e212] [cursor=pointer]:
+                  - /url: /api/pricing/
+              - listitem [ref=e213]:
+                - link "API log in (opens in a new window)" [ref=e214] [cursor=pointer]:
+                  - /url: https://platform.openai.com/login
+                  - text: API log in
+                  - img [ref=e215]
+                  - generic [ref=e217]: (opens in a new window)
+              - listitem [ref=e218]:
+                - link "Documentation (opens in a new window)" [ref=e219] [cursor=pointer]:
+                  - /url: https://developers.openai.com/api/docs
+                  - text: Documentation
+                  - img [ref=e220]
+                  - generic [ref=e222]: (opens in a new window)
+              - listitem [ref=e223]:
+                - link "Developer Forum (opens in a new window)" [ref=e224] [cursor=pointer]:
+                  - /url: https://community.openai.com/
+                  - text: Developer Forum
+                  - img [ref=e225]
+                  - generic [ref=e227]: (opens in a new window)
+        - generic [ref=e228]:
+          - generic [ref=e229]:
+            - heading "For Business" [level=2] [ref=e230]
+            - list [ref=e231]:
+              - listitem [ref=e232]:
+                - link "Business Overview" [ref=e233] [cursor=pointer]:
+                  - /url: /business/
+              - listitem [ref=e234]:
+                - link "Solutions" [ref=e235] [cursor=pointer]:
+                  - /url: /solutions/
+              - listitem [ref=e236]:
+                - link "Contact Sales" [ref=e237] [cursor=pointer]:
+                  - /url: /contact-sales/
+          - generic [ref=e238]:
+            - heading "Company" [level=2] [ref=e239]
+            - list [ref=e240]:
+              - listitem [ref=e241]:
+                - link "About Us" [ref=e242] [cursor=pointer]:
+                  - /url: /about/
+              - listitem [ref=e243]:
+                - link "Our Charter" [ref=e244] [cursor=pointer]:
+                  - /url: /charter/
+              - listitem [ref=e245]:
+                - link "Foundation (opens in a new window)" [ref=e246] [cursor=pointer]:
+                  - /url: https://openaifoundation.org/
+                  - text: Foundation
+                  - img [ref=e247]
+                  - generic [ref=e249]: (opens in a new window)
+              - listitem [ref=e250]:
+                - link "Careers" [ref=e251] [cursor=pointer]:
+                  - /url: /careers/
+              - listitem [ref=e252]:
+                - link "Brand" [ref=e253] [cursor=pointer]:
+                  - /url: /brand/
+          - generic [ref=e254]:
+            - heading "Support" [level=2] [ref=e255]
+            - list [ref=e256]:
+              - listitem [ref=e257]:
+                - link "Help Center (opens in a new window)" [ref=e258] [cursor=pointer]:
+                  - /url: https://help.openai.com/
+                  - text: Help Center
+                  - img [ref=e259]
+                  - generic [ref=e261]: (opens in a new window)
+        - generic [ref=e262]:
+          - generic [ref=e263]:
+            - heading "More" [level=2] [ref=e264]
+            - list [ref=e265]:
+              - listitem [ref=e266]:
+                - link "News" [ref=e267] [cursor=pointer]:
+                  - /url: /news/
+              - listitem [ref=e268]:
+                - link "Stories" [ref=e269] [cursor=pointer]:
+                  - /url: /stories/
+              - listitem [ref=e270]:
+                - link "Academy" [ref=e271] [cursor=pointer]:
+                  - /url: /academy/
+              - listitem [ref=e272]:
+                - link "Livestreams" [ref=e273] [cursor=pointer]:
+                  - /url: /live/
+              - listitem [ref=e274]:
+                - link "Podcast" [ref=e275] [cursor=pointer]:
+                  - /url: /podcast/
+              - listitem [ref=e276]:
+                - link "RSS" [ref=e277] [cursor=pointer]:
+                  - /url: /news/rss.xml
+          - generic [ref=e278]:
+            - heading "Terms & Policies" [level=2] [ref=e279]
+            - list [ref=e280]:
+              - listitem [ref=e281]:
+                - link "Terms of Use" [ref=e282] [cursor=pointer]:
+                  - /url: /policies/terms-of-use/
+              - listitem [ref=e283]:
+                - link "Privacy Policy" [ref=e284] [cursor=pointer]:
+                  - /url: /policies/privacy-policy/
+              - listitem [ref=e285]:
+                - link "Other Policies" [ref=e286] [cursor=pointer]:
+                  - /url: /policies/
+      - generic [ref=e287]:
+        - generic [ref=e288]:
+          - link "X" [ref=e289] [cursor=pointer]:
+            - /url: https://x.com/OpenAI
+            - img [ref=e290]
+            - generic [ref=e292]: (opens in a new window)
+          - link "YouTube" [ref=e293] [cursor=pointer]:
+            - /url: https://www.youtube.com/OpenAI
+            - img [ref=e294]
+            - generic [ref=e296]: (opens in a new window)
+          - link "LinkedIn" [ref=e297] [cursor=pointer]:
+            - /url: https://www.linkedin.com/company/openai
+            - img [ref=e298]
+            - generic [ref=e300]: (opens in a new window)
+          - link "GitHub" [ref=e301] [cursor=pointer]:
+            - /url: https://github.com/openai
+            - img [ref=e302]
+            - generic [ref=e304]: (opens in a new window)
+          - link "Instagram" [ref=e305] [cursor=pointer]:
+            - /url: https://www.instagram.com/openai/
+            - img [ref=e306]
+            - generic [ref=e308]: (opens in a new window)
+          - link "TikTok" [ref=e309] [cursor=pointer]:
+            - /url: https://www.tiktok.com/@openai
+            - img [ref=e310]
+            - generic [ref=e312]: (opens in a new window)
+          - link "Discord" [ref=e313] [cursor=pointer]:
+            - /url: https://discord.gg/openai
+            - img [ref=e314]
+            - generic [ref=e316]: (opens in a new window)
+        - generic [ref=e317]:
+          - generic [ref=e318]: OpenAI © 2015–2026
+          - button "Your privacy choices" [ref=e319] [cursor=pointer]:
+            - text: Your privacy choices
+            - img [ref=e320]
+        - generic [ref=e325]:
+          - button "Change language" [ref=e326] [cursor=pointer]:
+            - generic [ref=e327]:
+              - img [ref=e328]
+              - generic [ref=e331]:
+                - text: English
+                - generic [ref=e332]: United States
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                    - textbox "Search locales by name or region":
+                      - /placeholder: Search
+  - alert [ref=e339]

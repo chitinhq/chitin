@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
-import html, json, os, re, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+import html, json, os, re, shlex, sqlite3, subprocess, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_repo,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
+
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
 ASSETS = "/home/red/labs/local-ai-lab/wiki/assets"
 BASE = "http://100.115.89.9:8888"
 ACCENT = "#58a6ff"
 BOARD_DB = str(resolve_db())
+BOARD = resolve_board()
+REPO = board_repo() or os.environ.get("GITHUB_REPOSITORY", "")
+WORKSPACE = Path(os.environ.get("CHITIN_REPO", str(board_workspace())))
 ELO_DB = os.path.expanduser("~/.openclaw/data/clawta.db")
 BASE_ELO = 1500.0
 BASE_K = 32.0
@@ -56,7 +69,7 @@ REPORT_CARDS = [
         "title": "🔍 Board Audit",
         "href": "clawta-board-audit-latest.html",
         "schedule": "Every 2h",
-        "desc": "Leverage scoring, duplicate detection, failing CI, stale/blocked items, and recommended interventions.",
+        "desc": "Leverage scoring, duplicate detection, failing CI, stale/blocked items, spec-kit gaps, lifecycle prefix drift, watchdog prompt drift, and recommended interventions.",
         "tags": ["audit", "CI"],
     },
     {
@@ -198,7 +211,12 @@ def board_conn():
     return conn
 
 def open_prs():
-    _, raw = sh("gh pr list --repo chitinhq/chitin --state open --json number,title,headRefName,state,mergeStateStatus,updatedAt,isDraft,statusCheckRollup", 180)
+    _, raw = sh(
+        "gh pr list --repo "
+        + shlex.quote(REPO)
+        + " --state open --json number,title,headRefName,state,mergeStateStatus,updatedAt,isDraft,statusCheckRollup",
+        180,
+    )
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -229,7 +247,14 @@ def pr_check_summary(pr):
     return {"failing": failing, "pending": pending, "success": success, "tone": tone, "label": label}
 
 def lifecycle_snapshot():
-    code, raw = sh("cd /home/red/workspace/chitin && ./swarm/bin/clawta-pr-lifecycle --auto-merge --escalate-to red", 240)
+    code, raw = sh(
+        "cd "
+        + shlex.quote(str(WORKSPACE))
+        + " && ./swarm/bin/clawta-pr-lifecycle --board "
+        + shlex.quote(BOARD)
+        + " --auto-merge --escalate-to red",
+        240,
+    )
     if code != 0:
         return {"items": [], "error": raw[:1000]}
     try:
@@ -650,7 +675,7 @@ def chain():
     print(f"🛡️ Clawta chain summary: {rate:.1f}% 24h denial rate across {total} decisions. {url}")
 
 def board_lines():
-    _, out = sh("hermes kanban --board chitin list", 180)
+    _, out = sh("hermes kanban --board " + shlex.quote(BOARD) + " list", 180)
     items=[]
     for line in out.splitlines():
         m=re.match(r'\S+\s+(t_[0-9a-f]+)\s+(\S+)\s+(.*?)\s{2,}(.+)$', line)
@@ -670,9 +695,59 @@ def standup():
     _,url=save('standup', page('Grooming Standup', 'Chitin board status and next-action scan', body))
     print(f"📋 Clawta grooming standup: {len(active)} active/attention items, {counts.get('blocked',0)} blocked. {url}")
 
+def board_audit_categories(items, prs_json):
+    categories = []
+    spec_root = WORKSPACE / ".specify" / "specs"
+    specs_text = ""
+    if spec_root.exists():
+        for path in sorted(spec_root.glob("*/spec.md")):
+            try:
+                specs_text += "\n" + path.read_text(errors="ignore")
+            except OSError:
+                pass
+    prompt_drift = False
+    installer = WORKSPACE / "swarm" / "bin" / "install-board-watchdog-prompt.sh"
+    if installer.exists():
+        rc, _ = sh(shlex.quote(str(installer)) + " --verify", 30)
+        prompt_drift = rc != 0
+    merged_agent = [p for p in prs_json if str(p.get("headRefName", "")).startswith("agent/")]
+    for item in items:
+        if item["status"] in ("triage", "ready", "blocked"):
+            tid = item["id"]
+            body_match = re.search(rf"(?<![A-Za-z0-9_]){re.escape(tid)}(?![A-Za-z0-9_])", specs_text)
+            if not body_match:
+                categories.append(("missing spec", item))
+        if item["status"] == "in_progress" and item["id"] in {pr_ticket_id(p) for p in merged_agent}:
+            categories.append(("lifecycle skipped by prefix", item))
+        if item.get("block_reason") and "missing spec" in item.get("block_reason", "").lower():
+            categories.append(("unmerged or unreadable spec", item))
+    if prompt_drift:
+        categories.append(("watchdog prompt drift", {"id": "runtime", "title": "board-watchdog prompt differs from tracked installer source", "status": "runtime"}))
+    return categories
+
+
 def board_audit():
-    raw,items=board_lines(); _,prs=sh("gh pr list --repo chitinhq/chitin --state open --json number,title,statusCheckRollup,headRefName,mergeStateStatus,updatedAt",180)
+    raw,items=board_lines(); _,prs=sh(
+        "gh pr list --repo "
+        + shlex.quote(REPO)
+        + " --state open --json number,title,statusCheckRollup,headRefName,mergeStateStatus,updatedAt",
+        180,
+    )
     counts=Counter(i['status'] for i in items)
+    try:
+        prs_json = json.loads(prs) if prs.strip() else []
+    except json.JSONDecodeError:
+        prs_json = []
+    categories = board_audit_categories(items, prs_json)
+    category_counts = Counter(label for label, _ in categories)
+    category_rows = ''.join(
+        f"<tr><td>{html.escape(label)}</td><td class='mono'>{html.escape(item['id'])}</td><td><span class='pill'>{html.escape(item.get('status',''))}</span></td><td>{html.escape(item['title'])}</td></tr>"
+        for label, item in categories[:20]
+    ) or "<tr><td colspan='4'>No current spec/lifecycle/watchdog drift categories detected.</td></tr>"
+    category_summary = ''.join(
+        f"<div class='card'><div class='k'>{html.escape(label)}</div><div class='v'>{count}</div></div>"
+        for label, count in sorted(category_counts.items())
+    )
     leverage=[]
     for i in items:
         score=1 + (2 if i['status'] in ('blocked','ready') else 0) + (1 if i['assignee'] in ('red','clawta') else 0) + (1 if any(w in i['title'].lower() for w in ['bug','bypass','lockdown','ci','policy']) else 0)
@@ -687,9 +762,9 @@ def board_audit():
             if len(wa|wb)>0 and len(wa&wb)/len(wa|wb)>.55: dups.append((a,b,len(wa&wb)/len(wa|wb)))
     duphtml=''.join(f"<li>{a['id']} ↔ {b['id']} ({p:.0%}) — {html.escape(a['title'])} / {html.escape(b['title'])}</li>" for a,b,p in dups[:10]) or '<li>No obvious duplicates at crude threshold.</li>'
     stats=''.join(f"<div class='card'><div class='k'>{html.escape(k)}</div><div class='v'>{v}</div></div>" for k,v in counts.items())
-    body=f"<section class='grid'>{stats}</section><h2>Top leverage actions</h2><section class='grid'>{lev}</section><h2>Duplicate detector</h2><div class='card'><ul>{duphtml}</ul></div><h2>Open PR check snapshot</h2><pre>{html.escape(prs[:12000])}</pre><h2>Raw board</h2><pre>{html.escape(raw[:12000])}</pre>"
-    _,url=save('board-audit', page('Board Audit', 'Leverage, duplicates, CI and blocked-work scan', body))
-    print(f"🔍 Clawta board audit: {counts.get('blocked',0)} blocked, {len(dups)} possible duplicate pairs. {url}")
+    body=f"<section class='grid'>{stats}{category_summary}</section><h2>Current stack categories</h2><table><tr><th>Category</th><th>Ticket</th><th>Status</th><th>Title</th></tr>{category_rows}</table><h2>Top leverage actions</h2><section class='grid'>{lev}</section><h2>Duplicate detector</h2><div class='card'><ul>{duphtml}</ul></div><h2>Open PR check snapshot</h2><pre>{html.escape(prs[:12000])}</pre><h2>Raw board</h2><pre>{html.escape(raw[:12000])}</pre>"
+    _,url=save('board-audit', page('Board Audit', 'Leverage, duplicates, CI, spec-kit and runtime-drift scan', body))
+    print(f"🔍 Clawta board audit: {counts.get('blocked',0)} blocked, {len(dups)} possible duplicate pairs, {len(categories)} stack categories. {url}")
 
 def board_watchdog():
     orphan_data = lifecycle_orphans()

@@ -46,6 +46,7 @@ DECISIONS_DB = os.path.expanduser(
     os.environ.get("CLAWTA_DECISIONS_DB", "~/.openclaw/data/clawta_decisions.db")
 )
 LLM_TIMEOUT_SECONDS = 60
+KERNEL_TIMEOUT_SECONDS = 10
 DEFAULT_EXPLORATION_PERCENT = 0
 DEFAULT_EXPLORATION_MAX_CANDIDATES = 2
 HIGH_RISK_LEVELS = {"high", "irreversible"}
@@ -107,6 +108,129 @@ def load_cards(cards_dir: str = CARDS_DIR) -> tuple[list[dict], list[str]]:
     for error in errors:
         print(f"_pick_driver: failed to load agent card: {error}", file=sys.stderr)
     return cards, errors
+
+
+def emit_structured_log(level: str, code: str, **fields: object) -> None:
+    payload = {level: code, **fields}
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+
+
+def kernel_bin() -> str:
+    return os.environ.get("CHITIN_KERNEL_BIN", "chitin-kernel").strip() or "chitin-kernel"
+
+
+def load_kernel_approved_driver_ids() -> tuple[set[str] | None, str]:
+    repo = str(repo_root())
+    try:
+        result = subprocess.run(
+            [kernel_bin(), "drivers", "list", "--json", "--cwd", repo],
+            capture_output=True,
+            text=True,
+            timeout=KERNEL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_unavailable",
+            approval_source="fallback",
+            reason="kernel binary not found",
+            kernel_bin=kernel_bin(),
+        )
+        return None, "fallback"
+    except subprocess.TimeoutExpired:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_unavailable",
+            approval_source="fallback",
+            reason="kernel driver registry timed out",
+            kernel_bin=kernel_bin(),
+            timeout_seconds=KERNEL_TIMEOUT_SECONDS,
+        )
+        return None, "fallback"
+
+    if result.returncode != 0:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_unavailable",
+            approval_source="fallback",
+            reason="kernel driver registry exited non-zero",
+            kernel_bin=kernel_bin(),
+            returncode=result.returncode,
+            stderr=result.stderr.strip(),
+        )
+        return None, "fallback"
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_unavailable",
+            approval_source="fallback",
+            reason="kernel driver registry emitted malformed JSON",
+            kernel_bin=kernel_bin(),
+            error=str(exc),
+        )
+        return None, "fallback"
+
+    drivers = payload.get("drivers", [])
+    if not isinstance(drivers, list):
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_unavailable",
+            approval_source="fallback",
+            reason="kernel driver registry returned non-list drivers payload",
+            kernel_bin=kernel_bin(),
+        )
+        return None, "fallback"
+
+    approved_ids = {
+        str(driver.get("id")).strip()
+        for driver in drivers
+        if isinstance(driver, dict) and str(driver.get("id")).strip()
+    }
+    if not approved_ids:
+        emit_structured_log(
+            "warning",
+            "kernel_driver_registry_empty",
+            approval_source="fallback",
+            reason="kernel driver registry returned no approved drivers",
+            kernel_bin=kernel_bin(),
+        )
+        return None, "fallback"
+    return approved_ids, "kernel"
+
+
+def filter_cards_by_kernel_approval(cards: list[dict]) -> tuple[list[dict], str]:
+    approved_ids, approval_source = load_kernel_approved_driver_ids()
+    if approved_ids is None:
+        return cards, approval_source
+
+    filtered = []
+    routable_ids = set()
+    for card in cards:
+        card_id = str(card.get("id") or "").strip()
+        if not card_id:
+            continue
+        routable_ids.add(card_id)
+        if card_id in approved_ids:
+            filtered.append(card)
+        else:
+            emit_structured_log(
+                "warning",
+                "driver_not_kernel_approved",
+                approval_source="kernel",
+                driver=card_id,
+            )
+    for approved_id in sorted(approved_ids - routable_ids):
+        emit_structured_log(
+            "info",
+            "kernel_driver_not_routable",
+            approval_source="kernel",
+            driver=approved_id,
+        )
+    return filtered, approval_source
 
 
 def card_capabilities(card: dict) -> set[str]:
@@ -713,6 +837,7 @@ def emit_result(
     soul_hash: str,
     soul_category: str,
     shape: str,
+    approval_source: str,
 ) -> None:
     agent_fingerprint = composite_fingerprint(driver, model, soul_id, soul_hash)
     print(
@@ -734,6 +859,7 @@ def emit_result(
                 "card_load_errors": card_load_errors,
                 "exploration_candidates_considered": exploration_candidates_considered,
                 "shape_bucket": shape,
+                "approval_source": approval_source,
             }
         )
     )
@@ -741,11 +867,26 @@ def emit_result(
 
 def main() -> None:
     raw = sys.stdin.read()
-    if not raw.strip():
-        raise SystemExit("classify produced no JSON object")
-    classify = json.loads(raw)
+    # Hot-patch 2026-05-18: classify step's openclaw-agent call can return
+    # gateway error text instead of JSON when the gateway is degraded
+    # (recovered via gateway restart but classify still emits cached
+    # error envelopes). Fall back to empty classify so deterministic
+    # ranking can still proceed instead of crashing the whole dispatch.
+    # The deterministic path uses empty capabilities + default complexity —
+    # same as a "I don't know anything about this ticket" classify result.
+    # Documented in spec 022 (PR #744) Gate-1.
+    try:
+        classify = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(
+            f"[_pick_driver] WARN: classify stdin not JSON ({len(raw)} chars); "
+            "falling back to empty classify so deterministic routing can proceed",
+            file=sys.stderr,
+        )
+        classify = {}
     caps_needed = set(classify.get("capabilities", []))
     cards, load_errors = load_cards()
+    approved_cards, approval_source = filter_cards_by_kernel_approval(cards)
     soul_id, soul_hash, soul_category = resolve_soul(classify)
     shape = shape_bucket(classify)
 
@@ -768,11 +909,12 @@ def main() -> None:
             soul_hash=soul_hash,
             soul_category=soul_category,
             shape=shape,
+            approval_source=approval_source,
         )
         return
 
     router_mode = os.environ.get("ROUTER_MODE", "llm").strip().lower()
-    ranked_candidates = deterministic_ranked_candidates(classify, cards)
+    ranked_candidates = deterministic_ranked_candidates(classify, approved_cards)
     ranked_candidates, demoted_failures, failure_filter_reason = apply_failure_filter(
         classify, ranked_candidates
     )
@@ -805,6 +947,7 @@ def main() -> None:
             soul_hash=soul_hash,
             soul_category=soul_category,
             shape=shape,
+            approval_source=approval_source,
         )
         return
 
@@ -830,10 +973,11 @@ def main() -> None:
                 soul_hash=soul_hash,
                 soul_category=soul_category,
                 shape=shape,
+                approval_source=approval_source,
             )
             return
 
-    pick, candidates = deterministic_pick(classify, cards)
+    pick, candidates = deterministic_pick(classify, approved_cards)
     if demoted_failures:
         pick, candidates = deterministic_pick(classify, ranked_candidates)
     picked = pick.get("id")
@@ -874,6 +1018,7 @@ def main() -> None:
         soul_hash=soul_hash,
         soul_category=soul_category,
         shape=shape,
+        approval_source=approval_source,
     )
 
 

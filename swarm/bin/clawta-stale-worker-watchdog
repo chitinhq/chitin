@@ -33,10 +33,18 @@ from pathlib import Path
 from typing import Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from board_resolver import resolve_db, resolve_board
+from board_resolver import (
+    apply_board_cli_override,
+    board_workspace,
+    resolve_db,
+    resolve_board,
+    warn_implicit_default_board,
+)
 
+apply_board_cli_override()
+warn_implicit_default_board(Path(__file__).name)
 
-BOARD = os.environ.get("SWARM_BOARD", "chitin")
+BOARD = os.environ.get("SWARM_BOARD") or resolve_board()
 RED_ASSIGNEE = os.environ.get("CLAWTA_RED_ASSIGNEE", "red")
 AUTHOR = os.environ.get("CLAWTA_AUTHOR", "clawta")
 HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
@@ -47,15 +55,16 @@ KANBAN_DB = resolve_db()
 
 
 def resolve_repo_root(script_path: Path | None = None, home: Path | None = None) -> Path:
-    """Find the Chitin repo root from both repo and installed script paths."""
+    """Find the board workspace root from both repo and installed script paths."""
     env_root = os.environ.get("CHITIN_REPO")
     candidates: list[Path] = []
     if env_root:
         candidates.append(Path(env_root))
+    candidates.append(board_workspace())
     here = (script_path or Path(__file__)).resolve()
     home = home or Path.home()
     candidates.extend(here.parents)
-    candidates.append(home / "workspace" / "chitin")
+    candidates.append(home / "workspace" / resolve_board())
     for candidate in candidates:
         if (candidate / "scripts" / "kanban-flow").exists() and (candidate / "swarm").exists():
             return candidate
@@ -230,24 +239,22 @@ def increment_consecutive_failures(db_path: Path, ticket_id: str, failure_class:
     must gate retry decisions on schema_supports_retry_tracking() rather than
     trusting this return value on legacy boards.
     """
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                UPDATE tasks
-                   SET consecutive_failures = consecutive_failures + 1,
-                       last_failure_error = ?
-                 WHERE id = ?
-                """,
-                (f"[{failure_class}] {reason}", ticket_id),
-            )
-            row = conn.execute(
-                "SELECT consecutive_failures FROM tasks WHERE id = ?",
-                (ticket_id,),
-            ).fetchone()
-        return int(row[0]) if row else 0
-    except sqlite3.OperationalError:
+    if not schema_supports_retry_tracking(db_path):
         return 0
+    result = run(
+        [
+            str(KANBAN_FLOW_BIN),
+            "record-failure",
+            ticket_id,
+            failure_class,
+            reason,
+        ],
+        check=False,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        return 0
+    return get_consecutive_failures(db_path, ticket_id)
 
 
 def get_dispatch_history(db_path: Path, ticket_id: str, limit: int = 5) -> list[dict]:
@@ -349,7 +356,7 @@ def block_ticket_with_history(escalation: Escalation) -> None:
         timeout=45,
     )
     run(
-        [HERMES_BIN, "kanban", "--board", BOARD, "assign", escalation.id, RED_ASSIGNEE],
+        [str(KANBAN_FLOW_BIN), "assign", escalation.id, RED_ASSIGNEE],
         check=True,
     )
 
@@ -380,7 +387,7 @@ def block_ticket_with_history(escalation: Escalation) -> None:
     )
     run(
         [
-            HERMES_BIN, "kanban", "--board", BOARD, "comment", escalation.id,
+            str(KANBAN_FLOW_BIN), "comment", escalation.id,
             "--author", AUTHOR, comment,
         ],
         check=True,

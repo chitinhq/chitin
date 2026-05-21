@@ -1,0 +1,109 @@
+- generic [ref=e122]:
+  - banner [ref=e123]:
+    - generic [ref=e124]:
+      - link "ReadyBench Hire hire.readybench.io · mock" [ref=e125] [cursor=pointer]:
+        - /url: /dashboard
+        - generic [ref=e126]: RB
+        - generic [ref=e127]:
+          - generic [ref=e128]: ReadyBench Hire
+          - generic [ref=e129]: hire.readybench.io · mock
+      - navigation "Primary" [ref=e130]:
+        - link "Pipeline" [ref=e131] [cursor=pointer]:
+          - /url: /dashboard
+        - link "New request" [ref=e132] [cursor=pointer]:
+          - /url: /requests/new
+      - generic [ref=e133]:
+        - generic [ref=e134]: Acme Robotics
+        - generic [ref=e135]: AR
+  - main [ref=e136]:
+    - generic [ref=e288]:
+      - generic [ref=e289]:
+        - link "Pipeline" [ref=e290] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e291]
+          - text: Pipeline
+        - generic [ref=e293]:
+          - heading "Senior backend engineer — Python/Postgres" [level=1] [ref=e294]
+          - generic [ref=e295]: Shortlist ready
+        - generic [ref=e297]: Acme Robotics · posted 2026-04-28 · $70–$95 / hr
+      - 'list "Pipeline status: Shortlist ready" [ref=e299]':
+        - listitem [ref=e300]:
+          - generic [ref=e301]:
+            - img [ref=e303]
+            - generic [ref=e305]: Submitted
+        - listitem [ref=e306]:
+          - generic [ref=e307]:
+            - img [ref=e309]
+            - generic [ref=e311]: Under review
+        - listitem [ref=e312]:
+          - generic [ref=e313]:
+            - generic [ref=e314]: "3"
+            - generic [ref=e315]: Shortlist ready
+        - listitem [ref=e316]:
+          - generic [ref=e317]:
+            - generic [ref=e318]: "4"
+            - generic [ref=e319]: Screening
+        - listitem [ref=e320]:
+          - generic [ref=e321]:
+            - generic [ref=e322]: "5"
+            - generic [ref=e323]: Interviewing
+        - listitem [ref=e324]:
+          - generic [ref=e325]:
+            - generic [ref=e326]: "6"
+            - generic [ref=e327]: Decision pending
+        - listitem [ref=e328]:
+          - generic [ref=e329]:
+            - generic [ref=e330]: "7"
+            - generic [ref=e331]: Proposal sent
+        - listitem [ref=e332]:
+          - generic [ref=e333]:
+            - generic [ref=e334]: "8"
+            - generic [ref=e335]: Proposal accepted
+        - listitem [ref=e336]:
+          - generic [ref=e337]:
+            - generic [ref=e338]: "9"
+            - generic [ref=e339]: Selected
+      - tablist [ref=e340]:
+        - tab "Overview" [selected] [ref=e341] [cursor=pointer]
+        - tab "Shortlist" [ref=e342] [cursor=pointer]
+        - tab "Interviews" [ref=e343] [cursor=pointer]
+        - tab "Decision" [ref=e344] [cursor=pointer]
+        - tab "Proposal" [ref=e345] [cursor=pointer]
+        - tab "SOW" [ref=e346] [cursor=pointer]
+        - tab "Workspace" [ref=e347] [cursor=pointer]
+        - tab "Onboarding" [ref=e348] [cursor=pointer]
+        - tab "Check-ins" [ref=e349] [cursor=pointer]
+        - tab "Handoff" [ref=e350] [cursor=pointer]
+        - tab "Activity" [ref=e351] [cursor=pointer]
+      - generic [ref=e353]:
+        - generic [ref=e354]:
+          - heading "Project need" [level=2] [ref=e355]
+          - 'generic "Backed by existing platform endpoint: GET /api/requests/:id" [ref=e356]':
+            - img [ref=e357]
+            - text: Lifted
+            - code [ref=e360]: GET /api/requests/:id
+        - paragraph [ref=e361]: Build out the payments + billing service for our SaaS launch. Greenfield, well-scoped, 6-month engagement with an option to extend.
+        - generic [ref=e362]:
+          - generic [ref=e363]:
+            - term [ref=e364]: Required skills
+            - definition [ref=e365]:
+              - generic [ref=e366]:
+                - generic [ref=e367]: Python
+                - generic [ref=e368]: Django
+                - generic [ref=e369]: PostgreSQL
+                - generic [ref=e370]: Stripe API
+          - generic [ref=e371]:
+            - term [ref=e372]: Timezone overlap
+            - definition [ref=e373]: ≥ 4h overlap with US Eastern
+          - generic [ref=e374]:
+            - term [ref=e375]: Budget range
+            - definition [ref=e376]: $70–$95 / hr
+          - generic [ref=e377]:
+            - term [ref=e378]: Start date
+            - definition [ref=e379]: 2026-05-15
+          - generic [ref=e380]:
+            - term [ref=e381]: Urgency
+            - definition [ref=e382]: high
+          - generic [ref=e383]:
+            - term [ref=e384]: Buyer
+            - definition [ref=e385]: Acme Robotics

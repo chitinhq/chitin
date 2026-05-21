@@ -1,0 +1,222 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /overview
+      - img [ref=e6]
+      - generic [ref=e10]:
+        - generic [ref=e11]: chitin
+        - generic [ref=e12]: console
+    - navigation "Primary" [ref=e13]:
+      - link "Overview" [ref=e14] [cursor=pointer]:
+        - /url: /overview
+        - generic [ref=e16]: Overview
+      - link "Sessions" [ref=e17] [cursor=pointer]:
+        - /url: /sessions
+        - generic [ref=e19]: Sessions
+      - link "Tickets" [ref=e20] [cursor=pointer]:
+        - /url: /tickets
+        - generic [ref=e22]: Tickets
+      - link "Swarm ELO" [ref=e23] [cursor=pointer]:
+        - /url: /elo
+        - generic [ref=e25]: Swarm ELO
+      - link "Argus" [ref=e26] [cursor=pointer]:
+        - /url: /argus
+        - generic [ref=e28]: Argus
+      - link "Policy" [ref=e29] [cursor=pointer]:
+        - /url: /policy
+        - generic [ref=e31]: Policy
+      - link "Suggestions" [ref=e32] [cursor=pointer]:
+        - /url: /suggestions
+        - generic [ref=e34]: Suggestions
+    - generic "API connected · board chitin" [ref=e36]:
+      - generic [ref=e38]: chitin
+  - main [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - heading "Tickets" [level=1] [ref=e43]
+          - paragraph [ref=e44]: 4 tickets · filters live below
+        - generic [ref=e45]:
+          - combobox "Status filter" [ref=e46]:
+            - option "active (default)" [selected]
+            - option "in_progress"
+            - option "triage"
+            - option "ready"
+            - option "todo"
+            - option "done"
+            - option "archived"
+            - option "all"
+          - combobox "Assignee filter" [ref=e47]:
+            - option "all assignees" [selected]
+            - option "red (86)"
+            - option "programmer (82)"
+            - option "codex (33)"
+            - option "clawta (27)"
+            - option "claude-code (26)"
+            - option "architect (9)"
+            - option "copilot (8)"
+            - option "operator (7)"
+            - option "chitin-worker (6)"
+            - option "gemini (5)"
+            - option "analyst (4)"
+            - option "hermes (3)"
+            - option "tech-writer (2)"
+            - option "hermes-user (1)"
+            - option "researcher (1)"
+            - option "user (1)"
+          - textbox "Search tickets" [ref=e48]:
+            - /placeholder: search title / body / id…
+          - button "filter" [ref=e49] [cursor=pointer]
+      - table [ref=e52]:
+        - rowgroup [ref=e53]:
+          - row "id title status assignee priority age" [ref=e54]:
+            - columnheader "id" [ref=e55]
+            - columnheader "title" [ref=e56]
+            - columnheader "status" [ref=e57]
+            - columnheader "assignee" [ref=e58]
+            - columnheader "priority" [ref=e59]
+            - columnheader "age" [ref=e60]
+        - rowgroup [ref=e61]:
+          - 'row "t_e157b4c6 Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints in_progress hermes 50 1h" [ref=e62] [cursor=pointer]':
+            - cell "t_e157b4c6" [ref=e63]
+            - 'cell "Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints" [ref=e64]':
+              - generic [ref=e65]: "Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints"
+            - cell "in_progress" [ref=e66]:
+              - generic [ref=e70]: in_progress
+            - cell "hermes" [ref=e71]:
+              - generic [ref=e72]: hermes
+            - cell "50" [ref=e73]:
+              - generic "priority 50" [ref=e74]:
+                - generic [ref=e76]: "50"
+            - cell "1h" [ref=e77]
+          - 'row "t_18ffbbb3 Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges) in_progress codex 40 1h" [ref=e78] [cursor=pointer]':
+            - cell "t_18ffbbb3" [ref=e79]
+            - 'cell "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)" [ref=e80]':
+              - generic [ref=e81]: "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)"
+            - cell "in_progress" [ref=e82]:
+              - generic [ref=e86]: in_progress
+            - cell "codex" [ref=e87]:
+              - generic [ref=e88]: codex
+            - cell "40" [ref=e89]:
+              - generic "priority 40" [ref=e90]:
+                - generic [ref=e92]: "40"
+            - cell "1h" [ref=e93]
+          - row "t_7c9d02b7 Router heuristic allowlist for chitin-kernel subcommands in_progress codex 3 2d" [ref=e94] [cursor=pointer]:
+            - cell "t_7c9d02b7" [ref=e95]
+            - cell "Router heuristic allowlist for chitin-kernel subcommands" [ref=e96]:
+              - generic [ref=e97]: Router heuristic allowlist for chitin-kernel subcommands
+            - cell "in_progress" [ref=e98]:
+              - generic [ref=e102]: in_progress
+            - cell "codex" [ref=e103]:
+              - generic [ref=e104]: codex
+            - cell "3" [ref=e105]:
+              - generic "priority 3" [ref=e106]:
+                - generic [ref=e108]: "3"
+            - cell "2d" [ref=e109]
+          - 'row "t_elo_rati…loop Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards ready codex 40 19h" [ref=e110] [cursor=pointer]':
+            - cell "t_elo_rati…loop" [ref=e111]
+            - 'cell "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards" [ref=e112]':
+              - generic [ref=e113]: "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards"
+            - cell "ready" [ref=e114]:
+              - generic [ref=e118]: ready
+            - cell "codex" [ref=e119]:
+              - generic [ref=e120]: codex
+            - cell "40" [ref=e121]:
+              - generic "priority 40" [ref=e122]:
+                - generic [ref=e124]: "40"
+            - cell "19h" [ref=e125]
+      - dialog "Ticket detail" [ref=e126]:
+        - generic [ref=e127]:
+          - generic [ref=e128]:
+            - generic [ref=e129]: t_18ffbbb3
+            - generic [ref=e130]: "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)"
+            - generic [ref=e131]:
+              - generic [ref=e135]: in_progress
+              - generic [ref=e136]: codex
+              - generic [ref=e137]: prio 40
+              - generic [ref=e138]: created 2026-05-15 19:48:05Z
+          - button "close ✕" [ref=e139] [cursor=pointer]
+        - generic [ref=e140]:
+          - generic [ref=e141]:
+            - heading "change status" [level=3] [ref=e142]
+            - generic [ref=e143]:
+              - combobox "New status" [ref=e144]:
+                - option "—" [selected]
+                - option "start (→ in_progress)"
+                - option "ready (→ ready)"
+                - option "unblock (blocked → ready)"
+                - option "block (→ blocked)"
+                - option "demote (→ triage)"
+                - option "done (→ done)"
+              - button "apply" [disabled] [ref=e145]
+          - generic [ref=e146]:
+            - heading "body" [level=3] [ref=e147]
+            - generic [ref=e148]: "**Source spec:** `.specify/specs/001-agent-bus/spec.md` — User Story 5 (P5). **Goal** The chitin-console renders typed attachments on bus threads as Jira-style clickable badges with live state — a `kind=pr` attachment shows the PR title + merge state + CI badge; `kind=spec` shows a spec preview; `kind=task` shows the kanban ticket status; `kind=discord` deep-links to the channel; `kind=url`/`file` render as clickable affordances. **Depends on** - Phase 3 (`/threads` console route exists). File this AFTER Phase 3 lands. **Approach** - Add `AttachmentBadgeComponent` to chitin-console with one renderer per kind. - For `kind=pr`: enrich via `gh api repos/{owner}/{name}/pulls/{n}` (cache 60s); render number + title + state pill (open/merged/closed) + checks bucket. - For `kind=spec`: read the markdown file relative to repo root; render the H1 + first paragraph as preview; full content on hover/expand. - For `kind=task`: query the kanban DB (read-only) for status + assignee; render as a status pill. - For `kind=discord`: render Discord channel/thread deep-link with channel name. - For `kind=url`/`file`: simple clickable link. **Acceptance criteria** - [ ] All 6 attachment kinds render their badge in the console thread detail view. - [ ] PR badge shows live merge state + CI bucket (auto-refresh on view). - [ ] Spec badge expands to show H1 + first paragraph; full content on click. - [ ] Task badge shows current status + assignee from kanban DB. - [ ] Renderers gracefully handle missing references (e.g. spec path that no longer exists → \"(missing)\" badge). **Out of scope** - Inline markdown preview for non-spec files (later). - Cross-repo PR lookups (current repo only for v1). - Permission-gated rendering. invariants_and_boundaries: Invariant: rendering a badge never blocks the thread view — all enrichment is async with a stable placeholder. Boundary: missing references → \"(missing)\" badge, never a crash or empty space. Boundary: enrichment cache TTL ≤ 60s so PR/ticket state stays fresh enough to act on. Boundary: no writes to GitHub or kanban from the renderer — read-only enrichment."
+          - generic [ref=e149]:
+            - heading "runs (1)" [level=3] [ref=e150]
+            - list [ref=e151]:
+              - listitem [ref=e152]:
+                - generic [ref=e153]:
+                  - generic [ref=e157]: running
+                  - generic [ref=e158]: "run #514"
+                  - generic [ref=e159]: 2026-05-15 20:19:26Z
+          - generic [ref=e160]:
+            - heading "clawta dispatch decisions (1)" [level=3] [ref=e161]
+            - list [ref=e162]:
+              - listitem [ref=e163]:
+                - generic [ref=e164]:
+                  - generic [ref=e165]: codex · gpt-5.5
+                  - generic [ref=e166]: exploitation
+                  - generic [ref=e167]: 2026-05-15T20:20:11.612654Z
+                - generic [ref=e168]: This is a high-complexity TypeScript/React console feature with multiple async enrichment paths, caching, read-only GitHub/kanban integrations, and graceful missing-reference handling, so Codex is the best fit for careful implementation and debugging. gpt-5.5 is justified despite higher cost because the work spans UI components, data fetching, state/error handling, and regression-sensitive thread rendering rather than a small isolated edit.
+          - generic [ref=e169]:
+            - heading "events (15)" [level=3] [ref=e170]
+            - list [ref=e171]:
+              - listitem [ref=e172]:
+                - text: commented2026-05-15 20:29:43Z
+                - generic [ref=e173]: "{ \"author\": \"clawta\", \"len\": 147 }"
+              - listitem [ref=e174]:
+                - text: pr_opened2026-05-15 20:29:43Z
+                - generic [ref=e175]: "{ \"pr_url\": \"https://github.com/chitinhq/chitin/pull/679\", \"by\": \"clawta\" }"
+              - listitem [ref=e176]:
+                - text: commented2026-05-15 20:29:43Z
+                - generic [ref=e177]: "{ \"author\": \"clawta\", \"len\": 54 }"
+              - listitem [ref=e178]:
+                - text: commented2026-05-15 20:20:14Z
+                - generic [ref=e179]: "{ \"author\": \"clawta\", \"len\": 76 }"
+              - listitem [ref=e180]:
+                - text: commented2026-05-15 20:20:13Z
+                - generic [ref=e181]: "{ \"author\": \"clawta\", \"len\": 39 }"
+              - listitem [ref=e182]:
+                - text: commented2026-05-15 20:20:13Z
+                - generic [ref=e183]: "{ \"author\": \"clawta\", \"len\": 85 }"
+              - listitem [ref=e184]:
+                - text: assigned2026-05-15 20:20:13Z
+                - generic [ref=e185]: "{ \"assignee\": \"codex\" }"
+              - listitem [ref=e186]:
+                - text: commented2026-05-15 20:20:12Z
+                - generic [ref=e187]: "{ \"author\": \"clawta\", \"len\": 499 }"
+              - listitem [ref=e188]:
+                - text: commented2026-05-15 20:19:27Z
+                - generic [ref=e189]: "{ \"author\": \"clawta-poller\", \"len\": 149 }"
+              - listitem [ref=e190]:
+                - text: status_transition2026-05-15 20:19:26Z
+                - generic [ref=e191]: "{ \"from\": \"ready\", \"to\": \"in_progress\", \"by\": \"clawta-poller\", \"extra\": {} }"
+              - listitem [ref=e192]:
+                - text: commented2026-05-15 20:19:26Z
+                - generic [ref=e193]: "{ \"author\": \"clawta-poller\", \"len\": 39 }"
+              - listitem [ref=e194]:
+                - text: status_transition2026-05-15 19:58:04Z
+                - generic [ref=e195]: "{ \"from\": \"triage\", \"to\": \"ready\", \"by\": \"board-watchdog\", \"extra\": {} }"
+              - listitem [ref=e196]:
+                - text: commented2026-05-15 19:58:04Z
+                - generic [ref=e197]: "{ \"author\": \"board-watchdog\", \"len\": 59 }"
+              - listitem [ref=e198]:
+                - text: linked2026-05-15 19:48:24Z
+                - generic [ref=e199]: "{ \"parent\": \"t_e157b4c6\", \"child\": \"t_18ffbbb3\" }"
+              - listitem [ref=e200]:
+                - text: created2026-05-15 19:48:05Z
+                - generic [ref=e201]: "{ \"assignee\": null, \"status\": \"triage\", \"parents\": [], \"tenant\": null, \"skills\": null }"
+  - contentinfo [ref=e202]:
+    - generic [ref=e203]: chitin-console · local · read-only
+    - generic [ref=e204]: port 4200 → 7878

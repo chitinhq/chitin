@@ -217,10 +217,24 @@ steps:
     run: |
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "🦞 Starting dispatch to $pick_driver.json.driver/$pick_driver.json.model | complexity $pick_driver.json.complexity | via kanban-dispatch workflow"
       # Slice D: lifecycle discipline. Flip to in_progress so the board
-      # reflects reality. kanban-flow is idempotent when the ticket is
-      # already in_progress (e.g. clawta-poller flipped it before this
-      # workflow ran), so failure here is benign.
-      kanban-flow start ${ticket_id} --author clawta 2>/dev/null || true
+      # reflects reality. If a human/operator blocks the ticket while the
+      # dispatch is still classifying/routing, do NOT ignore that race and
+      # continue spawning: blocked must be a hard stop. Poller may have
+      # already claimed the ticket, so an in_progress status after a start
+      # failure is acceptable; any other status aborts dispatch.
+      DISPATCH_WORKTREE="$HOME/.cache/chitin/swarm-worktrees/$pick_driver.json.driver-${ticket_id}"
+      if ! kanban-flow start ${ticket_id} --author clawta --worktree "$DISPATCH_WORKTREE" 2>/dev/null; then
+        STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json | jq -r '.task.status // .status // empty')
+        if [[ "$STATUS" != "in_progress" ]]; then
+          echo "dispatch aborted: ${ticket_id} status is $STATUS after start attempt" >&2
+          exit 1
+        fi
+      fi
+      STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json | jq -r '.task.status // .status // empty')
+      if [[ "$STATUS" != "in_progress" ]]; then
+        echo "dispatch aborted: ${ticket_id} status is $STATUS before spawn" >&2
+        exit 1
+      fi
       env \
         CHITIN_DISPATCH_MODEL="$pick_driver.json.model" \
         CHITIN_DISPATCH_SOUL_ID="$pick_driver.json.soul_id" \
@@ -311,6 +325,16 @@ steps:
       CHITIN_REPO=$(chitin-kernel board-config "$BOARD_SLUG" workspace_root 2>/dev/null || echo "$HOME/workspace/chitin")
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
       mkdir -p "$(dirname "$WORKTREE_DIR")"
+      # Spec 018 base-freshness invariant: every spawn — including
+      # re-dispatch — must run on a worktree whose base matches
+      # origin/$DEFAULT_BRANCH as of NOW. Re-dispatch on a stale
+      # worktree previously caused agent/codex-5f18463a to be branched
+      # from af771d3 (pre-PR-#915), which would have deleted apps/portal
+      # on merge. Fail-loud over silently destroy newer commits.
+      if ! git -C "$CHITIN_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>&1; then
+        echo "spawn_worker: base-freshness fetch failed for origin/$DEFAULT_BRANCH" >&2
+        exit 1
+      fi
       if [[ ! -d "$WORKTREE_DIR" ]]; then
         # Use git worktree add directly — scripts/create-worktree.sh
         # has extra bootstrap logic we don't need here. If the branch
@@ -318,11 +342,35 @@ steps:
         # erroring on duplicate.
         git -C "$CHITIN_REPO" worktree add -b "$BRANCH" "$WORKTREE_DIR" "origin/$DEFAULT_BRANCH" 2>&1 \
           || git -C "$CHITIN_REPO" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1
+      else
+        # Re-dispatch case: worktree exists from a previous run.
+        # Reset to fresh base. Per spec 018 R2 we discard prior worker
+        # commits — they've already been pushed as agent/$DRIVER-$TICKET
+        # and either landed or were abandoned.
+        git -C "$WORKTREE_DIR" reset --hard "origin/$DEFAULT_BRANCH" 2>&1
+        git -C "$WORKTREE_DIR" clean -fd 2>&1
       fi
+      # Copy gitignored governance sidecars (chitin.yaml.sig) into the
+      # worktree. `git worktree add` does not carry gitignored files;
+      # without the .sig an autonomous worker — which scrubs the
+      # operator-presence bypass — has every tool call rejected by the
+      # kernel as policy_signature_missing, a silent iteration-budget
+      # deadlock (ticket t_5b665efe). Runs after the create AND the
+      # re-dispatch `clean -fd` branch so the sidecar is always present.
+      bash "$CHITIN_REPO/scripts/copy-governance-sidecars.sh" "$CHITIN_REPO" "$WORKTREE_DIR" \
+        || echo "spawn_worker: WARN copy-governance-sidecars failed — worker may hit policy_signature_missing" >&2
       if ! cd "$WORKTREE_DIR"; then
         echo "spawn_worker: failed to enter worktree $WORKTREE_DIR" >&2
         exit 1
       fi
+      # Spec 018 R3 + R4: assert base-freshness invariant + log the base.
+      BASE_SHA=$(git -C "$CHITIN_REPO" rev-parse "origin/$DEFAULT_BRANCH")
+      HEAD_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD)
+      if [[ "$BASE_SHA" != "$HEAD_SHA" ]]; then
+        echo "spawn_worker: base-freshness invariant violated: worktree HEAD=$HEAD_SHA != origin/$DEFAULT_BRANCH=$BASE_SHA" >&2
+        exit 1
+      fi
+      echo "spawn_worker: [base-freshness] $WORKTREE_DIR @ origin/$DEFAULT_BRANCH ${BASE_SHA:0:7}"
       # Inline role SKILL.md into the worker's system prompt. Role is
       # set via ROLE env var (default 'programmer'). Falls back to
       # no-prefix if the role file is missing. printf %s avoids the
@@ -378,6 +426,55 @@ steps:
       PROMPT_BYTES=$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')
       echo "spawn_worker: spawning driver=$DRIVER model=$MODEL cmd=$CMD prompt_bytes=$PROMPT_BYTES envelope=$NEW_ENV" >&2
 
+      # Resolve the file-system scope from the bound spec (Constitution §1.1,
+      # added 2026-05-17 after portal MVP day-0 retro). Emits JSON like
+      # {"may": ["apps/portal/**"], "must_not": ["frontend/**"], "source": "..."}.
+      # If the spec has no `## File-system scope` section (legacy spec), arrays
+      # are empty and the validator in spawn_worker_subprocess.py treats it
+      # as no-enforcement (back-compat). Helper script never errors — always
+      # emits valid JSON on stdout.
+      FS_SCOPE_JSON=$(python3 "$HOME/.openclaw/workflows/resolve-file-system-scope.py" \
+        --board "$BOARD_SLUG" --ticket-id "${TICKET_ID}" 2>/dev/null \
+        || echo '{"may":[],"must_not":[],"source":null}')
+      echo "spawn_worker: file_system_scope: $FS_SCOPE_JSON" >&2
+
+      # Install the pre-commit scope hook into the worktree so commits
+      # touching out-of-scope files are rejected BEFORE landing locally
+      # (third defense layer alongside prompt-scope injection + post-spawn
+      # validator). Scope JSON lives in the worktree's git dir so the
+      # hook can read it. Per ECC pattern (everything-claude-code) +
+      # chitinhq/workspace#418 day-0 retro.
+      HOOK_SOURCE="$HOME/workspace/chitin/swarm/bin/worker-pre-commit-scope-hook.sh"
+      WORKTREE_GIT_DIR=$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)
+      if [[ -n "$WORKTREE_GIT_DIR" && -f "$HOOK_SOURCE" ]]; then
+        # Resolve git-dir to absolute path (rev-parse can return relative)
+        if [[ "$WORKTREE_GIT_DIR" != /* ]]; then
+          WORKTREE_GIT_DIR="$WORKTREE_DIR/$WORKTREE_GIT_DIR"
+        fi
+        printf '%s' "$FS_SCOPE_JSON" > "$WORKTREE_GIT_DIR/swarm-scope.json"
+        mkdir -p "$WORKTREE_GIT_DIR/hooks"
+        ln -sfn "$HOOK_SOURCE" "$WORKTREE_GIT_DIR/hooks/pre-commit"
+        echo "spawn_worker: pre-commit scope hook installed at $WORKTREE_GIT_DIR/hooks/pre-commit" >&2
+      fi
+
+      # Inject the file-system scope INTO the prompt as a hard rule so the
+      # worker sees it before writing anything. Without this, workers read
+      # only the ticket body + ENV_HEADER and may write to the wrong app
+      # surface (see day-0 retro: workers wrote to frontend/ instead of
+      # apps/portal/). The post-spawn validator catches violations, but
+      # making the constraint VISIBLE in the prompt converts catch-after-
+      # commit into don't-commit-in-the-first-place. Only injected when
+      # the resolver found a non-empty scope (back-compat with legacy
+      # specs).
+      FS_MAY=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.may | if length == 0 then "" else "  - " + join("\n  - ") end')
+      FS_MUST_NOT=$(printf '%s' "$FS_SCOPE_JSON" | jq -r '.must_not | if length == 0 then "" else "  - " + join("\n  - ") end')
+      if [[ -n "$FS_MAY" || -n "$FS_MUST_NOT" ]]; then
+        SCOPE_HEADER=$(printf '\n# ⛔ File-system scope (HARD RULE — enforced post-commit)\n\nYour commits MUST stay within these path globs:\n\n**MAY write:**\n%s\n\n**MUST NOT write:**\n%s\n\nThe post-spawn validator will reject your commit and close your PR if you touch ANY file outside MAY-write or matching MUST-NOT. If the spec is wrong, STOP and comment on the ticket; do not silently expand scope.\n\n' "${FS_MAY:-  (no MAY rules — anything goes)}" "${FS_MUST_NOT:-  (no MUST NOT rules)}")
+        # Prepend scope above the existing prompt so it lands BEFORE the
+        # ticket body in the worker's reading order.
+        PROMPT="${SCOPE_HEADER}${PROMPT}"
+      fi
+
       # Spawn worker as subprocess with output capture instead of exec.
       # This enables: output capture, result observation, and parent-child
       # session tracking via parent_chain_id in chain ledger.
@@ -397,8 +494,13 @@ steps:
         --arg soul_hash "$pick_driver.json.soul_hash" \
         --arg agent_fingerprint "$pick_driver.json.agent_fingerprint" \
         --arg repo_root "$CHITIN_REPO" \
+        --arg workspace_root "$(python3 "$CHITIN_REPO/swarm/bin/board_resolver.py" --board "$BOARD_SLUG" workspace 2>/dev/null || echo "")" \
+        --arg spec_root "$(python3 "$CHITIN_REPO/swarm/bin/board_resolver.py" --board "$BOARD_SLUG" spec-dir 2>/dev/null || echo "")" \
+        --arg default_branch "$DEFAULT_BRANCH" \
+        --arg ticket_body "$TICKET_BODY" \
         --rawfile prompt /dev/stdin \
         --argjson args "$(echo "$ARGS_JSON" | jq -c '.')" \
+        --argjson file_system_scope "$FS_SCOPE_JSON" \
         '{
           driver: $driver,
           model: $model,
@@ -411,7 +513,12 @@ steps:
           soul_hash: $soul_hash,
           agent_fingerprint: $agent_fingerprint,
           repo_root: $repo_root,
+          workspace_root: $workspace_root,
+          spec_root: $spec_root,
+          default_branch: $default_branch,
+          ticket_body: $ticket_body,
           args: $args,
+          file_system_scope: $file_system_scope,
           env: {
             "CHITIN_DRIVER": "clawta",
             "CHITIN_BUDGET_ENVELOPE": $NEW_ENV,
@@ -421,7 +528,8 @@ steps:
             "CHITIN_DISPATCH_SOUL_HASH": $soul_hash,
             "CHITIN_DISPATCH_AGENT_FINGERPRINT": $agent_fingerprint,
             "CHITIN_ACTIVE_SOUL": $soul_id,
-            "CHITIN_AGENT_FINGERPRINT": $agent_fingerprint
+            "CHITIN_AGENT_FINGERPRINT": $agent_fingerprint,
+            "CHITIN_DEFAULT_BRANCH": $default_branch
           }
         }')
 
@@ -442,14 +550,18 @@ steps:
       RESULT_FILE="/tmp/dispatch-worker-result-${TICKET_ID}.json"
       printf '%s' "$WORKER_RESULT" > "$RESULT_FILE"
 
-      # Return appropriate exit code based on worker result
+      # Do not fail this workflow step for structured worker failures.
+      # finalize_dispatch consumes RESULT_FILE and is responsible for
+      # crashing/blocking the ticket with the detailed reason. Exiting
+      # non-zero here stops Lobster before finalize runs, leaving stale
+      # in_progress runs after spawn failures.
       if [[ "$WORKER_STATUS" != "completed" && "$WORKER_STATUS" != "completed_no_commit" ]]; then
-        echo "spawn_worker: worker failed with status=$WORKER_STATUS" >&2
-        exit 1
+        echo "spawn_worker: worker failed with status=$WORKER_STATUS; deferring to finalize_dispatch" >&2
+        exit 0
       fi
       if [[ "$WORKER_RETURNCODE" -ne 0 ]]; then
-        echo "spawn_worker: worker returned non-zero exit code: $WORKER_RETURNCODE" >&2
-        exit 1
+        echo "spawn_worker: worker returned non-zero exit code: $WORKER_RETURNCODE; deferring to finalize_dispatch" >&2
+        exit 0
       fi
       BASH_SCRIPT
       )"
@@ -473,6 +585,29 @@ steps:
       DRIVER='$pick_driver.json.driver'
       BOARD_SLUG='$resolve_board.json.board'
       DEFAULT_BRANCH=$(chitin-kernel board-config "$BOARD_SLUG" default_branch 2>/dev/null || echo "main")
+
+      # Spec 025 atomicity invariant: hold per-ticket flock across the
+      # entire block-or-close decision so concurrent kanban-flow unblock
+      # cannot race between the status check and the push.
+      # spec: 025-dispatch-atomicity-invariant
+      LOCKFILE="${HOME}/.chitin/locks/dispatch-${ticket_id}.lock"
+      mkdir -p "$(dirname "$LOCKFILE")"
+      exec {ATOMICITY_LOCKFD}>"$LOCKFILE"
+      if ! flock -nE 75 "$ATOMICITY_LOCKFD"; then
+        MSG="🦞 ${ticket_id}: finalize skipped; lock held by concurrent finalize/unblock — retry next cron tick"
+        echo "$MSG" >&2
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      echo "$$" >&"$ATOMICITY_LOCKFD"
+
+      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.task.status // .status // empty' 2>/dev/null || true)
+      if [[ "$CURRENT_STATUS" == "blocked" ]]; then
+        MSG="🦞 ${ticket_id}: finalize skipped because ticket is blocked. Refusing to reopen or push worker output from a stale active run."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
 
       # Check worker result from spawn_worker step
       RESULT_FILE="/tmp/dispatch-worker-result-${ticket_id}.json"
@@ -563,6 +698,37 @@ steps:
         hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         # Slice D: failure path — block, don't leave in_progress with no PR.
         kanban-flow crash ${ticket_id} "no feature branch checked out at end of run (HEAD=$BRANCH)" --author clawta --run-status failed --outcome failed 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      # Defensive invariant: the worker's branch MUST have at least one commit
+      # not present in origin/$DEFAULT_BRANCH before we push. Without this, a
+      # worker that exits with WORKER_STATUS=completed but never actually
+      # committed (lying or buggy worker) produces a zombie branch on the
+      # remote (HEAD == origin/$DEFAULT_BRANCH HEAD) and `gh pr create` then
+      # fails with "no commits between …", silently losing the ticket.
+      # This gate runs regardless of WORKER_STATUS — git is the source of truth.
+      git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+      COMMITS_AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo 0)
+      if [[ "${COMMITS_AHEAD:-0}" -eq 0 ]]; then
+        MSG="🦞 ${ticket_id}: worker reported status=$WORKER_STATUS but branch $BRANCH has 0 commits ahead of $DEFAULT_BRANCH. Refusing to push an empty branch. Worktree=$WORKTREE."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+        python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+          --ticket-id ${ticket_id} \
+          --outcome failure \
+          --failure-kind empty_branch >/dev/null 2>&1 || true
+        kanban-flow crash ${ticket_id} "worker produced 0 commits on branch $BRANCH ahead of $DEFAULT_BRANCH (worktree=$WORKTREE, worker_status=$WORKER_STATUS)" --author clawta --run-status blocked --outcome blocked --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
+        openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
+        exit 0
+      fi
+      # If an operator blocked the ticket while the worker was running,
+      # do not let finalize resurrect it by pushing/opening a PR. The
+      # blocked lane is the stronger signal; leave the worktree for manual
+      # inspection and keep the ticket blocked.
+      CURRENT_STATUS=$(hermes kanban --board $resolve_board.json.board show ${ticket_id} --json 2>/dev/null | jq -r '.task.status // .status // empty' 2>/dev/null || true)
+      if [[ "$CURRENT_STATUS" != "in_progress" ]]; then
+        MSG="🦞 ${ticket_id}: worker completed on $BRANCH, but ticket status is $CURRENT_STATUS; not pushing/opening PR. Worktree=$WORKTREE."
+        hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
         openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true
         exit 0
       fi

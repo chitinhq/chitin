@@ -1,0 +1,16 @@
+[      25ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://100.115.89.9:3200/node_modules/.vite/deps/react-dom_client.js?v=824a1bee:20100
+[ 1286167ms] [LOG] [vite] server connection lost. Polling for restart... @ http://100.115.89.9:3200/@vite/client:963
+[ 1286168ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1287170ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1288171ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1289172ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1290173ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1291176ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1292184ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1293198ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1294228ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1295285ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1296323ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1297431ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1298944ms] [ERROR] WebSocket connection to 'ws://100.115.89.9:3200/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://100.115.89.9:3200/@vite/client:1034
+[ 1301280ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://100.115.89.9:3200/node_modules/.vite/deps/react-dom_client.js?v=824a1bee:20100

@@ -100,6 +100,27 @@ backfilling, not by ignoring.
 - `chitin-kernel worktree status` — joins local worktrees, kanban ticket ids, and PR state for pickup/prune decisions; see [worktree conventions](./worktree-conventions.md)
 - `swarm-elo` — post-merge judge ratings (separate; doesn't drive lifecycle)
 
+## Mutation Channel
+
+`scripts/kanban-flow` is the only sanctioned mutation channel into the kanban
+DB from `swarm/*` code paths. That includes status changes, comments,
+assignee updates, retry counters, and block-reason metadata. If a swarm tool
+needs to mutate `tasks`, `task_comments`, or `task_events`, add or reuse a
+`kanban-flow <verb>` instead of writing SQL directly or calling an alternate
+board writer.
+
+The enforcement shape is intentionally two-layered:
+
+- Static: `scripts/check-swarm-kanban-isolation.sh` fails CI on direct write
+  SQL under `swarm/` (tests excluded).
+- Runtime: `kanban-flow` tags each write connection with a known
+  `PRAGMA application_id` and the DB audit triggers record every
+  `INSERT|UPDATE|DELETE` on `tasks`, `task_comments`, and `task_events` into
+  `kanban_mutations_log` with table, op, task id, application id, and pid.
+
+Followup ticket for the Go rewrite of this surface:
+`t_77f5b407-followup-1` (`chitin-kernel kanban <verb>`).
+
 ## When the state machine drifts
 
 Symptoms:

@@ -1,0 +1,13 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - paragraph [ref=e5]: ReadyBench Hire Portal
+    - heading "Sign in to your buyer workspace" [level=1] [ref=e6]
+    - paragraph [ref=e7]: Use the same ReadyBench buyer credentials you already use against the platform API.
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - text: Email
+        - textbox "Email" [ref=e10]
+      - generic [ref=e11]:
+        - text: Password
+        - textbox "Password" [ref=e12]
+      - button "Sign in" [ref=e13] [cursor=pointer]

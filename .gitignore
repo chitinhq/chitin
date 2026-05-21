@@ -77,4 +77,11 @@ __pycache__/
 *.pyc
 chitin.yaml.sig
 
+# Minnie/Octi per-goal session state (never committed) — spec 038
+.swarm/
+
 .angular
+
+# Icarus terminal-bench runtime output — the non-stop loop writes here
+# continuously (spec 068)
+jobs/

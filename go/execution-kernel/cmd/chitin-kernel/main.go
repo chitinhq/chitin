@@ -64,6 +64,8 @@ func main() {
 		cmdGate(args)
 	case "policy":
 		cmdPolicy(args)
+	case "drivers":
+		cmdDrivers(args)
 	case "explain":
 		cmdExplain(args)
 	case "envelope":

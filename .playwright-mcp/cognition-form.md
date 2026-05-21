@@ -1,0 +1,82 @@
+- generic [ref=e2]:
+  - list [ref=e7]:
+    - listitem [ref=e8]:
+      - link "Cognition" [ref=e9] [cursor=pointer]:
+        - /url: http://cognition.ai
+        - img "Cognition" [ref=e10]
+    - listitem [ref=e11]:
+      - link "Back to Cognition’s Job Listings" [ref=e12] [cursor=pointer]:
+        - /url: /cognition
+        - img [ref=e13]
+    - listitem
+  - generic [ref=e15]:
+    - heading "Deployed Engineer" [level=1] [ref=e17]
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - heading "Location" [level=2] [ref=e21]
+          - paragraph [ref=e22]: San Francisco; Austin, Texas; New York City
+        - generic [ref=e23]:
+          - heading "Employment Type" [level=2] [ref=e24]
+          - paragraph [ref=e25]: Full time
+        - generic [ref=e26]:
+          - heading "Location Type" [level=2] [ref=e27]
+          - paragraph [ref=e28]: On-site
+        - generic [ref=e29]:
+          - heading "Department" [level=2] [ref=e30]
+          - paragraph [ref=e31]:
+            - generic [ref=e32]: Customer Engineering ›
+            - generic [ref=e33]: Deployed Engineer
+      - generic [ref=e34]:
+        - tablist [ref=e35]:
+          - tab "Overview" [ref=e36] [cursor=pointer]
+          - tab "Application" [selected] [ref=e37] [cursor=pointer]
+        - tabpanel "Application" [ref=e39]:
+          - generic [ref=e40]:
+            - button "Choose File" [ref=e41]
+            - generic [ref=e43]:
+              - generic [ref=e44]:
+                - img [ref=e46]
+                - heading "Autofill from resume" [level=3] [ref=e48]
+              - paragraph [ref=e49]: Upload your resume here to autofill key application fields.
+              - button "Upload file" [ref=e51] [cursor=pointer]
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - generic [ref=e55]: Name*
+              - textbox "Name*" [ref=e57] [cursor=pointer]:
+                - /placeholder: Type here...
+            - generic [ref=e58]:
+              - generic [ref=e59]: Email*
+              - textbox "Email*" [ref=e61] [cursor=pointer]:
+                - /placeholder: hello@example.com...
+            - generic [ref=e62]:
+              - generic [ref=e63]: Resume*
+              - button "Resume*" [ref=e64]
+              - generic [ref=e65]:
+                - button "Upload File" [ref=e66] [cursor=pointer]:
+                  - img [ref=e67]
+                  - generic [ref=e69]: Upload File
+                - paragraph [ref=e70]: or drag and drop here
+            - generic [ref=e71]:
+              - generic [ref=e72]: Linkedin profile*
+              - textbox "Linkedin profile*" [ref=e74] [cursor=pointer]:
+                - /placeholder: Type here...
+            - generic [ref=e75]:
+              - generic [ref=e76]: Share an experience or achievement that you take particular pride in.
+              - textbox "Share an experience or achievement that you take particular pride in." [ref=e77] [cursor=pointer]:
+                - /placeholder: Type here...
+          - button "Submit Application" [ref=e78] [cursor=pointer]:
+            - text: Submit Application
+            - img [ref=e79]
+  - contentinfo [ref=e81]:
+    - link "Learn more about Ashby" [ref=e82] [cursor=pointer]:
+      - /url: https://www.ashbyhq.com
+      - generic [ref=e83]: Powered by
+      - img "Ashby" [ref=e84]
+    - paragraph [ref=e90]:
+      - link "Privacy Policy" [ref=e91] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/privacy
+      - link "Security" [ref=e92] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/security
+      - link "Vulnerability Disclosure" [ref=e93] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/disclosure
