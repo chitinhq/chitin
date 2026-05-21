@@ -16,6 +16,12 @@ container, so ollama (on the host) stays uncontended with the task
 process. The model lease lock (``~/.chitin-bench/model-lease.lock``)
 prevents the lint-fix watcher and the bench runner from stacking
 ollama calls.
+
+After each completed bench tick, the runner appends one gov-decision
+row to ``~/.chitin/gov-decisions-YYYY-MM-DD.jsonl`` with
+action_type=icarus_bench_tick so that every tick is queryable from
+chain_index.sqlite. The row is committed synchronously before the
+runner proceeds to the next tick so no tick is ever lost.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ STATE_FILE = CHITIN_BENCH_DIR / "bench-runner-state.json"
 LOG_FILE = CHITIN_BENCH_DIR / "bench-runner.log"
 LOCK_FILE = CHITIN_BENCH_DIR / "bench-runner.lock"
 HARBOR_TASKS_DIR = Path.home() / ".cache" / "harbor" / "tasks"
+CHITIN_DIR = Path(os.environ.get("CHITIN_HOME", str(Path.home() / ".chitin")))
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
@@ -74,6 +81,67 @@ def save_state(state: dict) -> None:
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     tmp.replace(STATE_FILE)
+
+
+def emit_gov_decision(
+    *,
+    task_name: str,
+    block_reason: str,
+    reward: float | None,
+    steps_used: int | None,
+    model: str,
+    status: str,
+) -> None:
+    """Append one gov-decision row to the Chitin governance chain.
+
+    Writes synchronously to ``~/.chitin/gov-decisions-YYYY-MM-DD.jsonl``
+    so that every completed bench tick is queryable from
+    ``chain_index.sqlite`` with action='icarus_bench_tick'.
+
+    Mirrors the write path of ``gov.WriteLog`` in the Go kernel:
+    daily-rotated, append-only JSONL. Fields follow the Decision
+    schema with icarus_bench_tick–specific metadata.
+
+    The row is committed before the runner proceeds to the next tick
+    so no tick is ever lost, matching the ticket acceptance criteria.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    date = ts[:10]  # YYYY-MM-DD
+
+    row: dict = {
+        "allowed": True,
+        "mode": "monitor",
+        "rule_id": "icarus_bench_tick",
+        "reason": block_reason if block_reason else "none",
+        "agent": "icarus-bench-runner",
+        "action_type": "icarus_bench_tick",
+        "action_target": task_name,
+        "ts": ts,
+        "model": model,
+        "block_reason": block_reason if block_reason else "none",
+    }
+    if reward is not None:
+        row["reward"] = reward
+    if steps_used is not None:
+        row["steps_used"] = steps_used
+    # Status is metadata useful for analysis even though the core
+    # ticket only requires block_reason, reward, steps_used, model.
+    row["tick_status"] = status
+
+    CHITIN_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = CHITIN_DIR / f"gov-decisions-{date}.jsonl"
+
+    line = json.dumps(row, sort_keys=True) + "\n"
+    try:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        log(f"gov-decision emitted: task={task_name} block_reason={block_reason} reward={reward} steps={steps_used}")
+    except OSError as exc:
+        # Best-effort: a full disk or permission error must not prevent
+        # the bench runner from continuing. Log the failure and move on.
+        log(f"gov-decision emit failed (best-effort, continuing): {exc}")
 
 
 def discover_tasks() -> list[tuple[str, Path]]:
@@ -126,6 +194,79 @@ def acquire_lock() -> "object":
     return fh
 
 
+def _extract_tick_metadata(result: dict, job_name: str) -> dict:
+    """Read the trial result.json written by harbor to extract
+    reward, steps_used, and block_reason for the gov-decision row.
+
+    Falls back to the ``result`` dict from ``run_one_task`` when harbor
+    didn't produce a result.json (infra_fail, timeout, etc.).
+    """
+    meta: dict = {
+        "block_reason": "none",
+        "reward": None,
+        "steps_used": None,
+    }
+
+    # Try to locate the trial result.json: jobs/icarus/<job>/<trial>/result.json
+    trial_dir = JOBS_DIR / job_name
+    if trial_dir.is_dir():
+        # Harbor creates one trial directory per attempt (-k 1 means one).
+        result_json = None
+        for trial_path in sorted(trial_dir.iterdir()):
+            candidate = trial_path / "result.json"
+            if candidate.is_file():
+                result_json = candidate
+                break  # take the first (only) trial
+        if result_json is not None:
+            try:
+                trial = json.loads(result_json.read_text())
+            except (json.JSONDecodeError, OSError):
+                return meta
+
+            # block_reason: agent_result.metadata.icarus_block_reason
+            agent_result = trial.get("agent_result") or {}
+            metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
+            icarus_reason = metadata.get("icarus_block_reason")
+            if icarus_reason:
+                meta["block_reason"] = icarus_reason
+            elif trial.get("exception_info"):
+                exc_info = trial["exception_info"]
+                meta["block_reason"] = f"harness_exception:{exc_info.get('exception_type', 'unknown')}"
+            elif result.get("status") == "timeout":
+                meta["block_reason"] = "timeout"
+
+            # reward: verifier_result.reward or verifier_result.rewards.reward
+            verifier_result = trial.get("verifier_result") or {}
+            if isinstance(verifier_result, dict):
+                if "reward" in verifier_result:
+                    try:
+                        meta["reward"] = float(verifier_result["reward"])
+                    except (TypeError, ValueError):
+                        pass
+                elif "rewards" in verifier_result and isinstance(verifier_result.get("rewards"), dict):
+                    try:
+                        meta["reward"] = float(verifier_result["rewards"]["reward"])
+                    except (TypeError, ValueError, KeyError):
+                        pass
+
+            # steps_used: agent_result.steps or agent_result.step_count
+            if isinstance(agent_result, dict):
+                steps = agent_result.get("steps") or agent_result.get("step_count")
+                if steps is not None:
+                    try:
+                        meta["steps_used"] = int(steps)
+                    except (TypeError, ValueError):
+                        pass
+    else:
+        # No job directory — use whatever we have from run_one_task.
+        if result.get("status") == "timeout":
+            meta["block_reason"] = "timeout"
+        elif result.get("status") == "infra_fail":
+            meta["block_reason"] = result.get("reason", "infra_fail")
+
+    return meta
+
+
 def run_one_task(task_name: str, task_dir: Path, model: str) -> dict:
     """Invoke ``harbor run`` against a single cached task. Returns a
     dict summarizing the outcome (used only for the runner log; the
@@ -138,7 +279,7 @@ def run_one_task(task_name: str, task_dir: Path, model: str) -> dict:
 
     harbor = shutil.which("harbor")
     if not harbor:
-        return {"status": "infra_fail", "reason": "harbor CLI not on PATH"}
+        return {"status": "infra_fail", "reason": "harbor CLI not on PATH", "job_name": job_name}
 
     env = os.environ.copy()
     env["PYTHONPATH"] = (
@@ -229,6 +370,23 @@ def main() -> int:
     now_ts = int(datetime.now(timezone.utc).timestamp())
     for name, task_dir in picks:
         result = run_one_task(name, task_dir, args.model)
+        # Extract tick metadata from the harbor result.json for the
+        # gov-decision row. Falls back gracefully for infra_fail /
+        # timeout where no result.json was written.
+        job_name = result.get("job_name", "")
+        tick_meta = _extract_tick_metadata(result, job_name)
+
+        # Emit one gov-decision row synchronously before proceeding.
+        # This guarantees every completed tick lands in the chain.
+        emit_gov_decision(
+            task_name=name,
+            block_reason=tick_meta["block_reason"],
+            reward=tick_meta["reward"],
+            steps_used=tick_meta["steps_used"],
+            model=args.model,
+            status=result.get("status", "unknown"),
+        )
+
         state.setdefault("last_tried", {})[name] = now_ts
         state.setdefault("history", []).append({
             "task_name": name, "ts": now_ts, **result,
