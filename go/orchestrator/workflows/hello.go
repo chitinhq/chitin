@@ -16,6 +16,8 @@ import (
 func Register(w worker.Worker) {
 	w.RegisterWorkflow(HelloWorkflow)
 	w.RegisterWorkflow(SequenceWorkflow)
+	w.RegisterWorkflow(SchedulerWorkflow)
+	w.RegisterWorkflow(WorkUnitWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

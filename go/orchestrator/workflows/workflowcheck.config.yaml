@@ -1,0 +1,35 @@
+# workflowcheck configuration for the Spec-DAG Scheduler (spec 076).
+#
+# workflowcheck (go.temporal.io/sdk/contrib/tools/workflowcheck) is the
+# determinism gate for the scheduler and work-unit workflows (spec 076 FR-005,
+# SC-007). Run it as:
+#
+#   workflowcheck -config workflows/workflowcheck.config.yaml ./workflows/...
+#
+# workflowcheck is a SYNTACTIC analyzer: it flags every `range` over a map as
+# non-deterministic, because in general map iteration order is unstable. The
+# functions listed below DO iterate a map — but each one immediately SORTS the
+# collected result before returning it, so the function's output is a pure,
+# deterministic mapping from its input. workflowcheck cannot see the
+# subsequent sort, so it raises a false positive; the `false` override marks
+# each as deterministic, which it provably is.
+#
+# Every override here is a range-THEN-sort function. No genuinely
+# non-deterministic construct is suppressed — the scheduler reads time only
+# through workflow.Now, sleeps only through workflow timers, and pushes every
+# side effect into an activity (see scheduler.go / work_unit.go doc comments).
+decls:
+  # dag.DAG.Nodes ranges the node map then sorts ascending by id (dag.go).
+  (*github.com/chitinhq/chitin/go/orchestrator/dag.DAG).Nodes: false
+  # dag.DAG.checkAcyclic collects node ids from the map then sorts them so the
+  # DFS visit order — and therefore the named cycle — is deterministic
+  # (acyclic.go).
+  (*github.com/chitinhq/chitin/go/orchestrator/dag.DAG).checkAcyclic: false
+  # dag.DAG.Stalled ranges the node map but only to test predicates whose
+  # outcome is order-independent (any-running, any-undone), then delegates the
+  # ordered decision to Frontier (frontier.go).
+  (*github.com/chitinhq/chitin/go/orchestrator/dag.DAG).Stalled: false
+  # workflows.sortedKeys ranges a node-id-keyed map then sorts ascending — it
+  # exists precisely to give the scheduler a deterministic map iteration order
+  # (scheduler.go).
+  github.com/chitinhq/chitin/go/orchestrator/workflows.sortedKeys: false
