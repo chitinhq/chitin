@@ -79,7 +79,8 @@ class TestTaskCompleteSentinel(TestCase):
 
 class TestLoopDetector(TestCase):
     """Invariant: trips on (a) 3 consecutive identical commands, OR
-    (b) 3 consecutive non-zero with identical captured output.
+    (b) 3 consecutive non-zero with identical captured output, OR
+    (c) 3 consecutive zero-exit commands with no captured output.
     Resets on any new command."""
 
     def test_no_loop_under_three(self):
@@ -101,6 +102,15 @@ class TestLoopDetector(TestCase):
         ld = LoopDetector()
         for cmd in ("cat a", "cat b", "cat c"):
             ld.record(cmd, ExecResult(stderr="permission denied", return_code=1))
+        self.assertTrue(ld.is_looping())
+
+    def test_three_silent_successes_trip(self):
+        """Three zero-exit commands with no observation content are not
+        progress; the harness should loud-fail instead of spending the
+        whole step budget."""
+        ld = LoopDetector()
+        for cmd in ("curl a", "curl b", "curl c"):
+            ld.record(cmd, ExecResult(return_code=0))
         self.assertTrue(ld.is_looping())
 
     def test_changing_output_does_not_trip(self):

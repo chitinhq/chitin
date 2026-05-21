@@ -187,7 +187,8 @@ class LoopDetector:
     Trips when:
     - The same command appears in three consecutive turns, OR
     - Three consecutive turns return non-zero exit AND no stdout/stderr
-      progress (same captured output).
+      progress (same captured output), OR
+    - Three consecutive turns return zero exit with no stdout/stderr at all.
 
     Reset on any successful exec or any new command.
     """
@@ -208,6 +209,8 @@ class LoopDetector:
         if len(self._cmds) < 3:
             return False
         if all(c == self._cmds[0] for c in self._cmds):
+            return True
+        if all(rc == 0 and out == "" for rc, out in self._results):
             return True
         if (
             all(rc != 0 for rc, _ in self._results)
@@ -285,6 +288,8 @@ when it sees this sentinel.
 - If a command returns non-zero, read the error, decide what to do
   next, and try a different command. Do NOT repeat the same command
   three times — the harness detects loops and aborts.
+- Three consecutive commands that succeed but produce no stdout/stderr
+  are also treated as a loop. Silent success is not progress.
 - Per-command timeout: {step_timeout}s. Whole-trial wallclock cap:
   {wallclock}s. Step budget: {step_budget} turns.
 
