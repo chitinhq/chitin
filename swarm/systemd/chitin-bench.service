@@ -1,12 +1,12 @@
 [Unit]
-Description=Icarus terminal-bench continuous loop (spec 068)
-Documentation=file:///home/red/workspace/chitin/.specify/specs/068-icarus-bench-loop-revival/spec.md
+Description=Chitin Bench terminal-bench continuous loop (spec 068)
+Documentation=file:///home/red/workspace/chitin/.specify/specs/068-chitin-bench-loop-revival/spec.md
 After=network-online.target ollama.service
 Wants=ollama.service
 
 [Service]
 Type=simple
-ExecStart=/home/red/workspace/chitin/swarm/bin/icarus-bench-loop
+ExecStart=/home/red/workspace/chitin/swarm/bin/chitin-bench-loop
 Restart=always
 RestartSec=30
 # Bench load is best-effort: yield CPU to interactive/agent work.
