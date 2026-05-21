@@ -79,6 +79,68 @@ func runWorkUnit(t *testing.T, node dag.Node, driverID string) (activities.Creat
 	return gotCreate, res, tornDown
 }
 
+// TestWorkUnit_PassesDescriptionToDriver proves an agent node's Description
+// reaches the driver as the work unit's Context — the instruction the driver
+// builds the agent prompt from — and that an empty Description falls back to
+// the spec/task ids so the agent is never invoked with no instruction.
+func TestWorkUnit_PassesDescriptionToDriver(t *testing.T) {
+	cases := []struct {
+		name        string
+		description string
+		wantContext string
+	}{
+		{"description carried verbatim",
+			"Implement the greeting constant in greeting.go",
+			"Implement the greeting constant in greeting.go"},
+		{"empty description falls back to ids", "", "spec 070 task T001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := suite.NewTestWorkflowEnvironment()
+			const driverID = "driver-impl"
+			var gotContext string
+
+			env.RegisterActivityWithOptions(
+				func(_ context.Context, _ activities.CreateWorktreeInput) (activities.CreateWorktreeResult, error) {
+					return activities.CreateWorktreeResult{Path: "/worktrees/wu-desc"}, nil
+				},
+				activityOpts("CreateWorktree"),
+			)
+			env.RegisterActivityWithOptions(
+				func(_ context.Context, _ activities.TeardownWorktreeInput) error { return nil },
+				activityOpts("TeardownWorktree"),
+			)
+			env.RegisterActivityWithOptions(
+				func(_ context.Context, wu driver.WorkUnit) (driver.Result, error) {
+					gotContext = wu.Context
+					return driver.Result{WorkUnitID: wu.ID, DriverID: driverID, Status: driver.StatusSucceeded}, nil
+				},
+				activityOpts("InvokeDriver:"+driverID),
+			)
+
+			node := dag.Node{
+				ID: "n-desc", SpecRef: "070", TaskRef: "T001",
+				Capability: "code.implement", Description: tc.description,
+				TargetRepo: "/repos/x", BaseRef: "main", WorktreeRequired: true,
+			}
+			env.ExecuteWorkflow(WorkUnitWorkflow, WorkUnitInput{
+				Node: node, DriverID: driverID, SchedulerRunID: "desc-run",
+			})
+
+			if !env.IsWorkflowCompleted() {
+				t.Fatalf("work-unit workflow did not complete")
+			}
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatalf("work-unit workflow errored: %v", err)
+			}
+			if gotContext != tc.wantContext {
+				t.Errorf("driver received Context %q, want %q", gotContext, tc.wantContext)
+			}
+		})
+	}
+}
+
 // TestWorkUnit_WorktreeFromNodeRepo proves FR-013 / US3 acceptance scenario 1:
 // a work unit's worktree is created from the node's named target repo at its
 // named base ref — never a hard-coded repo.

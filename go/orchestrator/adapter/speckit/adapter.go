@@ -321,6 +321,7 @@ func compileSpecDir(absSpecDir, relSpecDir, nodeNS, specRef string) (*CompiledSp
 			SpecRef:          specRef,
 			TaskRef:          t.ID,
 			Capability:       capability,
+			Description:      ctx.Description,
 			Priority:         DerivePriority(t),
 			TargetRepo:       "",   // an input the scheduler supplies, not the spec
 			BaseRef:          "",   // ditto

@@ -175,11 +175,19 @@ func invokeDriver(
 		},
 	})
 
+	// Context is the work unit's instructions — the driver builds the agent
+	// prompt from it. Carry the node's task description (the agent-node
+	// analogue of a deterministic node's command); fall back to the spec/task
+	// ids so the agent is never invoked with an empty instruction.
+	instructions := node.Description
+	if instructions == "" {
+		instructions = "spec " + node.SpecRef + " task " + node.TaskRef
+	}
 	wu := driver.WorkUnit{
 		ID:           node.ID,
 		SpecID:       node.SpecRef,
 		TaskID:       node.TaskRef,
-		Context:      node.SpecRef + " " + node.TaskRef,
+		Context:      instructions,
 		WorktreePath: worktreePath,
 	}
 

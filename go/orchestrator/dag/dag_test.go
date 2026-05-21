@@ -200,6 +200,13 @@ func TestNode_Equal(t *testing.T) {
 			t.Error("nodes with different Command must not be equal")
 		}
 	})
+	t.Run("differing Description are not equal", func(t *testing.T) {
+		other := base
+		other.Description = "implement the core type"
+		if base.Equal(other) {
+			t.Error("nodes with different Description must not be equal")
+		}
+	})
 }
 
 // TestNew_EmptyDAG proves the empty DAG is a valid, queryable zero value:

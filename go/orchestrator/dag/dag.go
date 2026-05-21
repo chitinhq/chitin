@@ -64,7 +64,7 @@ var nodeStatusNames = [...]string{
 	StatusRunning:                 "running",
 	StatusDone:                    "done",
 	StatusFailed:                  "failed",
-	StatusBlockedUnroutable:        "blocked-unroutable",
+	StatusBlockedUnroutable:       "blocked-unroutable",
 	StatusBlockedDependencyFailed: "blocked-dependency-failed",
 }
 
@@ -149,8 +149,9 @@ func (k NodeKind) Valid() bool {
 // A node's Kind decides HOW it runs (spec 076 FR-017): an agent node is
 // routed by Capability to a driver; a deterministic node instead runs its
 // Command as a plain Temporal activity. The two kinds use disjoint fields —
-// Capability is the agent-node routing key, Command/Args the deterministic-
-// node step spec — though a node may carry both for telemetry context.
+// Capability and Description are the agent-node routing key and instruction,
+// Command/Args the deterministic-node step spec — though a node may carry both
+// for telemetry context.
 type Node struct {
 	// ID is the stable, DAG-unique node identifier. It is the dependency-edge
 	// key and the final, stable tie-breaker in frontier ordering
@@ -184,6 +185,14 @@ type Node struct {
 	// node — e.g. ["test", "./..."] for `go test ./...`. Ignored for an
 	// NodeKindAgent node.
 	Args []string `json:"args,omitempty"`
+	// Description is the human- and driver-facing instruction for an
+	// NodeKindAgent node — the task's one-line description as written in the
+	// source kit artifact. It is the agent-node analogue of an
+	// NodeKindDeterministic node's Command/Args: the irreducible statement of
+	// what the work unit must do. The scheduler carries it to the driver so a
+	// dispatched agent acts on the task itself, not merely its id. Empty for a
+	// deterministic node, and for an agent node whose adapter supplied none.
+	Description string `json:"description,omitempty"`
 	// Priority orders the runnable frontier: higher priority is dispatched
 	// first (spec 076 FR-004). It is a declared property of the node, never
 	// inferred heuristically (spec 070 FR-015). Ties on priority are broken
@@ -220,6 +229,7 @@ func (n Node) Equal(other Node) bool {
 		n.Kind != other.Kind ||
 		n.Capability != other.Capability ||
 		n.Command != other.Command ||
+		n.Description != other.Description ||
 		n.Priority != other.Priority ||
 		n.TierHint != other.TierHint ||
 		n.TargetRepo != other.TargetRepo ||
