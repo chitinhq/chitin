@@ -247,9 +247,9 @@ func prDiffRange(a Action, repoRoot string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("git symbolic-ref --short refs/remotes/origin/HEAD: %w", err)
 		}
-		base = strings.TrimPrefix(defaultBase, "origin/")
+		base = defaultBase
 	}
-	return base + "..." + head, nil
+	return remoteBaseRef(base) + "..." + head, nil
 }
 
 func parsePRCreateBaseHead(raw string) (base, head string) {
@@ -258,6 +258,16 @@ func parsePRCreateBaseHead(raw string) (base, head string) {
 		return "", ""
 	}
 	return cmd.Flags["base"], cmd.Flags["head"]
+}
+
+func remoteBaseRef(base string) string {
+	base = strings.TrimSpace(base)
+	base = strings.TrimPrefix(base, "refs/remotes/")
+	base = strings.TrimPrefix(base, "refs/heads/")
+	if base == "" || strings.HasPrefix(base, "origin/") {
+		return base
+	}
+	return "origin/" + base
 }
 
 func boundsGitOutput(repoPath string, args ...string) (string, error) {

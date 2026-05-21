@@ -260,6 +260,29 @@ func TestCollectDiffStats_GithubPRCreateUsesHeadBranchNotCwdHead(t *testing.T) {
 	}
 }
 
+func TestCollectDiffStats_GithubPRCreateUsesRemoteBaseWhenLocalBaseIsStale(t *testing.T) {
+	repo := initBoundsTestRepo(t)
+	oldMain := gitOutputBounds(t, repo, "rev-parse", "main")
+
+	writeAndCommitBoundsFile(t, repo, "already-merged.txt", strings.Repeat("b\n", 2200), "remote base change")
+	runGitBounds(t, repo, "push", "origin", "main")
+	runGitBounds(t, repo, "update-ref", "refs/heads/main", oldMain)
+
+	runGitBounds(t, repo, "checkout", "-b", "feature/small", "origin/main")
+	writeAndCommitBoundsFile(t, repo, "small.txt", strings.Repeat("a\n", 20), "small branch change")
+
+	files, ins, del, err := collectDiffStats(Action{
+		Type:   ActGithubPRCreate,
+		Target: "gh pr create --base main --head feature/small",
+	}, repo, nil)
+	if err != nil {
+		t.Fatalf("collectDiffStats: %v", err)
+	}
+	if files != 1 || ins != 20 || del != 0 {
+		t.Fatalf("github.pr.create should diff origin/main...feature/small, got files=%d ins=%d del=%d", files, ins, del)
+	}
+}
+
 // Integration: ExcludePaths drops a generated lockfile from the totals
 // measured by collectDiffStats against a real git diff.
 func TestCollectDiffStats_ExcludePathsDropsLockfile(t *testing.T) {
@@ -390,6 +413,17 @@ func runGitBounds(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func gitOutputBounds(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func captureStderr(t *testing.T, fn func()) string {
