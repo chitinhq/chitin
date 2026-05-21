@@ -37,6 +37,7 @@ export default [
             { sourceTag: 'scope:app',        onlyDependOnLibsWithTags: ['scope:analytics'] },
             { sourceTag: 'scope:tooling',    onlyDependOnLibsWithTags: ['scope:analytics', 'scope:tooling'] },
             { sourceTag: 'scope:sdk',        onlyDependOnLibsWithTags: ['scope:analytics', 'scope:sdk'] },
+            { sourceTag: 'scope:server',     onlyDependOnLibsWithTags: [] },
             { sourceTag: 'scope:kernel',     onlyDependOnLibsWithTags: [] },
           ],
         },

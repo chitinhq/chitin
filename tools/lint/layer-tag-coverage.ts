@@ -1,17 +1,26 @@
-// Structural linter: every `layer:*` and `scope:*` nx tag in any
-// workspace project metadata has a matching `depConstraints` entry in
-// `eslint.config.mjs`.
+// Structural linter for the chitin Nx workspace. Three enforced
+// invariants, all shifted from review-time to author-time:
 //
-// Why: four separate Copilot review cycles (PRs #194 / #195 / #199 /
-// #192-cli-edge) caught the same omission — adding a new layer tag
-// without a corresponding depConstraint. The boundary rule then
-// silently fails to constrain the new layer (or fails open / fails
-// strict depending on @nx/enforce-module-boundaries' interpretation).
-// This linter moves the catch from review-time to author-time.
+//   1. Tag-coverage — every `layer:*` and `scope:*` nx tag carried by
+//      any project has a matching `depConstraints` entry in
+//      `eslint.config.mjs`. Four separate Copilot review cycles (PRs
+//      #194 / #195 / #199 / #192-cli-edge) caught the same omission:
+//      adding a layer tag without a depConstraint, so the boundary
+//      rule silently fails to constrain the new layer.
+//
+//   2. Single mechanism (spec 074, FR-004 / INV-004) — every project
+//      registers via `project.json`, never the `package.json` `nx`
+//      field. An `nx` field is a second mechanism and a violation.
+//
+//   3. Project convention (spec 074, FR-002 / FR-003 / FR-005) — every
+//      project.json carries the full `type:/scope:/layer:/lang:` tag
+//      set and declares a `validate` target. `validate` is the
+//      universal verification target every project runs in CI; each
+//      project's `validate` composes its own build/lint/test, so
+//      enforcing its presence enforces that the project is verified.
 //
 // Pure functions are exported so the test suite can pin every branch
-// of the symmetric-difference logic without standing up the
-// filesystem walk.
+// of the logic without standing up the filesystem walk.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -159,11 +168,145 @@ export function findCoverageGaps(
   return { missing, orphaned };
 }
 
+// ── Project convention (spec 074) ──────────────────────────────────
+
+/**
+ * The four tag namespaces every project MUST carry (FR-003). The gate
+ * checks only *presence* of each namespace, not the chosen value.
+ */
+export const REQUIRED_TAG_NAMESPACES = [
+  'type:',
+  'scope:',
+  'layer:',
+  'lang:',
+] as const;
+
+/**
+ * The one target every project MUST declare (FR-002). `validate` is the
+ * umbrella: Go's runs `vet && test`, Python's `compileall && pytest`,
+ * TS's `tsc && vitest`, and CI runs `nx affected -t validate`. Other
+ * standard targets (build/test/lint) are present where they apply; the
+ * gate keys on `validate` because its presence is the provable
+ * invariant that the project is verified at all.
+ */
+export const REQUIRED_TARGET = 'validate';
+
+/** A project as seen by the convention checker — one project.json. */
+export interface ProjectShape {
+  /** Repo-relative path to the project.json. */
+  path: string;
+  /** Project name (project.json `name`), or the dir path if unnamed. */
+  name: string;
+  /** Root-level `tags` array. */
+  tags: string[];
+  /** Declared target names (`targets` object keys). */
+  targetNames: string[];
+}
+
+/** A project that fails the convention gate. */
+export interface ConventionViolation {
+  /** Project name (for the error message). */
+  project: string;
+  /** Repo-relative project.json path. */
+  path: string;
+  /** Required tag namespaces with no carrying tag, in canonical order. */
+  missingTagNamespaces: string[];
+  /** Required targets not declared. */
+  missingTargets: string[];
+}
+
+/**
+ * Project the parsed JSON of a project.json file onto a ProjectShape.
+ * Returns null for any file that is not a project.json — package.json
+ * files are handled by the single-mechanism check, not here.
+ *
+ * Tolerant of malformed shapes: a missing/non-array `tags` becomes
+ * `[]`, a missing/non-object `targets` becomes `[]`. Such a project
+ * then surfaces as a violation (everything missing) rather than
+ * crashing the run.
+ */
+export function toProjectShape(pkg: PackageJsonShape): ProjectShape | null {
+  if (!pkg.path.endsWith('project.json')) return null;
+  const json = (pkg.json && typeof pkg.json === 'object' ? pkg.json : {}) as {
+    name?: unknown;
+    tags?: unknown;
+    targets?: unknown;
+  };
+  const dirPath = pkg.path.slice(0, -'/project.json'.length);
+  const name =
+    typeof json.name === 'string' && json.name.length > 0
+      ? json.name
+      : dirPath;
+  const tags = Array.isArray(json.tags)
+    ? json.tags.filter((t): t is string => typeof t === 'string')
+    : [];
+  const targetNames =
+    json.targets && typeof json.targets === 'object'
+      ? Object.keys(json.targets as Record<string, unknown>)
+      : [];
+  return { path: pkg.path, name, tags, targetNames };
+}
+
+/**
+ * Pure: given every project.json shape, find those missing a required
+ * tag namespace or the `validate` target.
+ *
+ * Knuth-style invariant: a project appears in the result IFF it is
+ * missing at least one required namespace or target, and a returned
+ * violation always lists ≥1 concrete gap. Output is sorted by project
+ * path so two runs over the same workspace are byte-identical.
+ */
+export function findConventionViolations(
+  projects: readonly ProjectShape[],
+): ConventionViolation[] {
+  const violations: ConventionViolation[] = [];
+  for (const project of projects) {
+    const missingTagNamespaces: string[] = REQUIRED_TAG_NAMESPACES.filter(
+      (ns) => !project.tags.some((t) => t.startsWith(ns)),
+    );
+    const missingTargets = project.targetNames.includes(REQUIRED_TARGET)
+      ? []
+      : [REQUIRED_TARGET];
+    if (missingTagNamespaces.length > 0 || missingTargets.length > 0) {
+      violations.push({
+        project: project.name,
+        path: project.path,
+        missingTagNamespaces,
+        missingTargets,
+      });
+    }
+  }
+  violations.sort((a, b) => a.path.localeCompare(b.path));
+  return violations;
+}
+
+/**
+ * Pure: find every package.json that still declares an `nx` field.
+ * Spec 074 converges on project.json as the single registration
+ * mechanism (FR-004, INV-004) — an `nx` field in package.json is a
+ * second mechanism and a violation.
+ *
+ * Returns repo-relative paths, sorted for deterministic output.
+ */
+export function findNxFieldPackageJsons(
+  pkgs: readonly PackageJsonShape[],
+): string[] {
+  const out: string[] = [];
+  for (const pkg of pkgs) {
+    if (!pkg.path.endsWith('package.json')) continue;
+    const json = pkg.json;
+    if (!json || typeof json !== 'object') continue;
+    const nxField = (json as { nx?: unknown }).nx;
+    if (nxField && typeof nxField === 'object') out.push(pkg.path);
+  }
+  return out.sort();
+}
+
 // ── I/O wrappers ───────────────────────────────────────────────────
 
 /**
- * Walk a workspace root for package.json AND project.json files
- * under `apps/`, `libs/`, `tools/`, `go/`, and `python/`, skipping node_modules
+ * Walk a workspace root for package.json AND project.json files under
+ * every top-level dir that can hold a project, skipping node_modules
  * and dist. Returns parsed JSON keyed by repo-relative path.
  *
  * Both file shapes are walked because Nx accepts tags in either:
@@ -172,12 +315,22 @@ export function findCoverageGaps(
  * skip the other — exactly the omission the linter is supposed to catch.
  */
 export function loadWorkspacePackageJsons(rootDir: string): PackageJsonShape[] {
-  // Top-level dirs that can contain workspace projects. Includes
-  // `tools/` (this lib lives there), `go/` (the Go kernel carries
-  // an Nx project.json with layer:kernel), and `python/` (the analysis
-  // library carries layer:analysis); otherwise those tags are
-  // mis-reported as orphaned.
-  const targets = ['apps', 'libs', 'tools', 'go', 'python'];
+  // Every top-level dir that can contain a workspace project. `go/` and
+  // `python/` carry Nx project.json files (the kernel/analysis); `tools/`
+  // holds this lib; `services/`, `bench/`, and `swarm/` hold projects
+  // registered by spec 074 Phase 1. A dir omitted here makes its
+  // projects invisible to the gate — the registration gap this spec
+  // closes (FR-005: coverage for *all* projects, every language).
+  const targets = [
+    'apps',
+    'libs',
+    'tools',
+    'go',
+    'python',
+    'services',
+    'bench',
+    'swarm',
+  ];
   const out: PackageJsonShape[] = [];
   for (const top of targets) {
     const topPath = join(rootDir, top);
@@ -274,6 +427,10 @@ export interface LintResult {
   ok: boolean;
   layer: CoverageGaps;
   scope: CoverageGaps;
+  /** Projects missing a required tag namespace or the validate target. */
+  convention: ConventionViolation[];
+  /** package.json files still declaring an `nx` field (FR-004). */
+  nxFieldPackageJsons: string[];
 }
 
 export async function lintLayerTagCoverage(opts: {
@@ -298,10 +455,21 @@ export async function lintLayerTagCoverage(opts: {
     scopeTagsByPath,
     extractDepConstraintScopeTags(depConstraints),
   );
+  const projects = pkgs
+    .map(toProjectShape)
+    .filter((p): p is ProjectShape => p !== null);
+  const convention = findConventionViolations(projects);
+  const nxFieldPackageJsons = findNxFieldPackageJsons(pkgs);
   return {
-    ok: layerGaps.missing.length === 0 && scopeGaps.missing.length === 0,
+    ok:
+      layerGaps.missing.length === 0 &&
+      scopeGaps.missing.length === 0 &&
+      convention.length === 0 &&
+      nxFieldPackageJsons.length === 0,
     layer: layerGaps,
     scope: scopeGaps,
+    convention,
+    nxFieldPackageJsons,
   };
 }
 
@@ -329,6 +497,43 @@ function printCoverageResult(
   }
 }
 
+function printConventionResult(result: LintResult): void {
+  if (result.nxFieldPackageJsons.length > 0) {
+    console.error(
+      'single-mechanism: ERROR — package.json files declaring an `nx` field:',
+    );
+    for (const path of result.nxFieldPackageJsons) {
+      console.error(`  ${path}`);
+    }
+    console.error(
+      '  → move the Nx config to a project.json (spec 074 FR-004 / INV-004).',
+    );
+    console.error('');
+  }
+
+  if (result.convention.length > 0) {
+    console.error(
+      'project-convention: ERROR — projects missing a required tag or target:',
+    );
+    for (const v of result.convention) {
+      console.error(`  ${v.project}  (${v.path})`);
+      if (v.missingTagNamespaces.length > 0) {
+        console.error(
+          `    missing tag namespace(s): ${v.missingTagNamespaces.join(', ')}`,
+        );
+      }
+      if (v.missingTargets.length > 0) {
+        console.error(`    missing target(s): ${v.missingTargets.join(', ')}`);
+      }
+    }
+    console.error(
+      '  → every project carries type:/scope:/layer:/lang: tags and a ' +
+        '`validate` target (spec 074 FR-002 / FR-003).',
+    );
+    console.error('');
+  }
+}
+
 async function main(): Promise<void> {
   const root = process.cwd();
   const eslintConfig = join(root, 'eslint.config.mjs');
@@ -339,6 +544,7 @@ async function main(): Promise<void> {
 
   printCoverageResult('layer-tag-coverage', 'layer', result.layer);
   printCoverageResult('scope-tag-coverage', 'scope', result.scope);
+  printConventionResult(result);
 
   if (result.layer.missing.length > 0 || result.scope.missing.length > 0) {
     console.error('');
@@ -349,12 +555,11 @@ async function main(): Promise<void> {
   }
 
   if (result.ok) {
+    const orphans =
+      result.layer.orphaned.length + result.scope.orphaned.length;
     console.error(
-      `tag-coverage: ok (` +
-      `${result.layer.missing.length + result.scope.missing.length} errors, ` +
-      `${result.layer.orphaned.length + result.scope.orphaned.length} orphan warning${
-        result.layer.orphaned.length + result.scope.orphaned.length === 1 ? '' : 's'
-      })`,
+      `structural-lint: ok (0 errors, ${orphans} orphan warning` +
+        `${orphans === 1 ? '' : 's'})`,
     );
   }
 
