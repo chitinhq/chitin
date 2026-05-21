@@ -137,7 +137,7 @@ spec 049 §R6.
 > Spec 066 adds structured decision records and drift analysis to the
 > kanban grooming loop (spec 054 stage 8 → stage 0 flywheel telemetry).
 
-|| Spec | Layer | Slug | Status | Bound ticket |
+| Spec | Layer | Slug | Status | Bound ticket |
 |------|-------|------|--------|---------------|
 | 066 | 8→0 | grooming-telemetry | draft | `t_70a085ab` |
 
@@ -147,7 +147,7 @@ spec 049 §R6.
 > tickets: routing (→ terminal worker via _pick_driver) vs. implementer
 > (→ Clawta directly when Stage 5 handoff present). Parent: specs 049, 054.
 
-|| Spec | Layer | Slug | Status | Bound ticket |
+| Spec | Layer | Slug | Status | Bound ticket |
 |------|-------|------|--------|---------------|
 | 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
 

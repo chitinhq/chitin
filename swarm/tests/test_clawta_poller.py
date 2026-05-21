@@ -1385,8 +1385,6 @@ class ClawtaPollerSpec067Tests(unittest.TestCase):
             conn.close()
 
             with mock.patch.object(module, "DB_PATH", db_path), \
-                 mock.patch.object(module, "fetch_routable_for_implementer",
-                                   wraps=module.fetch_routable_for_implementer), \
                  mock.patch.object(module, "dispatch_ticket", return_value=True) as mock_dispatch, \
                  mock.patch.object(module, "filter_tickets_with_incomplete_runs",
                                    side_effect=lambda x: (x, [])), \
