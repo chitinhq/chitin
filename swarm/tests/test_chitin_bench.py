@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest import TestCase, main
+from unittest import TestCase, main, mock
+from urllib import error as urllib_error
 
 from harbor.environments.base import ExecResult
 
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
     LoopDetector,
+    BenchOllamaError,
+    BenchOllamaTimeout,
     _strip_provider_prefix,
     is_task_complete,
+    ollama_chat,
     parse_bash_block,
 )
 
@@ -139,6 +143,35 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestOllamaChatFailures(TestCase):
+    """Invariant: Ollama decode timeouts are classified separately from
+    generic HTTP failures so timeout tickets are triaged correctly."""
+
+    def test_timeout_raises_timeout_block_reason(self):
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            with self.assertRaises(BenchOllamaTimeout):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
+
+    def test_urlerror_timeout_raises_timeout_block_reason(self):
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=urllib_error.URLError(TimeoutError("timed out")),
+        ):
+            with self.assertRaises(BenchOllamaTimeout):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
+
+    def test_non_timeout_urlerror_stays_generic(self):
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=urllib_error.URLError("connection refused"),
+        ):
+            with self.assertRaises(BenchOllamaError):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──

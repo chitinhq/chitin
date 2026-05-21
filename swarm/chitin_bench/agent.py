@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,6 +81,10 @@ class BenchParseFailure(BenchLoudFail):
 
 class BenchOllamaError(BenchLoudFail):
     block_reason = "ollama_error"
+
+
+class BenchOllamaTimeout(BenchLoudFail):
+    block_reason = "ollama_timeout"
 
 
 class BenchLoopDetected(BenchLoudFail):
@@ -138,7 +143,13 @@ def ollama_chat(
     try:
         with urllib_request.urlopen(req, timeout=timeout_s) as r:
             data = json.loads(r.read())
-    except (urllib_error.URLError, urllib_error.HTTPError, OSError) as exc:
+    except (TimeoutError, socket.timeout) as exc:
+        raise BenchOllamaTimeout(f"ollama timed out after {timeout_s}s") from exc
+    except urllib_error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise BenchOllamaTimeout(f"ollama timed out after {timeout_s}s") from exc
+        raise BenchOllamaError(f"ollama HTTP failed: {exc}") from exc
+    except (urllib_error.HTTPError, OSError) as exc:
         raise BenchOllamaError(f"ollama HTTP failed: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise BenchOllamaError(f"ollama returned non-JSON: {exc}") from exc
