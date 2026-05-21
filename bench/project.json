@@ -1,0 +1,32 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "governance-bench",
+  "root": "bench",
+  "sourceRoot": "bench",
+  "projectType": "application",
+  "tags": ["type:app", "scope:tooling", "layer:tooling", "lang:python"],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "bench",
+        "command": "python3 -m compileall -q ."
+      }
+    },
+    "compile": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "bench",
+        "command": "python3 -m compileall -q ."
+      }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "bench",
+        "command": "python3 -m compileall -q ."
+      },
+      "dependsOn": ["^validate"]
+    }
+  }
+}
