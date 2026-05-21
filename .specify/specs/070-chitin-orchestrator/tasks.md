@@ -29,7 +29,7 @@ New Go module `go/orchestrator/` — `cmd/chitin-orchestrator/`, `workflows/`,
 - [ ] T008 [P] Implement the activity base in `go/orchestrator/activities/base.go` — retry-policy + timeout conventions + idempotency helpers (FR-004, FR-005)
 - [ ] T009 Implement the Migration register (legacy → workflow → status) in `go/orchestrator/activities/migration_register.go` (data-model.md)
 - [ ] T010 Implement a hello-world workflow + its replay test in `go/orchestrator/workflows/hello.go` — the Phase 0 exit check (quickstart §3)
-- [ ] T011 Create `swarm/bin/install-chitin-orchestrator.sh` — idempotent installer + `swarm/systemd/chitin-orchestrator.service` (constitution §4)
+- [X] T011 Create `swarm/bin/install-chitin-orchestrator.sh` — idempotent installer + `swarm/systemd/chitin-orchestrator.service` (constitution §4)
 
 ## Phase 3: User Story 1 — Orchestration you can see and trust (Priority: P1) 🎯 MVP
 

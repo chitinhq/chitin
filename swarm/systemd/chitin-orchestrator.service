@@ -1,0 +1,16 @@
+[Unit]
+Description=Chitin Orchestrator worker host (spec 070)
+After=network-online.target temporal-dev.service
+Wants=temporal-dev.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/chitin-orchestrator
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+Nice=5
+
+[Install]
+WantedBy=default.target
