@@ -130,7 +130,7 @@ spec 049 §R6.
 | 061 | L1 | unified-spec-model | draft | `t_095e6cf0` |
 | 062 | L2/L3 | spec-build-attribution | draft | `t_0291fcfc` |
 | 063 | L5 | cross-layer-replay | draft | `t_87eeb464` |
-| 064 | L6 | telemetry-spec-feedback | draft (Q1+Q2 resolved) | `t_c2c59167`; PR #805 |
+| 064 | L6 | telemetry-spec-feedback | implemented (3/3 slices merged) | `t_c2c59167`; PRs #823 #824 #825 |
 | 065 | L7 | goal-rebuild-engine | draft | `t_aaf68eaa` |
 
 ## Grooming observability — spec 066
