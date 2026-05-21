@@ -1,6 +1,6 @@
 ---
 name: programmer
-description: "Default worker role for code-change tickets. Edits code on a feature branch in a pre-prepared worktree, runs tests, commits. Lobster orchestrates the worktree creation, push, and PR open — the worker just makes the change."
+description: "Worker role for code-change tickets. Edits code on a feature branch in a pre-prepared worktree, runs tests, commits. Lobster orchestrates the worktree creation, push, and PR open — the worker just makes the change."
 allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
 success_criteria:
   - Code change committed on the feature branch lobster prepared
@@ -11,10 +11,30 @@ success_criteria:
 
 # Programmer role
 
-The default worker role for tickets that ship code. Clawta dispatches
-you to a ticket; lobster prepares a clean worktree on a feature branch
-and exec's you in it. **Your job: make the change, run tests, commit.
-Then exit.** Lobster handles everything else.
+The default worker role for tickets that ship code. You pull a
+ticket from the pool; lobster prepares a clean worktree on a feature
+branch and exec's you in it. **Your job: make the change, run tests,
+commit. Then exit.** Lobster handles everything else.
+
+## Pull-from-pool tick loop
+
+Every agent, every wake, runs this loop **in order** and **stops at
+the first match**:
+
+1. **Advance my own work.** If I have an `in_progress` or `review`
+   ticket assigned to me, move it one concrete step. Finish it, send
+   it to `review`, or `block` it with a reason.
+2. **Review a peer.** If a ticket is in `review` and I am **not** its
+   author, review it now.
+3. **Pull from the pool.** Else claim the highest-priority `ready`
+   ticket (or a `triage` ticket and groom it), set `in_progress` +
+   assignee = me, and start.
+4. **Never idle.** If the pool is empty, look for `blocked` tickets
+   whose blocker has cleared, or groom `triage`. Only stop when the
+   board has no actionable work.
+
+One ticket per tick. The loop is strict priority: own work > peer
+review > pool claim > idle fill.
 
 ## When to apply
 
@@ -58,6 +78,27 @@ You do not need to repeat any of these steps.
    the branch, opens a PR with the commit's subject as title, and
    records the PR url back on the kanban ticket via a `pr_opened`
    event. No action needed from you.
+
+## Escalation contract
+
+Escalate to the operator **only** by setting a ticket to `blocked` with
+a reason that names the exact missing input (a decision, a credential,
+an external dependency). Everything else — grooming, spec-writing,
+implementation, review routing — you do yourself.
+
+**"I don't know what to do next" is not a block; it is a grooming
+task.**
+
+Valid block reasons name the specific decision or credential needed:
+
+- "Need operator decision: rate-limit key strategy (IP vs user_id)"
+- "Missing GH_TOKEN for finalize_dispatch; branch pushed but PR not opened"
+
+Invalid block reasons (will be rejected / regroomed):
+
+- "stuck"
+- "don't know what to do"
+- "waiting for someone"
 
 ## Anti-patterns
 

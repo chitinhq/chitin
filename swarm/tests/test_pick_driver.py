@@ -154,6 +154,27 @@ class PickDriverTests(unittest.TestCase):
         self.assertIn('"warning": "driver_not_kernel_approved"', result.stderr)
         self.assertIn('"driver": "copilot"', result.stderr)
 
+    def test_kernel_drivers_with_null_id_not_treated_as_approved(self):
+        """Safety: a driver entry with id=null must not add literal 'None'
+        to the approved set (str(None) == 'None' is truthy)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kernel = self.write_kernel_stub(
+                root,
+                "printf '%s\\n' '{\"drivers\":[{\"id\":null},{\"id\":\"copilot\"}],\"count\":2}'\n",
+            )
+            result = self.run_pick_driver_raw(
+                json.dumps({"complexity": "low", "capabilities": ["python"]}),
+                CLAWTA_EXPLORATION_PERCENT="0",
+                CHITIN_KERNEL_BIN=str(kernel),
+            )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["driver"], "copilot")
+        self.assertEqual(payload["approval_source"], "kernel")
+        self.assertNotIn("None", payload["driver"])
+
     def test_kernel_empty_driver_registry_falls_back_to_roster(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -231,6 +252,7 @@ class PickDriverTests(unittest.TestCase):
 
         self.assertEqual(result["driver"], "codex")
         self.assertEqual(result["router_mode"], "forced")
+        self.assertEqual(result["approval_source"], "forced")
         self.assertIn("FORCE_DRIVER env var bypassed routing logic", result["reasoning"])
 
     def test_exploration_pool_is_bounded_and_can_promote_gemini(self):

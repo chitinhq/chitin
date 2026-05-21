@@ -32,7 +32,10 @@ func loadRepoPolicy(t *testing.T) gov.Policy {
 		}
 		cwd = parent
 	}
-	policy, _, err := gov.LoadWithInheritance(cwd)
+	// Bypass signature verification: demo tests validate policy rule
+	// evaluation, not signature trust. The repo root chitin.yaml.sig
+	// exists but CI has no operator public key pinned.
+	policy, _, err := gov.LoadWithInheritanceWithOptions(cwd, gov.PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}

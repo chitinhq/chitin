@@ -292,7 +292,7 @@ rules:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p, _, err := LoadWithInheritance(dir)
+	p, _, err := LoadWithInheritanceWithOptions(dir, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestPolicy_BaselineDeniesNormalizedInlineInterpreterGovSelfMod(t *testing.T
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestPolicy_BaselineLegitimateEditorWriteUsesDirectSelfModRule(t *testing.T)
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestPolicy_BaselineSavedScriptGovSelfModRemainsKnownLimitation(t *testing.T
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestPolicy_BaselineDeniesTerraformDestroy(t *testing.T) {
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestPolicy_BaselineDeniesCurlPipeBash(t *testing.T) {
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestPolicy_BaselineGivesIntentionalUnknownsNamedDenyRules(t *testing.T) {
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestPolicy_BaselineProtectsSystemPaths(t *testing.T) {
 		}
 		cwd = parent
 	}
-	policy, _, err := LoadWithInheritance(cwd)
+	policy, _, err := LoadWithInheritanceWithOptions(cwd, PolicyLoadOptions{BypassSignature: true})
 	if err != nil {
 		t.Fatalf("LoadWithInheritance: %v", err)
 	}
@@ -627,7 +627,7 @@ id: typo
 mode: guardian
 rules: []
 `)
-	_, _, err := LoadWithInheritance(root)
+	_, _, err := LoadWithInheritanceWithOptions(root, PolicyLoadOptions{BypassSignature: true})
 	if err == nil {
 		t.Fatal("LoadWithInheritance must reject unknown mode")
 	}

@@ -11,15 +11,35 @@ success_criteria:
 
 # Reviewer role
 
-For tickets that explicitly ask for review, OR when clawta sequences
-an independent second pair of eyes on a PR-bearing ticket before merge.
+For tickets that explicitly ask for review, OR when an independent
+second pair of eyes on a PR-bearing ticket is needed before merge.
+
+## Pull-from-pool tick loop
+
+Every agent, every wake, runs this loop **in order** and **stops at
+the first match**:
+
+1. **Advance my own work.** If I have an `in_progress` or `review`
+   ticket assigned to me, move it one concrete step. Finish it, send
+   it to `review`, or `block` it with a reason.
+2. **Review a peer.** If a ticket is in `review` and I am **not** its
+   author, review it now.
+3. **Pull from the pool.** Else claim the highest-priority `ready`
+   ticket (or a `triage` ticket and groom it), set `in_progress` +
+   assignee = me, and start.
+4. **Never idle.** If the pool is empty, look for `blocked` tickets
+   whose blocker has cleared, or groom `triage`. Only stop when the
+   board has no actionable work.
+
+One ticket per tick. The loop is strict priority: own work > peer
+review > pool claim > idle fill.
 
 ## When to apply
 
 Use this role when:
 
 - Ticket title is "Review: <PR url or description>" — explicit review ticket
-- Clawta dispatches you to give a PR a second pair of eyes
+- A ticket is in `review` and you did **not** author the PR
 - An operator hands you a PR url and asks for an independent take
 
 If you'd be writing code, use **programmer** instead. If you'd be
@@ -41,8 +61,8 @@ ticket to `done`.
 
 ## The recipe
 
-1. **Claim** — `hermes kanban --board chitin assign <id> <your-name>`,
-   `kanban-flow start <id>`.
+1. **Claim** — pull the ticket from the pool. `hermes kanban --board
+   chitin assign <id> <your-name>`, `kanban-flow start <id>`.
 
 2. **Read the PR + acceptance** — `gh pr view <num> --json
    title,body,files,additions,deletions,commits`. Pull the diff:
@@ -75,6 +95,27 @@ ticket to `done`.
    own ticket stays in `in_progress` either way — the PR's GitHub
    state carries the review-phase truth.
 
+## Escalation contract
+
+Escalate to the operator **only** by setting a ticket to `blocked` with
+a reason that names the exact missing input (a decision, a credential,
+an external dependency). Everything else — grooming, spec-writing,
+implementation, review routing — you do yourself.
+
+**"I don't know what to do next" is not a block; it is a grooming
+task.**
+
+Valid block reasons name the specific decision or credential needed:
+
+- "Need operator decision: which auth provider to use for SSO review"
+- "Missing access to private repo for cross-PR diff comparison"
+
+Invalid block reasons (will be rejected / regroomed):
+
+- "stuck"
+- "don't know what to do"
+- "waiting for someone"
+
 ## Anti-patterns
 
 - **Vibe reviews.** "LGTM" without citing files is not a review. Either
@@ -86,9 +127,10 @@ ticket to `done`.
 - **Skipping boundary checks.** Most production incidents are a
   boundary the author didn't name. Name them; if untested, that's a
   changes-request item.
-- **Approving your own work.** A reviewer ticket dispatched to the
-  same agent that wrote the PR is a routing bug. Demote it back to
-  triage with a comment and let clawta re-route.
+- **Approving your own work.** A reviewer ticket pulled by the same
+  agent that wrote the PR violates the builder-OR-verifier invariant.
+  Demote it back to triage with a comment explaining the conflict and
+  let another agent pull it from the pool.
 
 ## Verdict template
 

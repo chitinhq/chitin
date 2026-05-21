@@ -49,12 +49,15 @@ func cmdDriversList(args []string) {
 	}
 
 	if *jsonOut {
-		out, _ := json.Marshal(map[string]any{
+		out, err := json.Marshal(map[string]any{
 			"policy_id": policy.ID,
 			"sources":   sources,
 			"drivers":   policy.Drivers,
 			"count":     len(policy.Drivers),
 		})
+		if err != nil {
+			exitErr("drivers_json_marshal", err.Error())
+		}
 		fmt.Println(string(out))
 		return
 	}
