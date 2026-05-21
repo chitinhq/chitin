@@ -190,6 +190,26 @@ triage rationale.
 |------|-------|--------|--------------|-------|
 | 074 | polyglot-monorepo-layout | draft | — | P0 cull drift → P1 registration gap → P2 convention → P3 layout convergence |
 
+## Chitin Orchestrator — specs 070 + 075-079
+
+> The agent-agnostic, Temporal-based orchestration platform, and the
+> self-improvement loop built on it. Spec 070 (operator-ratified engine:
+> Temporal Go, 2026-05-20) is the durable-execution foundation; 075 the
+> agent-driver contract; 076 the spec-DAG scheduler that replaces the
+> kanban pull-loop; 077 the kit-agnostic spec adapter; 078-079 the
+> self-improvement loop and its information-ingestion front-end. Octi
+> specs 040-048 are re-homed here. Implementation: PR #886. Strategy:
+> `docs/strategy/chitin-orchestrator-options-2026-05-20.md`.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **070** | chitin-orchestrator | draft | Temporal Go durable-execution platform; worktree isolation; migration off cron/script sprawl |
+| **075** | agent-driver-contract | draft | The `AgentDriver` interface, driver registry, capability cards — plug in any agent, zero core change |
+| **076** | spec-dag-scheduler | draft | Specs → dependency DAG; deterministic scheduler; agent vs deterministic nodes; replaces the kanban pull-loop (070 FR-015) |
+| **077** | spec-kit-adapter | draft | Kit-agnostic compile (spec-kit / OpenSpec / superpowers) → the normalized 076 DAG |
+| **078** | self-improvement-loop | draft | Telemetry → analysis → spec proposals → [human gate] → implementation; generalizes Sentinel (064) |
+| **079** | information-ingestion-pipeline | draft | External-knowledge front-end: broad-net gathering + signal/noise filter feeding 078's proposals |
+
 ## Workspace-overlay & retro specs
 
 | Spec | Title | Status | Notes |

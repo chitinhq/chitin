@@ -33,13 +33,19 @@ New Go module `go/orchestrator/` — `cmd/chitin-orchestrator/`, `workflows/`,
 
 ## Phase 3: User Story 1 — Orchestration you can see and trust (Priority: P1) 🎯 MVP
 
-**Goal**: the kanban pull-loop runs as a durable, inspectable, replayable workflow.
-**Independent test**: run beside the existing cron one day; every tick inspectable + replayable; equivalent board mutations.
+**Goal**: the spec-DAG scheduler runs as a durable, inspectable, replayable workflow — replacing the human-managed kanban pull-loop.
+**Independent test**: feed it a known spec task graph; every tick inspectable + replayable; replaying a tick produces identical scheduling decisions.
 
-- [ ] T012 [US1] Implement the pull-loop workflow in `go/orchestrator/workflows/pull_loop.go` — Continue-As-New for the never-ending loop (research D2, FR-009)
-- [ ] T013 [P] [US1] Implement the pull-loop activities (read board, claim/advance ticket, via hermes/kanban — kernel-gated) in `go/orchestrator/activities/pull_loop.go`
-- [ ] T014 [US1] Workflow replay/determinism test for the pull-loop in `go/orchestrator/workflows/pull_loop_test.go` (Temporal testsuite — FR-003)
-- [ ] T015 [US1] Run the pull-loop workflow beside the existing `kanban-pull-loop` cron; verify equivalent board mutations (FR-006)
+US1 is delivered by the **spec-DAG scheduler**, specified and tasked in
+**spec 076 (Spec-DAG Scheduler)** — a substantial component, not a
+one-file workflow. 070's role for US1 is the durable-execution platform
+underneath it (Phases 1–2). The scheduler also consumes the agent-driver
+contract (**spec 075**) to match work to drivers.
+
+- [ ] T012 [US1] Deliver the spec-DAG scheduler workflow per **spec 076** — Continue-As-New for the never-ending loop (076 carries its own task list)
+- [ ] T013 [US1] Deliver the spec→DAG compiler + capability-based driver matching per **spec 076** + **spec 075**
+- [ ] T014 [US1] Workflow replay/determinism test for the scheduler in `go/orchestrator/workflows/scheduler_test.go` (Temporal testsuite — FR-003)
+- [ ] T015 [US1] Run the scheduler beside the existing `kanban-pull-loop` cron; verify an equivalent, explainable work order (FR-006)
 - [ ] T016 [US1] Confirm every tick is inspectable + replayable in the Temporal UI over a 7-day soak (acceptance scenarios 1–3, SC-005)
 - [ ] T017 [US1] Retire the `kanban-pull-loop` cron once proven; update the Migration register (FR-007)
 
@@ -56,11 +62,11 @@ New Go module `go/orchestrator/` — `cmd/chitin-orchestrator/`, `workflows/`,
 
 ## Phase 5: User Story 3 — One orchestrator, zero sprawl (Priority: P3)
 
-**Goal**: pollers, board-engine, and the Icarus bench loop are workflows; all crons/scripts retired.
+**Goal**: pollers, the work-lifecycle workflow, and the Icarus bench loop are workflows; all crons/scripts retired.
 **Independent test**: inventory before/after — every orchestration action traces to a workflow.
 
 - [ ] T023 [P] [US3] Implement the poller/watchdog workflows in `go/orchestrator/workflows/pollers.go` (scheduled)
-- [ ] T024 [P] [US3] Implement the board-engine workflow (auto-merge / retry / archive) in `go/orchestrator/workflows/board_engine.go`
+- [ ] T024 [P] [US3] Implement the work-lifecycle workflow (auto-merge / retry / archive) in `go/orchestrator/workflows/lifecycle.go`, plus the board-projection writer activity (FR-016) — the legacy board-engine is retired, not ported
 - [ ] T025 [P] [US3] Implement the Icarus bench-loop workflow in `go/orchestrator/workflows/icarus_bench.go` — replaces `icarus-bench.service`
 - [ ] T026 [US3] Run each workflow beside its legacy cron/service; verify parity; retire each + update the Migration register
 - [ ] T027 [US3] Inventory check — confirm every orchestration action traces to a workflow; zero un-migrated crons/scripts remain (SC-001, SC-004)
@@ -89,7 +95,7 @@ New Go module `go/orchestrator/` — `cmd/chitin-orchestrator/`, `workflows/`,
 
 ## Implementation Strategy
 
-**MVP = US1 (the pull-loop).** Phase 1 + Phase 2 + Phase 3 deliver a single
-durable, inspectable workflow proven beside its cron — that alone validates
-the determinism + telemetry thesis. US2 and US3 are incremental; each phase
+**MVP = US1 (the spec-DAG scheduler).** Phase 1 + Phase 2 + Phase 3 deliver
+a single durable, inspectable scheduler workflow proven beside its cron —
+that alone validates the determinism + telemetry thesis. US2 and US3 are incremental; each phase
 retires its legacy path only after the workflow is proven (strangler-fig).

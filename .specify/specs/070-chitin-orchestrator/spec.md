@@ -13,26 +13,27 @@
 ### User Story 1 - Orchestration you can see and trust (Priority: P1)
 
 The operator opens one place and sees every orchestration action the swarm
-has taken — each pull-loop tick, each scheduled run — as a durable,
+has taken — each scheduler tick, each dispatched work unit — as a durable,
 timestamped, replayable record. When something misbehaves, the operator
 opens the exact run, sees every step and its inputs, and knows definitively
 what happened — no guessing whether a cron fired.
 
 **Why this priority**: This is the thesis — determinism + telemetry *in*
 orchestration. Without it the swarm cannot be trusted to run autonomously.
-It is also the smallest provable slice: one workflow (the kanban pull-loop)
-carries the whole value.
+It is also the smallest provable slice: one workflow — the spec-DAG
+scheduler (spec 076) — carries the whole value, and it *replaces* the
+human-managed kanban pull-loop outright rather than porting it.
 
-**Independent Test**: Migrate the kanban pull-loop to a durable workflow,
-run it beside the existing cron for one day, and confirm every tick is
-individually inspectable and replayable and the two produce equivalent
-board mutations.
+**Independent Test**: Stand up the spec-DAG scheduler as a durable
+workflow, feed it a known spec task graph, and confirm every tick is
+individually inspectable and replayable, and that replaying a tick over
+the same graph produces identical scheduling decisions.
 
 **Acceptance Scenarios**:
 
-1. **Given** the pull-loop runs as a workflow, **When** the operator looks at the orchestrator, **Then** every tick of the last 24h is listed with its start time, inputs, each step, and outcome.
-2. **Given** a pull-loop tick errored, **When** the operator opens that run, **Then** the failing step and its inputs are visible without reading raw logs.
-3. **Given** two ticks over the same board state, **When** they are replayed, **Then** they produce identical decisions.
+1. **Given** the scheduler runs as a workflow, **When** the operator looks at the orchestrator, **Then** every tick of the last 24h is listed with its start time, inputs, each step, and outcome.
+2. **Given** a scheduler tick errored, **When** the operator opens that run, **Then** the failing step and its inputs are visible without reading raw logs.
+3. **Given** two ticks over the same spec task graph, **When** they are replayed, **Then** they produce identical scheduling decisions.
 
 ---
 
@@ -84,7 +85,7 @@ orchestration action originates outside the orchestrator.
 
 - A workflow's code changes while instances are mid-flight — the orchestrator MUST preserve replay determinism across code versions.
 - The orchestrator's backing service is down — orchestration pauses and MUST resume cleanly when it returns; no work is lost.
-- A workflow is long-running by design (the pull-loop never "ends") — the orchestrator MUST support indefinitely-running workflows without unbounded history growth.
+- A workflow is long-running by design (the scheduler loop never "ends") — the orchestrator MUST support indefinitely-running workflows without unbounded history growth.
 - A cron is cut over to its workflow while a run is in flight — the cutover MUST NOT double-run or drop the in-flight tick.
 - An agent (Ares/Clawta) the orchestrator coordinates is unavailable — the workflow MUST wait/retry per policy, not fail silently.
 - Two work units run concurrently — each MUST run in its own isolated worktree and never observe the other's changes; the shared checkout is never a work surface.
@@ -128,7 +129,7 @@ orchestration action originates outside the orchestrator.
 - **SC-002**: Any orchestration failure can be diagnosed from its workflow run alone — no log-grepping — in under 2 minutes.
 - **SC-003**: A gateway restart mid-orchestration loses zero work and creates zero duplicates.
 - **SC-004**: The orchestration surface shrinks from ~36 cron jobs + ~52 shell scripts to a count near zero.
-- **SC-005**: The pull-loop (P1 slice) runs as a workflow for 7 consecutive days with every tick inspectable before the next slice begins.
+- **SC-005**: The spec-DAG scheduler (P1 slice) runs as a workflow for 7 consecutive days with every tick inspectable before the next slice begins.
 - **SC-006**: Time to answer "did orchestration X run, and what did it do?" drops to seconds (open the run) from minutes (guessing + logs).
 - **SC-007**: Zero dispatched work units run in or mutate the primary repository checkout — every unit is isolated in its own worktree.
 
@@ -140,7 +141,8 @@ orchestration action originates outside the orchestrator.
 - The agents (Ares, Clawta, Claude Code) remain the reasoning layer; the orchestrator coordinates and schedules them — it does not replace agent reasoning.
 - The agent-bus is being decommissioned in parallel (spec 069); the orchestrator never depends on it.
 - The design thinking in the retired "Octi" specs 040–048 is the starting basis, re-homed under "Chitin Orchestrator."
-- The Chitin Board remains the coordination substrate and Chitin Telemetry remains the observability sink; this spec integrates with both, it does not redefine them.
+- **Work sequencing comes from the spec task graph** (FR-015): specs are compiled into a dependency DAG and walked by a deterministic scheduler — designed in **spec 076 (Spec-DAG Scheduler)**. The Chitin Board is **demoted to a read-projection** of orchestrator state (FR-016), not a coordination substrate; Chitin Telemetry remains the observability sink. This spec integrates with both as *outputs* of orchestration, never as *inputs* to a scheduling decision.
+- The **agent-driver contract** — how any agent (Ares, Clawta, Claude Code, Codex, a local-LLM driver) plugs in to satisfy FR-017 — is specified in **spec 075 (Agent Driver Contract)**. The **spec-kit adapter** that compiles specs (spec-kit, superpowers, OpenSpec) into the DAG is **spec 077 (Spec-Kit Adapter)**. Spec 070 is the durable-execution platform those three build on.
 
 ## Out of Scope
 
