@@ -18,7 +18,10 @@ from harbor.environments.base import ExecResult
 
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
+    BenchAgent,
     LoopDetector,
+    STDERR_CAPTURE_LIMIT,
+    STDOUT_CAPTURE_LIMIT,
     _strip_provider_prefix,
     is_task_complete,
     parse_bash_block,
@@ -118,6 +121,43 @@ class TestLoopDetector(TestCase):
         ld.record("b", ExecResult(stdout="ok", return_code=0))
         ld.record("c", ExecResult(stderr="err", return_code=1))
         self.assertFalse(ld.is_looping())
+
+
+class TestObservationFormatting(TestCase):
+    """Invariant: truncated observations are labeled so the model can
+    narrow the next read instead of repeating the same command."""
+
+    def test_truncated_stdout_keeps_tail_visible(self):
+        trailer = "assert alert_detected, 'tail still visible'"
+        observation = BenchAgent._format_observation(
+            "cat /app/test_outputs.py",
+            ExecResult(
+                stdout=("x" * STDOUT_CAPTURE_LIMIT) + trailer,
+                return_code=0,
+            ),
+        )
+        self.assertIn(
+            "[stdout truncated: omitted",
+            observation,
+        )
+        self.assertIn("showing head+tail", observation)
+        self.assertIn(trailer, observation)
+
+    def test_truncated_stderr_keeps_tail_visible(self):
+        trailer = "ValueError: tail still visible"
+        observation = BenchAgent._format_observation(
+            "python broken.py",
+            ExecResult(
+                stderr=("e" * STDERR_CAPTURE_LIMIT) + trailer,
+                return_code=1,
+            ),
+        )
+        self.assertIn(
+            "[stderr truncated: omitted",
+            observation,
+        )
+        self.assertIn("showing head+tail", observation)
+        self.assertIn(trailer, observation)
 
 
 class TestStripProviderPrefix(TestCase):
