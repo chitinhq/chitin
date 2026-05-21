@@ -23,6 +23,7 @@ from swarm.chitin_bench.agent import (
     is_task_complete,
     parse_bash_block,
 )
+from swarm.icarus_harness.agent import IcarusAgent
 
 
 class TestBashBlockParser(TestCase):
@@ -139,6 +140,14 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestLegacyIcarusImportCompat(TestCase):
+    """Invariant: legacy Harbor import paths still resolve to the
+    current bench agent implementation."""
+
+    def test_legacy_import_exports_bench_agent(self):
+        self.assertEqual(IcarusAgent.__name__, "BenchAgent")
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──

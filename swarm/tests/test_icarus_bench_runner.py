@@ -1,4 +1,4 @@
-"""Tests for icarus-bench-runner — emit_gov_decision and _extract_tick_metadata.
+"""Tests for chitin-bench-runner — emit_gov_decision and _extract_tick_metadata.
 
 Covers the gov-decision row emission that this ticket (t_bb2a1575)
 introduced. These tests do NOT require harbor/ollama/docker; they
@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -202,6 +202,40 @@ class TestExtractTickMetadata(TestCase):
         result = {"status": "ran", "job_name": "icarus-test2"}
         meta = _runner["_extract_tick_metadata"](result, "icarus-test2")
         self.assertEqual(meta["reward"], 1.0)
+
+    def test_extracts_current_chitin_bench_metadata_keys(self):
+        """Invariant: the runner accepts the current chitin_bench_* metadata
+        keys, not only the legacy icarus_* names."""
+        self._write_trial_result("chitin-bench", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "wallclock_exceeded",
+                    "chitin_bench_steps_used": 28,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "chitin-bench"}
+        meta = _runner["_extract_tick_metadata"](result, "chitin-bench")
+        self.assertEqual(meta["block_reason"], "wallclock_exceeded")
+        self.assertEqual(meta["steps_used"], 28)
+
+    def test_prefers_metadata_steps_used_when_agent_result_steps_missing(self):
+        """Invariant: steps_used falls back to metadata when Harbor does not
+        materialize agent_result.steps at the top level."""
+        self._write_trial_result("chitin-bench-meta", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "icarus_block_reason": "step_budget_exceeded",
+                    "icarus_steps_used": 12,
+                },
+            },
+            "verifier_result": {"reward": 0.0},
+        })
+        result = {"status": "ran", "job_name": "chitin-bench-meta"}
+        meta = _runner["_extract_tick_metadata"](result, "chitin-bench-meta")
+        self.assertEqual(meta["block_reason"], "step_budget_exceeded")
+        self.assertEqual(meta["steps_used"], 12)
 
     def test_defaults_block_reason_to_none_when_no_result(self):
         """Invariant: when no result.json exists, block_reason defaults
