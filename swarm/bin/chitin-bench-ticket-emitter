@@ -80,6 +80,24 @@ def find_recent_results(window_hours: int) -> list[Path]:
     return out
 
 
+def _classify_exception_block_reason(exc_info: dict) -> str:
+    """Separate environment/container failures from agent exceptions."""
+    exc_type = str(exc_info.get("exception_type", "unknown"))
+    exc_message = str(exc_info.get("exception_message", "")).lower()
+    env_markers = (
+        "environment",
+        "docker",
+        "container",
+        "image pull",
+        "compose",
+    )
+    if exc_type.startswith("Environment") or exc_type.startswith("Docker"):
+        return f"environment_setup_failed:{exc_type}"
+    if any(marker in exc_message for marker in env_markers):
+        return f"environment_setup_failed:{exc_type}"
+    return f"harness_exception:{exc_type}"
+
+
 def classify_failure(trial: dict) -> tuple[bool, str, str]:
     """Inspect a TrialResult dict. Returns
     ``(is_failure, block_reason, evidence_excerpt)``.
@@ -94,7 +112,7 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
     if exc_info:
         return (
             True,
-            f"harness_exception:{exc_info.get('exception_type', 'unknown')}",
+            _classify_exception_block_reason(exc_info),
             (exc_info.get("exception_message") or "")[:500],
         )
 

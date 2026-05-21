@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -235,6 +235,23 @@ class TestExtractTickMetadata(TestCase):
         result = {"status": "ran", "job_name": "icarus-exc"}
         meta = _runner["_extract_tick_metadata"](result, "icarus-exc")
         self.assertEqual(meta["block_reason"], "harness_exception:RuntimeError")
+
+    def test_environment_start_timeout_is_not_marked_harness_exception(self):
+        """Invariant: Harbor environment startup failures are classified
+        as environment_setup_failed, not agent/harness exceptions."""
+        self._write_trial_result("icarus-env-timeout", "trial-0", {
+            "exception_info": {
+                "exception_type": "EnvironmentStartTimeoutError",
+                "exception_message": "Environment start timed out after 600.0 seconds",
+            },
+            "agent_result": {},
+        })
+        result = {"status": "ran", "job_name": "icarus-env-timeout"}
+        meta = _runner["_extract_tick_metadata"](result, "icarus-env-timeout")
+        self.assertEqual(
+            meta["block_reason"],
+            "environment_setup_failed:EnvironmentStartTimeoutError",
+        )
 
     def test_malformed_result_json_falls_back(self):
         """Invariant: a malformed result.json is tolerated; metadata
