@@ -220,7 +220,32 @@ class TestEmitterClassifier(TestCase):
             },
         })
         self.assertTrue(is_fail)
-        self.assertEqual(reason, "harness_loud_fail:step_budget_exceeded")
+        self.assertEqual(reason, "local_ceiling_exceeded")
+
+    def test_step_budget_records_steps_in_evidence(self):
+        is_fail, reason, evidence = self._classify({
+            "verifier_result": {"rewards": {"reward": 0.0}},
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "step_budget_exceeded",
+                    "chitin_bench_steps_used": 30,
+                },
+            },
+        })
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "local_ceiling_exceeded")
+        self.assertIn("reason=step_budget_exceeded", evidence)
+        self.assertIn("steps_used=30", evidence)
+
+    def test_loop_detected_stays_harness_loud_fail(self):
+        is_fail, reason, _ = self._classify({
+            "verifier_result": {"reward": 0.0},
+            "agent_result": {
+                "metadata": {"chitin_bench_block_reason": "loop_detected"},
+            },
+        })
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "harness_loud_fail:loop_detected")
 
     def test_missing_verifier_classified(self):
         is_fail, reason, _ = self._classify({})

@@ -39,6 +39,10 @@ KANBAN_BOARD = os.environ.get("CHITIN_BENCH_KANBAN_BOARD", "chitin-bench")
 TICKET_ASSIGNEE = os.environ.get("CHITIN_BENCH_TICKET_ASSIGNEE", "clawta")
 EMITTED_LOG = Path.home() / ".chitin-bench" / "emitted-tickets.jsonl"
 SCAN_WINDOW_HOURS = int(os.environ.get("CHITIN_BENCH_EMITTER_WINDOW_H", "48"))
+CAPABILITY_CEILING_REASONS = frozenset({
+    "step_budget_exceeded",
+    "wallclock_exceeded",
+})
 
 
 def log(msg: str) -> None:
@@ -101,6 +105,7 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
     agent_result = trial.get("agent_result") or {}
     metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
     chitin_bench_reason = metadata.get("chitin_bench_block_reason") if metadata else None
+    steps_used = metadata.get("chitin_bench_steps_used") if metadata else None
 
     verifier_result = trial.get("verifier_result") or {}
     # Harbor verifier writes either {"reward": <float>} (legacy) or
@@ -113,6 +118,12 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
             reward = verifier_result["rewards"].get("reward")
 
     if chitin_bench_reason:
+        if chitin_bench_reason in CAPABILITY_CEILING_REASONS:
+            return True, "local_ceiling_exceeded", _capability_excerpt(
+                reason=chitin_bench_reason,
+                steps_used=steps_used,
+                verifier_result=verifier_result,
+            )
         return True, f"harness_loud_fail:{chitin_bench_reason}", _verifier_excerpt(verifier_result)
 
     if reward is None:
@@ -139,6 +150,16 @@ def _verifier_excerpt(verifier_result: dict) -> str:
     if "stdout" in verifier_result:
         pieces.append(f"stdout(tail)=\n{(verifier_result['stdout'] or '')[-500:]}")
     return "\n".join(pieces) if pieces else json.dumps(verifier_result)[:500]
+
+
+def _capability_excerpt(*, reason: str, steps_used: object, verifier_result: dict) -> str:
+    pieces = [f"reason={reason}"]
+    if steps_used is not None:
+        pieces.append(f"steps_used={steps_used}")
+    verifier_excerpt = _verifier_excerpt(verifier_result)
+    if verifier_excerpt:
+        pieces.append(verifier_excerpt)
+    return "\n".join(pieces)
 
 
 def idempotency_key(task_name: str, block_reason: str) -> str:
