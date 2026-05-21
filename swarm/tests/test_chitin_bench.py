@@ -10,14 +10,20 @@ states the invariant up front in the docstring.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase, main
+from unittest.mock import AsyncMock, patch
 
 from harbor.environments.base import ExecResult
 
 from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
+    BenchAgent,
+    BenchOllamaError,
     LoopDetector,
     _strip_provider_prefix,
     is_task_complete,
@@ -139,6 +145,48 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class _FakeEnvironment:
+    async def exec(self, cmd: str) -> ExecResult:
+        return ExecResult(stdout=f"ran {cmd}", return_code=0)
+
+
+class TestOllamaTimeoutLoudFail(TestCase):
+    """Invariant: an Ollama timeout after observable progress stays a
+    structured loud-fail with block_reason=ollama_error."""
+
+    def test_timeout_sets_context_metadata_and_exit_record(self):
+        logs_dir = Path(tempfile.mkdtemp())
+        agent = BenchAgent(logs_dir=logs_dir, model_name="ollama/test")
+        context = SimpleNamespace(metadata=None)
+
+        with (
+            patch(
+                "swarm.chitin_bench.agent.gather_environment_bootstrap",
+                new=AsyncMock(return_value=""),
+            ),
+            patch(
+                "swarm.chitin_bench.agent.ollama_chat",
+                side_effect=[
+                    "```bash\ncat /app/feal.py\n```",
+                    BenchOllamaError("ollama HTTP failed: timed out"),
+                ],
+            ),
+        ):
+            asyncio.run(agent.run("recover key[5]", _FakeEnvironment(), context))
+
+        self.assertEqual(context.metadata["chitin_bench_block_reason"], "ollama_error")
+        self.assertEqual(context.metadata["chitin_bench_steps_used"], 2)
+
+        trajectory = (logs_dir / "chitin-bench-trajectory.jsonl").read_text().splitlines()
+        final_record = json.loads(trajectory[-1])
+        self.assertEqual(final_record["role"], "exit")
+        self.assertIn("loud_fail: ollama_error", final_record["content"])
+
+        summary = json.loads((logs_dir / "chitin-bench-summary.json").read_text())
+        self.assertEqual(summary["block_reason"], "ollama_error")
+        self.assertEqual(summary["steps"], 2)
 
 
 # ── Bench-ticket-emitter classify_failure (no harbor agents needed) ──
