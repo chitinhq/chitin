@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -191,6 +191,39 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["block_reason"], "stuck_in_loop")
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
+
+    def test_extracts_chitin_bench_metadata(self):
+        """Invariant: the runner prefers current chitin_bench metadata
+        keys so BenchAgent loud-fails are preserved in gov-decision rows."""
+        self._write_trial_result("chitin-bench-test", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "step_budget_exceeded",
+                    "chitin_bench_steps_used": 30,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "chitin-bench-test"}
+        meta = _runner["_extract_tick_metadata"](result, "chitin-bench-test")
+        self.assertEqual(meta["block_reason"], "step_budget_exceeded")
+        self.assertEqual(meta["reward"], 0.0)
+        self.assertEqual(meta["steps_used"], 30)
+
+    def test_prefers_chitin_bench_reason_over_legacy_reason(self):
+        """Invariant: when both metadata shapes are present, the current
+        chitin_bench key wins so mixed-format trials stay canonical."""
+        self._write_trial_result("mixed-metadata", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "wallclock_exceeded",
+                    "icarus_block_reason": "loop_detected",
+                },
+            },
+        })
+        result = {"status": "ran", "job_name": "mixed-metadata"}
+        meta = _runner["_extract_tick_metadata"](result, "mixed-metadata")
+        self.assertEqual(meta["block_reason"], "wallclock_exceeded")
 
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward

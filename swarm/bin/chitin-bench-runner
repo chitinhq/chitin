@@ -223,11 +223,15 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
             except (json.JSONDecodeError, OSError):
                 return meta
 
-            # block_reason: agent_result.metadata.icarus_block_reason
+            # block_reason: prefer the current chitin_bench metadata,
+            # but preserve legacy icarus metadata for older trials.
             agent_result = trial.get("agent_result") or {}
             metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
+            chitin_bench_reason = metadata.get("chitin_bench_block_reason")
             icarus_reason = metadata.get("icarus_block_reason")
-            if icarus_reason:
+            if chitin_bench_reason:
+                meta["block_reason"] = chitin_bench_reason
+            elif icarus_reason:
                 meta["block_reason"] = icarus_reason
             elif trial.get("exception_info"):
                 exc_info = trial["exception_info"]
@@ -249,9 +253,15 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
                     except (TypeError, ValueError, KeyError):
                         pass
 
-            # steps_used: agent_result.steps or agent_result.step_count
+            # steps_used: prefer the current metadata key, then fall back
+            # to legacy metadata and older top-level fields.
             if isinstance(agent_result, dict):
-                steps = agent_result.get("steps") or agent_result.get("step_count")
+                steps = (
+                    metadata.get("chitin_bench_steps_used")
+                    or metadata.get("icarus_steps_used")
+                    or agent_result.get("steps")
+                    or agent_result.get("step_count")
+                )
                 if steps is not None:
                     try:
                         meta["steps_used"] = int(steps)
