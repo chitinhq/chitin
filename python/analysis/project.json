@@ -10,7 +10,7 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "python/analysis",
-        "command": "if command -v uv >/dev/null 2>&1; then uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && python3 -m pytest -q; fi"
+        "command": "if command -v uv >/dev/null 2>&1; then PYTHONPATH=.. uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && PYTHONPATH=.. python3 -m pytest -q; fi"
       }
     },
     "compile": {
@@ -24,7 +24,7 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "python/analysis",
-        "command": "python3 -m compileall -q . && if command -v uv >/dev/null 2>&1; then uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && python3 -m pytest -q; fi"
+        "command": "python3 -m compileall -q . && if command -v uv >/dev/null 2>&1; then PYTHONPATH=.. uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-analysis-pip-install.log && PYTHONPATH=.. python3 -m pytest -q; fi"
       },
       "dependsOn": ["^validate"]
     }

@@ -20,10 +20,9 @@ build-backend = "setuptools.build_meta"
 packages = [
     "analysis",
     "analysis.proposals",
-    "analysis.templates",
     "analysis.search_backends",
 ]
-package-dir = {"analysis" = ".", "analysis.proposals" = "proposals", "analysis.templates" = "templates", "analysis.search_backends" = "search_backends"}
+package-dir = {"analysis" = ".", "analysis.proposals" = "proposals", "analysis.search_backends" = "search_backends"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

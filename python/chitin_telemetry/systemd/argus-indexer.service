@@ -1,0 +1,19 @@
+[Unit]
+Description=Argus Observatory Indexer (chitin gov-decisions tail)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=PYTHONUNBUFFERED=1
+# Argus is expected to be installed via `uv tool install <chitin>/python/chitin_telemetry`
+# which places the `chitin-telemetry` console script in %h/.local/bin. Fall back to
+# `python -m chitin_telemetry` only if uv-tool was not used.
+ExecStart=%h/.local/bin/argus index --decisions-dir %h/.chitin --follow
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

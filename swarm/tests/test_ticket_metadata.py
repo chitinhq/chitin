@@ -25,8 +25,8 @@ def load_module():
 class TicketMetadataTests(unittest.TestCase):
     def test_parse_role_reads_explicit_known_role(self) -> None:
         module = load_module()
-        body = "role: sentinel\n\nAcceptance:\n- mine chain"
-        self.assertEqual(module.parse_role(body), "sentinel")
+        body = "role: telemetry\n\nAcceptance:\n- mine chain"
+        self.assertEqual(module.parse_role(body), "telemetry")
 
     def test_parse_role_falls_back_for_unknown_role(self) -> None:
         module = load_module()
@@ -38,15 +38,15 @@ class TicketMetadataTests(unittest.TestCase):
         ticket = {"task": {"body": "Role: reviewer\n"}}
         self.assertEqual(module.resolve_role(ticket), "reviewer")
 
-    def test_resolve_role_routes_sentinel_from_title(self) -> None:
+    def test_resolve_role_routes_telemetry_from_title(self) -> None:
         module = load_module()
         ticket = {
             "task": {
-                "title": "feat(swarm): add sentinel invariant role",
+                "title": "feat(swarm): add telemetry invariant role",
                 "body": "Acceptance:\n- mine the chain",
             }
         }
-        self.assertEqual(module.resolve_role(ticket), "sentinel")
+        self.assertEqual(module.resolve_role(ticket), "telemetry")
 
     def test_resolve_role_keeps_explicit_role_over_title_inference(self) -> None:
         module = load_module()

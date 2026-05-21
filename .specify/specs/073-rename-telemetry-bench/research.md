@@ -42,3 +42,28 @@ A rename refactor has few open decisions. The two that matter:
   gate (FR-007) excludes `.specify/specs/`.
 - **Rationale**: history is a record; rewriting it adds churn and risk for
   no operational gain.
+
+## Phase 2 module map
+
+Observed and applied in this worktree:
+
+- **Argus package → `python/chitin_telemetry/`**:
+  `beliefs.py`, `cli.py`, `config.py`, `detectors.py`, `findings_cli.py`,
+  `findings_store.py`, `gpu.py`, `indexer.py`, `judge.py`, `kernel.py`,
+  `llm.py`, `logs.py`, `migrations.py`, `prompts.py`, `reporter.py`,
+  `session_indexer.py`, `sources.py`, package metadata, systemd units, and
+  the full Argus test suite.
+- **Sentinel / policy-analysis modules moved out of `python/analysis/` into
+  `python/chitin_telemetry/`**:
+  `decisions.py`, `detect.py`, `draft.py`, `llm_draft.py`, `loaders.py`,
+  `models.py`, `telemetry.py` (renamed from `sentinel.py`), `writers.py`,
+  `templates/`, the policy-analysis spec, and the matching tests.
+- **`python/analysis/` left in place**:
+  `analyzer.py`, `codex_mine.py`, `debt.py`, `floundering_calibration.py`,
+  `predict.py`, `skill_mine.py`, `souls.py`, `speckit_adapter.py`,
+  `superpowers_adapter.py`, `unified_spec.py`, `proposals/`, and their
+  remaining tests.
+- **External importer rewrites**:
+  bench tasks now invoke `python -m chitin_telemetry.telemetry`; the swarm
+  canary consumer and related tests import `chitin_telemetry.*`; the swarm
+  skill surface is `swarm/roles/telemetry/SKILL.md`.

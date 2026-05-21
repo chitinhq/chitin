@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from analysis.models import Decision
+from chitin_telemetry.models import Decision
 from analysis.predict import (
     Vocab,
     extract_features,

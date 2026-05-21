@@ -577,7 +577,7 @@ class TestNegativeMisroutePrevention:
             channel_id=CHANNEL_ARGUS,
         )
 
-        # Icarus message must NOT appear in ares, clawta, or argus threads
+        # Icarus message must NOT appear in ares, clawta, or chitin telemetry threads
         assert_message_absent(
             bus_db, thread_id=ares_thread, message_id=msg_id,
             body_contains="icarus-only message payload",

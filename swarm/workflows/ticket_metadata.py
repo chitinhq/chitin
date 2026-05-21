@@ -8,12 +8,12 @@ from typing import Any
 
 
 ROLE_RE = re.compile(r"(?im)^\s*role\s*:\s*([a-z0-9][a-z0-9_-]*)\s*$")
-SENTINEL_ROUTE_RE = re.compile(r"(?i)\b(sentinel|invariant(?:s)?|chain-min(?:e|ing)|policy mining)\b")
+SENTINEL_ROUTE_RE = re.compile(r"(?i)\b(telemetry|invariant(?:s)?|chain-min(?:e|ing)|policy mining)\b")
 KNOWN_ROLES = {
     "programmer",
     "researcher",
     "reviewer",
-    "sentinel",
+    "telemetry",
 }
 
 
@@ -57,7 +57,7 @@ def resolve_role(ticket: dict[str, Any], default: str = "programmer") -> str:
         return explicit
     title = _ticket_title(ticket)
     if SENTINEL_ROUTE_RE.search(title) or SENTINEL_ROUTE_RE.search(body):
-        return "sentinel"
+        return "telemetry"
     return default
 
 

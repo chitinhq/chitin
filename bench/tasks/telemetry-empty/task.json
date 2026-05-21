@@ -1,0 +1,17 @@
+{
+  "id": "telemetry-empty",
+  "description": "An empty window should still emit telemetry output without candidate proposals.",
+  "module": "chitin_telemetry.telemetry",
+  "fixture_dir": "../../fixtures",
+  "window": "1m",
+  "top_n": 5,
+  "now": "2026-04-30T12:00:00+00:00",
+  "expect": {
+    "returncode": 0,
+    "stream": "telemetry",
+    "proposal_count": 0,
+    "promotion_status": "no-candidate",
+    "pattern_count": 0,
+    "parse_errors": 2
+  }
+}

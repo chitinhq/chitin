@@ -5,7 +5,7 @@ stay stable across policy and analyzer refactors.
 
 Current scope:
 
-- Runs `python -m analysis.sentinel` end-to-end against fixed
+- Runs `python -m chitin_telemetry.telemetry` end-to-end against fixed
   `gov-decisions-*.jsonl` fixtures.
 - Verifies candidate-rule telemetry, empty-window behavior, top-N truncation,
   and error handling.

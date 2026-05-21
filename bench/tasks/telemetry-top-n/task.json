@@ -1,0 +1,18 @@
+{
+  "id": "telemetry-top-n",
+  "description": "Top-N truncation should keep only one drafted pattern and surface the cutoff reason.",
+  "module": "chitin_telemetry.telemetry",
+  "fixture_dir": "../../fixtures",
+  "window": "100d",
+  "top_n": 1,
+  "now": "2026-04-30T12:00:00+00:00",
+  "expect": {
+    "returncode": 0,
+    "stream": "telemetry",
+    "proposal_count": 1,
+    "promotion_status": "candidate",
+    "pattern_count": 1,
+    "top_rule_id": "no-destructive-rm",
+    "no_template_reason": "below top-N cutoff"
+  }
+}

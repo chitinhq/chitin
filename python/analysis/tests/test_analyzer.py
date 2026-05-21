@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from analysis import analyzer
-from analysis.loaders import load_gov_decisions, parse_window_str
+from chitin_telemetry.loaders import load_gov_decisions, parse_window_str
 
 
 FIXTURE = """\

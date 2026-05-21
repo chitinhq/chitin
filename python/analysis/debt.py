@@ -23,7 +23,7 @@ from typing import Optional
 
 import yaml
 
-from analysis.writers import write_json
+from chitin_telemetry.writers import write_json
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -1,0 +1,18 @@
+{
+  "id": "telemetry-candidate",
+  "description": "Repeated destructive-shell denies should produce a bounded telemetry proposal.",
+  "module": "chitin_telemetry.telemetry",
+  "fixture_dir": "../../fixtures",
+  "window": "100d",
+  "top_n": 5,
+  "now": "2026-04-30T12:00:00+00:00",
+  "expect": {
+    "returncode": 0,
+    "stream": "telemetry",
+    "proposal_count": 2,
+    "promotion_status": "candidate",
+    "pattern_count": 2,
+    "top_rule_id": "no-destructive-rm",
+    "parse_errors": 2
+  }
+}

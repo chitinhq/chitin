@@ -16,9 +16,9 @@ import pytest
 _BIN_DIR = str(Path(__file__).parent.parent / "bin")
 _CONSUMER_PATH = str(Path(_BIN_DIR) / "canary-consumer")
 
-# Set up argus paths first so the consumer's imports work
-_ARGUS_SRC = str(Path(__file__).parent.parent.parent / "python" / "argus" / "src")
-_ARGUS_PKG = str(Path(__file__).parent.parent.parent / "python" / "argus")
+# Set up chitin telemetry paths first so the consumer's imports work
+_ARGUS_SRC = str(Path(__file__).parent.parent.parent / "python" / "chitin_telemetry" / "src")
+_ARGUS_PKG = str(Path(__file__).parent.parent.parent / "python" / "chitin_telemetry")
 _ANALYSIS_SRC = str(Path(__file__).parent.parent.parent / "python" / "analysis" / "src")
 _ANALYSIS_PKG = str(Path(__file__).parent.parent.parent / "python" / "analysis")
 for _p in [_ARGUS_SRC, _ARGUS_PKG, _ANALYSIS_SRC, _ANALYSIS_PKG]:
@@ -32,9 +32,9 @@ with open(_CONSUMER_PATH) as _f:
     _code = compile(_f.read(), _CONSUMER_PATH, "exec")
     exec(_code, canary_consumer.__dict__)
 
-from argus.detectors import Finding
-from argus import findings_store, migrations
-from argus.indexer import init_db
+from chitin_telemetry.detectors import Finding
+from chitin_telemetry import findings_store, migrations
+from chitin_telemetry.indexer import init_db
 
 
 @pytest.fixture

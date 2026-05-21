@@ -159,8 +159,8 @@ def _scan_jsonl_files(
 
 def _make_finding(event: dict) -> "Finding":
     """Convert a lockdown_loop_detected event into an Argus Finding."""
-    # Import here to avoid circular imports; argus is on PYTHONPATH
-    from argus.detectors import Finding
+    # Import here to avoid circular imports; chitin telemetry is on PYTHONPATH
+    from chitin_telemetry.detectors import Finding
 
     agent = event.get("agent") or "unknown"
     reason = event.get("reason") or "lockdown loop detected"
@@ -254,7 +254,7 @@ def process_events(
                 new_count += 1
 
             if findings and not dry_run:
-                from argus.findings_store import persist
+                from chitin_telemetry.findings_store import persist
 
                 inserted, skipped = persist(findings_db, findings)
                 log.info(
@@ -310,7 +310,7 @@ def process_events(
             new_count += 1
 
         if findings and not dry_run:
-            from argus.findings_store import persist
+            from chitin_telemetry.findings_store import persist
 
             inserted, skipped = persist(findings_db, findings)
             log.info(
@@ -382,7 +382,7 @@ def main() -> int:
     findings_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Ensure findings table exists
-    from argus import migrations
+    from chitin_telemetry import migrations
 
     findings_conn = sqlite3.connect(str(findings_db_path))
     migrations.apply_pending(findings_conn)

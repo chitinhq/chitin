@@ -1,0 +1,31 @@
+[project]
+name = "chitin-telemetry"
+version = "0.1.0"
+description = "Chitin Telemetry: observability and policy-analysis tooling for chitin"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+chitin-telemetry = "chitin_telemetry.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["chitin_telemetry", "chitin_telemetry.templates"]
+package-dir = {"chitin_telemetry" = ".", "chitin_telemetry.templates" = "templates"}
+
+[tool.setuptools.package-data]
+chitin_telemetry = ["systemd/*.service", "systemd/*.timer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -21,7 +21,7 @@ argus is mid-compute on a different model, waits up to 60s for a free
 window using advisory file-lock at ~/.chitin-bench/model-lease.lock. If 60s
 elapses, loud-fails with vram_contention.
 
-Per spec §Invariants: read-only on argus index DB, chitin-native harness,
+Per spec §Invariants: read-only on chitin telemetry index DB, chitin-native harness,
 no governance bypass (chitin gate enforces tool calls).
 """
 
@@ -67,11 +67,11 @@ LEASE_LOCK = DEDUP_DIR / "model-lease.lock"
 VRAM_WAIT_SECONDS = 60
 MAX_RETRIES = 2  # N=2 retry cap per spec invariant 3
 
-# Per Ares review (#swarm msg 4563): argus uses qwen3.6:27b as its
-# hot model. When that's loaded in ollama, argus is mid-compute on it
+# Per Ares review (#swarm msg 4563): chitin telemetry uses qwen3.6:27b as its
+# hot model. When that's loaded in ollama, chitin telemetry is mid-compute on it
 # and chitin-bench should YIELD-IMMEDIATELY rather than wait 60s for a lock
-# argus never tries to acquire. The wait was wasteful; yielding lets
-# us retry on the next cron tick when argus is likely cold.
+# chitin telemetry never tries to acquire. The wait was wasteful; yielding lets
+# us retry on the next cron tick when chitin telemetry is likely cold.
 ARGUS_MODEL_NAME = os.environ.get("ARGUS_MODEL", "qwen3.6")
 
 # Per Ares review: shell-injection guard on lint_command. Only commands
@@ -235,7 +235,7 @@ def yield_if_argus_active() -> None:
     """Pre-dispatch check: if argus's hot model is loaded in ollama,
     chitin-bench yields immediately rather than waiting on the lease lock.
 
-    Per Ares review (#swarm msg 4563): argus uses nvidia-smi + skips
+    Per Ares review (#swarm msg 4563): chitin telemetry uses nvidia-smi + skips
     (doesn't lock). Lock-based coordination only prevents chitin-bench-vs-
     chitin-bench stacking. To coordinate chitin-bench-vs-argus we check `ollama ps`
     for argus's model and yield if present."""
@@ -244,7 +244,7 @@ def yield_if_argus_active() -> None:
         if ARGUS_MODEL_NAME.lower() in model.get("name", "").lower():
             raise BenchArgusActive(
                 f"argus model {model['name']!r} is hot — yielding "
-                f"(retry next cron tick when argus is cold)"
+                f"(retry next cron tick when chitin telemetry is cold)"
             )
 
 
@@ -585,8 +585,8 @@ def process_ticket(ticket: dict, model: str) -> dict:
 
     while retry_count <= MAX_RETRIES:
         try:
-            # Per Ares review: yield-immediately if argus model is hot
-            # (don't wait 60s for a lock argus never acquires).
+            # Per Ares review: yield-immediately if chitin telemetry model is hot
+            # (don't wait 60s for a lock chitin telemetry never acquires).
             yield_if_argus_active()
             with vram_lease():
                 ollama_ps_inspect()  # preflight (raises on infra failure)

@@ -26,7 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from analysis.writers import write_json
+from chitin_telemetry.writers import write_json
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

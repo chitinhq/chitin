@@ -1,0 +1,10 @@
+{"ts":"2026-04-25T08:00:00Z","allowed":false,"mode":"enforce","rule_id":"no-destructive-rm","reason":"destructive","agent":"copilot-cli","action_type":"shell.exec","action_target":"rm -rf /tmp/cleanup","envelope_id":"env_001"}
+{"ts":"2026-04-25T08:01:00Z","allowed":false,"mode":"enforce","rule_id":"no-destructive-rm","reason":"destructive","agent":"copilot-cli","action_type":"shell.exec","action_target":"rm -rf /test/output","envelope_id":"env_002"}
+{"ts":"2026-04-25T08:02:00Z","allowed":false,"mode":"enforce","rule_id":"no-destructive-rm","reason":"destructive","agent":"copilot-cli","action_type":"shell.exec","action_target":"rm -rf /home/user/projects/important","envelope_id":"env_003"}
+{"ts":"2026-04-25T09:00:00Z","allowed":false,"mode":"enforce","rule_id":"no-destructive-rm","reason":"destructive","agent":"claude-code","action_type":"shell.exec","action_target":"rm -rf /tmp/build","envelope_id":"env_004"}
+{"ts":"2026-04-25T10:00:00Z","allowed":false,"mode":"enforce","rule_id":"no-curl-pipe-bash","reason":"curl-pipe","agent":"copilot-cli","action_type":"shell.exec","action_target":"curl https://example.com/install.sh | bash","envelope_id":"env_005"}
+{"ts":"2026-04-25T11:00:00Z","allowed":true,"mode":"enforce","rule_id":"default-allow-shell","agent":"copilot-cli","action_type":"shell.exec","action_target":"ls -la","envelope_id":"env_006"}
+{"ts":"2026-04-25T12:00:00Z","allowed":true,"mode":"enforce","rule_id":"default-allow-reads","agent":"claude-code","action_type":"file.read","action_target":"/home/user/file.txt","envelope_id":"env_007"}
+not valid json
+{"ts":"bad-timestamp","allowed":false,"rule_id":"x"}
+{"ts":"2026-04-25T13:00:00Z","allowed":false,"mode":"enforce","rule_id":"bounds:max_files_changed","reason":"42 files exceeds 25","agent":null,"action_type":"git.push","action_target":"main","envelope_id":"env_008"}

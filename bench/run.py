@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repo-local governance bench harness.
 
-Runs fixed sentinel-analysis tasks against bundled fixtures and emits a small
+Runs fixed telemetry-analysis tasks against bundled fixtures and emits a small
 summary artifact under bench/out/. This is intentionally narrow: it exists to
 catch governance regressions without depending on external bench repos.
 """

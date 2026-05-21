@@ -1,0 +1,32 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "chitin-telemetry",
+  "root": "python/chitin_telemetry",
+  "sourceRoot": "python/chitin_telemetry",
+  "projectType": "application",
+  "tags": ["type:app", "scope:analytics", "layer:telemetry", "lang:python"],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/chitin_telemetry",
+        "command": "if command -v uv >/dev/null 2>&1; then PYTHONPATH=.. uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-telemetry-pip-install.log 2>&1 && PYTHONPATH=.. python3 -m pytest -q; fi"
+      }
+    },
+    "compile": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/chitin_telemetry",
+        "command": "python3 -m compileall -q ."
+      }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "python/chitin_telemetry",
+        "command": "python3 -m compileall -q . && if command -v uv >/dev/null 2>&1; then PYTHONPATH=.. uv run --extra dev pytest -q; else python3 -m pip install -e '.[dev]' >/tmp/chitin-telemetry-pip-install.log 2>&1 && PYTHONPATH=.. python3 -m pytest -q; fi"
+      },
+      "dependsOn": ["^validate"]
+    }
+  }
+}

@@ -52,8 +52,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from analysis.loaders import Window, load_gov_decisions
-from analysis.models import Decision
+from chitin_telemetry.loaders import Window, load_gov_decisions
+from chitin_telemetry.models import Decision
 
 
 # ──────────────────────────────────────────────────────────────────

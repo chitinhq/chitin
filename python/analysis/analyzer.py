@@ -23,8 +23,8 @@ from typing import Any
 
 import yaml
 
-from analysis.loaders import load_gov_decisions, parse_window_str
-from analysis.models import Decision
+from chitin_telemetry.loaders import load_gov_decisions, parse_window_str
+from chitin_telemetry.models import Decision
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_SONNET_MODEL = os.environ.get("CHITIN_ANALYZER_SONNET_MODEL", "claude-sonnet-4-6")
