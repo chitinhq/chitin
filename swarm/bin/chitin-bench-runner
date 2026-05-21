@@ -223,12 +223,16 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
             except (json.JSONDecodeError, OSError):
                 return meta
 
-            # block_reason: agent_result.metadata.icarus_block_reason
+            # block_reason: prefer current chitin_bench metadata, but keep
+            # reading legacy icarus metadata from older trials.
             agent_result = trial.get("agent_result") or {}
             metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
-            icarus_reason = metadata.get("icarus_block_reason")
-            if icarus_reason:
-                meta["block_reason"] = icarus_reason
+            block_reason = (
+                metadata.get("chitin_bench_block_reason")
+                or metadata.get("icarus_block_reason")
+            )
+            if block_reason:
+                meta["block_reason"] = block_reason
             elif trial.get("exception_info"):
                 exc_info = trial["exception_info"]
                 meta["block_reason"] = f"harness_exception:{exc_info.get('exception_type', 'unknown')}"
@@ -249,9 +253,15 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
                     except (TypeError, ValueError, KeyError):
                         pass
 
-            # steps_used: agent_result.steps or agent_result.step_count
+            # steps_used: prefer current metadata, then legacy metadata,
+            # then Harbor's top-level agent_result counters.
             if isinstance(agent_result, dict):
-                steps = agent_result.get("steps") or agent_result.get("step_count")
+                steps = (
+                    metadata.get("chitin_bench_steps_used")
+                    or metadata.get("icarus_steps_used")
+                    or agent_result.get("steps")
+                    or agent_result.get("step_count")
+                )
                 if steps is not None:
                     try:
                         meta["steps_used"] = int(steps)

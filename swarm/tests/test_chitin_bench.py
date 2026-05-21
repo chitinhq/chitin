@@ -211,6 +211,18 @@ class TestEmitterClassifier(TestCase):
         self.assertTrue(is_fail)
         self.assertEqual(reason, "harness_loud_fail:step_budget_exceeded")
 
+    def test_legacy_icarus_block_reason_classified(self):
+        """Older trials still use icarus_* metadata; they should classify
+        as harness loud-fails rather than plain verifier failures."""
+        is_fail, reason, _ = self._classify({
+            "verifier_result": {"reward": 0.0},
+            "agent_result": {
+                "metadata": {"icarus_block_reason": "step_budget_exceeded"},
+            },
+        })
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "harness_loud_fail:step_budget_exceeded")
+
     def test_missing_verifier_classified(self):
         is_fail, reason, _ = self._classify({})
         self.assertTrue(is_fail)

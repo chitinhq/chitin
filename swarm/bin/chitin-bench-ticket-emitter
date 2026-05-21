@@ -87,7 +87,7 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
     A trial is a failure if any of:
     - ``exception_info`` is set (agent or environment crashed)
     - ``verifier_result.reward`` < 1.0 (or missing)
-    - ``agent_result.metadata.chitin_bench_block_reason`` is set
+    - ``agent_result.metadata.{chitin_bench,icarus}_block_reason`` is set
     """
     # Environment / agent-setup exception path takes priority.
     exc_info = trial.get("exception_info")
@@ -100,7 +100,12 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
 
     agent_result = trial.get("agent_result") or {}
     metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
-    chitin_bench_reason = metadata.get("chitin_bench_block_reason") if metadata else None
+    chitin_bench_reason = None
+    if metadata:
+        chitin_bench_reason = (
+            metadata.get("chitin_bench_block_reason")
+            or metadata.get("icarus_block_reason")
+        )
 
     verifier_result = trial.get("verifier_result") or {}
     # Harbor verifier writes either {"reward": <float>} (legacy) or
@@ -178,7 +183,7 @@ Reproduce locally with:
 
 Then inspect the trajectory in jobs/chitin-bench/chitin-bench-repro-{task_name}/<trial>/agent/chitin-bench-trajectory.jsonl
 and decide:
-- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/chitin_bench_test.py.
+- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/test_chitin_bench.py.
 - Is this a model-capability ceiling? Note the step it stalls and file a follow-up to swap models.
 - Is this a verifier flake? Re-run; if it passes, close as flake.
 

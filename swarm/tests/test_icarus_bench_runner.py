@@ -25,8 +25,11 @@ sys.path.insert(0, str(RUNNER_DIR))
 # The runner script uses a hyphen in its filename so a standard import
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
-# inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+# inject it. Prefer the current chitin-bench name but keep a legacy
+# fallback so old tests can still exercise renamed codepaths.
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
+if not _runner_path.exists():
+    _runner_path = RUNNER_DIR / "icarus-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -191,6 +194,24 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["block_reason"], "stuck_in_loop")
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
+
+    def test_extracts_current_chitin_bench_metadata(self):
+        """Invariant: current chitin_bench metadata keys are accepted
+        alongside legacy icarus keys."""
+        self._write_trial_result("chitin-bench-test", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "chitin_bench_block_reason": "loop_detected",
+                    "chitin_bench_steps_used": 29,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "chitin-bench-test"}
+        meta = _runner["_extract_tick_metadata"](result, "chitin-bench-test")
+        self.assertEqual(meta["block_reason"], "loop_detected")
+        self.assertEqual(meta["reward"], 0.0)
+        self.assertEqual(meta["steps_used"], 29)
 
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward
