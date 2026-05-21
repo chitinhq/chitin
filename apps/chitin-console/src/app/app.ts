@@ -51,6 +51,7 @@ export class App implements OnInit, OnDestroy {
     { path: '/policy',      label: 'Policy',      icon: 'policy' },
     { path: '/suggestions', label: 'Suggestions', icon: 'suggestions' },
     { path: '/sdlc',        label: 'Swarm × SDLC', icon: 'sdlc' },
+    { path: '/orchestrator', label: 'Orchestrator', icon: 'orchestrator' },
   ];
 
   ngOnInit() {
