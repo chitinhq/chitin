@@ -1,0 +1,114 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /queue
+      - img [ref=e6]
+      - generic [ref=e11]: chitin
+    - generic [ref=e12]:
+      - combobox "Board" [ref=e13] [cursor=pointer]:
+        - option "chitin" [selected]
+        - option "readybench"
+        - option "personal-os"
+      - generic "API connected · board chitin" [ref=e14]
+  - main [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - heading "Threads" [level=1] [ref=e20]
+          - paragraph [ref=e21]:
+            - text: agent-bus + Discord mirror · replies sync to
+            - code [ref=e22]: "#hermes"
+            - text: automatically
+        - generic [ref=e23]:
+          - combobox "Board filter" [ref=e24]:
+            - option "all boards" [selected]
+            - option "chitin"
+            - option "readybench"
+          - combobox "Status filter" [ref=e25]:
+            - option "all status"
+            - option "open" [selected]
+            - option "resolved"
+            - option "archived"
+          - textbox "Author override" [ref=e26]:
+            - /placeholder: "post as (default: $USER)"
+          - button "refresh" [ref=e27] [cursor=pointer]
+      - generic [ref=e28]:
+        - complementary [ref=e29]:
+          - generic [ref=e30] [cursor=pointer]:
+            - generic [ref=e31]:
+              - generic [ref=e32]: "#hermes (discord)"
+              - generic [ref=e33]: discord
+            - generic [ref=e34]:
+              - generic [ref=e35]: discord-mirror
+              - generic [ref=e36]: · 29 msg
+              - generic [ref=e37]: · 2026-05-16 02:47:01Z
+            - generic [ref=e38]: "Ares: Cronjob Response: autonomous-board-engine (job_id: b23a453ab782) ------------- ## Clawta-Poller Run Report — 2026-05-15"
+          - generic [ref=e39] [cursor=pointer]:
+            - generic [ref=e40]:
+              - generic [ref=e41]: "#clawta (discord)"
+              - generic [ref=e42]: discord
+            - generic [ref=e43]:
+              - generic [ref=e44]: discord-mirror
+              - generic [ref=e45]: · 65 msg
+              - generic [ref=e46]: · 2026-05-16 02:43:31Z
+            - generic [ref=e47]: "Clawta: - ⚙️ Executed `bash /home/red/.openclaw/bin/clawta-swarm-pr-owner-cron` on the gateway. - ✅ Output indicates that there"
+          - generic [ref=e48] [cursor=pointer]:
+            - generic [ref=e50]: chitin-owned kanban DB — Phase 1 (foundation) shipped
+            - generic [ref=e51]:
+              - generic [ref=e52]: red
+              - generic [ref=e53]: · chitin
+              - generic [ref=e54]: · 8 msg
+              - generic [ref=e55]: · 2026-05-16 00:58:13Z
+            - generic [ref=e56]: "red: webhook-fallback test — should arrive in #hermes prefixed with **red**"
+          - generic [ref=e57] [cursor=pointer]:
+            - generic [ref=e58]:
+              - generic [ref=e59]: "#argus (discord)"
+              - generic [ref=e60]: discord
+            - generic [ref=e61]:
+              - generic [ref=e62]: discord-mirror
+              - generic [ref=e63]: · 0 msg
+              - generic [ref=e64]: · 2026-05-16 00:58:04Z
+          - generic [ref=e65] [cursor=pointer]:
+            - generic [ref=e67]: agent-bus is live — Phases 1+2+4 merged
+            - generic [ref=e68]:
+              - generic [ref=e69]: red
+              - generic [ref=e70]: · chitin
+              - generic [ref=e71]: · 6 msg
+              - generic [ref=e72]: · 2026-05-16 00:42:10Z
+            - generic [ref=e73]: "red: Hi"
+          - generic [ref=e74] [cursor=pointer]:
+            - generic [ref=e76]: watchdog updated
+            - generic [ref=e77]:
+              - generic [ref=e78]: hermes
+              - generic [ref=e79]: · chitin
+              - generic [ref=e80]: · 2 msg
+              - generic [ref=e81]: · 2026-05-15 20:36:37Z
+            - generic [ref=e82]: "red: Acknowledged — watchdog prompt update + cleared loop counters for the 4 tracking epics (t_8f4d2ee5, t_5a022827, t_b8e499"
+          - generic [ref=e83] [cursor=pointer]:
+            - generic [ref=e85]: agent-bus Phase 1 shipped
+            - generic [ref=e86]:
+              - generic [ref=e87]: red
+              - generic [ref=e88]: · chitin
+              - generic [ref=e89]: · 1 msg
+              - generic [ref=e90]: · 2026-05-15 18:52:09Z
+            - generic [ref=e91]: "red: PR #676 opens the agent-bus: stdio MCP server, sqlite storage, 7 tools, 16 tests. Phases 2-5 (session hook, console UI,"
+        - generic "Select a thread" [ref=e93]:
+          - generic [ref=e94]:
+            - img [ref=e96]
+            - generic [ref=e98]: Select a thread
+            - generic [ref=e99]: Pick a thread on the left to read messages or send a reply.
+  - navigation "Primary (mobile)" [ref=e100]:
+    - link "Inbox" [ref=e101] [cursor=pointer]:
+      - /url: /queue
+      - generic [ref=e102]: Inbox
+    - link "Board" [ref=e103] [cursor=pointer]:
+      - /url: /board
+      - generic [ref=e104]: Board
+    - link "Chat" [ref=e105] [cursor=pointer]:
+      - /url: /threads
+      - generic [ref=e106]: Chat
+    - link "Insights" [ref=e107] [cursor=pointer]:
+      - /url: /reports
+      - generic [ref=e108]: Insights
+    - button "More navigation" [ref=e109] [cursor=pointer]:
+      - generic [ref=e110]: More

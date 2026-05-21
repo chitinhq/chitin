@@ -1,0 +1,240 @@
+- generic [ref=e122]:
+  - banner [ref=e123]:
+    - generic [ref=e124]:
+      - link "ReadyBench Hire hire.readybench.io · mock" [ref=e125] [cursor=pointer]:
+        - /url: /dashboard
+        - generic [ref=e126]: RB
+        - generic [ref=e127]:
+          - generic [ref=e128]: ReadyBench Hire
+          - generic [ref=e129]: hire.readybench.io · mock
+      - navigation "Primary" [ref=e130]:
+        - link "Pipeline" [ref=e131] [cursor=pointer]:
+          - /url: /dashboard
+        - link "New request" [ref=e132] [cursor=pointer]:
+          - /url: /requests/new
+      - generic [ref=e133]:
+        - generic [ref=e134]: Acme Robotics
+        - generic [ref=e135]: AR
+  - main [ref=e136]:
+    - generic [ref=e288]:
+      - generic [ref=e289]:
+        - link "Pipeline" [ref=e290] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e291]
+          - text: Pipeline
+        - generic [ref=e293]:
+          - heading "Senior backend engineer — Python/Postgres" [level=1] [ref=e294]
+          - generic [ref=e295]: Shortlist ready
+        - generic [ref=e297]: Acme Robotics · posted 2026-04-28 · $70–$95 / hr
+      - 'list "Pipeline status: Shortlist ready" [ref=e299]':
+        - listitem [ref=e300]:
+          - generic [ref=e301]:
+            - img [ref=e303]
+            - generic [ref=e305]: Submitted
+        - listitem [ref=e306]:
+          - generic [ref=e307]:
+            - img [ref=e309]
+            - generic [ref=e311]: Under review
+        - listitem [ref=e312]:
+          - generic [ref=e313]:
+            - generic [ref=e314]: "3"
+            - generic [ref=e315]: Shortlist ready
+        - listitem [ref=e316]:
+          - generic [ref=e317]:
+            - generic [ref=e318]: "4"
+            - generic [ref=e319]: Screening
+        - listitem [ref=e320]:
+          - generic [ref=e321]:
+            - generic [ref=e322]: "5"
+            - generic [ref=e323]: Interviewing
+        - listitem [ref=e324]:
+          - generic [ref=e325]:
+            - generic [ref=e326]: "6"
+            - generic [ref=e327]: Decision pending
+        - listitem [ref=e328]:
+          - generic [ref=e329]:
+            - generic [ref=e330]: "7"
+            - generic [ref=e331]: Proposal sent
+        - listitem [ref=e332]:
+          - generic [ref=e333]:
+            - generic [ref=e334]: "8"
+            - generic [ref=e335]: Proposal accepted
+        - listitem [ref=e336]:
+          - generic [ref=e337]:
+            - generic [ref=e338]: "9"
+            - generic [ref=e339]: Selected
+      - tablist [ref=e340]:
+        - tab "Overview" [ref=e341] [cursor=pointer]
+        - tab "Shortlist" [active] [selected] [ref=e342] [cursor=pointer]
+        - tab "Interviews" [ref=e343] [cursor=pointer]
+        - tab "Decision" [ref=e344] [cursor=pointer]
+        - tab "Proposal" [ref=e345] [cursor=pointer]
+        - tab "SOW" [ref=e346] [cursor=pointer]
+        - tab "Workspace" [ref=e347] [cursor=pointer]
+        - tab "Onboarding" [ref=e348] [cursor=pointer]
+        - tab "Check-ins" [ref=e349] [cursor=pointer]
+        - tab "Handoff" [ref=e350] [cursor=pointer]
+        - tab "Activity" [ref=e351] [cursor=pointer]
+      - generic [ref=e386]:
+        - generic [ref=e387]:
+          - heading "Curated shortlist" [level=2] [ref=e388]
+          - generic "Net-new build" [ref=e389]:
+            - img [ref=e390]
+            - text: New
+        - generic [ref=e392]:
+          - generic [ref=e393]:
+            - generic [ref=e394]:
+              - generic [ref=e395]:
+                - heading "Lucia Romero" [level=3] [ref=e397]
+                - paragraph [ref=e398]: Senior Backend Engineer · Patagonia Devs
+              - generic [ref=e399]:
+                - generic [ref=e400]: "92"
+                - generic [ref=e401]: match
+            - generic [ref=e402]:
+              - generic [ref=e403]:
+                - term [ref=e404]:
+                  - img [ref=e405]
+                  - text: Timezone
+                - definition [ref=e407]: Buenos Aires (UTC-3)
+              - generic [ref=e408]:
+                - term [ref=e409]:
+                  - img [ref=e410]
+                  - text: Availability
+                - definition [ref=e413]: Full-time, starts in 1 week
+              - generic [ref=e414]:
+                - term [ref=e415]:
+                  - img [ref=e416]
+                  - text: Rate
+                - definition [ref=e418]: $78/hr
+            - generic [ref=e419]:
+              - generic [ref=e420]: Match notes
+              - list [ref=e421]:
+                - listitem [ref=e422]:
+                  - img [ref=e424]
+                  - generic [ref=e426]: 8 yrs Python + Django, 4 yrs PostgreSQL
+                - listitem [ref=e427]:
+                  - img [ref=e429]
+                  - generic [ref=e431]: Shipped two 50-engineer migrations as tech lead
+                - listitem [ref=e432]:
+                  - img [ref=e434]
+                  - generic [ref=e436]: Async-by-default — only 2 synchronous meetings/week in last role
+            - generic [ref=e437]:
+              - generic [ref=e438]: Operating fit signals
+              - generic [ref=e439]:
+                - generic "5h overlap with EST" [ref=e440]:
+                  - generic [ref=e441]: timezoneOverlap
+                  - generic [ref=e442]: 5/5
+                - generic "Writes RFCs before code" [ref=e443]:
+                  - generic [ref=e444]: asyncCommunication
+                  - generic [ref=e445]: 5/5
+                - generic "Drove Stripe migration end-to-end" [ref=e446]:
+                  - generic [ref=e447]: ownershipStyle
+                  - generic [ref=e448]: 4/5
+            - generic [ref=e449]:
+              - button "Schedule interview" [ref=e450] [cursor=pointer]
+              - button "Strong yes for Lucia Romero" [ref=e451] [cursor=pointer]: Strong yes
+              - button "Reject Lucia Romero" [ref=e452] [cursor=pointer]: Reject
+          - generic [ref=e453]:
+            - generic [ref=e454]:
+              - generic [ref=e455]:
+                - heading "Tomás Pereira" [level=3] [ref=e457]
+                - paragraph [ref=e458]: Senior Backend Engineer · Gauss Engineering
+              - generic [ref=e459]:
+                - generic [ref=e460]: "87"
+                - generic [ref=e461]: match
+            - generic [ref=e462]:
+              - generic [ref=e463]:
+                - term [ref=e464]:
+                  - img [ref=e465]
+                  - text: Timezone
+                - definition [ref=e467]: Lisbon (UTC+0)
+              - generic [ref=e468]:
+                - term [ref=e469]:
+                  - img [ref=e470]
+                  - text: Availability
+                - definition [ref=e473]: Full-time, starts in 2 weeks
+              - generic [ref=e474]:
+                - term [ref=e475]:
+                  - img [ref=e476]
+                  - text: Rate
+                - definition [ref=e478]: $85/hr
+            - generic [ref=e479]:
+              - generic [ref=e480]: Match notes
+              - list [ref=e481]:
+                - listitem [ref=e482]:
+                  - img [ref=e484]
+                  - generic [ref=e486]: 10 yrs Python, strong distributed systems background
+                - listitem [ref=e487]:
+                  - img [ref=e489]
+                  - generic [ref=e491]: Led payment platform at fintech (~50M txns/yr)
+                - listitem [ref=e492]:
+                  - img [ref=e494]
+                  - generic [ref=e496]: Some sync-meeting preference; flagged as medium risk for async fit
+            - generic [ref=e497]:
+              - generic [ref=e498]: Operating fit signals
+              - generic [ref=e499]:
+                - generic "1h overlap with EST" [ref=e500]:
+                  - generic [ref=e501]: timezoneOverlap
+                  - generic [ref=e502]: 3/5
+                - generic "Mixed signal in screening" [ref=e503]:
+                  - generic [ref=e504]: asyncCommunication
+                  - generic [ref=e505]: 3/5
+                - generic "Owned PCI compliance push" [ref=e506]:
+                  - generic [ref=e507]: ownershipStyle
+                  - generic [ref=e508]: 5/5
+            - generic [ref=e509]:
+              - button "Schedule interview" [ref=e510] [cursor=pointer]
+              - button "Strong yes for Tomás Pereira" [ref=e511] [cursor=pointer]: Strong yes
+              - button "Reject Tomás Pereira" [ref=e512] [cursor=pointer]: Reject
+          - generic [ref=e513]:
+            - generic [ref=e514]:
+              - generic [ref=e515]:
+                - heading "Diego Salinas" [level=3] [ref=e517]
+                - paragraph [ref=e518]: Backend Engineer · Caracas Code Co.
+              - generic [ref=e519]:
+                - generic [ref=e520]: "81"
+                - generic [ref=e521]: match
+            - generic [ref=e522]:
+              - generic [ref=e523]:
+                - term [ref=e524]:
+                  - img [ref=e525]
+                  - text: Timezone
+                - definition [ref=e527]: Caracas (UTC-4)
+              - generic [ref=e528]:
+                - term [ref=e529]:
+                  - img [ref=e530]
+                  - text: Availability
+                - definition [ref=e533]: Full-time, starts immediately
+              - generic [ref=e534]:
+                - term [ref=e535]:
+                  - img [ref=e536]
+                  - text: Rate
+                - definition [ref=e538]: $65/hr
+            - generic [ref=e539]:
+              - generic [ref=e540]: Match notes
+              - list [ref=e541]:
+                - listitem [ref=e542]:
+                  - img [ref=e544]
+                  - generic [ref=e546]: 5 yrs Python, 2 yrs production Postgres at scale
+                - listitem [ref=e547]:
+                  - img [ref=e549]
+                  - generic [ref=e551]: Strong written English, weekly demo videos
+                - listitem [ref=e552]:
+                  - img [ref=e554]
+                  - generic [ref=e556]: Less senior than the other two — would need an architect to pair with
+            - generic [ref=e557]:
+              - generic [ref=e558]: Operating fit signals
+              - generic [ref=e559]:
+                - generic "4h overlap with EST" [ref=e560]:
+                  - generic [ref=e561]: timezoneOverlap
+                  - generic [ref=e562]: 5/5
+                - generic "Loom-first communicator" [ref=e563]:
+                  - generic [ref=e564]: asyncCommunication
+                  - generic [ref=e565]: 4/5
+                - generic "Strong IC, less lead experience" [ref=e566]:
+                  - generic [ref=e567]: ownershipStyle
+                  - generic [ref=e568]: 3/5
+            - generic [ref=e569]:
+              - button "Schedule interview" [ref=e570] [cursor=pointer]
+              - button "Strong yes for Diego Salinas" [ref=e571] [cursor=pointer]: Strong yes
+              - button "Reject Diego Salinas" [ref=e572] [cursor=pointer]: Reject

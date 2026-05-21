@@ -8,6 +8,7 @@ import { StatusPillComponent } from '../ui/status-pill.component';
 import { LoaderComponent } from '../ui/loader.component';
 import { EmptyStateComponent } from '../ui/empty-state.component';
 import { ageFromEpochSeconds, fmtTs, shortenId, priorityBarWidth } from '../utils';
+import { copyToClipboard } from '../copy.util';
 
 @Component({
   selector: 'cc-tickets',
@@ -48,6 +49,11 @@ export class TicketsPage implements OnInit {
     { value: 'done',    label: 'done (→ done)',           needsReason: true  },
   ];
 
+  // Comment composer state.
+  readonly commenting = signal(false);
+  readonly commentError = signal<string | null>(null);
+  pendingComment = '';
+
   status = 'in_progress,triage,ready,todo';
   assignee = '';
   q = '';
@@ -75,6 +81,73 @@ export class TicketsPage implements OnInit {
     for (const t of list) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
     return { total, byStatus };
   });
+
+  // Known agent assignees — anything else lands a ticket in an
+  // operator lane. status=blocked also implies a human is needed.
+  private readonly agentAssignees = new Set([
+    'codex', 'claude-code', 'copilot', 'gemini', 'clawta',
+    'chitin-worker', 'hermes',
+  ]);
+
+  /** True when the currently-open ticket is waiting on operator input. */
+  readonly isHITL = computed(() => {
+    const t = this.selectedDetail()?.task;
+    if (!t) return false;
+    if (t.status === 'blocked') return true;
+    if (!t.assignee) return true;
+    return !this.agentAssignees.has(t.assignee);
+  });
+
+  /** A copy-pasteable prompt for a Claude Code / agent session. */
+  readonly operatorPrompt = computed(() => {
+    const d = this.selectedDetail();
+    if (!d) return '';
+    const t = d.task;
+    const blockReason = (t as { block_reason?: string | null }).block_reason || '(none — check comments/events)';
+    const bodyExcerpt = (t.body || '').slice(0, 1200);
+    const recentComments = d.comments.slice(-3)
+      .map(c => `  - ${c.author}: ${c.body.slice(0, 200)}`)
+      .join('\n') || '  (none)';
+
+    return `I need help with a human-in-the-loop ticket on the chitin board.
+
+**Ticket:** ${t.id} — ${t.title}
+**Status:** ${t.status}
+**Assignee:** ${t.assignee || '(unassigned)'}
+**Priority:** ${t.priority}
+**Block reason:** ${blockReason}
+**Repo:** ~/workspace/chitin
+**Console:** http://100.115.89.9:7878/tickets?id=${t.id}
+
+**Body:**
+${bodyExcerpt || '(empty)'}${(t.body || '').length > 1200 ? '\n…[truncated; see /tickets?id=' + t.id + ' for full body]' : ''}
+
+**Recent comments:**
+${recentComments}
+
+Please investigate, then take one of these actions:
+- Add a comment with the next step (via the console at \`/tickets?id=${t.id}\` or \`kanban-flow status ${t.id}\`)
+- Unblock it: \`kanban-flow unblock ${t.id} --author ${t.assignee || 'red'}\`
+- Mark done: \`kanban-flow done ${t.id} --result "<summary>" --author ${t.assignee || 'red'}\`
+- Re-block with a different reason: \`kanban-flow block ${t.id} "<reason>" --author ${t.assignee || 'red'}\`
+
+Use any chitin / hermes / clawta tooling available. Report what you found and what you changed.`;
+  });
+
+  readonly promptCopied = signal(false);
+
+  async copyOperatorPrompt() {
+    const text = this.operatorPrompt();
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      this.promptCopied.set(true);
+      setTimeout(() => this.promptCopied.set(false), 1800);
+    } else {
+      this.promptCopied.set(false);
+      this.mutationError.set('Copy failed — select the prompt and copy manually.');
+    }
+  }
 
   constructor() {
     // React to query param "id" — open drawer for that ticket
@@ -110,7 +183,9 @@ export class TicketsPage implements OnInit {
     this.selectedDetail.set(null);
     this.pendingStatus = '';
     this.pendingReason = '';
+    this.pendingComment = '';
     this.mutationError.set(null);
+    this.commentError.set(null);
     this.router.navigate([], { queryParams: { id }, queryParamsHandling: 'merge' });
     this.api.task(id).subscribe({
       next: (r) => { this.selectedDetail.set(r); this.drawerLoading.set(false); },
@@ -122,7 +197,9 @@ export class TicketsPage implements OnInit {
     this.selectedDetail.set(null);
     this.pendingStatus = '';
     this.pendingReason = '';
+    this.pendingComment = '';
     this.mutationError.set(null);
+    this.commentError.set(null);
     this.router.navigate([], { queryParams: { id: null }, queryParamsHandling: 'merge' });
   }
 
@@ -155,6 +232,26 @@ export class TicketsPage implements OnInit {
         this.mutating.set(false);
         const detail = err?.error?.detail || err?.error?.stderr || err?.message || 'unknown error';
         this.mutationError.set(String(detail));
+      },
+    });
+  }
+
+  submitComment() {
+    const detail = this.selectedDetail();
+    const body = this.pendingComment.trim();
+    if (!detail || !body) return;
+    this.commenting.set(true);
+    this.commentError.set(null);
+    this.api.addTaskComment(detail.task.id, { body }).subscribe({
+      next: (r) => {
+        this.commenting.set(false);
+        this.pendingComment = '';
+        if (r.task) this.selectedDetail.set(r.task);
+      },
+      error: (err) => {
+        this.commenting.set(false);
+        const msg = err?.error?.detail || err?.message || 'failed to post comment';
+        this.commentError.set(String(msg));
       },
     });
   }

@@ -1,0 +1,68 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /overview
+      - img [ref=e6]
+      - generic [ref=e10]:
+        - generic [ref=e11]: chitin
+        - generic [ref=e12]: console
+    - navigation "Primary" [ref=e13]:
+      - link "Overview" [ref=e14] [cursor=pointer]:
+        - /url: /overview
+        - generic [ref=e16]: Overview
+      - link "My Queue" [ref=e17] [cursor=pointer]:
+        - /url: /queue
+        - generic [ref=e19]: My Queue
+      - link "Threads" [ref=e20] [cursor=pointer]:
+        - /url: /threads
+        - generic [ref=e22]: Threads
+      - link "Board" [ref=e23] [cursor=pointer]:
+        - /url: /board
+        - generic [ref=e25]: Board
+      - link "Sessions" [ref=e26] [cursor=pointer]:
+        - /url: /sessions
+        - generic [ref=e28]: Sessions
+      - link "Tickets" [ref=e29] [cursor=pointer]:
+        - /url: /tickets
+        - generic [ref=e31]: Tickets
+      - link "Swarm ELO" [ref=e32] [cursor=pointer]:
+        - /url: /elo
+        - generic [ref=e34]: Swarm ELO
+      - link "Argus" [ref=e35] [cursor=pointer]:
+        - /url: /argus
+        - generic [ref=e37]: Argus
+      - link "Reports" [ref=e38] [cursor=pointer]:
+        - /url: /reports
+        - generic [ref=e40]: Reports
+      - link "Policy" [ref=e41] [cursor=pointer]:
+        - /url: /policy
+        - generic [ref=e43]: Policy
+      - link "Suggestions" [ref=e44] [cursor=pointer]:
+        - /url: /suggestions
+        - generic [ref=e46]: Suggestions
+    - generic "API connected · board chitin" [ref=e48]:
+      - generic [ref=e50]: chitin
+  - main [ref=e51]:
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - heading "Threads" [level=1] [ref=e55]
+        - paragraph [ref=e56]:
+          - text: agent-bus + Discord mirror · replies sync to
+          - code [ref=e57]: "#hermes"
+          - text: automatically
+      - generic [ref=e58]:
+        - combobox "Board filter" [ref=e59]:
+          - option "all boards" [selected]
+          - option "chitin"
+          - option "readybench"
+        - combobox "Status filter" [ref=e60]:
+          - option "all status" [selected]
+          - option "open"
+          - option "resolved"
+          - option "archived"
+        - textbox "Author override" [ref=e61]:
+          - /placeholder: "post as (default: $USER)"
+        - button "refresh" [ref=e62] [cursor=pointer]
+  - contentinfo [ref=e63]:
+    - generic [ref=e64]: chitin-console · local · read-only
+    - generic [ref=e65]: port 4200 → 7878

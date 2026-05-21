@@ -165,10 +165,6 @@ body {
 .pill-status-todo       { color: var(--chitin); background: rgba(212,165,116,0.10); border-color: rgba(212,165,116,0.25); }
 .pill-status-in_progress{ color: var(--run); background: rgba(34,197,94,0.10);   border-color: rgba(34,197,94,0.35); }
 .pill-status-done       { color: #38BDF8; background: rgba(56,189,248,0.10);    border-color: rgba(56,189,248,0.20); }
-.pill-status-open       { color: var(--run); background: rgba(34,197,94,0.10); border-color: rgba(34,197,94,0.30); }
-.pill-status-merged     { color: #38BDF8; background: rgba(56,189,248,0.10); border-color: rgba(56,189,248,0.20); }
-.pill-status-closed     { color: var(--danger); background: rgba(239,68,68,0.10); border-color: rgba(239,68,68,0.25); }
-.pill-status-resolved   { color: #38BDF8; background: rgba(56,189,248,0.10); border-color: rgba(56,189,248,0.20); }
 .pill-status-archived   { color: var(--dim); background: rgba(100,116,139,0.08); border-color: rgba(100,116,139,0.20); }
 .pill-status-blocked,
 .pill-status-crashed,

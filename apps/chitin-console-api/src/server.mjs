@@ -18,7 +18,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
@@ -51,14 +51,38 @@ const CHITIN_BOARD_DB = path.join(CHITIN_KANBAN_ROOT, CURRENT_BOARD, 'kanban.db'
 const HERMES_BOARD_DB = path.join(HERMES_KANBAN_ROOT, 'boards', CURRENT_BOARD, 'kanban.db');
 const BOARD_DB = fs.existsSync(CHITIN_BOARD_DB) ? CHITIN_BOARD_DB : HERMES_BOARD_DB;
 const BOARD_DB_SOURCE = BOARD_DB === CHITIN_BOARD_DB ? 'chitin' : 'hermes';
-const BUS_DB = process.env.AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
 const ARGUS_DB = process.env.ARGUS_INDEX_DB || path.join(HOME, '.argus', 'index.db');
 const CLAWTA_DECISIONS_DB = process.env.CLAWTA_DECISIONS_DB
   || path.join(HOME, '.openclaw', 'data', 'clawta_decisions.db');
 const CLAWTA_DB = process.env.CLAWTA_DB || path.join(HOME, '.openclaw', 'data', 'clawta.db');
 const CHAIN_LEDGER_DIR = path.join(HOME, '.chitin');
-const ANALYZER_DB = process.env.CHITIN_ANALYZER_DB || path.join(CHAIN_LEDGER_DIR, 'analyzer.db');
 const POLICY_FILE = process.env.CHITIN_POLICY_FILE || path.join(REPO_ROOT, 'chitin.yaml');
+const BUS_DB_PATH = process.env.CHITIN_AGENT_BUS_DB || path.join(HOME, '.chitin', 'agent-bus', 'bus.db');
+
+// Discord outbound. Auto-loaded from ~/.hermes/.env if process env
+// doesn't already have them — lets the console-api push to the
+// #hermes channel without a separate config step.
+function loadDiscordEnv() {
+  const out = {
+    token: process.env.DISCORD_BOT_TOKEN || '',
+    home: process.env.DISCORD_HOME_CHANNEL || '',
+  };
+  if (!out.token || !out.home) {
+    try {
+      const raw = fs.readFileSync(path.join(HOME, '.hermes', '.env'), 'utf8');
+      for (const line of raw.split('\n')) {
+        const m = line.match(/^([A-Z_]+)=(.*)$/);
+        if (!m) continue;
+        if (m[1] === 'DISCORD_BOT_TOKEN' && !out.token) out.token = m[2].trim();
+        if (m[1] === 'DISCORD_HOME_CHANNEL' && !out.home) out.home = m[2].trim();
+      }
+    } catch { /* env file optional */ }
+  }
+  return out;
+}
+const _discord = loadDiscordEnv();
+const DISCORD_BOT_TOKEN = _discord.token;
+const DISCORD_HOME_CHANNEL = _discord.home;
 
 // Optional static bundle. When CHITIN_CONSOLE_STATIC_ROOT points at a
 // built chitin-console (e.g. dist/apps/chitin-console/browser), the
@@ -70,6 +94,15 @@ const STATIC_ROOT = process.env.CHITIN_CONSOLE_STATIC_ROOT
   || (fs.existsSync(path.join(REPO_ROOT, 'dist/apps/chitin-console/browser'))
         ? path.join(REPO_ROOT, 'dist/apps/chitin-console/browser')
         : null);
+
+// Reports root — pre-existing static HTML reports previously served on
+// port 8888 by `python -m http.server`. Mounting them under /reports/
+// on this server folds them into the single Tailscale URL.
+const REPORTS_ROOT = process.env.CHITIN_REPORTS_ROOT
+  || (fs.existsSync(path.join(HOME, 'labs', 'local-ai-lab', 'wiki', 'assets'))
+        ? path.join(HOME, 'labs', 'local-ai-lab', 'wiki', 'assets')
+        : null);
+
 const STATIC_MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
@@ -87,27 +120,13 @@ const STATIC_MIME = {
 };
 
 let kanbanDB = null;
-let busDB = null;
 let argusDB = null;
 let clawtaDecisionsDB = null;
 let clawtaDB = null;
-let analyzerDB = null;
-
-const ANALYZER_SCHEMA = `
-CREATE TABLE IF NOT EXISTS analyzer_suggestions (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  target TEXT NOT NULL,
-  diff TEXT NOT NULL,
-  rationale TEXT NOT NULL,
-  applied INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_created_at
-  ON analyzer_suggestions(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_analyzer_suggestions_type_target
-  ON analyzer_suggestions(type, target);
-`;
+let busDB = null;
+// Per-board kanban DB cache. Lets ?board=<slug> swap data sources
+// per request without thrashing connections.
+const boardDBCache = new Map();
 
 function openIfExists(p, readonly = true) {
   try {
@@ -119,26 +138,57 @@ function openIfExists(p, readonly = true) {
   }
 }
 
-function openAnalyzerDB() {
+function boardKanbanPath(slug) {
+  if (!slug) return BOARD_DB;
+  const chitinPath = path.join(CHITIN_KANBAN_ROOT, slug, 'kanban.db');
+  const hermesPath = path.join(HERMES_KANBAN_ROOT, 'boards', slug, 'kanban.db');
+  if (fs.existsSync(chitinPath)) return chitinPath;
+  if (fs.existsSync(hermesPath)) return hermesPath;
+  return null;
+}
+
+/** Returns the kanban DB for a board. Falls back to the default when slug matches CURRENT_BOARD. */
+function getBoardDB(slug) {
+  if (!slug || slug === CURRENT_BOARD) return kanbanDB;
+  if (boardDBCache.has(slug)) return boardDBCache.get(slug);
+  const p = boardKanbanPath(slug);
+  if (!p) { boardDBCache.set(slug, null); return null; }
+  const db = openIfExists(p);
+  boardDBCache.set(slug, db);
+  return db;
+}
+
+/** Lists every board with a discoverable kanban DB. */
+function listBoards() {
+  const boards = new Map();
   try {
-    fs.mkdirSync(path.dirname(ANALYZER_DB), { recursive: true });
-    const db = new Database(ANALYZER_DB);
-    db.exec(ANALYZER_SCHEMA);
-    return db;
-  } catch (e) {
-    console.warn(`[console-api] could not open ${ANALYZER_DB}: ${e.message}`);
-    return null;
-  }
+    for (const d of fs.readdirSync(CHITIN_KANBAN_ROOT)) {
+      const f = path.join(CHITIN_KANBAN_ROOT, d, 'kanban.db');
+      if (fs.existsSync(f)) boards.set(d, { slug: d, source: 'chitin', path: f });
+    }
+  } catch { /* may not exist yet */ }
+  try {
+    const root = path.join(HERMES_KANBAN_ROOT, 'boards');
+    for (const d of fs.readdirSync(root)) {
+      const f = path.join(root, d, 'kanban.db');
+      if (fs.existsSync(f) && !boards.has(d)) {
+        boards.set(d, { slug: d, source: 'hermes', path: f });
+      }
+    }
+  } catch { /* may not exist yet */ }
+  return { boards: [...boards.values()], current: CURRENT_BOARD };
 }
 
 function reopen() {
-  kanbanDB?.close(); busDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); analyzerDB?.close();
+  kanbanDB?.close(); argusDB?.close(); clawtaDecisionsDB?.close(); clawtaDB?.close(); busDB?.close();
+  for (const db of boardDBCache.values()) { try { db?.close(); } catch { /* ignore */ } }
+  boardDBCache.clear();
   kanbanDB           = openIfExists(BOARD_DB);
-  busDB              = openIfExists(BUS_DB);
   argusDB            = openIfExists(ARGUS_DB);
   clawtaDecisionsDB  = openIfExists(CLAWTA_DECISIONS_DB);
   clawtaDB           = openIfExists(CLAWTA_DB);
-  analyzerDB         = openAnalyzerDB();
+  // bus.db needs read+write since the threads page lets you reply.
+  busDB              = openIfExists(BUS_DB_PATH, false);
 }
 reopen();
 
@@ -154,16 +204,575 @@ function json(res, status, body) {
 }
 const notFound  = (res) => json(res, 404, { error: 'not_found' });
 const serverErr = (res, e) => json(res, 500, { error: 'server_error', detail: String(e?.message || e) });
-const ATTACHMENT_CACHE_TTL_MS = 60_000;
-const attachmentCache = new Map();
 
 // ---------- Helpers ----------
 function* readJsonl(file) {
   const raw = fs.readFileSync(file, 'utf8');
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
-    try { yield JSON.parse(line); } catch { continue; }
+    try { yield JSON.parse(line); } catch {}
   }
+}
+
+// ---------- Industry-scan parser ----------
+// Pulls structured paper cards + telemetry from the latest
+// industry-scan-*.html generated by the cron. Uses regex against
+// the report's stable class names — adding a real HTML parser
+// dependency would dwarf the parser size for what this needs.
+function parseIndustryScan() {
+  if (!REPORTS_ROOT) return null;
+  let file;
+  try {
+    const latest = path.join(REPORTS_ROOT, 'industry-scan-latest.html');
+    if (fs.existsSync(latest)) {
+      file = latest;
+    } else {
+      const candidates = fs.readdirSync(REPORTS_ROOT)
+        .filter(f => /^industry-scan-\d{4}-\d{2}-\d{2}\.html$/.test(f))
+        .map(f => path.join(REPORTS_ROOT, f))
+        .map(p => ({ path: p, mtime: fs.statSync(p).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (!candidates.length) return null;
+      file = candidates[0].path;
+    }
+  } catch { return null; }
+
+  let html;
+  try { html = fs.readFileSync(file, 'utf8'); }
+  catch { return null; }
+
+  const stat = fs.statSync(file);
+  const dateMatch = html.match(/Industry Scan\s*[—-]\s*(\d{4}-\d{2}-\d{2})/);
+
+  // Telemetry meta-bar — 4 stat boxes
+  const telemetry = [];
+  const metaRe = /<div class="meta-box">\s*<div class="value(?:[^"]*)">([^<]+)<\/div>\s*<div class="label">([^<]+)<\/div>/g;
+  let m;
+  while ((m = metaRe.exec(html)) !== null) {
+    telemetry.push({ value: stripTags(m[1]).trim(), label: stripTags(m[2]).trim() });
+  }
+
+  // Section h2 → cards beneath it (until next h2 or end)
+  const sections = [];
+  const h2Re = /<h2>([^<]+)<\/h2>/g;
+  const h2Hits = [];
+  while ((m = h2Re.exec(html)) !== null) h2Hits.push({ title: stripTags(m[1]).trim(), index: m.index, end: m.index + m[0].length });
+  for (let i = 0; i < h2Hits.length; i++) {
+    const start = h2Hits[i].end;
+    const end = (i + 1 < h2Hits.length) ? h2Hits[i + 1].index : html.length;
+    const slice = html.slice(start, end);
+    // Skip the telemetry h2 — already captured above
+    if (/Telemetry/i.test(h2Hits[i].title)) continue;
+    const papers = parsePapers(slice);
+    if (papers.length) sections.push({ title: h2Hits[i].title, papers });
+  }
+
+  // Action items at the bottom — usually <ul><li>…</li></ul> inside .action-items
+  const actionMatch = html.match(/<div class="action-items">([\s\S]*?)<\/div>/);
+  const actions = [];
+  if (actionMatch) {
+    const liRe = /<li>([\s\S]*?)<\/li>/g;
+    let li;
+    while ((li = liRe.exec(actionMatch[1])) !== null) {
+      actions.push(stripTags(li[1]).trim());
+    }
+  }
+
+  return {
+    file: path.basename(file),
+    date: dateMatch ? dateMatch[1] : null,
+    generatedAt: stat.mtimeMs,
+    telemetry,
+    sections,
+    actions,
+  };
+}
+
+function parsePapers(htmlSlice) {
+  const cards = [];
+  const cardRe = /<div class="card">([\s\S]*?)<\/div>\s*(?=<div class="card">|<\/div>|$)/g;
+  // The above is too greedy; use a simpler approach: each card-title triggers a window that ends at the next card-title.
+  const titleRe = /<div class="card-title">\s*<a href="([^"]+)">([^<]+)<\/a>\s*<\/div>/g;
+  const titles = [];
+  let m;
+  while ((m = titleRe.exec(htmlSlice)) !== null) {
+    titles.push({ url: m[1], title: stripTags(m[2]).trim(), start: m.index });
+  }
+  for (let i = 0; i < titles.length; i++) {
+    const start = titles[i].start;
+    const end = (i + 1 < titles.length) ? titles[i + 1].start : htmlSlice.length;
+    const block = htmlSlice.slice(start, end);
+    // Authors
+    const authorsM = block.match(/<div class="card-authors">([^<]+)<\/div>/);
+    // Stars — count "★" before the dim wrapper
+    const starsM = block.match(/<span class="stars">([\s\S]*?)<\/span>/);
+    let starsFilled = 0;
+    if (starsM) {
+      const before = starsM[1].split('<span class="dim">')[0];
+      starsFilled = (before.match(/★/g) || []).length;
+    }
+    // Tags
+    const tagRe = /<span class="tag tag-([a-z-]+)">([^<]+)<\/span>/g;
+    const tags = [];
+    let t;
+    while ((t = tagRe.exec(block)) !== null) {
+      tags.push({ kind: t[1], label: stripTags(t[2]).trim() });
+    }
+    // Insight
+    const insightM = block.match(/<div class="insight-box">[\s\S]*?<span class="emoji">[^<]+<\/span>\s*([\s\S]*?)<\/div>/);
+    // Summary — everything inside .summary
+    const summaryM = block.match(/<div class="summary">([\s\S]*?)<\/div>/);
+    cards.push({
+      title: titles[i].title,
+      url: titles[i].url,
+      authors: authorsM ? stripTags(authorsM[1]).trim() : null,
+      stars: starsFilled,
+      tags,
+      insight: insightM ? stripTags(insightM[1]).trim() : null,
+      summary: summaryM ? stripTags(summaryM[1]).trim() : null,
+    });
+  }
+  return cards;
+}
+
+function stripTags(s) {
+  // CodeQL js/double-escaping fix (Clawta msg 5136): decode &amp; LAST.
+  // If &amp; is decoded first, then &amp;lt; becomes &lt; then <, which
+  // means a double-encoded "&lt;" string injects a literal "<". Decoding
+  // &amp; last makes &amp;lt; become &lt; (the safe literal string).
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ');
+}
+
+// ---------- Agent-bus threads ----------
+// Read+write surface for ~/.chitin/agent-bus/bus.db. The Phase 4
+// Discord mirror runs as a separate process and propagates new
+// messages both ways, so a reply posted via this endpoint shows up
+// in #hermes (or whichever channel the thread is bound to) without
+// any extra wiring here.
+function listThreads(query) {
+  if (!busDB) return { threads: [], note: 'agent-bus DB unavailable' };
+  const limit = Math.min(Number(query.get('limit') || 100), 500);
+  const board = query.get('board');
+  const status = query.get('status');
+  const conds = [];
+  const params = {};
+  if (board) { conds.push('board = @board'); params.board = board; }
+  if (status) { conds.push('status = @status'); params.status = status; }
+  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  const rows = busDB.prepare(`
+    SELECT t.id, t.board, t.task_id, t.title, t.author, t.audience, t.status,
+           t.discord_thread_id, t.created_at, t.updated_at,
+           (SELECT COUNT(*) FROM messages WHERE thread_id = t.id) AS message_count,
+           (SELECT body FROM messages WHERE thread_id = t.id ORDER BY id DESC LIMIT 1) AS last_message_body,
+           (SELECT author FROM messages WHERE thread_id = t.id ORDER BY id DESC LIMIT 1) AS last_message_author
+    FROM threads t
+    ${where}
+    ORDER BY t.updated_at DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+  return { threads: rows };
+}
+
+function getThread(id, query) {
+  if (!busDB) return null;
+  const thread = busDB.prepare(`
+    SELECT id, board, task_id, title, author, audience, status,
+           discord_thread_id, created_at, updated_at
+    FROM threads WHERE id = ?
+  `).get(id);
+  if (!thread) return null;
+
+  // Chat-style pagination — default: newest N messages.
+  // before_id: lazy-load older (scroll up). after_id: poll for newer.
+  const limit  = Math.min(Math.max(Number(query?.get?.('limit') || 50), 1), 200);
+  const before = Number(query?.get?.('before_id') || 0);
+  const after  = Number(query?.get?.('after_id')  || 0);
+
+  let rows;
+  if (after > 0) {
+    rows = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ? AND id > ?
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(id, after, limit);
+  } else if (before > 0) {
+    const desc = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ? AND id < ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(id, before, limit);
+    rows = desc.reverse();
+  } else {
+    const desc = busDB.prepare(`
+      SELECT id, parent_id, author, audience, body, kind,
+             discord_message_id, ack_required, created_at
+      FROM messages
+      WHERE thread_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(id, limit);
+    rows = desc.reverse();
+  }
+
+  let has_more_older = false;
+  if (rows.length > 0) {
+    const oldestId = rows[0].id;
+    const more = busDB.prepare(
+      'SELECT 1 FROM messages WHERE thread_id = ? AND id < ? LIMIT 1'
+    ).get(id, oldestId);
+    has_more_older = !!more;
+  }
+  const total = busDB.prepare('SELECT COUNT(*) AS n FROM messages WHERE thread_id = ?').get(id).n;
+
+  const attachments = busDB.prepare(`
+    SELECT id, kind, ref, display, created_at
+    FROM attachments WHERE thread_id = ?
+    ORDER BY id ASC
+  `).all(id);
+  return { thread, messages: rows, has_more_older, total, attachments };
+}
+
+async function postThreadReply(threadId, body) {
+  if (!busDB) return { status: 503, body: { error: 'bus_unavailable' } };
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const text = (body?.body || '').trim();
+  if (!text) return { status: 400, body: { error: 'body_required' } };
+  if (text.length > 8000) return { status: 400, body: { error: 'body_too_long' } };
+  const parentId = body?.parent_id != null ? Number(body.parent_id) : null;
+  const kind = ['message', 'directive', 'ack', 'system'].includes(body?.kind) ? body.kind : 'message';
+  const audience = body?.audience || null;
+  const ackRequired = body?.ack_required ? 1 : 0;
+
+  const thread = busDB.prepare(
+    'SELECT id, title, discord_thread_id FROM threads WHERE id = ?'
+  ).get(threadId);
+  if (!thread) return { status: 404, body: { error: 'thread_not_found' } };
+
+  const now = Math.floor(Date.now() / 1000);
+  const insert = busDB.prepare(`
+    INSERT INTO messages (thread_id, parent_id, author, audience, body, kind, ack_required, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const touchThread = busDB.prepare('UPDATE threads SET updated_at = ? WHERE id = ?');
+  let messageId;
+  try {
+    const tx = busDB.transaction(() => {
+      const r = insert.run(threadId, parentId, author, audience, text, kind, ackRequired, now);
+      messageId = r.lastInsertRowid;
+      touchThread.run(now, threadId);
+    });
+    tx();
+  } catch (e) {
+    return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
+  }
+
+  // Outbound mirror: post via the channel's webhook so the message
+  // appears authored as the human (e.g. "red") and Hermes/Clawta
+  // actually reply to it. Channel resolution order:
+  //   1. body.channel_id  (UI picker)
+  //   2. thread.discord_thread_id  (mirror-bound thread)
+  //   3. first discovered channel  (fallback)
+  let discordMessageId = null;
+  let discordError = null;
+  try {
+    let channelId = body?.channel_id || thread.discord_thread_id || null;
+    if (!channelId && discordChannels.size > 0) {
+      channelId = discordChannels.keys().next().value;
+    }
+    if (channelId && discordChannels.has(channelId)) {
+      const res = await postToDiscord(channelId, text, author);
+      if (res?.id) {
+        discordMessageId = res.id;
+        busDB.prepare('UPDATE messages SET discord_message_id = ? WHERE id = ?').run(res.id, messageId);
+      }
+    } else if (!DISCORD_BOT_TOKEN) {
+      discordError = 'DISCORD_BOT_TOKEN not configured';
+    } else if (discordChannels.size === 0) {
+      discordError = 'no channels discovered yet — try again in a few seconds';
+    } else {
+      discordError = `unknown channel ${channelId}`;
+    }
+  } catch (e) {
+    discordError = String(e?.message || e);
+  }
+
+  return { status: 200, body: {
+    ok: true,
+    message_id: messageId,
+    discord_message_id: discordMessageId,
+    discord_error: discordError,
+    thread: getThread(threadId),
+  }};
+}
+
+// ---------- Discord mirror ----------
+// Generic over the bot's guild. On boot we discover every text
+// channel the bot can see and:
+//   inbound  — poll each every DISCORD_POLL_SEC into a per-channel
+//              bus thread (keyed by discord_thread_id == channel id)
+//   outbound — post via a per-channel WEBHOOK with username set to
+//              the bus message's author, so messages appear as the
+//              human (e.g. "red") rather than the bot — otherwise
+//              Hermes/Clawta filter out their own bot's messages
+//              and never reply.
+const DISCORD_POLL_SEC = Number(process.env.DISCORD_POLL_SEC || 30);
+const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '';
+const DISCORD_WEBHOOK_NAME = process.env.DISCORD_WEBHOOK_NAME || 'chitin-console';
+const DISCORD_CHANNEL_DENY = (process.env.DISCORD_CHANNEL_DENY || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+// Per-channel webhook URLs as fallback when the bot lacks Manage
+// Webhooks permission. Format: "hermes=https://...,clawta=https://..."
+// Also auto-loaded from ~/.hermes/.env if DISCORD_WEBHOOK_URLS isn't
+// in the process env.
+function loadWebhookOverrides() {
+  let raw = process.env.DISCORD_WEBHOOK_URLS || '';
+  if (!raw) {
+    try {
+      const env = fs.readFileSync(path.join(HOME, '.hermes', '.env'), 'utf8');
+      const m = env.match(/^DISCORD_WEBHOOK_URLS=(.*)$/m);
+      if (m) raw = m[1].trim();
+    } catch { /* env file optional */ }
+  }
+  const out = new Map();
+  for (const pair of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+    const eq = pair.indexOf('=');
+    if (eq > 0) out.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+  }
+  return out;
+}
+const DISCORD_WEBHOOK_OVERRIDES = loadWebhookOverrides();
+let discordPollerStarted = false;
+// channel id -> { name, webhookUrl }
+const discordChannels = new Map();
+
+function ensureCursorTable() {
+  if (!busDB) return;
+  busDB.exec(`
+    CREATE TABLE IF NOT EXISTS discord_cursors (
+      channel_id      TEXT PRIMARY KEY,
+      last_message_id TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    )
+  `);
+}
+function getCursor(channelId) {
+  const row = busDB.prepare('SELECT last_message_id FROM discord_cursors WHERE channel_id = ?').get(channelId);
+  return row?.last_message_id || null;
+}
+function setCursor(channelId, messageId) {
+  busDB.prepare(`
+    INSERT INTO discord_cursors(channel_id, last_message_id, updated_at)
+    VALUES(?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET
+      last_message_id = excluded.last_message_id,
+      updated_at = excluded.updated_at
+  `).run(channelId, messageId, Math.floor(Date.now() / 1000));
+}
+
+/** Finds the bus thread bound to a Discord channel, creating one if absent. */
+function findOrCreateChannelThread(channelId, title) {
+  const existing = busDB.prepare('SELECT id FROM threads WHERE discord_thread_id = ? LIMIT 1').get(channelId);
+  if (existing) return existing.id;
+  const now = Math.floor(Date.now() / 1000);
+  const r = busDB.prepare(`
+    INSERT INTO threads (board, title, author, status, discord_thread_id, created_at, updated_at)
+    VALUES (NULL, ?, ?, 'open', ?, ?, ?)
+  `).run(title, 'discord-mirror', channelId, now, now);
+  return r.lastInsertRowid;
+}
+
+async function pickGuild() {
+  const res = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`guilds ${res.status}`);
+  const guilds = await res.json();
+  if (!guilds.length) return null;
+  if (DISCORD_GUILD_ID) return guilds.find(g => g.id === DISCORD_GUILD_ID) || null;
+  return guilds[0];
+}
+
+async function ensureChannelWebhook(channelId, channelName) {
+  // 1. Env override
+  if (DISCORD_WEBHOOK_OVERRIDES.has(channelName)) {
+    return DISCORD_WEBHOOK_OVERRIDES.get(channelName);
+  }
+  // 2. List existing webhooks (bot needs MANAGE_WEBHOOKS for GET too)
+  const list = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (list.ok) {
+    const hooks = await list.json();
+    // Prefer one we created; else any with a token
+    const ours = hooks.find(h => h.name === DISCORD_WEBHOOK_NAME && h.token);
+    const any  = hooks.find(h => h.token);
+    const found = ours || any;
+    if (found) return `https://discord.com/api/webhooks/${found.id}/${found.token}`;
+  }
+  // 3. Try to create (needs MANAGE_WEBHOOKS)
+  const create = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: DISCORD_WEBHOOK_NAME }),
+  });
+  if (!create.ok) {
+    const text = await create.text().catch(() => '');
+    throw new Error(`webhook create ${create.status}: ${text.slice(0, 200)}`);
+  }
+  const w = await create.json();
+  return `https://discord.com/api/webhooks/${w.id}/${w.token}`;
+}
+
+/** POSTs to a channel via its webhook (preferred) or bot token (fallback). */
+async function postToDiscord(channelId, content, username) {
+  const entry = discordChannels.get(channelId);
+  if (entry?.webhookUrl) {
+    const payload = {
+      content: content.slice(0, 1990),
+      username: (username || 'console').slice(0, 80),
+      allowed_mentions: { parse: ['users', 'roles', 'everyone'] },
+    };
+    const res = await fetch(`${entry.webhookUrl}?wait=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`webhook ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return await res.json();
+  }
+  // Fallback: bot-token POST (message appears as the bot, NOT as the
+  // user — Hermes/Clawta will likely ignore it). Format the body to
+  // surface the intended author at least.
+  const formatted = `**${username || 'console'}**\n${content.slice(0, 1900)}`;
+  const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: formatted, allowed_mentions: { parse: ['users', 'roles', 'everyone'] } }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`bot post ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return await res.json();
+}
+
+async function discoverChannels() {
+  const guild = await pickGuild();
+  if (!guild) { console.warn('[chitin-console-api] discord: bot is in no guilds'); return; }
+  const res = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) { console.warn(`[chitin-console-api] discord channels ${res.status}`); return; }
+  const channels = await res.json();
+  for (const c of channels) {
+    if (c.type !== 0) continue;
+    if (DISCORD_CHANNEL_DENY.includes(c.name)) continue;
+    let webhookUrl = null;
+    try {
+      webhookUrl = await ensureChannelWebhook(c.id, c.name);
+    } catch (e) {
+      // Permission missing — fall through; postToDiscord will use the
+      // bot-token fallback for this channel (posts as the bot).
+      console.warn(`[chitin-console-api] discord #${c.name}: no webhook (${e.message || e}); will use bot-token fallback`);
+    }
+    discordChannels.set(c.id, { name: c.name, webhookUrl });
+  }
+  const summary = [...discordChannels.values()]
+    .map(c => `#${c.name}${c.webhookUrl ? '✓' : '(bot)'}`)
+    .join(', ');
+  console.log(`[chitin-console-api] discord guild=${guild.name} channels=[${summary}]`);
+  if ([...discordChannels.values()].some(c => !c.webhookUrl)) {
+    console.log('[chitin-console-api] hint: grant the bot MANAGE_WEBHOOKS, or set DISCORD_WEBHOOK_URLS=hermes=URL,clawta=URL so posts show as the user instead of the bot');
+  }
+}
+
+async function pollDiscordChannel(channelId, channelName) {
+  if (!busDB || !DISCORD_BOT_TOKEN || !channelId) return { ok: false, reason: 'not_configured' };
+  const cursor = getCursor(channelId);
+  const url = new URL(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`);
+  url.searchParams.set('limit', '50');
+  if (cursor) url.searchParams.set('after', cursor);
+  const res = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bot ${DISCORD_BOT_TOKEN}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`#${channelName} poll ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const msgs = await res.json();
+  msgs.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+  if (msgs.length === 0) return { ok: true, ingested: 0 };
+
+  const threadId = findOrCreateChannelThread(channelId, `#${channelName} (discord)`);
+  const insert = busDB.prepare(`
+    INSERT INTO messages (thread_id, author, body, kind, discord_message_id, created_at)
+    SELECT ?, ?, ?, 'message', ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM messages WHERE discord_message_id = ?)
+  `);
+  const touch = busDB.prepare('UPDATE threads SET updated_at = ? WHERE id = ?');
+  let ingested = 0;
+  let lastId = cursor;
+  for (const m of msgs) {
+    const author = m.author?.username || 'discord';
+    // Skip our own webhook posts (their author username equals the bus author)
+    if (m.webhook_id) { lastId = m.id; continue; }
+    let body = (m.content || '').trim();
+    if (!body) {
+      const a = (m.attachments || []).length;
+      const e = (m.embeds || []).length;
+      body = `(attachment x${a}, embed x${e})`;
+    }
+    const ts = Math.floor(Date.now() / 1000);
+    const r = insert.run(threadId, author, body, m.id, ts, m.id);
+    if (r.changes > 0) ingested++;
+    lastId = m.id;
+  }
+  if (ingested > 0) touch.run(Math.floor(Date.now() / 1000), threadId);
+  if (lastId && lastId !== cursor) setCursor(channelId, lastId);
+  return { ok: true, ingested, lastId };
+}
+
+function startDiscordPoller() {
+  if (discordPollerStarted) return;
+  if (!busDB || !DISCORD_BOT_TOKEN) {
+    console.log(`[chitin-console-api] discord poller disabled (bus=${!!busDB} token=${!!DISCORD_BOT_TOKEN})`);
+    return;
+  }
+  discordPollerStarted = true;
+  ensureCursorTable();
+  discoverChannels().then(() => {
+    const tick = async () => {
+      for (const [channelId, meta] of discordChannels.entries()) {
+        try {
+          const r = await pollDiscordChannel(channelId, meta.name);
+          if (r?.ingested > 0) {
+            console.log(`[chitin-console-api] discord #${meta.name}: ingested ${r.ingested} message(s)`);
+          }
+        } catch (e) {
+          console.warn(`[chitin-console-api] discord #${meta.name} poll failed: ${e.message || e}`);
+        }
+      }
+    };
+    setInterval(tick, DISCORD_POLL_SEC * 1000);
+    setTimeout(tick, 2000);
+    console.log(`[chitin-console-api] discord poller started (every ${DISCORD_POLL_SEC}s, ${discordChannels.size} channel(s))`);
+  }).catch(e => console.warn(`[chitin-console-api] discord discovery failed: ${e.message || e}`));
 }
 
 function listLedgerFiles({ maxDays = 14 } = {}) {
@@ -178,98 +787,18 @@ function listLedgerFiles({ maxDays = 14 } = {}) {
   } catch { return []; }
 }
 
-function slugify(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function previewText(value, max = 140) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function safeRepoPath(relPath) {
-  if (!relPath) return null;
-  const resolved = path.resolve(REPO_ROOT, relPath);
-  const relative = path.relative(REPO_ROOT, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
-}
-
-function parseMarkdownPreview(content) {
-  const lines = String(content || '').split(/\r?\n/);
-  let title = '';
-  let i = 0;
-  while (i < lines.length && !title) {
-    const line = lines[i].trim();
-    if (line.startsWith('# ')) title = line.replace(/^# /, '').trim();
-    i += 1;
-  }
-  const bodyLines = [];
-  let inFence = false;
-  for (; i < lines.length; i += 1) {
-    const raw = lines[i];
-    const line = raw.trim();
-    if (line.startsWith('```')) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    if (!line) {
-      if (bodyLines.length) break;
-      continue;
-    }
-    bodyLines.push(line);
-  }
-  return {
-    title: title || '(untitled spec)',
-    preview: bodyLines.join(' '),
-  };
-}
-
-function currentRepoInfo() {
-  try {
-    const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    const match = remote.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/);
-    if (!match) return null;
-    return { owner: match[1], repo: match[2], remote };
-  } catch {
-    return null;
-  }
-}
-
-const repoInfo = currentRepoInfo();
-
-function ghApi(route, extraArgs = []) {
-  const args = ['api', route, ...extraArgs];
-  const raw = execFileSync('gh', args, {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  return JSON.parse(raw);
-}
-
-function withAttachmentCache(key, loader) {
-  const now = Date.now();
-  const hit = attachmentCache.get(key);
-  if (hit && now - hit.at < ATTACHMENT_CACHE_TTL_MS) return hit.value;
-  const value = loader();
-  attachmentCache.set(key, { at: now, value });
-  return value;
-}
-
 // ---------- Endpoints ----------
-function getStats() {
-  if (!kanbanDB) return { board: CURRENT_BOARD, lanes: {} };
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+  return sorted[idx];
+}
+
+function getStats(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const db = getBoardDB(board);
+  if (!db) return { board, lanes: {} };
+  const kanbanDB = db;  // shadow so the rest of the body is unchanged
   const rows = kanbanDB.prepare("SELECT status, COUNT(*) as n FROM tasks GROUP BY status").all();
   const lanes = Object.fromEntries(rows.map(r => [r.status, r.n]));
   const last7 = kanbanDB.prepare(
@@ -280,6 +809,34 @@ function getStats() {
     "SELECT (strftime('%s','now') - created_at) AS age FROM tasks WHERE status IN ('ready','todo','triage') ORDER BY age"
   ).all().map(r => r.age);
   const median = ages.length ? ages[Math.floor(ages.length / 2)] : 0;
+
+  // Cycle time = completed_at - started_at (work-in-progress duration).
+  // Lead time   = completed_at - created_at (idea → done).
+  // 30-day window over completed tickets. Tasks with NULL started_at
+  // (done without ever flipping in_progress) skip the cycle bucket.
+  let cycle = { p50: null, p90: null, n: 0 };
+  let lead  = { p50: null, p90: null, n: 0 };
+  try {
+    const completed = kanbanDB.prepare(`
+      SELECT
+        (completed_at - started_at) AS cycle,
+        (completed_at - created_at) AS lead
+      FROM tasks
+      WHERE status = 'done'
+        AND completed_at IS NOT NULL
+        AND completed_at > strftime('%s','now') - 30*86400
+    `).all();
+    const cycleSamples = completed
+      .map(r => r.cycle)
+      .filter(v => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    const leadSamples = completed
+      .map(r => r.lead)
+      .filter(v => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    cycle = { p50: percentile(cycleSamples, 0.5), p90: percentile(cycleSamples, 0.9), n: cycleSamples.length };
+    lead  = { p50: percentile(leadSamples, 0.5),  p90: percentile(leadSamples, 0.9),  n: leadSamples.length };
+  } catch {}
   let successRate = null, runsLast24 = 0, runsCompleted24 = 0;
   try {
     const sr = kanbanDB.prepare(`
@@ -297,11 +854,9 @@ function getStats() {
       FROM task_runs WHERE ended_at IS NOT NULL AND ended_at > strftime('%s','now') - 86400
     `).get();
     runsLast24 = r24.total; runsCompleted24 = r24.ok;
-  } catch {
-    // Stats endpoints stay available even when task_runs is absent.
-  }
+  } catch {}
   return {
-    board: CURRENT_BOARD,
+    board,
     lanes,
     completedLast7Days: last7,
     inFlight,
@@ -309,12 +864,16 @@ function getStats() {
     successRate7d: successRate,
     runsLast24,
     runsCompleted24,
+    cycleTime30d: cycle,
+    leadTime30d: lead,
     generatedAt: Date.now(),
   };
 }
 
 function listTasks(query) {
-  if (!kanbanDB) return { board: CURRENT_BOARD, tasks: [] };
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
+  if (!kanbanDB) return { board, tasks: [] };
   const status   = query.get('status');
   const assignee = query.get('assignee');
   const search   = query.get('q');
@@ -357,10 +916,12 @@ function listTasks(query) {
   `;
   params.limit = limit;
   const rows = kanbanDB.prepare(sql).all(params);
-  return { board: CURRENT_BOARD, count: rows.length, tasks: rows };
+  return { board, count: rows.length, tasks: rows };
 }
 
-function getTask(id) {
+function getTask(id, board) {
+  const slug = board || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(slug);
   if (!kanbanDB) return null;
   const task = kanbanDB.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return null;
@@ -371,137 +932,23 @@ function getTask(id) {
     'SELECT id, profile, step_key, status, started_at, ended_at, outcome, summary, error FROM task_runs WHERE task_id = ? ORDER BY started_at DESC'
   ).all(id);
   let comments = [];
-  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch { comments = []; }
+  try { comments = kanbanDB.prepare('SELECT id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
   let links = [];
-  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch { links = []; }
+  try { links = kanbanDB.prepare('SELECT id, rel, ref, created_at FROM task_links WHERE task_id = ? ORDER BY id ASC').all(id); } catch {}
   let clawtaDecisions = [];
   if (clawtaDecisionsDB) {
     try {
       clawtaDecisions = clawtaDecisionsDB.prepare(
         'SELECT id, driver, model, selection_mode, reasoning, ts FROM clawta_decisions WHERE ticket_id = ? ORDER BY ts DESC LIMIT 25'
       ).all(id);
-    } catch {
-      clawtaDecisions = [];
-    }
+    } catch {}
   }
   return { task, runs, events, comments, links, clawtaDecisions };
 }
 
-function listThreads(query) {
-  if (!busDB) return { threads: [], count: 0 };
-  const board = query.get('board');
-  const status = query.get('status');
-  const audience = query.get('audience');
-  const search = (query.get('q') || '').trim().toLowerCase();
-  const limit = Math.min(Number(query.get('limit') || 200), 1000);
-
-  const conds = [];
-  const params = {};
-  if (board) { conds.push('t.board = @board'); params.board = board; }
-  if (status) { conds.push('t.status = @status'); params.status = status; }
-  if (audience) {
-    conds.push("(t.audience IS NULL OR t.audience = '' OR ',' || t.audience || ',' LIKE @audience)");
-    params.audience = `%,${audience},%`;
-  }
-  if (search) {
-    conds.push('(LOWER(t.title) LIKE @q OR LOWER(COALESCE(first_msg.body, \'\')) LIKE @q OR t.task_id LIKE @qid)');
-    params.q = `%${search}%`;
-    params.qid = `%${query.get('q')}%`;
-  }
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-  const rows = busDB.prepare(`
-    SELECT
-      t.id,
-      t.board,
-      t.task_id,
-      t.title,
-      t.author,
-      t.audience,
-      t.status,
-      t.discord_thread_id,
-      t.created_at,
-      t.updated_at,
-      COALESCE(msg_counts.message_count, 0) AS message_count,
-      COALESCE(att_counts.attachment_count, 0) AS attachment_count,
-      latest_msg.author AS last_message_author,
-      latest_msg.body AS last_message_body
-    FROM threads t
-    LEFT JOIN (
-      SELECT thread_id, COUNT(*) AS message_count
-      FROM messages
-      GROUP BY thread_id
-    ) AS msg_counts ON msg_counts.thread_id = t.id
-    LEFT JOIN (
-      SELECT thread_id, COUNT(*) AS attachment_count
-      FROM attachments
-      GROUP BY thread_id
-    ) AS att_counts ON att_counts.thread_id = t.id
-    LEFT JOIN messages AS latest_msg
-      ON latest_msg.id = (
-        SELECT id FROM messages WHERE thread_id = t.id ORDER BY created_at DESC, id DESC LIMIT 1
-      )
-    LEFT JOIN messages AS first_msg
-      ON first_msg.id = (
-        SELECT id FROM messages WHERE thread_id = t.id ORDER BY created_at ASC, id ASC LIMIT 1
-      )
-    ${where}
-    ORDER BY t.updated_at DESC, t.id DESC
-    LIMIT @limit
-  `).all({ ...params, limit });
-  return {
-    threads: rows.map((row) => ({
-      ...row,
-      last_message_preview: previewText(row.last_message_body),
-    })),
-    count: rows.length,
-  };
-}
-
-function getThread(id) {
-  if (!busDB) return null;
-  const thread = busDB.prepare(`
-    SELECT
-      t.id,
-      t.board,
-      t.task_id,
-      t.title,
-      t.author,
-      t.audience,
-      t.status,
-      t.discord_thread_id,
-      t.created_at,
-      t.updated_at
-    FROM threads t
-    WHERE t.id = ?
-  `).get(id);
-  if (!thread) return null;
-  const messages = busDB.prepare(`
-    SELECT id, thread_id, parent_id, author, audience, body, kind,
-           discord_message_id, ack_required, created_at
-    FROM messages
-    WHERE thread_id = ?
-    ORDER BY created_at ASC, id ASC
-  `).all(id);
-  const attachments = busDB.prepare(`
-    SELECT id, thread_id, kind, ref, display, created_at
-    FROM attachments
-    WHERE thread_id = ?
-    ORDER BY created_at ASC, id ASC
-  `).all(id);
-  return {
-    thread: {
-      ...thread,
-      message_count: messages.length,
-      attachment_count: attachments.length,
-      last_message_preview: previewText(messages.at(-1)?.body),
-      last_message_author: messages.at(-1)?.author || null,
-    },
-    messages,
-    attachments,
-  };
-}
-
-function listAssignees() {
+function listAssignees(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
   if (!kanbanDB) return { assignees: [] };
   const rows = kanbanDB.prepare(`
     SELECT assignee, COUNT(*) AS n
@@ -513,253 +960,9 @@ function listAssignees() {
   return { assignees: rows };
 }
 
-function getTaskAttachment(ref) {
-  if (!kanbanDB) {
-    return {
-      kind: 'task',
-      ref,
-      status: 'missing',
-      label: ref,
-      title: ref,
-      subtitle: '(missing)',
-    };
-  }
-  const task = kanbanDB.prepare('SELECT id, title, status, assignee FROM tasks WHERE id = ?').get(ref);
-  if (!task) {
-    return {
-      kind: 'task',
-      ref,
-      status: 'missing',
-      label: ref,
-      title: ref,
-      subtitle: '(missing)',
-      href: `/tickets?id=${encodeURIComponent(ref)}`,
-    };
-  }
-  return {
-    kind: 'task',
-    ref,
-    status: 'ok',
-    label: task.id,
-    title: task.title,
-    subtitle: task.assignee ? `${task.status} · ${task.assignee}` : task.status,
-    taskStatus: task.status,
-    assignee: task.assignee,
-    href: `/tickets?id=${encodeURIComponent(task.id)}`,
-  };
-}
-
-function getSpecAttachment(ref) {
-  const absPath = safeRepoPath(ref);
-  if (!absPath || !fs.existsSync(absPath)) {
-    return {
-      kind: 'spec',
-      ref,
-      status: 'missing',
-      label: 'spec',
-      title: path.basename(ref),
-      subtitle: '(missing)',
-    };
-  }
-  const content = fs.readFileSync(absPath, 'utf8');
-  const preview = parseMarkdownPreview(content);
-  return {
-    kind: 'spec',
-    ref,
-    status: 'ok',
-    label: 'spec',
-    title: preview.title,
-    subtitle: previewText(preview.preview, 180),
-    preview: preview.preview,
-    body: content,
-    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
-  };
-}
-
-function normalizePrRef(ref) {
-  const raw = String(ref || '').trim();
-  const simple = raw.match(/^#?(\d+)$/);
-  if (simple && repoInfo) return { ...repoInfo, number: Number(simple[1]), crossRepo: false };
-  const qualified = raw.match(/^([^/]+)\/([^#]+)#(\d+)$/);
-  if (qualified) {
-    return {
-      owner: qualified[1],
-      repo: qualified[2],
-      number: Number(qualified[3]),
-      crossRepo: !repoInfo || qualified[1] !== repoInfo.owner || qualified[2] !== repoInfo.repo,
-    };
-  }
-  return null;
-}
-
-function ciBucketFromState(state) {
-  switch (state) {
-    case 'success': return 'passing';
-    case 'failure':
-    case 'error': return 'failing';
-    case 'pending': return 'pending';
-    default: return 'unknown';
-  }
-}
-
-function getPrAttachment(ref) {
-  const parsed = normalizePrRef(ref);
-  if (!parsed) {
-    return {
-      kind: 'pr',
-      ref,
-      status: 'missing',
-      label: 'PR',
-      title: ref,
-      subtitle: '(missing)',
-    };
-  }
-  if (parsed.crossRepo) {
-    return {
-      kind: 'pr',
-      ref,
-      status: 'missing',
-      label: `PR #${parsed.number}`,
-      title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
-      subtitle: '(missing)',
-    };
-  }
-  return withAttachmentCache(`pr:${parsed.owner}/${parsed.repo}#${parsed.number}`, () => {
-    try {
-      const pr = ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}`);
-      const combined = ghApi(`repos/${parsed.owner}/${parsed.repo}/commits/${pr.head.sha}/status`);
-      const merged = pr.merged_at ? 'merged' : pr.state;
-      const ciBucket = ciBucketFromState(combined.state);
-      return {
-        kind: 'pr',
-        ref,
-        status: 'ok',
-        label: `PR #${pr.number}`,
-        title: pr.title,
-        subtitle: `${merged} · CI ${ciBucket}`,
-        prNumber: pr.number,
-        prState: merged,
-        checks: ciBucket,
-        href: pr.html_url,
-      };
-    } catch (e) {
-      return {
-        kind: 'pr',
-        ref,
-        status: 'error',
-        label: `PR #${parsed.number}`,
-        title: `${parsed.owner}/${parsed.repo}#${parsed.number}`,
-        subtitle: '(missing)',
-        error: e.message,
-      };
-    }
-  });
-}
-
-function discordHref(ref) {
-  if (/^https?:\/\//.test(ref)) return ref;
-  const cleaned = String(ref || '').trim().replace(/^discord:\/\//, '').replace(/^\/+/, '');
-  return `discord://-/channels/${cleaned}`;
-}
-
-function getDiscordAttachment(ref, display) {
-  const label = display || `#${slugify(ref).replace(/-/g, '-') || 'discord'}`;
-  return {
-    kind: 'discord',
-    ref,
-    status: ref ? 'ok' : 'missing',
-    label: 'discord',
-    title: label,
-    subtitle: ref ? previewText(ref, 80) : '(missing)',
-    href: ref ? discordHref(ref) : undefined,
-  };
-}
-
-function getUrlAttachment(ref, display) {
-  return {
-    kind: 'url',
-    ref,
-    status: ref ? 'ok' : 'missing',
-    label: display || 'url',
-    title: display || ref,
-    subtitle: ref ? previewText(ref, 90) : '(missing)',
-    href: ref || undefined,
-  };
-}
-
-function getFileAttachment(ref) {
-  const absPath = safeRepoPath(ref);
-  if (!absPath || !fs.existsSync(absPath)) {
-    return {
-      kind: 'file',
-      ref,
-      status: 'missing',
-      label: 'file',
-      title: ref,
-      subtitle: '(missing)',
-    };
-  }
-  let firstLine = '';
-  try {
-    firstLine = fs.readFileSync(absPath, 'utf8').split(/\r?\n/, 1)[0] || '';
-  } catch {
-    firstLine = '';
-  }
-  return {
-    kind: 'file',
-    ref,
-    status: 'ok',
-    label: 'file',
-    title: ref,
-    subtitle: previewText(firstLine || 'open file', 120),
-    href: `/api/repo-file?path=${encodeURIComponent(ref)}`,
-  };
-}
-
-function getAttachmentEnrichment(threadId, attachmentId) {
-  if (!busDB) return null;
-  const attachment = busDB.prepare(`
-    SELECT id, thread_id, kind, ref, display, created_at
-    FROM attachments
-    WHERE thread_id = ? AND id = ?
-  `).get(threadId, attachmentId);
-  if (!attachment) return null;
-  switch (attachment.kind) {
-    case 'spec':
-      return getSpecAttachment(attachment.ref);
-    case 'pr':
-      return getPrAttachment(attachment.ref);
-    case 'task':
-      return getTaskAttachment(attachment.ref);
-    case 'discord':
-      return getDiscordAttachment(attachment.ref, attachment.display);
-    case 'url':
-      return getUrlAttachment(attachment.ref, attachment.display);
-    case 'file':
-      return getFileAttachment(attachment.ref);
-    default:
-      return {
-        kind: attachment.kind,
-        ref: attachment.ref,
-        status: 'missing',
-        label: attachment.kind,
-        title: attachment.display || attachment.ref,
-        subtitle: '(missing)',
-      };
-  }
-}
-
-function getRepoFile(query) {
-  const relPath = query.get('path');
-  const absPath = safeRepoPath(relPath);
-  if (!absPath || !fs.existsSync(absPath)) return null;
-  return {
-    path: relPath,
-    content: fs.readFileSync(absPath, 'utf8'),
-  };
-}
-
 function listRunsRecent(query) {
+  const board = query?.get?.('board') || CURRENT_BOARD;
+  const kanbanDB = getBoardDB(board);
   if (!kanbanDB) return { runs: [] };
   const limit = Math.min(Number(query.get('limit') || 50), 500);
   const rows = kanbanDB.prepare(`
@@ -784,7 +987,7 @@ function listArgusFindings(query) {
   ];
   for (const sql of candidates) {
     try { return { findings: argusDB.prepare(sql).all(limit) }; }
-    catch { continue; }
+    catch {}
   }
   try {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
@@ -798,7 +1001,7 @@ function argusInfo() {
     const tables = argusDB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r => r.name);
     const counts = {};
     for (const t of tables) {
-      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch { counts[t] = 0; }
+      try { counts[t] = argusDB.prepare(`SELECT COUNT(*) as n FROM "${t}"`).get().n; } catch {}
     }
     return { available: true, tables, counts };
   } catch (e) { return { available: true, error: e.message }; }
@@ -928,84 +1131,13 @@ function getPolicy() {
   } catch (e) { return { path: POLICY_FILE, error: e.message }; }
 }
 
-function getAnalyzerSuggestions(query) {
-  if (!analyzerDB) {
-    return {
-      enabled: false,
-      note: `analyzer db unavailable at ${ANALYZER_DB}`,
-      suggestions: [],
-      filters: { type: '', target: '', sort: 'created_at_desc' },
-    };
-  }
-  const type = (query.get('type') || '').trim();
-  const target = (query.get('target') || '').trim().toLowerCase();
-  const sort = (query.get('sort') || 'created_at_desc').trim();
-  const clauses = [];
-  const params = {};
-  if (type) {
-    clauses.push('type = @type');
-    params.type = type;
-  }
-  if (target) {
-    clauses.push('LOWER(target) LIKE @target');
-    params.target = `%${target}%`;
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const order = sort === 'created_at_asc' ? 'created_at ASC' : 'created_at DESC';
-  const suggestions = analyzerDB.prepare(`
-    SELECT id, type, target, diff, rationale, applied, created_at
-    FROM analyzer_suggestions
-    ${where}
-    ORDER BY ${order}, id ASC
-    LIMIT 500
-  `).all(params);
+function getAnalyzerSuggestions() {
   return {
-    enabled: true,
-    note: suggestions.length ? '' : 'No suggestions yet. Run the analyzer to generate a fresh batch.',
-    suggestions,
-    filters: { type, target, sort },
-  };
-}
-
-function runAnalyzer(body) {
-  const window = String(body?.window || '24h').trim() || '24h';
-  const args = [
-    '-m', 'analysis.analyzer',
-    '--window', window,
-    '--db-path', ANALYZER_DB,
-    '--policy-file', POLICY_FILE,
-  ];
-  if (body?.skip_llm === true) args.push('--skip-llm');
-  const proc = spawnSync('python3', args, {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    timeout: 120_000,
-    env: { ...process.env, PYTHONPATH: 'python' },
-  });
-  reopen();
-  let summary = null;
-  try {
-    summary = JSON.parse(proc.stdout || '{}');
-  } catch {}
-  if (proc.status !== 0) {
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        error: 'analyzer_failed',
-        exit: proc.status,
-        stdout: (proc.stdout || '').slice(-2000),
-        stderr: (proc.stderr || '').slice(-2000),
-      },
-    };
-  }
-  return {
-    status: 200,
-    body: {
-      ok: true,
-      summary,
-      suggestions: getAnalyzerSuggestions(new URLSearchParams()).suggestions,
-    },
+    enabled: false,
+    note: 'Analyzer cron (slice 5 of the dashboard epic) not yet implemented. ' +
+          'Once `analyzer-cron.lobster` ships, this endpoint will read from ' +
+          'analyzer_suggestions(id, type, target, diff, rationale, applied, created_at).',
+    suggestions: [],
   };
 }
 
@@ -1040,23 +1172,25 @@ function getCostHistogram() {
 // ---------- Routing ----------
 const handlers = [
   [/^\/api\/health$/,                () => ({ ok: true, board: CURRENT_BOARD, ts: Date.now() })],
-  [/^\/api\/stats$/,                 () => getStats()],
+  [/^\/api\/stats$/,                 (req, q) => getStats(q)],
   [/^\/api\/tasks$/,                 (req, q) => listTasks(q)],
-  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1])],
-  [/^\/api\/threads$/,               (req, q) => listThreads(q)],
-  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]))],
-  [/^\/api\/threads\/(\d+)\/attachments\/(\d+)$/, (req, q, m) => getAttachmentEnrichment(Number(m[1]), Number(m[2]))],
-  [/^\/api\/assignees$/,             () => listAssignees()],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)$/, (req, q, m) => getTask(m[1], q.get('board'))],
+  [/^\/api\/assignees$/,             (req, q) => listAssignees(q)],
   [/^\/api\/runs\/recent$/,          (req, q) => listRunsRecent(q)],
+  [/^\/api\/boards$/,                () => listBoards()],
   [/^\/api\/argus\/info$/,           () => argusInfo()],
   [/^\/api\/argus\/findings$/,       (req, q) => listArgusFindings(q)],
   [/^\/api\/elo$/,                   () => listEloLeaderboard()],
   [/^\/api\/sessions$/,              (req, q) => listSessions(q)],
   [/^\/api\/sessions\/([a-zA-Z0-9_\-:.]+)$/, (req, q, m) => getSession(decodeURIComponent(m[1]))],
   [/^\/api\/policy$/,                () => getPolicy()],
-  [/^\/api\/suggestions$/,           (req, q) => getAnalyzerSuggestions(q)],
+  [/^\/api\/suggestions$/,           () => getAnalyzerSuggestions()],
   [/^\/api\/clawta\/decisions$/,     (req, q) => listClawtaDecisions(q)],
   [/^\/api\/cost\/histogram$/,       () => getCostHistogram()],
+  [/^\/api\/reports\/industry-scan$/, () => parseIndustryScan()],
+  [/^\/api\/threads$/,               (req, q) => listThreads(q)],
+  [/^\/api\/threads\/(\d+)$/,        (req, q, m) => getThread(Number(m[1]), q)],
+  [/^\/api\/discord\/channels$/,     () => ({ channels: [...discordChannels.entries()].map(([id, c]) => ({ id, name: c.name })) })],
 ];
 
 // Write handlers. Body is the parsed JSON request body. Each handler
@@ -1069,14 +1203,65 @@ const handlers = [
 // read returns the post-write state. Yes, that's a small latency
 // blip; acceptable until Plan 4 retires the hermes DB.
 const writeHandlers = [
-  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/, (req, body, m) => postTaskStatus(m[1], body)],
-  [/^\/api\/analyze$/, (req, body) => runAnalyzer(body)],
+  [/^\/api\/tasks$/,                             (req, body) => createTask(body)],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/status$/,   (req, body, m) => postTaskStatus(m[1], body)],
+  [/^\/api\/tasks\/(t_[a-zA-Z0-9]+)\/comment$/,  (req, body, m) => postTaskComment(m[1], body)],
+  [/^\/api\/threads\/(\d+)\/reply$/,             (req, body, m) => postThreadReply(Number(m[1]), body)],
 ];
+
+function createTask(body) {
+  const title = (body?.title || '').trim();
+  const text = (body?.body || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
+  const assignee = (body?.assignee || '').trim();
+  const priority = body?.priority != null ? Number(body.priority) : null;
+  const triage = body?.triage === false ? false : true;  // default to triage
+  const idempotencyKey = (body?.idempotency_key || '').trim();
+  if (!title) return { status: 400, body: { error: 'title_required' } };
+  if (title.length > 200) return { status: 400, body: { error: 'title_too_long' } };
+  if (text.length > 16000) return { status: 400, body: { error: 'body_too_long' } };
+
+  const args = ['kanban', '--board', board, 'create', title, '--json'];
+  if (text) args.push('--body', text);
+  if (assignee) args.push('--assignee', assignee);
+  if (priority != null && Number.isFinite(priority)) args.push('--priority', String(priority));
+  if (triage) args.push('--triage');
+  if (idempotencyKey) args.push('--idempotency-key', idempotencyKey);
+
+  const proc = spawnSync('hermes', args, { encoding: 'utf8', timeout: 30_000 });
+  if (proc.status !== 0) {
+    return { status: 502, body: {
+      error: 'hermes_create_failed',
+      exit: proc.status,
+      stderr: (proc.stderr || '').slice(-1000),
+      stdout: (proc.stdout || '').slice(-1000),
+    }};
+  }
+  let created = null;
+  try { created = JSON.parse(proc.stdout || '{}'); } catch {}
+
+  // Refresh the chitin mirror so the new task shows up on next GET.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
+    encoding: 'utf8', timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: created?.id ?? null,
+    title,
+    board,
+    refreshed,
+    created,
+  }};
+}
 
 function postTaskStatus(taskId, body) {
   const status = (body?.status || '').trim();
   const author = (body?.author || os.userInfo().username || 'console').trim();
   const reason = (body?.reason || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
   const allowed = new Set(['start', 'ready', 'unblock', 'block', 'demote', 'done']);
   if (!allowed.has(status)) {
     return { status: 400, body: { error: 'invalid_status', detail: `status must be one of ${[...allowed].join(', ')}` } };
@@ -1094,7 +1279,7 @@ function postTaskStatus(taskId, body) {
 
   const flow = spawnSync('kanban-flow', flowArgs, {
     encoding: 'utf8',
-    env: { ...process.env, KANBAN_BOARD: CURRENT_BOARD },
+    env: { ...process.env, KANBAN_BOARD: board },
     timeout: 15_000,
   });
   if (flow.status !== 0) {
@@ -1107,10 +1292,7 @@ function postTaskStatus(taskId, body) {
   }
 
   // Refresh the chitin-owned mirror so the next GET reflects the write.
-  // If migration fails we still return success — the write landed in
-  // hermes, and the next migrate cycle (whether manual or via a cron)
-  // will catch up.
-  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', CURRENT_BOARD], {
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
     encoding: 'utf8',
     timeout: 30_000,
   });
@@ -1121,10 +1303,80 @@ function postTaskStatus(taskId, body) {
     ok: true,
     task_id: taskId,
     status,
+    board,
     flow_stdout: (flow.stdout || '').trim(),
     refreshed,
     refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
-    task: getTask(taskId),
+    task: getTask(taskId, board),
+  }};
+}
+
+function postTaskComment(taskId, body) {
+  const author = (body?.author || os.userInfo().username || 'console').trim();
+  const text = (body?.body || '').trim();
+  const board = (body?.board || CURRENT_BOARD).trim();
+  if (!text) {
+    return { status: 400, body: { error: 'body_required', detail: 'comment body is required' } };
+  }
+  if (text.length > 8000) {
+    return { status: 400, body: { error: 'body_too_long', detail: 'comment must be <= 8000 chars' } };
+  }
+
+  const existing = getTask(taskId, board);
+  if (!existing) {
+    return { status: 404, body: { error: 'task_not_found', detail: taskId } };
+  }
+
+  // Writes need a writable handle on the hermes-side DB (source of
+  // truth during cutover) so kanban-flow's audit invariant holds.
+  const home = os.homedir();
+  const hermesDB = path.join(home, '.hermes', 'kanban', 'boards', board, 'kanban.db');
+  if (!fs.existsSync(hermesDB)) {
+    return { status: 500, body: { error: 'no_writable_db', detail: hermesDB } };
+  }
+
+  let writeDB;
+  try {
+    writeDB = new Database(hermesDB, { readonly: false, fileMustExist: true });
+  } catch (e) {
+    return { status: 500, body: { error: 'open_write_db_failed', detail: String(e.message || e) } };
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const insertComment = writeDB.prepare(
+      'INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const insertEvent = writeDB.prepare(
+      'INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const tx = writeDB.transaction(() => {
+      const c = insertComment.run(taskId, author, text, now);
+      insertEvent.run(taskId, 'comment_added', JSON.stringify({ author, comment_id: c.lastInsertRowid }), now);
+    });
+    tx();
+  } catch (e) {
+    return { status: 500, body: { error: 'write_failed', detail: String(e.message || e) } };
+  } finally {
+    writeDB.close();
+  }
+
+  // Refresh the chitin mirror so subsequent reads include the new comment.
+  const migrate = spawnSync('chitin-kernel', ['kanban', 'migrate', board], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  const refreshed = migrate.status === 0;
+  if (refreshed) reopen();
+
+  return { status: 200, body: {
+    ok: true,
+    task_id: taskId,
+    author,
+    board,
+    refreshed,
+    refresh_error: refreshed ? null : (migrate.stderr || '').slice(-500),
+    task: getTask(taskId, board),
   }};
 }
 
@@ -1167,7 +1419,7 @@ const server = http.createServer(async (req, res) => {
         try { body = await readBody(req); }
         catch (e) { return json(res, 400, { error: 'bad_body', detail: String(e.message || e) }); }
         try {
-          const out = fn(req, body, m);
+          const out = await fn(req, body, m);
           return json(res, out.status, out.body);
         } catch (e) { return serverErr(res, e); }
       }
@@ -1176,18 +1428,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' });
-
-  if (url.pathname === '/api/repo-file') {
-    const file = getRepoFile(url.searchParams);
-    if (!file) return notFound(res);
-    res.writeHead(200, {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(file.content);
-    return;
-  }
   for (const [re, fn] of handlers) {
     const m = url.pathname.match(re);
     if (m) {
@@ -1198,11 +1438,47 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return serverErr(res, e); }
     }
   }
+  // /api/reports/legacy/* — bridge to the pre-existing cron-generated
+  // HTML reports. Kept around so anyone bookmarking a specific report
+  // URL still resolves. The Angular /reports route renders the data
+  // natively from the same upstream sources.
+  if (REPORTS_ROOT && url.pathname.startsWith('/api/reports/legacy/')) {
+    return serveReports(req, res, url.pathname.replace('/api/reports/legacy', ''));
+  }
   if (STATIC_ROOT && !url.pathname.startsWith('/api/')) {
     return serveStatic(req, res, url.pathname);
   }
   notFound(res);
 });
+
+function serveReports(req, res, pathname) {
+  // Strip the leading slash and treat as a path under REPORTS_ROOT.
+  let rel = pathname.replace(/^\/+/, '');
+  if (rel === '') rel = 'index.html';
+  rel = decodeURIComponent(rel);
+  const safe = path.normalize(rel);
+  if (safe.startsWith('..') || path.isAbsolute(safe)) {
+    return json(res, 400, { error: 'bad_path' });
+  }
+  let abs = path.join(REPORTS_ROOT, safe);
+  let stat;
+  try { stat = fs.statSync(abs); } catch { stat = null; }
+  if (stat && stat.isDirectory()) {
+    abs = path.join(abs, 'index.html');
+    try { stat = fs.statSync(abs); } catch { stat = null; }
+  }
+  if (!stat || !stat.isFile()) return notFound(res);
+  const ext = path.extname(abs).toLowerCase();
+  const mime = STATIC_MIME[ext] || 'application/octet-stream';
+  // Reports are mutable (regenerated by crons) — never cache.
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': stat.size,
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+  });
+  fs.createReadStream(abs).pipe(res);
+}
 
 function serveStatic(req, res, pathname) {
   // SPA shape: every non-/api GET that doesn't match a file on disk
@@ -1244,13 +1520,14 @@ server.listen(PORT, HOST, () => {
   console.log(`[chitin-console-api] localhost-only listening on http://${HOST}:${PORT}`);
   console.log(`[chitin-console-api] board=${CURRENT_BOARD}`);
   console.log(`[chitin-console-api] kanban=${BOARD_DB} source=${BOARD_DB_SOURCE} (${kanbanDB ? 'OK' : 'MISSING'})`);
-  console.log(`[chitin-console-api] bus=${BUS_DB} (${busDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] argus=${ARGUS_DB} (${argusDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta_decisions=${CLAWTA_DECISIONS_DB} (${clawtaDecisionsDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] clawta=${CLAWTA_DB} (${clawtaDB ? 'OK' : 'MISSING'})`);
-  console.log(`[chitin-console-api] analyzer=${ANALYZER_DB} (${analyzerDB ? 'OK' : 'MISSING'})`);
   console.log(`[chitin-console-api] policy=${POLICY_FILE}`);
   console.log(`[chitin-console-api] static_root=${STATIC_ROOT || '(none — /api only)'}`);
+  console.log(`[chitin-console-api] reports_root=${REPORTS_ROOT || '(none)'}`);
+  console.log(`[chitin-console-api] agent-bus=${BUS_DB_PATH} (${busDB ? 'OK' : 'MISSING'})`);
+  startDiscordPoller();
 });
 
 process.on('SIGINT',  () => { server.close(); process.exit(0); });

@@ -119,12 +119,62 @@
           }
         </section>
 
+        @if (isHITL()) {
+          <section class="block hitl">
+            <header class="hitl-head">
+              <h3 class="block-title">⚑ operator prompt</h3>
+              <button class="btn copy-btn" type="button" (click)="copyOperatorPrompt()">
+                {{ promptCopied() ? '✓ copied' : 'copy' }}
+              </button>
+            </header>
+            <p class="text-muted small hitl-help">
+              This ticket is waiting on a human. Paste the prompt below into Claude Code,
+              an agent session, or a chat to delegate the investigation.
+            </p>
+            <pre class="mono small hitl-prompt">{{ operatorPrompt() }}</pre>
+          </section>
+        }
+
         <section class="block">
           <h3 class="block-title">body</h3>
           @if (d.task.body) {
             <pre class="mono body-pre">{{ d.task.body }}</pre>
           } @else {
             <p class="text-muted small">No body.</p>
+          }
+        </section>
+
+        <section class="block">
+          <h3 class="block-title">comments ({{ d.comments.length }})</h3>
+          @if (d.comments.length === 0) {
+            <p class="text-muted small">No comments yet.</p>
+          } @else {
+            <ul class="comment-list">
+              @for (c of d.comments; track c.id) {
+                <li class="comment-item">
+                  <div class="comment-head">
+                    <span class="mono small text-glow">{{ c.author }}</span>
+                    <span class="mono tiny text-dim">{{ fmtTs(c.created_at) }}</span>
+                  </div>
+                  <div class="comment-body mono small">{{ c.body }}</div>
+                </li>
+              }
+            </ul>
+          }
+          <div class="comment-composer">
+            <textarea class="input comment-input" rows="2"
+                      [(ngModel)]="pendingComment"
+                      [disabled]="commenting()"
+                      placeholder="Add a comment…"
+                      aria-label="Comment body"></textarea>
+            <button class="btn" type="button"
+                    [disabled]="!pendingComment.trim() || commenting()"
+                    (click)="submitComment()">
+              {{ commenting() ? 'posting…' : 'comment' }}
+            </button>
+          </div>
+          @if (commentError(); as err) {
+            <p class="status-mut-err mono small">{{ err }}</p>
           }
         </section>
 

@@ -1,0 +1,123 @@
+- generic [ref=e2]:
+  - list [ref=e4]:
+    - listitem [ref=e5]:
+      - link "Cognition" [ref=e6] [cursor=pointer]:
+        - /url: http://cognition.ai
+        - img "Cognition" [ref=e7]
+    - listitem [ref=e8]:
+      - link "Back to Cognition’s Job Listings" [ref=e9] [cursor=pointer]:
+        - /url: /cognition
+        - img [ref=e10]
+    - listitem
+  - generic [ref=e12]:
+    - heading "Deployed Engineer" [level=1] [ref=e14]
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - heading "Location" [level=2] [ref=e18]
+          - paragraph [ref=e19]: San Francisco; Austin, Texas; New York City
+        - generic [ref=e20]:
+          - heading "Employment Type" [level=2] [ref=e21]
+          - paragraph [ref=e22]: Full time
+        - generic [ref=e23]:
+          - heading "Location Type" [level=2] [ref=e24]
+          - paragraph [ref=e25]: On-site
+        - generic [ref=e26]:
+          - heading "Department" [level=2] [ref=e27]
+          - paragraph [ref=e28]:
+            - generic [ref=e29]: Customer Engineering ›
+            - generic [ref=e30]: Deployed Engineer
+      - generic [ref=e31]:
+        - tablist [ref=e32]:
+          - tab "Overview" [selected] [ref=e33] [cursor=pointer]
+          - tab "Application" [ref=e34] [cursor=pointer]
+        - tabpanel "Overview" [ref=e36]:
+          - generic [ref=e37]:
+            - heading "We are an applied AI lab building end-to-end software agents." [level=2] [ref=e38]:
+              - strong [ref=e39]: We are an applied AI lab building end-to-end software agents.
+            - paragraph [ref=e40]: We're the makers of Devin, the first AI software engineer, and Windsurf, the AI-native IDE. Together, they represent our vision for collaborative AI teammates that enable engineers to focus on more interesting problems and empower teams to strive for more ambitious goals.
+            - paragraph [ref=e41]: Our team is small and talent-dense. Among our founding team, we have world-class competitive programmers, former founders, and leaders from companies at the cutting edge of AI including Scale AI, Palantir, Cursor, Waymo, Tesla, Lunchclub, Modal, Google DeepMind, and Nuro.
+            - paragraph [ref=e42]: Building Devin and Windsurf is just the first step—our hardest challenges still lie ahead. If you’re excited to solve some of the world’s biggest problems and build AI that can reason on real-world tasks, apply to join us.
+            - heading [level=3]
+            - heading "About the Role" [level=2] [ref=e43]:
+              - strong [ref=e44]: About the Role
+            - paragraph [ref=e45]: At Cognition, customers are our highest priority. Deployed Engineers (DEs) are customer-facing technical experts who help our customers maximize the value they get out of Devin/Windsurf.
+            - paragraph [ref=e46]: You’ll work directly with engineers to understand their workflows, identify high-impact use cases, and deploy Devin/Windsurf into real production environments. You’ll lead demos and pilots, support integrations, and drive adoption of the Cognition platform from the inside out.
+            - paragraph [ref=e47]: This role combines hands-on technical work, customer partnership, and rapid execution. You'll serve a broad range of clients, switching context frequently and staying ahead of issues before they become blockers. You're expected to be proactive, make judgment calls, and take ownership of outcomes.
+            - paragraph [ref=e48]
+            - paragraph [ref=e49]:
+              - strong [ref=e50]: "In this role, you will:"
+            - list [ref=e51]:
+              - listitem [ref=e52]:
+                - paragraph [ref=e53]: Own all technical aspects of the customer lifecycle—from deployment through activation, making sure our customers are successful using Devin
+              - listitem [ref=e54]:
+                - paragraph [ref=e55]: Work closely with customers to understand their technical challenges and identify the best use cases for Devin to be a productive contributor
+              - listitem [ref=e56]:
+                - paragraph [ref=e57]: Build deep relationships with our customers’ engineering teams to ensure smooth product integration and adoption, activating top users and driving product utilization
+              - listitem [ref=e58]:
+                - paragraph [ref=e59]: Build! Always listen to customer feedback, have a bias towards implementing requested features yourself, and advocate for the customers’ needs with the rest of the team
+              - listitem [ref=e60]:
+                - paragraph [ref=e61]: Be the customer oracle! Exercise your product instincts to help set the roadmap
+            - paragraph [ref=e62]
+            - paragraph [ref=e63]:
+              - strong [ref=e64]: What We Value
+            - list [ref=e65]:
+              - listitem [ref=e66]:
+                - paragraph [ref=e67]: Customer empathy — you care deeply about how engineers work and what helps them succeed
+              - listitem [ref=e68]:
+                - paragraph [ref=e69]: Ownership mindset — you take responsibility for results, not just tasks
+              - listitem [ref=e70]:
+                - paragraph [ref=e71]: Technical curiosity — you enjoy digging into unfamiliar systems and understanding how they really work
+              - listitem [ref=e72]:
+                - paragraph [ref=e73]: Bias toward execution — you move quickly from problem to solution
+              - listitem [ref=e74]:
+                - paragraph [ref=e75]: Grit — you’re comfortable operating in ambiguous, high-intensity environments
+              - listitem [ref=e76]:
+                - paragraph [ref=e77]: Exploratory rigor — You poke at edges, ask uncomfortable questions, and would rather find problems yourself than have them find you.
+                - paragraph [ref=e78]
+            - paragraph [ref=e79]:
+              - strong [ref=e80]: Requirements
+            - list [ref=e81]:
+              - listitem [ref=e82]:
+                - paragraph [ref=e83]: Strong engineering foundation from a rigorous technical environment
+              - listitem [ref=e84]:
+                - paragraph [ref=e85]: Demonstrated track record of exceptional performance in whatever you've pursued, whether academic, athletic, professional, or entrepreneurial
+              - listitem [ref=e86]:
+                - paragraph [ref=e87]: Self-directed by default. You don't need a manager to tell you what to do next or how to prioritize.
+              - listitem [ref=e88]:
+                - paragraph [ref=e89]: Strong communication skills. You can hold your own with senior engineers and executives alike.
+              - listitem [ref=e90]:
+                - paragraph [ref=e91]: Have a high tolerance for ambiguity, intensity, and sustained effort when the problem demands it.
+              - listitem [ref=e92]:
+                - paragraph [ref=e93]: Willingness to travel 25–50%
+                - paragraph [ref=e94]
+            - paragraph [ref=e95]:
+              - strong [ref=e96]: You might excel if you…
+            - list [ref=e97]:
+              - listitem [ref=e98]:
+                - paragraph [ref=e99]: Advanced in at least one modern programming language (e.g., Python, TypeScript)
+              - listitem [ref=e100]:
+                - paragraph [ref=e101]: Experience writing and debugging real software systems
+              - listitem [ref=e102]:
+                - paragraph [ref=e103]: Want to work directly with real users on high-impact technical problems
+              - listitem [ref=e104]:
+                - paragraph [ref=e105]: Learn quickly by being embedded in challenging, real-world environments
+              - listitem [ref=e106]:
+                - paragraph [ref=e107]: Have worked at an early-stage startup or in a role where you operated well beyond your job description
+            - heading "Equal Opportunity" [level=2] [ref=e108]
+            - paragraph [ref=e109]: Cognition is an equal opportunity employer. We do not discriminate on the basis of race, color, religion, sex, sexual orientation, gender identity, national origin, age, disability, veteran status, or any other protected characteristic under applicable law. We are committed to providing reasonable accommodations for candidates with disabilities throughout the hiring process - please let us know if you need any.
+          - link "Apply for this Job" [ref=e110] [cursor=pointer]:
+            - /url: /cognition/d72d584c-bb11-4b6a-b043-d81425ea884a/application
+            - button "Apply for this Job" [ref=e111]
+  - contentinfo [ref=e112]:
+    - link "Learn more about Ashby" [ref=e113] [cursor=pointer]:
+      - /url: https://www.ashbyhq.com
+      - generic [ref=e114]: Powered by
+      - img "Ashby" [ref=e115]
+    - paragraph [ref=e121]:
+      - link "Privacy Policy" [ref=e122] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/privacy
+      - link "Security" [ref=e123] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/security
+      - link "Vulnerability Disclosure" [ref=e124] [cursor=pointer]:
+        - /url: https://www.ashbyhq.com/disclosure

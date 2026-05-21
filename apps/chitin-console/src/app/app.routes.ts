@@ -18,9 +18,19 @@ export const appRoutes: Route[] = [
     data: { title: 'Session' },
   },
   {
+    path: 'queue',
+    loadComponent: () => import('./pages/queue.page').then(m => m.QueuePage),
+    data: { title: 'Queue' },
+  },
+  {
     path: 'threads',
     loadComponent: () => import('./pages/threads.page').then(m => m.ThreadsPage),
     data: { title: 'Threads' },
+  },
+  {
+    path: 'board',
+    loadComponent: () => import('./pages/board.page').then(m => m.BoardPage),
+    data: { title: 'Board' },
   },
   {
     path: 'tickets',
@@ -36,6 +46,11 @@ export const appRoutes: Route[] = [
     path: 'argus',
     loadComponent: () => import('./pages/argus.page').then(m => m.ArgusPage),
     data: { title: 'Argus' },
+  },
+  {
+    path: 'reports',
+    loadComponent: () => import('./pages/reports.page').then(m => m.ReportsPage),
+    data: { title: 'Reports' },
   },
   {
     path: 'policy',

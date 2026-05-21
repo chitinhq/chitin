@@ -1,0 +1,84 @@
+<header class="head">
+  <div>
+    <h1 class="title">My Queue</h1>
+    <p class="subtitle mono">
+      human-in-the-loop tickets · paste any prompt into Claude Code to delegate
+    </p>
+  </div>
+  <div class="filters">
+    <select class="input" [(ngModel)]="reasonFilter" aria-label="Reason filter">
+      <option value="all">all reasons</option>
+      <option value="blocked">blocked</option>
+      <option value="unassigned">unassigned</option>
+      <option value="operator">operator-lane</option>
+    </select>
+    <select class="input" [(ngModel)]="assigneeFilter" aria-label="Assignee filter">
+      <option value="">all assignees</option>
+      @for (a of availableAssignees(); track a) {
+        <option [value]="a">{{ a }}</option>
+      }
+    </select>
+    <button class="btn" type="button" (click)="reload()">refresh</button>
+  </div>
+</header>
+
+@if (loading()) {
+  <cc-loader message="Scanning HITL tickets"></cc-loader>
+} @else {
+  <section class="kpis">
+    <div class="kpi"><span class="mono tiny label">total</span><span class="mono val">{{ summary().total }}</span></div>
+    <div class="kpi blocked"><span class="mono tiny label">blocked</span><span class="mono val text-danger">{{ summary().blocked }}</span></div>
+    <div class="kpi"><span class="mono tiny label">unassigned</span><span class="mono val text-warn">{{ summary().unassigned }}</span></div>
+    <div class="kpi"><span class="mono tiny label">operator-lane</span><span class="mono val text-chitin">{{ summary().operator }}</span></div>
+  </section>
+
+  @if (mutationError(); as err) {
+    <div class="queue-err mono small" role="alert">⚠ {{ err }}</div>
+  }
+
+  @if (filteredTickets().length === 0) {
+    <div class="plate">
+      <cc-empty-state title="Inbox zero" body="No human-in-the-loop tickets match the current filters."></cc-empty-state>
+    </div>
+  } @else {
+    <ul class="queue-list">
+      @for (t of filteredTickets(); track t.id) {
+        <li class="queue-card" [class.is-blocked]="t.status === 'blocked'">
+          <header class="queue-head" (click)="toggleExpanded(t.id)">
+            <div class="queue-id mono tiny text-muted">{{ shortenId(t.id, 10, 4) }}</div>
+            <div class="queue-title">{{ t.title }}</div>
+            <div class="queue-meta">
+              <cc-status-pill [status]="t.status"></cc-status-pill>
+              <span class="mono tiny text-muted">{{ t.assignee || 'unassigned' }}</span>
+              <span class="mono tiny text-dim">{{ ageFromEpochSeconds(t.created_at) }}</span>
+            </div>
+            <button type="button" class="btn btn-toggle" (click)="$event.stopPropagation(); toggleExpanded(t.id)">
+              {{ expanded()[t.id] ? '▾' : '▸' }}
+            </button>
+          </header>
+
+          @if (expanded()[t.id]) {
+            <div class="queue-body">
+              <div class="queue-actions">
+                <button class="btn copy-btn" type="button" (click)="copyPrompt(t)">
+                  {{ copiedId() === t.id ? '✓ copied prompt' : '📋 copy prompt' }}
+                </button>
+                <a class="btn btn-secondary" [routerLink]="['/tickets']" [queryParams]="{ id: t.id }">
+                  open in drawer →
+                </a>
+                @if (t.status === 'blocked') {
+                  <button class="btn btn-secondary" type="button"
+                          [disabled]="mutating() === t.id"
+                          (click)="quickUnblock(t)">
+                    {{ mutating() === t.id ? 'unblocking…' : 'quick unblock' }}
+                  </button>
+                }
+              </div>
+              <pre class="queue-prompt mono small">{{ promptFor(t) }}</pre>
+            </div>
+          }
+        </li>
+      }
+    </ul>
+  }
+}

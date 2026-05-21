@@ -1,0 +1,117 @@
+- generic [ref=e2]:
+  - navigation "Primary" [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: ReadyBench
+      - list [ref=e6]:
+        - listitem [ref=e7]:
+          - link "Dashboard" [ref=e8] [cursor=pointer]:
+            - /url: /dashboard
+        - listitem [ref=e9]:
+          - link "Engagements" [ref=e10] [cursor=pointer]:
+            - /url: /engagements
+        - listitem [ref=e11]:
+          - link "Messages" [ref=e12] [cursor=pointer]:
+            - /url: /messages
+        - listitem [ref=e13]:
+          - link "Reviews" [ref=e14] [cursor=pointer]:
+            - /url: /reviews
+        - listitem [ref=e15]:
+          - link "Settings" [ref=e16] [cursor=pointer]:
+            - /url: /settings
+      - link "Notifications" [ref=e17] [cursor=pointer]:
+        - /url: /notifications
+        - img [ref=e18]
+      - button "Sign out" [ref=e21] [cursor=pointer]
+  - main [ref=e49]:
+    - generic [ref=e50]:
+      - navigation "Breadcrumb" [ref=e51]:
+        - link "Dashboard" [ref=e52] [cursor=pointer]:
+          - /url: /dashboard
+        - text: / Senior Platform Engineer (smoke)
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - generic [ref=e56]:
+            - heading "Senior Platform Engineer (smoke)" [level=1] [ref=e57]
+            - generic [ref=e58]: Open
+          - paragraph [ref=e59]: Dev Buyer Co · posted 2026-05-20 · $120–$170 / hr
+        - button "Share" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+          - text: Share
+      - generic [ref=e68]:
+        - navigation "Request pipeline" [ref=e69]:
+          - heading "Pipeline" [level=2] [ref=e70]
+          - list [ref=e71]:
+            - listitem [ref=e72]:
+              - generic [ref=e73]: "1"
+              - generic [ref=e74]: Submitted
+            - listitem [ref=e75]:
+              - generic [ref=e76]: "2"
+              - generic [ref=e77]: Under review
+            - listitem [ref=e78]:
+              - generic [ref=e79]: "3"
+              - generic [ref=e80]: Shortlist ready
+            - listitem [ref=e81]:
+              - generic [ref=e82]: "4"
+              - generic [ref=e83]: Screening
+            - listitem [ref=e84]:
+              - generic [ref=e85]: "5"
+              - generic [ref=e86]: Interviewing
+            - listitem [ref=e87]:
+              - generic [ref=e88]: "6"
+              - generic [ref=e89]: Decision pending
+            - listitem [ref=e90]:
+              - generic [ref=e91]: "7"
+              - generic [ref=e92]: Proposal sent
+            - listitem [ref=e93]:
+              - generic [ref=e94]: "8"
+              - generic [ref=e95]: Proposal accepted
+            - listitem [ref=e96]:
+              - generic [ref=e97]: "9"
+              - generic [ref=e98]: Selected
+        - generic [ref=e99]:
+          - tablist "Request detail sections" [ref=e100]:
+            - generic [ref=e101]:
+              - tab "Overview" [ref=e102] [cursor=pointer]
+              - tab "Shortlist" [active] [selected] [ref=e103] [cursor=pointer]
+              - tab "Interviews" [ref=e104] [cursor=pointer]
+          - generic [ref=e181]:
+            - generic [ref=e182]:
+              - heading "Curated shortlist" [level=2] [ref=e183]
+              - generic [ref=e184]: Net-new build
+            - paragraph [ref=e185]: Top 3 candidates ranked by overall fit. Anonymous until you request an intro.
+            - generic [ref=e186]:
+              - article [ref=e187]:
+                - generic [ref=e188]:
+                  - heading "Senior React Engineer" [level=3] [ref=e189]
+                  - generic [ref=e190]: candidate-56a8529b6688
+                - paragraph [ref=e191]: 9+ years experience
+                - paragraph [ref=e192]: excellent
+                - generic [ref=e193]:
+                  - generic [ref=e194]: React
+                  - generic [ref=e195]: TypeScript
+                  - generic [ref=e196]: Node.js
+              - article [ref=e197]:
+                - generic [ref=e198]:
+                  - heading "Platform Engineer" [level=3] [ref=e199]
+                  - generic [ref=e200]: candidate-294512b5e362
+                - paragraph [ref=e201]: 7+ years experience
+                - paragraph [ref=e202]: good
+                - generic [ref=e203]:
+                  - generic [ref=e204]: Node.js
+                  - generic [ref=e205]: PostgreSQL
+                  - generic [ref=e206]: AWS
+              - article [ref=e207]:
+                - generic [ref=e208]:
+                  - heading "Full-stack Developer" [level=3] [ref=e209]
+                  - generic [ref=e210]: candidate-3ce761a1c178
+                - paragraph [ref=e211]: 6+ years experience
+                - paragraph [ref=e212]: good
+                - generic [ref=e213]:
+                  - generic [ref=e214]: React
+                  - generic [ref=e215]: PostgreSQL
+                  - generic [ref=e216]: GraphQL
+          - region "Activity" [ref=e175]:
+            - button "Activity Collapse" [expanded] [ref=e176] [cursor=pointer]:
+              - heading "Activity" [level=2] [ref=e177]
+              - generic [ref=e178]: Collapse
+            - paragraph [ref=e180]: The activity timeline lands with the request workflow milestones — a quick way to catch up on what moved while you were away. It is pinned here so it is always one glance from the request you are reading.

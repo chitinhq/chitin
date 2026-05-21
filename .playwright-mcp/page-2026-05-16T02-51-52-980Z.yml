@@ -1,0 +1,107 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /queue
+      - img [ref=e6]
+      - generic [ref=e11]: chitin
+    - generic [ref=e12]:
+      - combobox "Board" [ref=e13] [cursor=pointer]:
+        - option "chitin" [selected]
+        - option "readybench"
+        - option "personal-os"
+      - generic "API connected · board chitin" [ref=e14]
+  - main [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - heading "Tickets" [level=1] [ref=e20]
+          - paragraph [ref=e21]: 5 tickets · filters live below
+        - generic [ref=e22]:
+          - combobox "Status filter" [ref=e23]:
+            - option "active (default)" [selected]
+            - option "in_progress"
+            - option "triage"
+            - option "ready"
+            - option "todo"
+            - option "done"
+            - option "archived"
+            - option "all"
+          - combobox "Assignee filter" [ref=e24]:
+            - option "all assignees" [selected]
+            - option "red (87)"
+            - option "programmer (82)"
+            - option "codex (33)"
+            - option "clawta (28)"
+            - option "claude-code (26)"
+            - option "architect (9)"
+            - option "copilot (8)"
+            - option "operator (7)"
+            - option "chitin-worker (6)"
+            - option "gemini (5)"
+            - option "analyst (4)"
+            - option "hermes (2)"
+            - option "tech-writer (2)"
+            - option "hermes-user (1)"
+            - option "researcher (1)"
+            - option "user (1)"
+          - textbox "Search tickets" [ref=e25]:
+            - /placeholder: search title / body / id…
+          - button "filter" [ref=e26] [cursor=pointer]
+      - table [ref=e29]:
+        - rowgroup [ref=e30]:
+          - row "id title status age" [ref=e31]:
+            - columnheader "id" [ref=e32]
+            - columnheader "title" [ref=e33]
+            - columnheader "status" [ref=e34]
+            - columnheader "age" [ref=e35]
+        - rowgroup [ref=e36]:
+          - 'row "t_18ffbbb3 Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges) in_progress 7h" [ref=e37] [cursor=pointer]':
+            - cell "t_18ffbbb3" [ref=e38]
+            - 'cell "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)" [ref=e39]':
+              - generic [ref=e40]: "Agent-bus Phase 5: typed attachment renderers in console (Jira-style badges)"
+            - cell "in_progress" [ref=e41]:
+              - generic [ref=e45]: in_progress
+            - cell "7h" [ref=e46]
+          - row "t_7c9d02b7 Router heuristic allowlist for chitin-kernel subcommands in_progress 3d" [ref=e47] [cursor=pointer]:
+            - cell "t_7c9d02b7" [ref=e48]
+            - cell "Router heuristic allowlist for chitin-kernel subcommands" [ref=e49]:
+              - generic [ref=e50]: Router heuristic allowlist for chitin-kernel subcommands
+            - cell "in_progress" [ref=e51]:
+              - generic [ref=e55]: in_progress
+            - cell "3d" [ref=e56]
+          - 'row "t_69ab3d3e SkillFlow: Flow-Driven Recursive Skill Evolution for Agentic Orchestration triage 1h" [ref=e57] [cursor=pointer]':
+            - cell "t_69ab3d3e" [ref=e58]
+            - 'cell "SkillFlow: Flow-Driven Recursive Skill Evolution for Agentic Orchestration" [ref=e59]':
+              - generic [ref=e60]: "SkillFlow: Flow-Driven Recursive Skill Evolution for Agentic Orchestration"
+            - cell "triage" [ref=e61]:
+              - generic [ref=e65]: triage
+            - cell "1h" [ref=e66]
+          - 'row "t_5ffe6486 LEMON: Learning Executable Multi-Agent Orchestration via Counterfactual Reinforcement Learning triage 2h" [ref=e67] [cursor=pointer]':
+            - cell "t_5ffe6486" [ref=e68]
+            - 'cell "LEMON: Learning Executable Multi-Agent Orchestration via Counterfactual Reinforcement Learning" [ref=e69]':
+              - generic [ref=e70]: "LEMON: Learning Executable Multi-Agent Orchestration via Counterfactual Reinforcement Learning"
+            - cell "triage" [ref=e71]:
+              - generic [ref=e75]: triage
+            - cell "2h" [ref=e76]
+          - 'row "t_elo_rati…loop Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards ready 1d" [ref=e77] [cursor=pointer]':
+            - cell "t_elo_rati…loop" [ref=e78]
+            - 'cell "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards" [ref=e79]':
+              - generic [ref=e80]: "Build ELO rating loop: correlate PR, task_run, chitin outcomes, write to agent cards"
+            - cell "ready" [ref=e81]:
+              - generic [ref=e85]: ready
+            - cell "1d" [ref=e86]
+  - navigation "Primary (mobile)" [ref=e87]:
+    - link "Inbox" [ref=e88] [cursor=pointer]:
+      - /url: /queue
+      - generic [ref=e89]: Inbox
+    - link "Board" [ref=e90] [cursor=pointer]:
+      - /url: /board
+      - generic [ref=e91]: Board
+    - link "Chat" [ref=e92] [cursor=pointer]:
+      - /url: /threads
+      - generic [ref=e93]: Chat
+    - link "Insights" [ref=e94] [cursor=pointer]:
+      - /url: /reports
+      - generic [ref=e95]: Insights
+    - button "More navigation" [ref=e96] [cursor=pointer]:
+      - generic [ref=e97]: More

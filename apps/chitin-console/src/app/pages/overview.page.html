@@ -18,6 +18,14 @@
     <cc-kpi-card label="success 7d"
       [value]="fmtPct(stats()?.successRate7d, 1)"
       [tone]="(stats()?.successRate7d ?? 0) >= 0.5 ? 'run' : 'warn'"></cc-kpi-card>
+    <cc-kpi-card label="cycle p50 (30d)"
+      [value]="ageFromMsAgo(stats()?.cycleTime30d?.p50 ?? 0)"></cc-kpi-card>
+    <cc-kpi-card label="cycle p90 (30d)"
+      [value]="ageFromMsAgo(stats()?.cycleTime30d?.p90 ?? 0)"></cc-kpi-card>
+    <cc-kpi-card label="lead p50 (30d)"
+      [value]="ageFromMsAgo(stats()?.leadTime30d?.p50 ?? 0)"></cc-kpi-card>
+    <cc-kpi-card label="lead p90 (30d)"
+      [value]="ageFromMsAgo(stats()?.leadTime30d?.p90 ?? 0)"></cc-kpi-card>
   </section>
 
   <section class="grid-2">

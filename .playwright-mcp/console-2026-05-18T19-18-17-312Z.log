@@ -1,0 +1,11 @@
+[    4002ms] [WARNING]   WARN  [Statsig] Request encoding failed for https://ab.chatgpt.com/v1/initialize InvalidCharacterError: Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.
+    at s._tryEncodeBody (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:42612)
+    at https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:28148
+    at n.ErrorBoundary._capture (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:28446)
+    at e.<computed> [as _tryEncodeBody] (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:28117)
+    at s.<anonymous> (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:39133)
+    at Generator.next (<anonymous>)
+    at https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:37629
+    at new Promise (<anonymous>)
+    at r (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:37378)
+    at s.post (https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:1:39043) @ https://openai.com/_next/static/chunks/04.i~h-woodbb.js?dpl=dpl_Bg6e7GepmbnyTyxkUgK4toKZbbyW:0

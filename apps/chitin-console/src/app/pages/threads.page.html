@@ -2,137 +2,171 @@
   <div>
     <h1 class="title">Threads</h1>
     <p class="subtitle mono">
-      {{ threads().length }} threads · read-only bus view with async attachment badges
+      agent-bus + Discord mirror · replies sync to <code>#hermes</code> automatically
     </p>
   </div>
   <div class="filters">
-    <input class="input compact" type="text" placeholder="board"
-      [(ngModel)]="board" (keyup.enter)="reload()" aria-label="Board filter"/>
-    <select class="input" [(ngModel)]="status" (ngModelChange)="reload()" aria-label="Status filter">
-      @for (o of statusOptions; track o.value) {
-        <option [value]="o.value">{{ o.label }}</option>
-      }
+    <select class="input" [(ngModel)]="boardFilter" (ngModelChange)="reload()" aria-label="Board filter">
+      <option value="">all boards</option>
+      <option value="chitin">chitin</option>
+      <option value="readybench">readybench</option>
     </select>
-    <input class="input compact" type="text" placeholder="audience"
-      [(ngModel)]="audience" (keyup.enter)="reload()" aria-label="Audience filter"/>
-    <input class="input search" type="text" placeholder="search title / opener / task id…"
-      [(ngModel)]="q" (keyup.enter)="reload()" aria-label="Search threads"/>
-    <button class="btn" type="button" (click)="reload()">filter</button>
+    <select class="input" [(ngModel)]="statusFilter" (ngModelChange)="reload()" aria-label="Status filter">
+      <option value="">all status</option>
+      <option value="open">open</option>
+      <option value="resolved">resolved</option>
+      <option value="archived">archived</option>
+    </select>
+    <input class="input author-input" type="text" [(ngModel)]="authorOverride"
+           placeholder="post as (default: $USER)" aria-label="Author override" />
+    <button class="btn" type="button" (click)="reload()">refresh</button>
   </div>
 </header>
 
 @if (loading()) {
   <cc-loader message="Loading threads"></cc-loader>
-} @else if (threads().length === 0) {
-  <div class="plate">
-    <cc-empty-state title="No threads" body="No bus threads match the current filters."></cc-empty-state>
-  </div>
 } @else {
-  <div class="plate panel">
-    <div class="panel-body">
-      <table class="tbl">
-        <thead>
-          <tr>
-            <th>thread</th>
-            <th>status</th>
-            <th>board</th>
-            <th>attachments</th>
-            <th>updated</th>
-          </tr>
-        </thead>
-        <tbody>
-          @for (t of threads(); track t.id) {
-            <tr class="row-hover" (click)="openThread(t.id)">
-              <td class="thread-cell">
-                <div class="ttl">{{ t.title }}</div>
-                <div class="meta mono">
-                  #{{ t.id }} · {{ t.author }}
-                  @if (t.task_id) {
-                    <span>· {{ t.task_id }}</span>
-                  }
-                  @if (t.audience) {
-                    <span>· {{ t.audience }}</span>
-                  }
-                </div>
-                @if (t.last_message_preview) {
-                  <div class="preview">{{ t.last_message_preview }}</div>
-                }
-              </td>
-              <td><cc-status-pill [status]="t.status"></cc-status-pill></td>
-              <td class="mono small">{{ t.board || 'global' }}</td>
-              <td class="mono small">{{ t.attachment_count }} / {{ t.message_count }}</td>
-              <td class="mono small text-muted">{{ ageFromEpochSeconds(t.updated_at) }}</td>
-            </tr>
-          }
-        </tbody>
-      </table>
-    </div>
-  </div>
-}
-
-@if (selectedDetail() || drawerLoading()) {
-  <aside class="drawer" role="dialog" aria-label="Thread detail" aria-modal="false">
-    <header class="drawer-head">
-      @if (selectedDetail(); as d) {
-        <div>
-          <div class="mono small text-muted">thread #{{ d.thread.id }}</div>
-          <div class="drawer-title">{{ d.thread.title }}</div>
-          <div class="meta">
-            <cc-status-pill [status]="d.thread.status"></cc-status-pill>
-            <span class="mono small text-muted">{{ d.thread.author }}</span>
-            <span class="mono small text-muted">{{ d.thread.board || 'global' }}</span>
-            <span class="mono small text-dim">updated {{ fmtTs(d.thread.updated_at) }}</span>
-          </div>
-        </div>
-      } @else {
-        <div class="mono small text-muted">loading…</div>
+  <div class="threads-layout">
+    <aside class="thread-list">
+      @if (threads().length === 0) {
+        <cc-empty-state title="No threads"
+          body="agent-bus has no threads matching this filter. Post one via the MCP server or Discord."
+        ></cc-empty-state>
       }
-      <button class="btn" type="button" (click)="closeDrawer()">close ✕</button>
-    </header>
-
-    <div class="drawer-body">
-      @if (drawerLoading()) {
-        <cc-loader message="Loading thread"></cc-loader>
-      } @else if (selectedDetail(); as d) {
-        <section class="block">
-          <h3 class="block-title">attachments ({{ d.attachments.length }})</h3>
-          @if (d.attachments.length === 0) {
-            <p class="text-muted small">No attachments on this thread.</p>
-          } @else {
-            <div class="attachments-grid">
-              @for (attachment of d.attachments; track attachment.id) {
-                <cc-attachment-badge [threadId]="d.thread.id" [attachment]="attachment"></cc-attachment-badge>
-              }
+      @for (t of threads(); track t.id) {
+        <a class="thread-row"
+           [class.active]="selected()?.thread?.id === t.id"
+           (click)="openThread(t.id)">
+          <div class="thread-row-head">
+            <span class="mono small thread-title">{{ t.title }}</span>
+            @if (t.discord_thread_id) { <span class="badge discord mono tiny">discord</span> }
+          </div>
+          <div class="thread-row-meta mono tiny text-muted">
+            <span>{{ t.author }}</span>
+            @if (t.board) { <span class="text-dim">· {{ t.board }}</span> }
+            @if (t.task_id) { <span class="text-chitin">· {{ shortenId(t.task_id, 8, 4) }}</span> }
+            <span class="text-dim">· {{ t.message_count }} msg</span>
+            <span class="text-dim">· {{ fmtTs(t.updated_at) }}</span>
+          </div>
+          @if (t.last_message_body) {
+            <div class="thread-row-preview mono tiny text-muted">
+              <span class="text-glow">{{ t.last_message_author }}:</span>
+              {{ t.last_message_body.slice(0, 120) }}
             </div>
           }
-        </section>
+        </a>
+      }
+    </aside>
 
-        <section class="block">
-          <h3 class="block-title">messages ({{ d.messages.length }})</h3>
-          @if (d.messages.length === 0) {
-            <p class="text-muted small">No messages recorded.</p>
-          } @else {
-            <ul class="message-list">
-              @for (message of d.messages; track message.id) {
-                <li class="message-item">
-                  <div class="message-head">
-                    <span class="mono small text-glow">{{ message.author }}</span>
-                    <span class="mono tiny text-muted">{{ message.kind }}</span>
-                    @if (message.parent_id) {
-                      <span class="mono tiny text-muted">reply to #{{ message.parent_id }}</span>
-                    }
-                    @if (message.ack_required) {
-                      <span class="ack mono tiny">ack</span>
-                    }
-                    <span class="mono tiny text-dim">{{ fmtTs(message.created_at) }}</span>
-                  </div>
-                  <pre class="message-body mono">{{ message.body }}</pre>
+    <section class="thread-detail">
+      @if (detailLoading()) {
+        <cc-loader message="Loading thread"></cc-loader>
+      } @else if (!selected()) {
+        <cc-empty-state title="Select a thread"
+          body="Pick a thread on the left to read messages or send a reply."
+        ></cc-empty-state>
+      } @else if (selected(); as d) {
+        <header class="detail-head">
+          <div>
+            <div class="mono small text-muted">thread #{{ d.thread.id }}</div>
+            <div class="detail-title">{{ d.thread.title }}</div>
+            <div class="detail-meta mono tiny text-muted">
+              {{ d.thread.author }}
+              @if (d.thread.board) { · {{ d.thread.board }} }
+              · status {{ d.thread.status }}
+              @if (d.thread.discord_thread_id) {
+                · <span class="badge discord mono tiny">discord {{ d.thread.discord_thread_id.slice(-6) }}</span>
+              }
+            </div>
+          </div>
+          <button class="btn" type="button" (click)="closeThread()">close ✕</button>
+        </header>
+
+        @if (d.attachments.length > 0) {
+          <section class="attachments">
+            <div class="block-title">attachments ({{ d.attachments.length }})</div>
+            <ul class="attach-list">
+              @for (a of d.attachments; track a.id) {
+                <li class="mono small">
+                  <span class="badge mono tiny" [attr.data-kind]="a.kind">{{ a.kind }}</span>
+                  <span class="text-muted">{{ a.display || a.ref }}</span>
                 </li>
               }
             </ul>
+          </section>
+        }
+
+        <div class="message-pane">
+          <ul class="message-list" #messageList (scroll)="onScroll()">
+            <li class="msg-sentinel mono tiny text-dim">
+              @if (loadingOlder()) {
+                loading older…
+              } @else if (d.has_more_older) {
+                scroll up for older
+              } @else {
+                — start of thread —
+              }
+            </li>
+            @for (m of d.messages; track m.id) {
+              <li class="msg" [attr.data-kind]="m.kind">
+                <div class="msg-head">
+                  <span class="mono small text-glow">{{ m.author }}</span>
+                  <span class="mono tiny text-dim">{{ fmtTs(m.created_at) }}</span>
+                  @if (m.kind !== 'message') {
+                    <span class="badge mono tiny" [attr.data-kind]="m.kind">{{ m.kind }}</span>
+                  }
+                  @if (m.discord_message_id) {
+                    <span class="badge mono tiny discord">discord</span>
+                  }
+                  @if (m.ack_required) {
+                    <span class="badge mono tiny warn">ack required</span>
+                  }
+                </div>
+                <div class="msg-body mono small">{{ m.body }}</div>
+              </li>
+            }
+          </ul>
+          @if (newSince() > 0) {
+            <button class="new-pill mono tiny" type="button" (click)="jumpToLatest()">
+              ↓ {{ newSince() }} new
+            </button>
           }
-        </section>
+        </div>
+
+        <footer class="composer">
+          <div class="composer-row">
+            <textarea class="input composer-input" rows="2"
+                      [(ngModel)]="composer"
+                      [disabled]="posting()"
+                      placeholder="reply… (mirrors to Discord as the author below)"
+                      aria-label="Reply body"
+                      (keydown.control.enter)="send()"
+                      (keydown.meta.enter)="send()"></textarea>
+            <button class="btn primary" type="button"
+                    [disabled]="!composer.trim() || posting()"
+                    (click)="send()">
+              {{ posting() ? 'sending…' : 'send' }}
+            </button>
+          </div>
+          <div class="composer-meta">
+            <label class="mono tiny text-muted">channel
+              <select class="input" [(ngModel)]="composerChannelId" [disabled]="posting()" aria-label="Discord channel">
+                <option value="">auto (thread or default)</option>
+                @for (c of discordChannels(); track c.id) {
+                  <option [value]="c.id">#{{ c.name }}</option>
+                }
+              </select>
+            </label>
+            <label class="mono tiny text-muted">as
+              <input class="input author-mini" type="text" [(ngModel)]="authorOverride"
+                     placeholder="$USER" aria-label="Author override" />
+            </label>
+          </div>
+        </footer>
+        @if (postError(); as err) {
+          <p class="composer-err mono small">{{ err }}</p>
+        }
       }
-    </div>
-  </aside>
+    </section>
+  </div>
 }

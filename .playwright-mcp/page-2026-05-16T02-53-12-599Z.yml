@@ -1,0 +1,309 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Chitin Console home" [ref=e5] [cursor=pointer]:
+      - /url: /queue
+      - img [ref=e6]
+      - generic [ref=e11]: chitin
+    - navigation "Primary" [ref=e12]:
+      - link "Inbox" [ref=e13] [cursor=pointer]:
+        - /url: /queue
+        - generic [ref=e14]: Inbox
+      - link "Board" [ref=e15] [cursor=pointer]:
+        - /url: /board
+        - generic [ref=e16]: Board
+      - link "Chat" [ref=e17] [cursor=pointer]:
+        - /url: /threads
+        - generic [ref=e18]: Chat
+      - link "Insights" [ref=e19] [cursor=pointer]:
+        - /url: /reports
+        - generic [ref=e20]: Insights
+      - button "More navigation" [ref=e21] [cursor=pointer]:
+        - generic [ref=e22]: More
+    - generic [ref=e23]:
+      - combobox "Board" [ref=e24] [cursor=pointer]:
+        - option "chitin" [selected]
+        - option "readybench"
+        - option "personal-os"
+      - generic "API connected · board chitin" [ref=e25]
+  - main [ref=e27]:
+    - generic [ref=e28]:
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - heading "My Queue" [level=1] [ref=e31]
+          - paragraph [ref=e32]: human-in-the-loop tickets · paste any prompt into Claude Code to delegate
+        - generic [ref=e33]:
+          - combobox "Reason filter" [ref=e34]:
+            - option "all reasons" [selected]
+            - option "blocked"
+            - option "unassigned"
+            - option "operator-lane"
+          - combobox "Assignee filter" [ref=e35]:
+            - option "all assignees" [selected]
+            - option "red"
+          - button "refresh" [ref=e36] [cursor=pointer]
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: total
+          - generic [ref=e40]: "28"
+        - generic [ref=e41]:
+          - generic [ref=e42]: blocked
+          - generic [ref=e43]: "27"
+        - generic [ref=e44]:
+          - generic [ref=e45]: unassigned
+          - generic [ref=e46]: "1"
+        - generic [ref=e47]:
+          - generic [ref=e48]: operator-lane
+          - generic [ref=e49]: "0"
+      - list [ref=e50]:
+        - listitem [ref=e51]:
+          - generic [ref=e52] [cursor=pointer]:
+            - generic [ref=e53]: t_8f4d2ee5
+            - generic [ref=e54]: "Epic: Chitin Dashboard (visual replay + self-improving feedback loop)"
+            - generic [ref=e55]:
+              - generic [ref=e59]: blocked
+              - generic [ref=e60]: red
+              - generic [ref=e61]: 4d
+            - button "▸" [ref=e62]
+        - listitem [ref=e63]:
+          - generic [ref=e64] [cursor=pointer]:
+            - generic [ref=e65]: t_3e13b0d5
+            - generic [ref=e66]: "Slice 5: LLM analyzer cron (prompt/skill/policy suggestions)"
+            - generic [ref=e67]:
+              - generic [ref=e71]: blocked
+              - generic [ref=e72]: red
+              - generic [ref=e73]: 4d
+            - button "▸" [ref=e74]
+        - listitem [ref=e75]:
+          - generic [ref=e76] [cursor=pointer]:
+            - generic [ref=e77]: t_3cf15ef1
+            - generic [ref=e78]: "Slice 6: Policy composer + adoption flow"
+            - generic [ref=e79]:
+              - generic [ref=e83]: blocked
+              - generic [ref=e84]: red
+              - generic [ref=e85]: 4d
+            - button "▸" [ref=e86]
+        - listitem [ref=e87]:
+          - generic [ref=e88] [cursor=pointer]:
+            - generic [ref=e89]: t_d0908a55
+            - generic [ref=e90]: "Slice 2.5: Clawta LLM router reads ELO before deciding"
+            - generic [ref=e91]:
+              - generic [ref=e95]: blocked
+              - generic [ref=e96]: red
+              - generic [ref=e97]: 4d
+            - button "▸" [ref=e98]
+        - listitem [ref=e99]:
+          - generic [ref=e100] [cursor=pointer]:
+            - generic [ref=e101]: t_da209102
+            - generic [ref=e102]: "Argus slice 5 — Hermes integration: standup-fold"
+            - generic [ref=e103]:
+              - generic [ref=e107]: blocked
+              - generic [ref=e108]: red
+              - generic [ref=e109]: 2d
+            - button "▸" [ref=e110]
+        - listitem [ref=e111]:
+          - generic [ref=e112] [cursor=pointer]:
+            - generic [ref=e113]: t_b8e499eb
+            - generic [ref=e114]: "Research: orchestration peers — multica, paperclip, sandcastle, Archon"
+            - generic [ref=e115]:
+              - generic [ref=e119]: blocked
+              - generic [ref=e120]: red
+              - generic [ref=e121]: 2d
+            - button "▸" [ref=e122]
+        - listitem [ref=e123]:
+          - generic [ref=e124] [cursor=pointer]:
+            - generic [ref=e125]: t_b9e018a9
+            - generic [ref=e126]: "Research: skills frameworks — superpowers upstream, karpathy, addyosmani"
+            - generic [ref=e127]:
+              - generic [ref=e131]: blocked
+              - generic [ref=e132]: red
+              - generic [ref=e133]: 2d
+            - button "▸" [ref=e134]
+        - listitem [ref=e135]:
+          - generic [ref=e136] [cursor=pointer]:
+            - generic [ref=e137]: t_77f5b407
+            - generic [ref=e138]: "Architecture audit (2026-05-13): Isolate swarm kanban mutations"
+            - generic [ref=e139]:
+              - generic [ref=e143]: blocked
+              - generic [ref=e144]: red
+              - generic [ref=e145]: 2d
+            - button "▸" [ref=e146]
+        - listitem [ref=e147]:
+          - generic [ref=e148] [cursor=pointer]:
+            - generic [ref=e149]: t_75c8c8c1
+            - generic [ref=e150]: "Architecture audit (2026-05-13): Audit scripts for runtime logic"
+            - generic [ref=e151]:
+              - generic [ref=e155]: blocked
+              - generic [ref=e156]: red
+              - generic [ref=e157]: 2d
+            - button "▸" [ref=e158]
+        - listitem [ref=e159]:
+          - generic [ref=e160] [cursor=pointer]:
+            - generic [ref=e161]: t_5a022827
+            - generic [ref=e162]: "Epic: Swarm Autopilot v1"
+            - generic [ref=e163]:
+              - generic [ref=e167]: blocked
+              - generic [ref=e168]: red
+              - generic [ref=e169]: 2d
+            - button "▸" [ref=e170]
+        - listitem [ref=e171]:
+          - generic [ref=e172] [cursor=pointer]:
+            - generic [ref=e173]: t_7cb9cf49
+            - generic [ref=e174]: _pick_driver must only route to kernel-approved drivers, not encode policy
+            - generic [ref=e175]:
+              - generic [ref=e179]: blocked
+              - generic [ref=e180]: red
+              - generic [ref=e181]: 2d
+            - button "▸" [ref=e182]
+        - listitem [ref=e183]:
+          - generic [ref=e184] [cursor=pointer]:
+            - generic [ref=e185]: t_657f9952
+            - generic [ref=e186]: Parameterize swarm for multi-repo board support
+            - generic [ref=e187]:
+              - generic [ref=e191]: blocked
+              - generic [ref=e192]: red
+              - generic [ref=e193]: 2d
+            - button "▸" [ref=e194]
+        - listitem [ref=e195]:
+          - generic [ref=e196] [cursor=pointer]:
+            - generic [ref=e197]: t_b8e5337c
+            - generic [ref=e198]: "Multi-repo support B: kanban-flow reads board config + readybench smoke"
+            - generic [ref=e199]:
+              - generic [ref=e203]: blocked
+              - generic [ref=e204]: red
+              - generic [ref=e205]: 2d
+            - button "▸" [ref=e206]
+        - listitem [ref=e207]:
+          - generic [ref=e208] [cursor=pointer]:
+            - generic [ref=e209]: t_55e04e01
+            - generic [ref=e210]: "Multi-repo support C: clawta-poller + dispatch worktree per board"
+            - generic [ref=e211]:
+              - generic [ref=e215]: blocked
+              - generic [ref=e216]: red
+              - generic [ref=e217]: 2d
+            - button "▸" [ref=e218]
+        - listitem [ref=e219]:
+          - generic [ref=e220] [cursor=pointer]:
+            - generic [ref=e221]: t_12568dca
+            - generic [ref=e222]: "Multi-repo support D: clawta-pr-* + audit scripts per repo + drift guard"
+            - generic [ref=e223]:
+              - generic [ref=e227]: blocked
+              - generic [ref=e228]: red
+              - generic [ref=e229]: 2d
+            - button "▸" [ref=e230]
+        - listitem [ref=e231]:
+          - generic [ref=e232] [cursor=pointer]:
+            - generic [ref=e233]: t_25cd184e
+            - generic [ref=e234]: Port LLM-compiled wiki pipeline with ingest, compile, lint, and ask
+            - generic [ref=e235]:
+              - generic [ref=e239]: blocked
+              - generic [ref=e240]: red
+              - generic [ref=e241]: 2d
+            - button "▸" [ref=e242]
+        - listitem [ref=e243]:
+          - generic [ref=e244] [cursor=pointer]:
+            - generic [ref=e245]: t_d5385ba9
+            - generic [ref=e246]: Port soulforge as canonical soul library with archetype catalog
+            - generic [ref=e247]:
+              - generic [ref=e251]: blocked
+              - generic [ref=e252]: red
+              - generic [ref=e253]: 2d
+            - button "▸" [ref=e254]
+        - listitem [ref=e255]:
+          - generic [ref=e256] [cursor=pointer]:
+            - generic [ref=e257]: t_26dc166c
+            - generic [ref=e258]: Add phased rollout and backfill audit to clawta-poller invariants gate
+            - generic [ref=e259]:
+              - generic [ref=e263]: blocked
+              - generic [ref=e264]: red
+              - generic [ref=e265]: 2d
+            - button "▸" [ref=e266]
+        - listitem [ref=e267]:
+          - generic [ref=e268] [cursor=pointer]:
+            - generic [ref=e269]: t_c7bb6c64
+            - generic [ref=e270]: Write typed egress and MCP trust policy spec for chitin kernel
+            - generic [ref=e271]:
+              - generic [ref=e275]: blocked
+              - generic [ref=e276]: red
+              - generic [ref=e277]: 1d
+            - button "▸" [ref=e278]
+        - listitem [ref=e279]:
+          - generic [ref=e280] [cursor=pointer]:
+            - generic [ref=e281]: t_3a0d06be
+            - generic [ref=e282]: E2E multi-board test
+            - generic [ref=e283]:
+              - generic [ref=e287]: blocked
+              - generic [ref=e288]: red
+              - generic [ref=e289]: 1d
+            - button "▸" [ref=e290]
+        - listitem [ref=e291]:
+          - generic [ref=e292] [cursor=pointer]:
+            - generic [ref=e293]: t_04f498eb
+            - generic [ref=e294]: Create standardized agent work-contract PR template
+            - generic [ref=e295]:
+              - generic [ref=e299]: blocked
+              - generic [ref=e300]: red
+              - generic [ref=e301]: 12h
+            - button "▸" [ref=e302]
+        - listitem [ref=e303]:
+          - generic [ref=e304] [cursor=pointer]:
+            - generic [ref=e305]: t_99cbcc0f
+            - generic [ref=e306]: Add review-burden and net-leverage metrics to clawta scoreboard
+            - generic [ref=e307]:
+              - generic [ref=e311]: blocked
+              - generic [ref=e312]: red
+              - generic [ref=e313]: 12h
+            - button "▸" [ref=e314]
+        - listitem [ref=e315]:
+          - generic [ref=e316] [cursor=pointer]:
+            - generic [ref=e317]: t_6c53f7ff
+            - generic [ref=e318]: Hermes adversarial review — auto-review every swarm PR
+            - generic [ref=e319]:
+              - generic [ref=e323]: blocked
+              - generic [ref=e324]: red
+              - generic [ref=e325]: 12h
+            - button "▸" [ref=e326]
+        - listitem [ref=e327]:
+          - generic [ref=e328] [cursor=pointer]:
+            - generic [ref=e329]: t_d32e7505
+            - generic [ref=e330]: Implement 3090 BenchOps always-on verification and indexing worker
+            - generic [ref=e331]:
+              - generic [ref=e335]: blocked
+              - generic [ref=e336]: red
+              - generic [ref=e337]: 12h
+            - button "▸" [ref=e338]
+        - listitem [ref=e339]:
+          - generic [ref=e340] [cursor=pointer]:
+            - generic [ref=e341]: t_1ba34650
+            - generic [ref=e342]: Enforce governance boundary blocking agents from modifying eval harness
+            - generic [ref=e343]:
+              - generic [ref=e347]: blocked
+              - generic [ref=e348]: red
+              - generic [ref=e349]: 12h
+            - button "▸" [ref=e350]
+        - listitem [ref=e351]:
+          - generic [ref=e352] [cursor=pointer]:
+            - generic [ref=e353]: t_dbd11405
+            - generic [ref=e354]: Chitin operator MCP server — chain + governance + adapter-backed operator tools
+            - generic [ref=e355]:
+              - generic [ref=e359]: blocked
+              - generic [ref=e360]: red
+              - generic [ref=e361]: 10h
+            - button "▸" [ref=e362]
+        - listitem [ref=e363]:
+          - generic [ref=e364] [cursor=pointer]:
+            - generic [ref=e365]: t_e157b4c6
+            - generic [ref=e366]: "Agent-bus Phase 3: chitin-console /threads UI + console-api write endpoints"
+            - generic [ref=e367]:
+              - generic [ref=e371]: blocked
+              - generic [ref=e372]: red
+              - generic [ref=e373]: 7h
+            - button "▸" [ref=e374]
+        - listitem [ref=e375]:
+          - generic [ref=e376] [cursor=pointer]:
+            - generic [ref=e377]: t_69ab3d3e
+            - generic [ref=e378]: "SkillFlow: Flow-Driven Recursive Skill Evolution for Agentic Orchestration"
+            - generic [ref=e379]:
+              - generic [ref=e383]: triage
+              - generic [ref=e384]: unassigned
+              - generic [ref=e385]: 1h
+            - button "▸" [ref=e386]
