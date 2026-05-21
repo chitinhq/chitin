@@ -56,6 +56,15 @@ type Gate struct {
 	// keep writing the smaller schema with no breakage.
 	Fingerprint FingerprintContext
 
+	// ChainID and SessionID correlate every Decision this Gate writes to
+	// the kernel event-chain and the dispatching agent's session. The CLI
+	// hook layer sets them from the hook payload's session id (or the
+	// `gate evaluate --session-id` flag). Empty values omit the JSON
+	// field. Stamped independently of the envelope so a decision groups
+	// into its session in the console even when no envelope is active.
+	ChainID   string
+	SessionID string
+
 	// NoRecord, when true, suppresses persistent side effects: no
 	// Counter.RecordDenial increment, no WriteLog chain-event append.
 	// Read-only state (Counter.IsLocked, Counter.Level) is still
@@ -243,6 +252,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		stampEnvelope(&d, envelope, g, a, agent)
 		stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
 		stampWorktreeDiagnostic(&d, a, g.Cwd)
+		stampSession(&d, g.ChainID, g.SessionID)
 		if !g.NoRecord {
 			_ = WriteLog(d, g.LogDir)
 		}
@@ -417,6 +427,9 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// alter d.Allowed or the policy RuleID; it gives downstream readers
 	// chain evidence before the worktree requirement graduates to enforce.
 	stampWorktreeDiagnostic(&d, a, g.Cwd)
+	// 7c. Stamp chain/session correlation so the console can group this
+	// decision into its agent session even when no envelope is present.
+	stampSession(&d, g.ChainID, g.SessionID)
 
 	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
 	// daily chain rollups (fingerprint_outcomes, swarm_health) with
@@ -513,6 +526,19 @@ func stampFingerprint(d *Decision, ctx FingerprintContext, authority AuthorityCo
 	d.Authority = ResolveTrustedAuthority(ctx, authority)
 	d.WorkflowID = ctx.WorkflowID
 	d.Fingerprint = agentFingerprint
+}
+
+// stampSession writes the chain/session correlation ids onto d. Empty
+// values are pass-through — Decision's omitempty tags drop them, so
+// pre-session dispatches keep the smaller schema. Single call site
+// pattern (lockdown path + main flow) prevents drift, mirroring
+// stampFingerprint. The console groups decisions into sessions by
+// chain_id || session_id || envelope_id; before these ids were stamped
+// that grouping rode solely on envelope_id, so an envelope regression
+// silently un-chained an agent from the console (Hermes, 2026-05).
+func stampSession(d *Decision, chainID, sessionID string) {
+	d.ChainID = chainID
+	d.SessionID = sessionID
 }
 
 func ResolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) string {

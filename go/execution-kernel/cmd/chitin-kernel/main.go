@@ -825,6 +825,7 @@ func cmdGateEvaluate(args []string) {
 	cwd := fs.String("cwd", ".", "cwd the action would execute against")
 	hookStdin := fs.Bool("hook-stdin", false, "read Claude Code PreToolUse JSON from stdin (hook driver mode)")
 	envelopeID := fs.String("envelope", "", "envelope ID (overrides CHITIN_BUDGET_ENVELOPE and ~/.chitin/current-envelope)")
+	sessionID := fs.String("session-id", "", "agent session id; stamped onto the decision row (chain_id + session_id) so the console groups it into a session even when no envelope is active. The hermes plugin forwards its hermes session id here.")
 	requirePolicy := fs.Bool("require-policy", false, "fail closed when no chitin.yaml is found from cwd (default: fail open with stderr warning)")
 	policyFile := fs.String("policy-file", os.Getenv("CHITIN_POLICY_FILE"), "explicit chitin.yaml path; overrides the cwd-walk-upward lookup. Required for callers (like the hermes plugin) that run from arbitrary cwds and need policy enforcement to be cwd-independent.")
 	bypassSig := fs.Bool("bypass-sig", false, "break-glass: skip chitin.yaml signature verification for this evaluation; emits an audit row and stderr warning")
@@ -891,7 +892,7 @@ func cmdGateEvaluate(args []string) {
 			"action_target": action.Target,
 		}
 		if ruleID == "policy_signature_invalid" {
-			auditPolicySignatureDeny(chitinDir(), action, *agent, errMsg)
+			auditPolicySignatureDeny(chitinDir(), action, *agent, *sessionID, errMsg)
 		}
 		b, _ := json.Marshal(out)
 		fmt.Println(string(b))
@@ -904,11 +905,38 @@ func cmdGateEvaluate(args []string) {
 		auditPolicySignatureBypass(chitinDir, action, *agent, selectedPolicyPath(*policyFile, absCwd))
 		fmt.Fprintln(os.Stderr, `{"warning":"policy_signature_bypass","note":"chitin.yaml signature verification bypassed for this gate evaluation; restore a valid signature immediately"}`)
 	}
-	counter, err := gov.OpenCounter(filepath.Join(chitinDir, "gov.db"))
+	dbPath := filepath.Join(chitinDir, "gov.db")
+	counter, err := gov.OpenCounter(dbPath)
 	if err != nil {
 		exitErr("gate_counter", err.Error())
 	}
 	defer counter.Close()
+
+	// Resolve the budget envelope from the same precedence chain the hook
+	// path uses (--envelope > $CHITIN_BUDGET_ENVELOPE > current-envelope).
+	// Pre-fix this path passed a hard nil, so every decision the hermes
+	// plugin produced through `gate evaluate` carried no envelope_id —
+	// and the console, which groups sessions by chain_id||session_id||
+	// envelope_id, dropped Hermes entirely. Resolution failure is
+	// non-fatal here: warn and continue gate+audit-only, since failing
+	// closed would let an envelope-DB hiccup deadlock every hermes tool
+	// call (the plugin shells into exactly this path).
+	envelope, store, err := resolveEnvelope(chitinDir, dbPath, *envelopeID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "{\"warning\":\"envelope_resolve\",\"note\":%q}\n", err.Error())
+		envelope, store = nil, nil
+	}
+	if store != nil {
+		defer store.Close()
+	}
+
+	// chain_id is the agent session id when supplied (so every decision
+	// in a session groups together in the console), else a fresh
+	// per-evaluation id. The hermes plugin passes --session-id.
+	chainID := *sessionID
+	if chainID == "" {
+		chainID = newChainID()
+	}
 
 	gate := &gov.Gate{
 		Policy: policy, Counter: counter,
@@ -919,30 +947,35 @@ func cmdGateEvaluate(args []string) {
 		// populated this; operator CLI calls wrote fingerprint-less rows.
 		Fingerprint: gov.FingerprintContextFromEnv(),
 		NoRecord:    *noRecord,
+		// Chain/session correlation so a decision groups into its agent
+		// session in the console even when no envelope is active.
+		ChainID:   chainID,
+		SessionID: *sessionID,
 	}
 	// F4 addendum: wire gov.Gate's OnDecision to emit a `decision` chain
 	// event via the canonical path (which fires OTEL projection if
-	// configured). For the bare CLI path we don't have a session_id, so
-	// each evaluation gets a fresh UUID — single-event chain, valid OTEL
-	// span via F4's "root event of root chain" parent-rule branch.
-	// Surface is the operator-CLI origin, not the agent identifier
-	// (agent flows separately into AgentInstanceID).
+	// configured). chain_id is the Gate's ChainID so the gov-decisions
+	// row and the v2 chain event share one id.
 	//
 	// Skip when --no-record is set: the decision emitter writes a chain
 	// event, which is the second persistence path NoRecord must mute.
 	// Without this, smoke tests still pollute the chain via OnDecision
 	// even though gate.go's WriteLog is suppressed.
-	if !*noRecord {
-		chainID := newChainID()
-		if chainID != "" {
-			de, deClose, err := newDecisionEmitter(chitinDir, chainID, "operator", func() string { return chainID })
-			if err == nil {
-				defer deClose()
-				gate.OnDecision = de.emitDecision
-			}
+	if !*noRecord && chainID != "" {
+		de, deClose, err := newDecisionEmitter(chitinDir, chainID, "operator", func() string { return chainID })
+		if err == nil {
+			defer deClose()
+			gate.OnDecision = de.emitDecision
 		}
 	}
-	d := gate.Evaluate(action, *agent, nil)
+	// Chitin admin commands (envelope grant/use) and --no-record smoke
+	// probes evaluate without debiting the envelope — mirrors the hook
+	// path so an exhausted envelope can't deadlock operator recovery.
+	spendEnvelope := envelope
+	if *noRecord || isChitinAdminCommand(action) {
+		spendEnvelope = nil
+	}
+	d := gate.Evaluate(action, *agent, spendEnvelope)
 
 	// Include action metadata in the CLI output. The Decision struct tags
 	// Action as json:"-" to keep the chain-event payload lean, but the CLI
@@ -1049,14 +1082,23 @@ func cmdPolicyVerify(args []string) {
 	fmt.Println(`{"ok":true}`)
 }
 
-func auditPolicySignatureDeny(logDir string, action gov.Action, agent, reason string) {
+// auditPolicySignatureDeny writes the audit row for a signature-invalid
+// policy load. It runs before the Gate is constructed (the policy failed
+// to load, so there is nothing to Evaluate), so it stamps the chain/
+// session ids itself — without them this deny row carries no correlation
+// id and the console drops it. sessionID is the dispatching agent's
+// session; chain_id mirrors it so the row groups with the rest of the
+// session's decisions.
+func auditPolicySignatureDeny(logDir string, action gov.Action, agent, sessionID, reason string) {
 	_ = gov.WriteLog(gov.Decision{
-		Allowed: false,
-		Mode:    "enforce",
-		RuleID:  "policy_signature_invalid",
-		Reason:  reason,
-		Action:  action,
-		Agent:   agent,
+		Allowed:   false,
+		Mode:      "enforce",
+		RuleID:    "policy_signature_invalid",
+		Reason:    reason,
+		Action:    action,
+		Agent:     agent,
+		ChainID:   sessionID,
+		SessionID: sessionID,
 	}, logDir)
 }
 

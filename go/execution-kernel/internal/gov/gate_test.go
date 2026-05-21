@@ -895,3 +895,83 @@ func TestFingerprintContextFromEnv_SystemRoleHonored(t *testing.T) {
 		t.Errorf("explicit CHITIN_ROLE=system must pass through: got %q", got.Role)
 	}
 }
+
+// The console groups decisions into sessions by chain_id || session_id ||
+// envelope_id. Every Decision a Gate writes must therefore carry the
+// Gate's chain/session ids — independently of envelope presence — or an
+// envelope-less agent (Hermes, 2026-05) vanishes from the console. The
+// next four tests pin that invariant across all three Evaluate exit
+// paths (allow, deny, lockdown) plus the omitempty default.
+
+func TestGate_ChainSessionStampedOnAllow(t *testing.T) {
+	g, _ := newTestGate(t)
+	g.ChainID = "chain-abc"
+	g.SessionID = "sess-xyz"
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if !d.Allowed {
+		t.Fatalf("file.read should be allowed: %+v", d)
+	}
+	if d.ChainID != "chain-abc" {
+		t.Errorf("ChainID: got %q want chain-abc", d.ChainID)
+	}
+	if d.SessionID != "sess-xyz" {
+		t.Errorf("SessionID: got %q want sess-xyz", d.SessionID)
+	}
+}
+
+func TestGate_ChainSessionStampedOnDeny(t *testing.T) {
+	g, dir := newTestGate(t)
+	g.ChainID = "chain-deny"
+	g.SessionID = "sess-deny"
+	d := g.Evaluate(Action{Type: ActShellExec, Target: "rm -rf go/"}, "agent1", nil)
+	if d.Allowed {
+		t.Fatalf("expected deny")
+	}
+	if d.ChainID != "chain-deny" || d.SessionID != "sess-deny" {
+		t.Errorf("deny row missing chain/session ids: chain=%q session=%q", d.ChainID, d.SessionID)
+	}
+	// The WriteLog JSON projection must carry the ids too — the console
+	// reads the JSONL, not the in-memory Decision. Guards against the
+	// projection struct in decision.go drifting from the Decision struct.
+	logDir := filepath.Join(dir, "decisions")
+	entries, _ := os.ReadDir(logDir)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log file, got %d", len(entries))
+	}
+	raw, err := os.ReadFile(filepath.Join(logDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(raw), `"chain_id":"chain-deny"`) {
+		t.Errorf("written JSONL missing chain_id: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"session_id":"sess-deny"`) {
+		t.Errorf("written JSONL missing session_id: %s", raw)
+	}
+}
+
+func TestGate_ChainSessionStampedOnLockdown(t *testing.T) {
+	// The lockdown short-circuit returns before the main-flow stamp, so
+	// it needs its own stamp — same invariant as fingerprint dims (#76).
+	g, _ := newTestGate(t)
+	g.ChainID = "chain-lock"
+	g.SessionID = "sess-lock"
+	g.Counter.Lockdown("agent1")
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.RuleID != "lockdown" {
+		t.Fatalf("expected lockdown, got %q", d.RuleID)
+	}
+	if d.ChainID != "chain-lock" || d.SessionID != "sess-lock" {
+		t.Errorf("lockdown row missing chain/session ids: chain=%q session=%q", d.ChainID, d.SessionID)
+	}
+}
+
+func TestGate_ChainSessionEmptyByDefault(t *testing.T) {
+	// Zero-value Gate.ChainID/SessionID → omitempty drops the JSON
+	// fields; v1 audit-log readers tolerate the absence.
+	g, _ := newTestGate(t)
+	d := g.Evaluate(Action{Type: ActFileRead, Target: "/tmp/x"}, "agent1", nil)
+	if d.ChainID != "" || d.SessionID != "" {
+		t.Errorf("expected empty chain/session ids by default, got chain=%q session=%q", d.ChainID, d.SessionID)
+	}
+}
