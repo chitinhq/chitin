@@ -423,10 +423,26 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// row carries (model, role, workflow_id, fingerprint) for joining
 	// against PR/review outcomes downstream.
 	stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
-	// 7b. Stamp audit-only worktree posture. This deliberately does not
-	// alter d.Allowed or the policy RuleID; it gives downstream readers
-	// chain evidence before the worktree requirement graduates to enforce.
+	// 7b. Stamp worktree posture, and — when the policy graduates it to an
+	// enforced invariant (invariantModes: worktree-required: enforce) —
+	// deny a side-effect action evaluated from the primary git checkout.
+	// Kernel-side, so --no-verify / CHITIN_KERNEL_BIN tricks cannot reach
+	// around it. Honors operator presence: an operator working
+	// interactively in the primary checkout is not an autonomous agent.
+	// Placed after step 6 so a worktree deny does NOT increment the
+	// lockdown counter — the agent is redirected to a worktree, not
+	// escalated toward lockdown.
 	stampWorktreeDiagnostic(&d, a, g.Cwd)
+	if d.Allowed && d.WorktreeStatus == "primary" &&
+		g.Policy.InvariantModes["worktree-required"] == "enforce" &&
+		!operatorPresenceBypass() {
+		d.Allowed = false
+		d.RuleID = "worktree-required"
+		d.Mode = "enforce"
+		d.Reason = "side-effect action from the primary git checkout is denied; " +
+			"create a linked worktree and work on a feature branch"
+		d.Suggestion = "git worktree add ../<repo>-<slug> -b <type>/<slug> origin/main, then cd into it"
+	}
 	// 7c. Stamp chain/session correlation so the console can group this
 	// decision into its agent session even when no envelope is present.
 	stampSession(&d, g.ChainID, g.SessionID)
