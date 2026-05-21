@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -245,6 +245,31 @@ class TestExtractTickMetadata(TestCase):
         result = {"status": "ran", "job_name": "icarus-bad"}
         meta = _runner["_extract_tick_metadata"](result, "icarus-bad")
         self.assertEqual(meta["block_reason"], "none")
+
+
+class TestBenchModelDefaults(TestCase):
+    """Invariant: the runner, loop, and cron installer stay aligned on the
+    coder-tuned default model so bench tasks do not silently route back to
+    qwen3.6:27b."""
+
+    def test_runner_defaults_to_qwen3_coder(self):
+        self.assertEqual(
+            _runner["DEFAULT_MODEL"],
+            "ollama/qwen3-coder:30b-32k",
+        )
+
+    def test_shell_wrappers_default_to_qwen3_coder(self):
+        loop_script = (RUNNER_DIR / "chitin-bench-loop").read_text()
+        install_script = (RUNNER_DIR / "install-chitin-bench-cron.sh").read_text()
+
+        self.assertIn(
+            'CHITIN_BENCH_MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            loop_script,
+        )
+        self.assertIn(
+            'MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            install_script,
+        )
 
 
 if __name__ == "__main__":
