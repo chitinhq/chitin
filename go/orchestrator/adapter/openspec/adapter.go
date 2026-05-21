@@ -207,6 +207,7 @@ func compileChangeDir(absDir, relDir, changeName string) (*CompiledChange, error
 			SpecRef:          changeName,
 			TaskRef:          taskRef,
 			Capability:       capability,
+			Description:      ctx.Description,
 			Priority:         changeKindPriority(dl.kind),
 			WorktreeRequired: true,
 			Status:           dag.StatusPending,

@@ -116,6 +116,14 @@ func TestCompileMetadata(t *testing.T) {
 	if t4, _ := d.Node("100-sample-feature/T004"); t4.Capability != string(driver.CapTestAuthor) {
 		t.Errorf("T004 capability = %q, want %q", t4.Capability, driver.CapTestAuthor)
 	}
+
+	// Description: every compiled node carries the task's instruction text, so
+	// a dispatched agent acts on the task itself, not merely its id.
+	for _, n := range d.Nodes() {
+		if n.Description == "" {
+			t.Errorf("node %s has an empty Description — an agent would be invoked with no instruction", n.ID)
+		}
+	}
 }
 
 // TestCompileContext asserts the per-node Task Context carries FR references
