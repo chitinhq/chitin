@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/telemetry"
 )
 
 // DispatchRecord is one node dispatched on a scheduler tick — the node and
@@ -56,14 +59,11 @@ type TickTelemetrySink interface {
 	Emit(ctx context.Context, rec TickRecord) error
 }
 
-// logTickTelemetrySink is the default TickTelemetrySink: it logs each tick
-// record rather than writing a real telemetry store.
-//
-// TODO(spec 076 FR-015, spec 070 FR-008): replace logTickTelemetrySink with
-// a concrete sink that writes Chitin Telemetry. The telemetry export surface
-// is owned by spec 070 and is not yet importable from this orchestrator
-// module; until it is wired, tick records are logged. Telemetry is a
-// write-only side effect, never on the scheduling critical path.
+// logTickTelemetrySink is the fallback TickTelemetrySink: it logs each tick
+// record rather than exporting to a telemetry collector. The concrete sink is
+// OTLPTickTelemetrySink below; logTickTelemetrySink is the safe default when
+// no OTLP collector is configured (spec 070 FR-008 telemetry is a write-only
+// side effect, never on the scheduling critical path).
 type logTickTelemetrySink struct{}
 
 // Emit logs one tick record. It never returns an error.
@@ -76,8 +76,80 @@ func (logTickTelemetrySink) Emit(_ context.Context, rec TickRecord) error {
 	return nil
 }
 
-// NewLogTickTelemetrySink returns the default logging TickTelemetrySink.
+// NewLogTickTelemetrySink returns the fallback logging TickTelemetrySink.
 func NewLogTickTelemetrySink() TickTelemetrySink { return logTickTelemetrySink{} }
+
+// OTLPTickTelemetrySink is the concrete TickTelemetrySink (spec 076 FR-015,
+// spec 070 FR-008). It projects each per-tick record onto one OTLP span and
+// exports it to the configured collector via the telemetry package's
+// OTLP/HTTP exporter.
+//
+// It is write-only: Emit projects and POSTs; it never reads telemetry back.
+// A telemetry export fault is logged and dropped — Emit returns nil — so a
+// flaky or absent collector can never stall the scheduler.
+type OTLPTickTelemetrySink struct {
+	// exporter is the OTLP/HTTP exporter. A nil exporter is the
+	// telemetry-disabled state; its ExportSpans is a safe no-op.
+	exporter *telemetry.Exporter
+}
+
+// NewOTLPTickTelemetrySink returns a TickTelemetrySink backed by exporter. A
+// nil exporter (the value NewExporter returns when no collector is
+// configured) yields a sink whose Emit is a quiet no-op — the orchestrator
+// runs telemetry-disabled rather than failing.
+func NewOTLPTickTelemetrySink(exporter *telemetry.Exporter) *OTLPTickTelemetrySink {
+	return &OTLPTickTelemetrySink{exporter: exporter}
+}
+
+// NewOTLPTickTelemetrySinkFromEnv builds an OTLP sink whose exporter is
+// resolved from the OTEL_EXPORTER_OTLP_* env vars. When neither var is set
+// the exporter is nil and the sink no-ops — the standard wiring used by main.
+func NewOTLPTickTelemetrySinkFromEnv() *OTLPTickTelemetrySink {
+	return NewOTLPTickTelemetrySink(telemetry.NewExporter())
+}
+
+// Emit projects one tick record onto an OTLP span and exports it. The span's
+// trace id is derived from the scheduler run id so a run's ticks share one
+// trace; the span id is derived from the run id and tick number. An export
+// failure is logged and swallowed — Emit returns nil regardless — because
+// telemetry is a non-authoritative projection (spec 070 FR-008).
+func (s *OTLPTickTelemetrySink) Emit(ctx context.Context, rec TickRecord) error {
+	if s == nil || !s.exporter.Enabled() {
+		return nil
+	}
+	now := time.Now()
+	span := telemetry.Span{
+		TraceID: telemetry.TraceIDForRun(rec.SchedulerRunID),
+		SpanID:  telemetry.SpanIDForTick(rec.SchedulerRunID, rec.Tick),
+		Name:    "scheduler.tick",
+		Start:   now,
+		End:     now,
+		Attributes: []telemetry.Attr{
+			telemetry.StringAttr("scheduler.run_id", rec.SchedulerRunID),
+			telemetry.IntAttr("scheduler.tick", int64(rec.Tick)),
+			telemetry.IntAttr("scheduler.frontier_size", int64(len(rec.Frontier))),
+			telemetry.IntAttr("scheduler.dispatched_count", int64(len(rec.Dispatched))),
+			telemetry.IntAttr("scheduler.blocked_unroutable_count", int64(len(rec.BlockedUnroutable))),
+			telemetry.IntAttr("scheduler.blocked_dependency_failed_count", int64(len(rec.BlockedDependencyFailed))),
+			telemetry.IntAttr("scheduler.completed_count", int64(len(rec.Completed))),
+			telemetry.StringAttr("scheduler.stalled", boolStr(rec.Stalled)),
+		},
+	}
+	if err := s.exporter.ExportSpans(ctx, []telemetry.Span{span}); err != nil {
+		// Telemetry is a non-authoritative projection: log and drop, never
+		// propagate an export fault onto the scheduling path.
+		log.Printf("tick-telemetry: export run=%s tick=%d: %v", rec.SchedulerRunID, rec.Tick, err)
+	}
+	return nil
+}
+
+// boolStr renders a bool as the lowercase string OTLP string attributes use.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
 
 // TickTelemetry is the EmitTickTelemetry activity (spec 076 FR-015). Emitting
 // telemetry is a write to an external store — a SIDE EFFECT — so it MUST run
