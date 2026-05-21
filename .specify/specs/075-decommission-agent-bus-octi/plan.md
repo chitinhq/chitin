@@ -1,4 +1,4 @@
-# 069 — Implementation plan
+# 075 — Implementation plan
 
 ## Approach
 
@@ -7,7 +7,7 @@ delete code** — so nothing is mid-call when its code vanishes.
 
 System-side changes (configs, crons, services, DB) are applied directly
 — they are not version-controlled. Repo-side changes (code deletion, doc
-updates) go on branch `069-decommission-agent-bus-octi` → PR → merge.
+updates) go on branch `075-decommission-agent-bus-octi` → PR → merge.
 
 ## Order
 

@@ -1,6 +1,6 @@
 # Feature Specification: Chitin Coach
 
-**Feature Branch**: `071-chitin-coach`
+**Feature Branch**: `076-chitin-coach`
 
 **Created**: 2026-05-20
 

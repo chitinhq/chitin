@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-20 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
+> Last updated 2026-05-21 (specs 069–073, 075–076 INDEX entries; prior: spec 025, Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -18,6 +18,7 @@
 | **022** | dispatch readiness contract | draft | — | PR #744 open; spec 022 unifies poller + watchdog spec-root resolution + boundary checks |
 | **023** | agent-bus bidirectional liveness | shipped | — | PR #746 merged; outbound env-refresh + inbound `agent-bus-inbound-poll` cron + bidirectional e2e |
 | **024** | active-repo doc-bundle contract | shipped | (this overnight sprint) | PR #747 merged; the spec defining this INDEX file |
+| **025** | dispatch-atomicity-invariant | shipped | `t_f391ba00` | block↔close single-owner lock; PR #739 pair half; Gate-3 of spec 022 |
 
 ## Spec-kit foundation (mostly shipped)
 
@@ -177,6 +178,45 @@ attended; tracking epics, research deferred, operator-audit planning
 docs, or work superseded by GitHub-archived upstreams). See
 `.specify/specs/audit-2026-05-18/INDEX.md` for the per-ticket
 triage rationale.
+
+## Decommission & restructure — specs 069–070
+
+> Spec 069 removes the agent-bus and mini wrapper per operator directive 2026-05-20.
+> Spec 070 rehomes the Temporal orchestration layer (Octi 040–048) as the Chitin Orchestrator.
+> Earlier draft `069-decommission-agent-bus-octi` renumbered to spec 075 (Octi decommission was
+> a naming collision — only the mini wrapper is killed in 069).
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **069** | decommission-agent-bus-mini | draft | — | Kill agent-bus + mini CC-CLI wrapper; re-scoped: Octi NOT killed |
+| **070** | chitin-orchestrator | draft | — | Temporal orchestration layer; rehomes Octi 040–048 |
+| 075 | decommission-agent-bus-octi | draft | — | Renumbered from 069 collision; Octi-only decommission (not ratified) |
+
+## Chitin Coach & block-invariant fix — specs 071, 076
+
+> Spec 071 fixes the kanban status-naming mismatch (running vs in_progress).
+> Spec 076 adopts the AI-Engineering-Coach analysis engine as the operator-facing arm of Chitin Telemetry.
+> Earlier draft `071-chitin-coach` renumbered to spec 076.
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **071** | kanban-block-invariant-fix | draft | `t_54b9c01d` | Fixes running/in_progress status mismatch in kanban_db.py |
+| 076 | chitin-coach | draft | — | Renumbered from 071 collision; AI-Engineering-Coach integration |
+
+## Agent-injection hardening — spec 072
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **072** | agent-injection-hardening | draft | — | Reader/writer role separation as defense-in-depth against prompt injection |
+
+## Rename telemetry + bench — spec 073
+
+> Spec 073 collapses Sentinel+Argus → Chitin Telemetry; Icarus → Chitin Bench.
+> Phase 1 shipped (PR #841). Phases 2–4 in flight.
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| **073** | rename-telemetry-bench | draft | `t_87372fbc` (Phase 2), `t_bddcd8d6` (Phase 3), `t_169c408f` (Phase 4) | Phase 1 shipped; Phase 2–4 in flight |
 
 ## Monorepo platform — spec 074
 
