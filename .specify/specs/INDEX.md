@@ -178,6 +178,18 @@ docs, or work superseded by GitHub-archived upstreams). See
 `.specify/specs/audit-2026-05-18/INDEX.md` for the per-ticket
 triage rationale.
 
+## Monorepo platform — spec 074
+
+> Spec 074 closes the Nx polyglot registration gap (Go/Python projects
+> invisible to `nx affected`/graph/cache) and converges the folder layout
+> to a single type-first `apps/`+`libs/` scheme. Four independently
+> shippable phases (Phase 0 culls dead drift); coordinates with deletion
+> specs 069/070. Companion analysis: `docs/strategy/chitin-monorepo-audit.md`.
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| 074 | polyglot-monorepo-layout | draft | — | P0 cull drift → P1 registration gap → P2 convention → P3 layout convergence |
+
 ## Workspace-overlay & retro specs
 
 | Spec | Title | Status | Notes |

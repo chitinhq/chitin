@@ -228,6 +228,15 @@ imports.
 - **FR-015**: Each phase MUST be independently shippable: Phase 1 (FR-001–003)
   ships and delivers value with zero file moves; Phase 2 (FR-004–006) ships
   on top of it; Phase 3 (FR-007–011) ships last, one project per PR.
+- **FR-016**: Dead / drift projects — code that survives no feature and is
+  superseded — MUST be **removed**, not registered. The audit identified
+  `apps/chitin-dashboard` (an abandoned React dashboard superseded by the
+  Angular `apps/chitin-console`; it even commits its `dist/` build output)
+  and the untracked `apps/agentguard-vscode` leftover (its tracked files were
+  already removed by PR #837). A code-bearing directory that is neither a
+  living project nor deletion-bound by another spec is drift; this spec culls
+  it. This is **Phase 0** — it runs before registration so the gap analysis
+  and `nx show projects` count reflect only real projects.
 
 ### Key Entities
 
