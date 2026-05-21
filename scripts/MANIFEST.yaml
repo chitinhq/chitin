@@ -84,7 +84,12 @@ entries:
 
   - path: scripts/create-worktree.sh
     category: operator
-    purpose: create a task-scoped git worktree with the repo naming and path conventions
+    purpose: create a task-scoped git worktree with the repo naming and path conventions; calls copy-governance-sidecars.sh to prevent worker deadlock on policy_signature_missing (t_4317ae81)
+
+  - path: scripts/repair-worktree-sidecars.sh
+    category: operator
+    purpose: one-shot repair for existing worktrees missing governance sidecars (chitin.yaml.sig)
+    port_ticket: t_4317ae81
 
   - path: scripts/governance-boundary.allow
     category: ci

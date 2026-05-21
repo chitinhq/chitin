@@ -186,6 +186,17 @@ if [[ "$bootstrap" -eq 1 ]]; then
   (cd "$target_path" && bash scripts/bootstrap-worktree.sh "${bootstrap_args[@]}")
 fi
 
+# Copy gitignored governance sidecars (chitin.yaml.sig) into the
+# worktree. `git worktree add` does not carry gitignored files; without
+# the .sig an autonomous worker — which scrubs the operator-presence
+# bypass — has every tool call rejected by the kernel as
+# policy_signature_missing (ticket t_4317ae81). Also runs on reuse so
+# that a re-dispatch `clean -fd` doesn't leave the sidecar missing.
+if [[ -f "$repo_root/scripts/copy-governance-sidecars.sh" ]]; then
+  bash "$repo_root/scripts/copy-governance-sidecars.sh" "$repo_root" "$target_path" \
+    || echo "create-worktree: WARN copy-governance-sidecars failed — worker may hit policy_signature_missing" >&2
+fi
+
 cat <<EOF
 ready: $target_path
 branch: $branch
