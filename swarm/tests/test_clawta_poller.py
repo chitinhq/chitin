@@ -1554,5 +1554,176 @@ class ClawtaPollerSpec067Tests(unittest.TestCase):
         self.assertFalse(module.STAGE5_HANDOFF_RE.search("**Stage-5-handoff: clawta**"))
 
 
+    # ---- Regression tests for t_c69de258: validate implementer-lane fix ----
+
+    def test_terminal_lane_tickets_unaffected_by_implementer_logic(self) -> None:
+        """TC4: tickets already on terminal lanes (codex/copilot/gemini/claude-code)
+        are not impacted by the implementer-lane logic."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_codex01', 'codex ticket', '', 'ready', 'codex', NULL, 50, 1),
+                  ('t_copilot01', 'copilot ticket', '', 'ready', 'copilot', NULL, 40, 2),
+                  ('t_gemini01', 'gemini ticket', '', 'ready', 'gemini', NULL, 30, 3);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                terminal = module.fetch_ready_for_terminal_lanes()
+                terminal_ids = [t["id"] for t in terminal]
+                routing = module.fetch_routable_for_routing()
+                routing_ids = [t["id"] for t in routing]
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+
+            # All three terminal-lane tickets appear in fetch_ready_for_terminal_lanes
+            self.assertIn("t_codex01", terminal_ids)
+            self.assertIn("t_copilot01", terminal_ids)
+            self.assertIn("t_gemini01", terminal_ids)
+            # None appear in routing or implementer pools
+            self.assertNotIn("t_codex01", routing_ids)
+            self.assertNotIn("t_copilot01", routing_ids)
+            self.assertNotIn("t_gemini01", routing_ids)
+            self.assertNotIn("t_codex01", impl_ids)
+            self.assertNotIn("t_copilot01", impl_ids)
+            self.assertNotIn("t_gemini01", impl_ids)
+
+    def test_malformed_stage5_handoff_defaults_to_routing(self) -> None:
+        """TC5: malformed or partial Stage-5 indicators that do NOT contain
+        the substring 'Stage-5-handoff: clawta' (case-insensitive in SQL LIKE)
+        default to the safe routing path. Note: SQLite LIKE is case-insensitive
+        for ASCII, so lowercase variants ARE matched by the SQL query even
+        though the Python regex rejects them."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_mal1', 'wrong agent', '', 'ready', 'clawta', NULL, 50, 1),
+                  ('t_mal2', 'empty handoff', '', 'ready', 'clawta', NULL, 40, 2),
+                  ('t_mal3', 'no handoff text', '', 'ready', 'clawta', NULL, 30, 3),
+                  ('t_ok5', 'correct handoff', '', 'ready', 'clawta', NULL, 10, 5);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_mal1', 'octi-handoff', 'Stage-5-handoff: codex', 100),
+                  ('t_mal2', 'octi-handoff', 'Stage-5-handoff:', 100),
+                  ('t_mal3', 'octi-handoff', 'handoff to clawta for implementation', 100),
+                  ('t_ok5', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+                routing = module.fetch_routable_for_routing()
+                routing_ids = [t["id"] for t in routing]
+
+            # Only the correctly-formed handoff ticket is in the implementer pool
+            self.assertIn("t_ok5", impl_ids)
+            self.assertNotIn("t_mal1", impl_ids)
+            self.assertNotIn("t_mal2", impl_ids)
+            self.assertNotIn("t_mal3", impl_ids)
+            # Malformed handoff tickets fall through to the routing pool
+            self.assertIn("t_mal1", routing_ids)
+            self.assertIn("t_mal2", routing_ids)
+            self.assertIn("t_mal3", routing_ids)
+            # The correct handoff ticket does NOT appear in routing
+            self.assertNotIn("t_ok5", routing_ids)
+
+    def test_original_bug_profile_picked_up_promptly(self) -> None:
+        """TC6: a ticket matching t_73b8dad9's profile (ready + assignee=clawta
+        + Stage-5 handoff) is now picked up by fetch_routable_for_implementer
+        -- not left idle for 40 hours."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_73b8dad9', 'spec 067 impl', 'Groomed spec 067 implementation ticket', 'ready', 'clawta', NULL, 50, 1);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_73b8dad9', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+                routing = module.fetch_routable_for_routing()
+                routing_ids = [t["id"] for t in routing]
+
+            # The ticket MUST be found in implementer pool -- not stranded in routing
+            self.assertIn("t_73b8dad9", impl_ids,
+                          "t_73b8dad9 profile ticket must be found by fetch_routable_for_implementer")
+            self.assertNotIn("t_73b8dad9", routing_ids,
+                             "t_73b8dad9 profile ticket must NOT appear in routing pool")
+
+    def test_no_regressions_dispatch_behavior_summary(self) -> None:
+        """Summary regression: after all spec 067 changes, the poller's core
+        dispatch paths still produce correct partitioning of tickets into
+        terminal, routing, and implementer pools."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = make_db(Path(tmp))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                INSERT INTO tasks(id, title, body, status, assignee, idempotency_key, priority, created_at)
+                VALUES
+                  ('t_term1', 'codex terminal', '', 'ready', 'codex', NULL, 60, 1),
+                  ('t_route1', 'clawta routing', '', 'ready', 'clawta', NULL, 50, 2),
+                  ('t_impl1', 'clawta implementer', '', 'ready', 'clawta', NULL, 40, 3),
+                  ('t_worker1', 'chitin-worker routing', '', 'ready', 'chitin-worker', NULL, 30, 4);
+                INSERT INTO task_comments(task_id, author, body, created_at)
+                VALUES
+                  ('t_impl1', 'octi-handoff', 'Stage-5-handoff: clawta', 100);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(module, "DB_PATH", db_path):
+                terminal = module.fetch_ready_for_terminal_lanes()
+                terminal_ids = [t["id"] for t in terminal]
+                routing = module.fetch_routable_for_routing()
+                routing_ids = [t["id"] for t in routing]
+                impl = module.fetch_routable_for_implementer()
+                impl_ids = [t["id"] for t in impl]
+
+            # Terminal lane tickets go only to terminal pool
+            self.assertIn("t_term1", terminal_ids)
+            self.assertNotIn("t_term1", routing_ids)
+            self.assertNotIn("t_term1", impl_ids)
+            # Clawta without handoff goes to routing pool
+            self.assertIn("t_route1", routing_ids)
+            self.assertNotIn("t_route1", terminal_ids)
+            self.assertNotIn("t_route1", impl_ids)
+            # Clawta with handoff goes to implementer pool only
+            self.assertIn("t_impl1", impl_ids)
+            self.assertNotIn("t_impl1", terminal_ids)
+            self.assertNotIn("t_impl1", routing_ids)
+            # chitin-worker goes to routing pool
+            self.assertIn("t_worker1", routing_ids)
+            self.assertNotIn("t_worker1", terminal_ids)
+            self.assertNotIn("t_worker1", impl_ids)
+
+
 if __name__ == "__main__":
     unittest.main()
