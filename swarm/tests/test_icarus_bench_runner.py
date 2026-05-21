@@ -1,4 +1,4 @@
-"""Tests for icarus-bench-runner — emit_gov_decision and _extract_tick_metadata.
+"""Tests for chitin-bench-runner — emit_gov_decision and _extract_tick_metadata.
 
 Covers the gov-decision row emission that this ticket (t_bb2a1575)
 introduced. These tests do NOT require harbor/ollama/docker; they
@@ -12,7 +12,7 @@ docstring.
 from __future__ import annotations
 
 import json
-import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -26,8 +26,8 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
-_runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
+_runner: dict = {"__file__": str(_runner_path), "__name__": "chitin_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
 
@@ -45,9 +45,8 @@ class TestEmitGovDecision(TestCase):
 
     def tearDown(self) -> None:
         _runner["CHITIN_DIR"] = self._original_chitin_dir
-        # Cleanup
-        for f in Path(self.tmpdir).rglob("*.jsonl"):
-            f.unlink()
+        # Cleanup temp directory and all contents
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_emits_one_line_with_required_fields(self):
         """Invariant: a single call appends exactly one JSON line with
@@ -170,6 +169,8 @@ class TestExtractTickMetadata(TestCase):
 
     def tearDown(self) -> None:
         _runner["JOBS_DIR"] = self._original_jobs_dir
+        # Cleanup temp directory and all contents
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_trial_result(self, job_name: str, trial_name: str, data: dict) -> None:
         trial_dir = _runner["JOBS_DIR"] / job_name / trial_name
