@@ -44,6 +44,52 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// branchOf returns the dedicated branch name the Manager recorded for the
+// worktree at path, read from the active registry before Teardown clears it.
+func branchOf(t *testing.T, mgr *Manager, path string) string {
+	t.Helper()
+	mgr.mu.Lock()
+	recs, err := mgr.readActive()
+	mgr.mu.Unlock()
+	if err != nil {
+		t.Fatalf("readActive: %v", err)
+	}
+	for _, r := range recs {
+		if r.Path == path {
+			return r.Branch
+		}
+	}
+	t.Fatalf("no active record for worktree %q", path)
+	return ""
+}
+
+// commitInto stages everything under dir and commits it with a deterministic
+// identity, advancing the worktree's branch past its base — the test stand-in
+// for a work unit producing a work product.
+func commitInto(t *testing.T, dir, msg string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-m", msg)
+}
+
+// branchExists reports whether refs/heads/branch resolves in the repo at repoDir.
+func branchExists(repoDir, branch string) bool {
+	_, err := runGit(repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
 // TestCreateTeardown_RoundTrip proves the core lifecycle: Create yields a
 // fresh worktree directory distinct from the primary checkout, on a new
 // branch at the requested base ref, and Teardown removes it cleanly
@@ -136,8 +182,8 @@ func TestCreate_RejectsBadInput(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 	cases := []struct {
-		name             string
-		repo, ref, wuID  string
+		name            string
+		repo, ref, wuID string
 	}{
 		{"empty repo", "", "main", "wu"},
 		{"empty ref", "/tmp/repo", "", "wu"},
@@ -176,6 +222,66 @@ func TestTeardown_Idempotent(t *testing.T) {
 	never := filepath.Join(t.TempDir(), "never-a-worktree")
 	if err := mgr.Teardown(never); err != nil {
 		t.Errorf("Teardown of a non-worktree path returned %v, want nil", err)
+	}
+}
+
+// TestTeardown_DeletesEmptyBranch proves Teardown deletes the worktree's
+// dedicated branch when the work unit produced no commits — the branch tip is
+// still the base commit, so the branch is empty litter, not a work product.
+func TestTeardown_DeletesEmptyBranch(t *testing.T) {
+	repo := newTestRepo(t)
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	path, err := mgr.Create(repo, "main", "wu-empty")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	branch := branchOf(t, mgr, path)
+	if !branchExists(repo, branch) {
+		t.Fatalf("dedicated branch %q should exist after Create", branch)
+	}
+
+	if err := mgr.Teardown(path); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	// The work unit did nothing — Teardown must drop the empty branch so it
+	// does not litter the target repo.
+	if branchExists(repo, branch) {
+		t.Errorf("Teardown left empty branch %q — an empty work unit must not litter a branch", branch)
+	}
+}
+
+// TestTeardown_KeepsBranchWithWorkProduct proves Teardown keeps the worktree's
+// branch when the work unit committed to it — the branch tip advanced past the
+// base commit, so the branch is a work product (an agent node's commits,
+// perhaps an open PR) and must survive teardown.
+func TestTeardown_KeepsBranchWithWorkProduct(t *testing.T) {
+	repo := newTestRepo(t)
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	path, err := mgr.Create(repo, "main", "wu-product")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	branch := branchOf(t, mgr, path)
+
+	// The work unit commits a work product into its worktree, advancing the
+	// dedicated branch past its base.
+	if err := os.WriteFile(filepath.Join(path, "result.txt"), []byte("work product\n"), 0o644); err != nil {
+		t.Fatalf("writing work product: %v", err)
+	}
+	commitInto(t, path, "work-unit output")
+
+	if err := mgr.Teardown(path); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	// The branch carries a commit past base — Teardown must preserve it.
+	if !branchExists(repo, branch) {
+		t.Errorf("Teardown deleted branch %q carrying a work product", branch)
 	}
 }
 
