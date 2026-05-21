@@ -975,3 +975,24 @@ func TestGate_ChainSessionEmptyByDefault(t *testing.T) {
 		t.Errorf("expected empty chain/session ids by default, got chain=%q session=%q", d.ChainID, d.SessionID)
 	}
 }
+
+func TestGate_NoCommitToProtectedDoesNotEscalate(t *testing.T) {
+	// "Wrong-branch" denials must not push an agent toward lockdown — the
+	// deny already protects the branch; locking on top just deadlocks the
+	// agent (ticket t_2356307a). Contrast TestGate_EscalationRecorded,
+	// where a genuine violation (rm -rf) DOES escalate.
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "")
+	repo := initTestRepoOnBranch(t, "main")
+	g, _ := newTestGate(t)
+	g.Policy = protectedCommitPolicy(t)
+	g.Cwd = repo
+	for i := 0; i < 15; i++ {
+		d := g.Evaluate(Action{Type: ActGitCommit, Target: `git commit -m "x"`, Path: repo}, "agent1", nil)
+		if d.Allowed || d.RuleID != "no-commit-to-protected" {
+			t.Fatalf("iter %d: want no-commit-to-protected deny, got allowed=%v rule=%q", i, d.Allowed, d.RuleID)
+		}
+	}
+	if lv := g.Counter.Level("agent1"); lv != "normal" {
+		t.Errorf("after 15 protected-commit denials, level=%q want normal (must not escalate)", lv)
+	}
+}

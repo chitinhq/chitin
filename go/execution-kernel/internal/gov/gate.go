@@ -386,10 +386,20 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			break
 		}
 	}
-	envelopeDeny := d.RuleID == "envelope-exhausted" ||
+	// Denials exempt from escalation toward lockdown. Envelope-budget
+	// denials are operator-imposed caps, not agent misbehavior. The
+	// "wrong-place" denials — committing to a protected branch, a
+	// side-effect from the primary checkout — are redirections: the deny
+	// already prevented the harm, so escalating the agent toward lockdown
+	// on top just deadlocks it during normal work (ticket t_2356307a).
+	// Genuinely dangerous repeats (rm -rf, governance self-mod) are NOT
+	// exempt and still escalate.
+	escalationExempt := d.RuleID == "envelope-exhausted" ||
 		d.RuleID == "envelope-closed" ||
-		d.RuleID == "envelope-not-found"
-	if !d.Allowed && !envelopeDeny && g.Counter != nil {
+		d.RuleID == "envelope-not-found" ||
+		d.RuleID == "no-commit-to-protected" ||
+		d.RuleID == "worktree-required"
+	if !d.Allowed && !escalationExempt && g.Counter != nil {
 		if !g.NoRecord {
 			// Log on failure rather than silently swallow — a SQLite
 			// failure here is the "agent never locks" path. We still
