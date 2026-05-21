@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""icarus-bench-ticket-emitter — scan jobs/icarus/ for failed trials
-and post tickets to the icarus kanban board.
+"""chitin-bench-ticket-emitter — scan jobs/chitin-bench/ for failed trials
+and post tickets to the chitin-bench kanban board.
 
-Run after every ``icarus-bench-runner`` tick (the runner invokes us
+Run after every ``chitin-bench-runner`` tick (the runner invokes us
 automatically; we can also be called standalone for backfill).
 
 Dedup invariant: one open ticket per ``(task_name, block_reason)``
 within 7 days. We achieve this via ``hermes kanban create
---idempotency-key icarus-bench:<task>:<reason>`` — hermes refuses to
+--idempotency-key chitin-bench:<task>:<reason>`` — hermes refuses to
 re-create a non-archived task with the same key.
 
 Failure classes:
 - ``verifier_failed`` — trial completed but verifier returned reward < 1
-- ``harness_loud_fail`` — Icarus harness raised IcarusLoudFail with
+- ``harness_loud_fail`` — Chitin Bench harness raised BenchLoudFail with
   ``block_reason`` in the agent context metadata
 - ``harness_exception`` — agent threw an unexpected exception
 - ``environment_setup_failed`` — docker build / container start failed
@@ -34,11 +34,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-JOBS_DIR = REPO_ROOT / "jobs" / "icarus"
-KANBAN_BOARD = os.environ.get("ICARUS_KANBAN_BOARD", "icarus")
-TICKET_ASSIGNEE = os.environ.get("ICARUS_TICKET_ASSIGNEE", "clawta")
-EMITTED_LOG = Path.home() / ".icarus" / "emitted-tickets.jsonl"
-SCAN_WINDOW_HOURS = int(os.environ.get("ICARUS_EMITTER_WINDOW_H", "48"))
+JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
+KANBAN_BOARD = os.environ.get("CHITIN_BENCH_KANBAN_BOARD", "chitin-bench")
+TICKET_ASSIGNEE = os.environ.get("CHITIN_BENCH_TICKET_ASSIGNEE", "clawta")
+EMITTED_LOG = Path.home() / ".chitin-bench" / "emitted-tickets.jsonl"
+SCAN_WINDOW_HOURS = int(os.environ.get("CHITIN_BENCH_EMITTER_WINDOW_H", "48"))
 
 
 def log(msg: str) -> None:
@@ -55,13 +55,13 @@ def hermes_bin() -> str:
 
 
 def find_recent_results(window_hours: int) -> list[Path]:
-    """Find Harbor trial result files under ``jobs/icarus/`` modified
+    """Find Harbor trial result files under ``jobs/chitin-bench/`` modified
     in the last ``window_hours``.
 
     Harbor writes both a job-level ``<job>/result.json`` and a
     trial-level ``<job>/<trial>/result.json``. We want only the
     trial-level files (each represents one bench attempt). Filter by
-    depth == 3 from JOBS_DIR (jobs/icarus / <job> / <trial> /
+    depth == 3 from JOBS_DIR (jobs/chitin-bench / <job> / <trial> /
     result.json).
     """
     if not JOBS_DIR.is_dir():
@@ -70,7 +70,7 @@ def find_recent_results(window_hours: int) -> list[Path]:
     out: list[Path] = []
     for results in JOBS_DIR.rglob("result.json"):
         try:
-            # Only trial-level: jobs/icarus/<job>/<trial>/result.json
+            # Only trial-level: jobs/chitin-bench/<job>/<trial>/result.json
             if len(results.relative_to(JOBS_DIR).parts) != 3:
                 continue
             if results.stat().st_mtime >= cutoff:
@@ -87,7 +87,7 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
     A trial is a failure if any of:
     - ``exception_info`` is set (agent or environment crashed)
     - ``verifier_result.reward`` < 1.0 (or missing)
-    - ``agent_result.metadata.icarus_block_reason`` is set
+    - ``agent_result.metadata.chitin_bench_block_reason`` is set
     """
     # Environment / agent-setup exception path takes priority.
     exc_info = trial.get("exception_info")
@@ -100,7 +100,7 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
 
     agent_result = trial.get("agent_result") or {}
     metadata = (agent_result.get("metadata") or {}) if isinstance(agent_result, dict) else {}
-    icarus_reason = metadata.get("icarus_block_reason") if metadata else None
+    chitin_bench_reason = metadata.get("chitin_bench_block_reason") if metadata else None
 
     verifier_result = trial.get("verifier_result") or {}
     # Harbor verifier writes either {"reward": <float>} (legacy) or
@@ -112,8 +112,8 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
         elif "rewards" in verifier_result and isinstance(verifier_result["rewards"], dict):
             reward = verifier_result["rewards"].get("reward")
 
-    if icarus_reason:
-        return True, f"harness_loud_fail:{icarus_reason}", _verifier_excerpt(verifier_result)
+    if chitin_bench_reason:
+        return True, f"harness_loud_fail:{chitin_bench_reason}", _verifier_excerpt(verifier_result)
 
     if reward is None:
         return True, "verifier_missing", _verifier_excerpt(verifier_result)
@@ -143,7 +143,7 @@ def _verifier_excerpt(verifier_result: dict) -> str:
 
 def idempotency_key(task_name: str, block_reason: str) -> str:
     # Truncate to keep key reasonable.
-    return f"icarus-bench:{task_name}:{block_reason}"[:120]
+    return f"chitin-bench:{task_name}:{block_reason}"[:120]
 
 
 def ticket_body(
@@ -173,12 +173,12 @@ agent: {agent_info.get("name", "?")}@{agent_info.get("version", "?")} model={mod
 Reproduce locally with:
   cd {REPO_ROOT}
   PYTHONPATH=. harbor run --path ~/.cache/harbor/tasks/*/{task_name} \\
-    --agent-import-path swarm.icarus_harness.agent:IcarusAgent \\
-    --model ollama/qwen3-coder:30b-32k --job-name icarus-repro-{task_name}
+    --agent-import-path swarm.chitin_bench.agent:BenchAgent \\
+    --model ollama/qwen3-coder:30b-32k --job-name chitin-bench-repro-{task_name}
 
-Then inspect the trajectory in jobs/icarus/icarus-repro-{task_name}/<trial>/agent/icarus-trajectory.jsonl
+Then inspect the trajectory in jobs/chitin-bench/chitin-bench-repro-{task_name}/<trial>/agent/chitin-bench-trajectory.jsonl
 and decide:
-- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/icarus_harness_test.py.
+- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/chitin_bench_test.py.
 - Is this a model-capability ceiling? Note the step it stalls and file a follow-up to swap models.
 - Is this a verifier flake? Re-run; if it passes, close as flake.
 
@@ -210,7 +210,7 @@ def emit_ticket_or_comment(
     """
     hermes = hermes_bin()
     key = idempotency_key(task_name, block_reason)
-    title = f"icarus-bench failure: {task_name} ({block_reason[:40]})"
+    title = f"chitin-bench failure: {task_name} ({block_reason[:40]})"
     body = ticket_body(
         task_name=task_name,
         block_reason=block_reason,
@@ -224,7 +224,7 @@ def emit_ticket_or_comment(
         return {"action": "dry_run", "key": key}
 
     # NOT --triage: Clawta's board watcher only picks up status='ready'
-    # tickets. We want her to surface every failure in #icarus within
+    # tickets. We want her to surface every failure in #chitin-bench within
     # 60s, so the ticket lands in 'ready' from the start. The body is
     # fully self-contained (no spec required) and the idempotency-key
     # prevents duplicates.
@@ -248,14 +248,14 @@ def emit_ticket_or_comment(
         action = "created"
         log(f"created ticket id={tid} key={key}")
         # Promote to ready so Clawta's watcher picks it up within 60s.
-        # Clawta's clawta-swarm-board-watcher only emits #icarus
+        # Clawta's clawta-swarm-board-watcher only emits #chitin-bench
         # notifications for tickets in status='ready'; without this
         # promote the ticket sits invisible in triage.
         if tid:
             ready_cmd = [
                 shutil.which("kanban-flow") or "kanban-flow",
                 "ready", tid,
-                "--author", "icarus-bench-emitter",
+                "--author", "chitin-bench-emitter",
             ]
             rproc = subprocess.run(
                 ready_cmd,
@@ -281,7 +281,7 @@ def emit_ticket_or_comment(
                 hermes, "kanban", "--board", KANBAN_BOARD,
                 "comment", existing,
                 f"Recurring bench failure: {trial_path}\n\n{evidence[:1000]}",
-                "--author", "icarus-bench-emitter",
+                "--author", "chitin-bench-emitter",
             ]
             cproc = subprocess.run(comment_cmd, capture_output=True, text=True, check=False)
             log(f"comment on existing ticket {existing} rc={cproc.returncode}")
@@ -301,7 +301,7 @@ def _find_ticket_by_key(hermes: str, key: str) -> str | None:
 
     The CLI accepts ``--idempotency-key`` on create but does not have a
     direct query subcommand. We list and grep — slow but correct, and
-    the icarus board is small.
+    the chitin-bench board is small.
     """
     list_cmd = [hermes, "kanban", "--board", KANBAN_BOARD, "list", "--json"]
     proc = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
@@ -322,10 +322,10 @@ def _find_ticket_by_key(hermes: str, key: str) -> str | None:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="icarus-bench-ticket-emitter")
+    p = argparse.ArgumentParser(description="chitin-bench-ticket-emitter")
     p.add_argument(
         "--window-hours", type=int, default=SCAN_WINDOW_HOURS,
-        help="how far back to scan jobs/icarus/ for results.json",
+        help="how far back to scan jobs/chitin-bench/ for results.json",
     )
     p.add_argument("--dry-run", action="store_true",
                    help="log what would happen without creating tickets")

@@ -1,11 +1,11 @@
-"""Tests for swarm/bin/icarus-watcher (ic-001 v1).
+"""Tests for swarm/bin/chitin-bench-watcher (ic-001 v1).
 
 Covers the 8 spec invariants + 6 boundary cases. Uses unittest +
 mocks so it runs in CI without an RTX 3090 / ollama daemon.
 
 Per ic-001 spec §E2E coverage:
-- icarus-watcher: skill match + dispatch (e2e here as integration test)
-- icarus-watcher: skip non-matching + disabled skills (unit)
+- chitin-bench-watcher: skill match + dispatch (e2e here as integration test)
+- chitin-bench-watcher: skip non-matching + disabled skills (unit)
 - post-check: lint-fix lane (unit)
 - loud-fail on N=2 retries exceeded with split routing (e2e)
 - WORKER_RECEIPT 6-field contract (e2e)
@@ -26,14 +26,14 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
-WATCHER_PATH = REPO / "swarm" / "bin" / "icarus-watcher"
+WATCHER_PATH = REPO / "swarm" / "bin" / "chitin-bench-watcher"
 
 
 def load_watcher_module():
     """Import the watcher script as a module (it has no .py extension)."""
     from importlib.machinery import SourceFileLoader
-    loader = SourceFileLoader("icarus_watcher", str(WATCHER_PATH))
-    spec = importlib.util.spec_from_loader("icarus_watcher", loader)
+    loader = SourceFileLoader("chitin_bench_watcher", str(WATCHER_PATH))
+    spec = importlib.util.spec_from_loader("chitin_bench_watcher", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
@@ -115,7 +115,7 @@ class TestEnabledLanes(unittest.TestCase):
         """Tickets with disabled-lane skill must not invoke the model."""
         ticket = {
             "id": "t_test", "title": "t", "body": "skill: log-pattern",
-            "skill": "log-pattern", "status": "ready", "assignee": "icarus",
+            "skill": "log-pattern", "status": "ready", "assignee": "chitin-bench",
             "priority": 0, "latest_ts": 0,
         }
         with mock.patch.object(watcher, "ollama_generate") as mock_gen, \
@@ -131,44 +131,44 @@ class TestEnabledLanes(unittest.TestCase):
 
 class TestDedupKey(unittest.TestCase):
     def test_composite_key_includes_all_4_fields(self):
-        t = {"id": "t_abc", "status": "ready", "assignee": "icarus",
+        t = {"id": "t_abc", "status": "ready", "assignee": "chitin-bench",
              "latest_ts": 12345}
         key = watcher.dedup_key(t)
-        self.assertEqual(key, "t_abc:ready:icarus:12345")
+        self.assertEqual(key, "t_abc:ready:chitin-bench:12345")
 
     def test_status_change_makes_new_key(self):
-        t1 = {"id": "t_x", "status": "ready", "assignee": "icarus", "latest_ts": 100}
-        t2 = {"id": "t_x", "status": "ready", "assignee": "icarus", "latest_ts": 200}
+        t1 = {"id": "t_x", "status": "ready", "assignee": "chitin-bench", "latest_ts": 100}
+        t2 = {"id": "t_x", "status": "ready", "assignee": "chitin-bench", "latest_ts": 200}
         self.assertNotEqual(watcher.dedup_key(t1), watcher.dedup_key(t2))
 
 
 # ── Board read-only fetch (invariant 8 read-only) ─────────────────
 
 class TestFetchReadyTickets(unittest.TestCase):
-    """Invariant 8: Icarus reads board, never writes."""
+    """Invariant 8: Chitin Bench reads board, never writes."""
 
     def test_returns_only_ready_status_with_spec_approved_skill(self):
         with tempfile.TemporaryDirectory() as td:
-            tdir = Path(td) / "icarus"
+            tdir = Path(td) / "chitin-bench"
             tdir.mkdir()
             _make_fake_board(tdir, [
                 {"id": "t_1", "title": "ready+lint", "body": "skill: lint-fix",
-                 "assignee": "icarus", "status": "ready"},
+                 "assignee": "chitin-bench", "status": "ready"},
                 {"id": "t_2", "title": "triage+lint", "body": "skill: lint-fix",
-                 "assignee": "icarus", "status": "triage"},
+                 "assignee": "chitin-bench", "status": "triage"},
                 {"id": "t_3", "title": "ready+unknown", "body": "skill: unknown-lane",
-                 "assignee": "icarus", "status": "ready"},
+                 "assignee": "chitin-bench", "status": "ready"},
                 {"id": "t_4", "title": "ready+no-skill", "body": "no skill line",
-                 "assignee": "icarus", "status": "ready"},
+                 "assignee": "chitin-bench", "status": "ready"},
                 {"id": "t_5", "title": "ready+wrong-assignee", "body": "skill: lint-fix",
                  "assignee": "ares", "status": "ready"},
                 {"id": "t_6", "title": "ready+wildcard", "body": "skill: lint-fix",
                  "assignee": "*", "status": "ready"},
             ])
             with mock.patch.object(watcher, "KANBAN_ROOT", Path(td)):
-                tickets = watcher.fetch_ready_tickets("icarus")
+                tickets = watcher.fetch_ready_tickets("chitin-bench")
         ids = {t["id"] for t in tickets}
-        # t_1 (ready+lint-fix+icarus) and t_6 (ready+lint-fix+wildcard) only
+        # t_1 (ready+lint-fix+chitin-bench) and t_6 (ready+lint-fix+wildcard) only
         self.assertEqual(ids, {"t_1", "t_6"})
 
 
@@ -196,7 +196,7 @@ class TestVramLease(unittest.TestCase):
                 holder = lease_path.open("a+")
                 fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
                 try:
-                    with self.assertRaises(watcher.IcarusVramContention):
+                    with self.assertRaises(watcher.BenchVramContention):
                         with watcher.vram_lease(timeout_s=1):
                             pass
                 finally:
@@ -213,7 +213,7 @@ class TestSplitEscalation(unittest.TestCase):
         return {
             "id": "t_esc", "title": "esc test",
             "body": "skill: lint-fix\npath: /tmp/x\nlinter: ruff\nlint_command: ruff /tmp/x",
-            "skill": "lint-fix", "status": "ready", "assignee": "icarus",
+            "skill": "lint-fix", "status": "ready", "assignee": "chitin-bench",
             "priority": 0, "latest_ts": 0,
         }
 
@@ -221,7 +221,7 @@ class TestSplitEscalation(unittest.TestCase):
         ticket = self._make_lint_fix_ticket()
         with mock.patch.object(watcher, "vram_lease"), \
              mock.patch.object(watcher, "ollama_ps_inspect",
-                               side_effect=watcher.IcarusInfraFailure("gpu oom")), \
+                               side_effect=watcher.BenchInfraFailure("gpu oom")), \
              mock.patch.object(watcher, "post_worker_receipt") as mock_receipt:
             result = watcher.process_ticket(ticket, "qwen3-coder:30b-32k")
         self.assertEqual(result.get("escalated"), "operator")
@@ -255,7 +255,7 @@ class TestReceiptContract(unittest.TestCase):
 
     def test_receipt_includes_all_6_fields(self):
         ticket = {"id": "t_r", "title": "receipt test", "body": "",
-                  "skill": "lint-fix", "status": "ready", "assignee": "icarus",
+                  "skill": "lint-fix", "status": "ready", "assignee": "chitin-bench",
                   "priority": 0, "latest_ts": 0}
         captured = []
 
@@ -309,7 +309,7 @@ class TestLintFixPostCheck(unittest.TestCase):
                     f"lint_command: ruff check {path}")
             ticket = {"id": "t_lf", "title": "noop test", "body": body,
                       "skill": "lint-fix", "status": "ready",
-                      "assignee": "icarus", "priority": 0, "latest_ts": 0}
+                      "assignee": "chitin-bench", "priority": 0, "latest_ts": 0}
             fake_pass = mock.MagicMock(returncode=0, stdout="", stderr="")
             with mock.patch.object(watcher.subprocess, "run",
                                    return_value=fake_pass), \
@@ -335,7 +335,7 @@ class TestLintFixPostCheck(unittest.TestCase):
                     f"lint_command: ruff check {path}")
             ticket = {"id": "t_lf2", "title": "pass test", "body": body,
                       "skill": "lint-fix", "status": "ready",
-                      "assignee": "icarus", "priority": 0, "latest_ts": 0}
+                      "assignee": "chitin-bench", "priority": 0, "latest_ts": 0}
             fake_fail = mock.MagicMock(returncode=1, stdout="lint errors", stderr="")
             fake_pass = mock.MagicMock(returncode=0, stdout="", stderr="")
             with mock.patch.object(watcher.subprocess, "run",
@@ -365,20 +365,20 @@ class TestLintFixPostCheck(unittest.TestCase):
                     f"lint_command: bash -c 'rm -rf /'")  # malicious
             ticket = {"id": "t_lf_evil", "title": "shell injection",
                       "body": body, "skill": "lint-fix", "status": "ready",
-                      "assignee": "icarus", "priority": 0, "latest_ts": 0}
-            with self.assertRaises(watcher.IcarusTicketMalformed) as ctx:
+                      "assignee": "chitin-bench", "priority": 0, "latest_ts": 0}
+            with self.assertRaises(watcher.BenchTicketMalformed) as ctx:
                 watcher.lane_lint_fix(ticket, "qwen3-coder:30b-32k")
             self.assertIn("not in allowlist", str(ctx.exception))
         finally:
             os.unlink(path)
 
     def test_malformed_ticket_raises(self):
-        """Ticket missing path/linter/lint_command → IcarusTicketMalformed."""
+        """Ticket missing path/linter/lint_command → BenchTicketMalformed."""
         body = "skill: lint-fix"  # missing all 3 fields
         ticket = {"id": "t_lf3", "title": "malformed", "body": body,
                   "skill": "lint-fix", "status": "ready",
-                  "assignee": "icarus", "priority": 0, "latest_ts": 0}
-        with self.assertRaises(watcher.IcarusTicketMalformed):
+                  "assignee": "chitin-bench", "priority": 0, "latest_ts": 0}
+        with self.assertRaises(watcher.BenchTicketMalformed):
             watcher.lane_lint_fix(ticket, "qwen3-coder:30b-32k")
 
 

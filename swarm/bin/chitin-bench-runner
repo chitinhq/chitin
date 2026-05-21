@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""icarus-bench-runner — pick N cached Terminal-Bench tasks, run the
-Icarus harness against each, write results to ``jobs/icarus/``.
+"""chitin-bench-runner — pick N cached Terminal-Bench tasks, run the
+Chitin Bench harness against each, write results to ``jobs/chitin-bench/``.
 
 Designed to be called by hermes cron every N minutes. Single-flight
 via flock so re-entrant cron ticks don't stack while a trial is
@@ -8,12 +8,12 @@ mid-run.
 
 Picks tasks LRU (least-recently-tried) from
 ``~/.cache/harbor/tasks/<ulid>/<task-name>/``. State is persisted to
-``~/.icarus/bench-runner-state.json``.
+``~/.chitin-bench/bench-runner-state.json``.
 
-Architecture choice: the Icarus agent runs HOST-side. Harbor's
+Architecture choice: the Chitin Bench agent runs HOST-side. Harbor's
 ``environment.exec`` is the only path that talks to the docker
 container, so ollama (on the host) stays uncontended with the task
-process. The model lease lock (``~/.icarus/model-lease.lock``)
+process. The model lease lock (``~/.chitin-bench/model-lease.lock``)
 prevents the lint-fix watcher and the bench runner from stacking
 ollama calls.
 """
@@ -33,25 +33,25 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ICARUS_DIR = Path.home() / ".icarus"
-STATE_FILE = ICARUS_DIR / "bench-runner-state.json"
-LOG_FILE = ICARUS_DIR / "bench-runner.log"
-LOCK_FILE = ICARUS_DIR / "bench-runner.lock"
+CHITIN_BENCH_DIR = Path.home() / ".chitin-bench"
+STATE_FILE = CHITIN_BENCH_DIR / "bench-runner-state.json"
+LOG_FILE = CHITIN_BENCH_DIR / "bench-runner.log"
+LOCK_FILE = CHITIN_BENCH_DIR / "bench-runner.lock"
 HARBOR_TASKS_DIR = Path.home() / ".cache" / "harbor" / "tasks"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-JOBS_DIR = REPO_ROOT / "jobs" / "icarus"
+JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
 
-DEFAULT_MODEL = os.environ.get("ICARUS_MODEL", "ollama/qwen3.6:27b")
-DEFAULT_N_TASKS = int(os.environ.get("ICARUS_N_TASKS", "1"))
-DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("ICARUS_PER_TASK_WALLCLOCK", "1800"))
-EMITTER = REPO_ROOT / "swarm" / "bin" / "icarus-bench-ticket-emitter"
+DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3.6:27b")
+DEFAULT_N_TASKS = int(os.environ.get("CHITIN_BENCH_N_TASKS", "1"))
+DEFAULT_PER_TASK_WALLCLOCK = int(os.environ.get("CHITIN_BENCH_PER_TASK_WALLCLOCK", "1800"))
+EMITTER = REPO_ROOT / "swarm" / "bin" / "chitin-bench-ticket-emitter"
 
-AGENT_IMPORT_PATH = "swarm.icarus_harness.agent:IcarusAgent"
+AGENT_IMPORT_PATH = "swarm.chitin_bench.agent:BenchAgent"
 
 
 def log(msg: str) -> None:
-    ICARUS_DIR.mkdir(parents=True, exist_ok=True)
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
     line = f"[{ts}] {msg}\n"
     sys.stdout.write(line)
@@ -70,7 +70,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    ICARUS_DIR.mkdir(parents=True, exist_ok=True)
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     tmp.replace(STATE_FILE)
@@ -114,7 +114,7 @@ def pick_tasks(tasks: list[tuple[str, Path]], state: dict, n: int) -> list[tuple
 
 
 def acquire_lock() -> "object":
-    ICARUS_DIR.mkdir(parents=True, exist_ok=True)
+    CHITIN_BENCH_DIR.mkdir(parents=True, exist_ok=True)
     fh = LOCK_FILE.open("a+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -129,12 +129,12 @@ def acquire_lock() -> "object":
 def run_one_task(task_name: str, task_dir: Path, model: str) -> dict:
     """Invoke ``harbor run`` against a single cached task. Returns a
     dict summarizing the outcome (used only for the runner log; the
-    actual results live in ``jobs/icarus/<job_name>/<trial>/results.json``
+    actual results live in ``jobs/chitin-bench/<job_name>/<trial>/results.json``
     and are consumed by the ticket emitter).
     """
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    job_name = f"icarus-{ts}-{task_name}"
+    job_name = f"chitin-bench-{ts}-{task_name}"
 
     harbor = shutil.which("harbor")
     if not harbor:
@@ -192,7 +192,7 @@ def run_one_task(task_name: str, task_dir: Path, model: str) -> dict:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="icarus-bench-runner")
+    p = argparse.ArgumentParser(description="chitin-bench-runner")
     p.add_argument("--n-tasks", type=int, default=DEFAULT_N_TASKS,
                    help="number of tasks to dispatch this tick")
     p.add_argument("--model", default=DEFAULT_MODEL,

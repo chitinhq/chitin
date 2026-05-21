@@ -1,6 +1,6 @@
-"""Icarus — deterministic bash-only Harbor agent.
+"""Chitin Bench — deterministic bash-only Harbor agent.
 
-Cleanroomed from mini-swe-agent (≈100 LOC core), with three Icarus-
+Cleanroomed from mini-swe-agent (≈100 LOC core), with three Chitin Bench-
 distinctive additions:
 
 1. **Environment bootstrap** — turn 0 injects available interpreters
@@ -42,11 +42,11 @@ from harbor.models.agent.context import AgentContext
 # ── Config ─────────────────────────────────────────────────────────
 
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.environ.get("ICARUS_MODEL", "ollama/qwen3-coder:30b-32k")
-DEFAULT_STEP_BUDGET = int(os.environ.get("ICARUS_STEP_BUDGET", "30"))
-DEFAULT_STEP_TIMEOUT_SEC = int(os.environ.get("ICARUS_STEP_TIMEOUT_SEC", "60"))
-DEFAULT_WALLCLOCK_SEC = int(os.environ.get("ICARUS_WALLCLOCK_SEC", "900"))
-DEFAULT_LLM_TIMEOUT_SEC = int(os.environ.get("ICARUS_LLM_TIMEOUT_SEC", "180"))
+DEFAULT_MODEL = os.environ.get("CHITIN_BENCH_MODEL", "ollama/qwen3-coder:30b-32k")
+DEFAULT_STEP_BUDGET = int(os.environ.get("CHITIN_BENCH_STEP_BUDGET", "30"))
+DEFAULT_STEP_TIMEOUT_SEC = int(os.environ.get("CHITIN_BENCH_STEP_TIMEOUT_SEC", "60"))
+DEFAULT_WALLCLOCK_SEC = int(os.environ.get("CHITIN_BENCH_WALLCLOCK_SEC", "900"))
+DEFAULT_LLM_TIMEOUT_SEC = int(os.environ.get("CHITIN_BENCH_LLM_TIMEOUT_SEC", "180"))
 
 TASK_COMPLETE_SENTINEL = "TASK_COMPLETE"
 
@@ -67,30 +67,30 @@ class TurnRecord:
 # ── Exceptions (loud-fail taxonomy) ────────────────────────────────
 
 
-class IcarusLoudFail(RuntimeError):
+class BenchLoudFail(RuntimeError):
     """Base class for harness loud-fails. Carries a structured
     ``block_reason`` consumed by the bench-ticket emitter."""
 
     block_reason: str = "unknown"
 
 
-class IcarusParseFailure(IcarusLoudFail):
+class BenchParseFailure(BenchLoudFail):
     block_reason = "parse_failure"
 
 
-class IcarusOllamaError(IcarusLoudFail):
+class BenchOllamaError(BenchLoudFail):
     block_reason = "ollama_error"
 
 
-class IcarusLoopDetected(IcarusLoudFail):
+class BenchLoopDetected(BenchLoudFail):
     block_reason = "loop_detected"
 
 
-class IcarusStepBudgetExceeded(IcarusLoudFail):
+class BenchStepBudgetExceeded(BenchLoudFail):
     block_reason = "step_budget_exceeded"
 
 
-class IcarusWallclockExceeded(IcarusLoudFail):
+class BenchWallclockExceeded(BenchLoudFail):
     block_reason = "wallclock_exceeded"
 
 
@@ -119,7 +119,7 @@ def ollama_chat(
     Determinism: ``temperature=0`` and ``seed=0`` are the defaults.
     Caller can override per-call but the bench loop holds them fixed.
 
-    Raises :class:`IcarusOllamaError` on any network / HTTP / decode
+    Raises :class:`BenchOllamaError` on any network / HTTP / decode
     failure (loud-fail; the trial aborts).
     """
     payload = {
@@ -139,14 +139,14 @@ def ollama_chat(
         with urllib_request.urlopen(req, timeout=timeout_s) as r:
             data = json.loads(r.read())
     except (urllib_error.URLError, urllib_error.HTTPError, OSError) as exc:
-        raise IcarusOllamaError(f"ollama HTTP failed: {exc}") from exc
+        raise BenchOllamaError(f"ollama HTTP failed: {exc}") from exc
     except json.JSONDecodeError as exc:
-        raise IcarusOllamaError(f"ollama returned non-JSON: {exc}") from exc
+        raise BenchOllamaError(f"ollama returned non-JSON: {exc}") from exc
 
     msg = data.get("message") or {}
     content = msg.get("content")
     if not isinstance(content, str):
-        raise IcarusOllamaError(
+        raise BenchOllamaError(
             f"ollama response missing assistant content: keys={list(data.keys())}"
         )
     return content
@@ -159,7 +159,7 @@ def parse_bash_block(response: str) -> str | None:
     """Return the FIRST fenced bash block from the assistant response.
 
     Accepts ```bash / ```sh / ``` (untagged). Returns ``None`` when no
-    block is present (caller raises :class:`IcarusParseFailure` if a
+    block is present (caller raises :class:`BenchParseFailure` if a
     block was required).
     """
     m = BASH_BLOCK_RE.search(response)
@@ -252,7 +252,7 @@ async def gather_environment_bootstrap(environment: BaseEnvironment) -> str:
 
 
 SYSTEM_PROMPT = """\
-You are Icarus, a deterministic terminal agent solving a benchmark task.
+You are Chitin Bench, a deterministic terminal agent solving a benchmark task.
 
 You operate inside a Linux container. You issue ONE bash command per turn
 inside a single fenced code block and read the output before deciding
@@ -297,12 +297,12 @@ task with the same trajectory file are byte-equal.
 # ── Main agent ─────────────────────────────────────────────────────
 
 
-class IcarusAgent(BaseAgent):
-    """Icarus — single-loop, bash-only, deterministic Harbor agent.
+class BenchAgent(BaseAgent):
+    """Chitin Bench — single-loop, bash-only, deterministic Harbor agent.
 
     Invocation:
         harbor run \\
-            --agent-import-path swarm.icarus_harness.agent:IcarusAgent \\
+            --agent-import-path swarm.chitin_bench.agent:BenchAgent \\
             --model ollama/qwen3-coder:30b-32k \\
             --path <task-dir>
     """
@@ -315,7 +315,7 @@ class IcarusAgent(BaseAgent):
         # Not in Harbor's enum; this name is only used when the agent
         # is invoked via --agent-import-path. Harbor records it in
         # ``AgentInfo.name`` for the trial result.
-        return "icarus"
+        return "chitin-bench"
 
     def version(self) -> str:
         return "1.0.0"
@@ -351,7 +351,7 @@ class IcarusAgent(BaseAgent):
     ) -> None:
         """Drive the bash-loop until ``TASK_COMPLETE``, step budget,
         wallclock, parse failure, ollama failure, or loop detection.
-        Trajectory is written to ``logs_dir / icarus-trajectory.jsonl``
+        Trajectory is written to ``logs_dir / chitin-bench-trajectory.jsonl``
         whether the trial succeeds or loud-fails."""
         model = self.model_name or DEFAULT_MODEL
         start = time.monotonic()
@@ -378,16 +378,16 @@ class IcarusAgent(BaseAgent):
         try:
             while True:
                 if step >= self._step_budget:
-                    raise IcarusStepBudgetExceeded(
+                    raise BenchStepBudgetExceeded(
                         f"step budget {self._step_budget} exhausted"
                     )
                 if time.monotonic() - start > self._wallclock_sec:
-                    raise IcarusWallclockExceeded(
+                    raise BenchWallclockExceeded(
                         f"wallclock {self._wallclock_sec}s exceeded"
                     )
 
                 step += 1
-                self.logger.info(f"[icarus] step {step}/{self._step_budget}")
+                self.logger.info(f"[chitin-bench] step {step}/{self._step_budget}")
 
                 # LLM call.
                 response = ollama_chat(
@@ -397,12 +397,12 @@ class IcarusAgent(BaseAgent):
                 messages.append({"role": "assistant", "content": response})
 
                 if is_task_complete(response):
-                    self.logger.info(f"[icarus] TASK_COMPLETE at step {step}")
+                    self.logger.info(f"[chitin-bench] TASK_COMPLETE at step {step}")
                     break
 
                 cmd = parse_bash_block(response)
                 if cmd is None:
-                    raise IcarusParseFailure(
+                    raise BenchParseFailure(
                         f"step {step}: no fenced bash block in assistant response "
                         f"(len={len(response)})"
                     )
@@ -416,14 +416,14 @@ class IcarusAgent(BaseAgent):
                 except asyncio.TimeoutError:
                     result = ExecResult(
                         stdout=None,
-                        stderr=f"[icarus] step timeout after "
+                        stderr=f"[chitin-bench] step timeout after "
                         f"{self._step_timeout_sec}s",
                         return_code=124,
                     )
 
                 loop_detector.record(cmd, result)
                 if loop_detector.is_looping():
-                    raise IcarusLoopDetected(
+                    raise BenchLoopDetected(
                         f"step {step}: 3-strike loop on `{cmd[:80]}`"
                     )
 
@@ -433,11 +433,11 @@ class IcarusAgent(BaseAgent):
                 })
                 messages.append({"role": "user", "content": obs})
 
-        except IcarusLoudFail as exc:
+        except BenchLoudFail as exc:
             self._block_reason = exc.block_reason
             self._record(step, "exit", f"loud_fail: {exc.block_reason}: {exc}")
             self.logger.warning(
-                f"[icarus] loud-fail at step {step}: "
+                f"[chitin-bench] loud-fail at step {step}: "
                 f"{exc.block_reason}: {exc}"
             )
         finally:
@@ -482,7 +482,7 @@ class IcarusAgent(BaseAgent):
     def _persist_trajectory(self) -> None:
         """Write the trajectory as JSONL to ``logs_dir``. Also write a
         summary JSON for the bench-ticket emitter."""
-        traj_path = self.logs_dir / "icarus-trajectory.jsonl"
+        traj_path = self.logs_dir / "chitin-bench-trajectory.jsonl"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         with traj_path.open("w") as fh:
             for r in self._trajectory:
@@ -491,7 +491,7 @@ class IcarusAgent(BaseAgent):
                     "content": r.content, "metadata": r.metadata,
                 }) + "\n")
 
-        summary_path = self.logs_dir / "icarus-summary.json"
+        summary_path = self.logs_dir / "chitin-bench-summary.json"
         summary_path.write_text(json.dumps({
             "agent": self.name(),
             "version": self.version(),
@@ -502,6 +502,6 @@ class IcarusAgent(BaseAgent):
 
     def _populate_context(self, context: AgentContext, steps_used: int) -> None:
         context.metadata = (context.metadata or {}) | {
-            "icarus_block_reason": self._block_reason,
-            "icarus_steps_used": steps_used,
+            "chitin_bench_block_reason": self._block_reason,
+            "chitin_bench_steps_used": steps_used,
         }

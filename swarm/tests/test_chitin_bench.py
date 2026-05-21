@@ -1,4 +1,4 @@
-"""Tests for swarm/icarus_harness — the Icarus Harbor agent.
+"""Tests for swarm/chitin_bench — the Chitin Bench Harbor agent.
 
 These tests do NOT require ollama / docker / harbor's containerized
 environment. They cover the parser, loop detector, and the
@@ -16,7 +16,7 @@ from unittest import TestCase, main
 
 from harbor.environments.base import ExecResult
 
-from swarm.icarus_harness.agent import (
+from swarm.chitin_bench.agent import (
     BASH_BLOCK_RE,
     LoopDetector,
     _strip_provider_prefix,
@@ -151,11 +151,11 @@ class TestEmitterClassifier(TestCase):
         # Import lazily; the emitter module imports nothing heavy.
         import importlib.util
         from pathlib import Path
-        emitter_path = Path(__file__).resolve().parents[1] / "bin" / "icarus-bench-ticket-emitter"
+        emitter_path = Path(__file__).resolve().parents[1] / "bin" / "chitin-bench-ticket-emitter"
         loader_spec = importlib.util.spec_from_loader(
-            "icarus_emitter",
+            "chitin_bench_emitter",
             importlib.machinery.SourceFileLoader(  # type: ignore[attr-defined]
-                "icarus_emitter", str(emitter_path),
+                "chitin_bench_emitter", str(emitter_path),
             ),
         )
         mod = importlib.util.module_from_spec(loader_spec)
@@ -201,11 +201,11 @@ class TestEmitterClassifier(TestCase):
         self.assertTrue(is_fail)
         self.assertIn("DockerBuildError", reason)
 
-    def test_icarus_block_reason_classified(self):
+    def test_chitin_bench_block_reason_classified(self):
         is_fail, reason, _ = self._classify({
             "verifier_result": {"reward": 0.0},
             "agent_result": {
-                "metadata": {"icarus_block_reason": "step_budget_exceeded"},
+                "metadata": {"chitin_bench_block_reason": "step_budget_exceeded"},
             },
         })
         self.assertTrue(is_fail)
