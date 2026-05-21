@@ -87,26 +87,29 @@ if ! cd "$REPO" 2>/dev/null; then
   exit 1
 fi
 
-# Ensure we're on `main` before pulling. The chitin-shipped-entry-flipper
-# cron script (and others) leave the working tree on whatever branch
-# they created — `git pull --ff-only` against an unrelated branch
-# fails with "Not possible to fast-forward, aborting." Switch to main
-# defensively so the redeploy can proceed regardless of what other
-# crons left behind. --autostash preserves the operator's uncommitted
-# files (docs/roadmap.md, docs/swarm-lessons.md) across the switch.
+# Ensure we're on `main` before pulling. Cron scripts (e.g. the
+# chitin-shipped-entry-flipper) can leave the working tree on a branch
+# they created; `git pull --ff-only` against an unrelated branch fails.
+#
+# A *clean* switch to main is safe — it means the prior branch carried
+# no uncommitted work, so nothing is lost. But if the switch is blocked
+# by uncommitted changes, an operator or an agent is actively working
+# in this checkout. Do NOT stash their work out from under them: that
+# silently moves HEAD and buries an entire feature branch's worth of
+# in-progress work in a stash. Constitution §2 makes the operator's
+# primary checkout sacred — automation runs in dedicated worktrees,
+# never by hijacking the working tree. Defer the redeploy instead; the
+# timer retries in ~15 min and proceeds once the tree is back on a
+# clean main. (Uncommitted service-written docs on main itself are
+# still handled below by `git pull --autostash`.)
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$current_branch" != "main" ]]; then
-  if ! git -c advice.detachedHead=false checkout main 2>/dev/null; then
-    # Stash + switch + pop, in case detachedHead-prevention or local
-    # uncommitted edits block a clean switch.
-    git stash push --include-untracked --quiet >/dev/null 2>&1 || true
-    if ! git checkout main 2>/dev/null; then
-      emit fail branch-switch-failed "from=$current_branch"
-      exit 1
-    fi
-    git stash pop --quiet >/dev/null 2>&1 || true
+  if git -c advice.detachedHead=false checkout main 2>/dev/null; then
+    emit ok auto-switched-to-main "from=$current_branch"
+  else
+    emit deferred operator-working-tree-active "branch=$current_branch"
+    exit 0
   fi
-  emit ok auto-switched-to-main "from=$current_branch"
 fi
 
 old_sha=$(git rev-parse HEAD)
