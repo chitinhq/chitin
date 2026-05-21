@@ -63,11 +63,33 @@ func (a *InvokeDriver) Execute(ctx context.Context, wu WorkUnit) (Result, error)
 		}, nil
 	}
 
-	// Heartbeat so a long agent invocation stays visible and the activity
-	// timeout (set by the workflow) governs liveness. activity.RecordHeartbeat
-	// is a no-op outside a Temporal activity context, so Execute remains
-	// callable directly in unit tests.
-	activity.RecordHeartbeat(ctx, fmt.Sprintf("invoking %s on work unit %s", a.driver.ID(), wu.ID))
+	// Heartbeat for the WHOLE invocation, not just once, so a long agent run
+	// stays visible and the activity's StartToClose timeout — not the much
+	// shorter HeartbeatTimeout — governs liveness. A single heartbeat would let
+	// any invocation longer than the HeartbeatTimeout be killed mid-run. A
+	// background ticker beats while AgentDriver.Invoke blocks and stops the
+	// instant Invoke returns. activity.RecordHeartbeat is a no-op outside a
+	// Temporal activity context, so Execute remains callable directly in tests.
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	go func() {
+		beat := func() {
+			activity.RecordHeartbeat(ctx, fmt.Sprintf("invoking %s on work unit %s", a.driver.ID(), wu.ID))
+		}
+		beat() // an immediate first beat — never wait a full interval to be seen.
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				beat()
+			}
+		}
+	}()
 
 	res, err := a.driver.Invoke(ctx, wu)
 	if err != nil {
@@ -110,3 +132,9 @@ func (a *InvokeDriver) Execute(ctx context.Context, wu WorkUnit) (Result, error)
 // activity-side code, not workflow code, so reading the clock here is
 // legitimate (it is the workflow that must stay clock-free).
 var timeNow = time.Now
+
+// heartbeatInterval is how often Execute beats while a driver invocation is in
+// flight. It must stay well under the HeartbeatTimeout the workflow sets on the
+// activity (currently 2 minutes) so a beat is never missed; 20 seconds leaves a
+// 6× margin.
+const heartbeatInterval = 20 * time.Second
