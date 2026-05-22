@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest import TestCase, main, skipUnless
+from unittest import TestCase, main, mock, skipUnless
+from urllib import error as urllib_error
 
 try:
     from harbor.environments.base import ExecResult
@@ -35,11 +36,13 @@ try:
     from swarm.chitin_bench.agent import (
         BASH_BLOCK_RE,
         BenchAgent,
+        BenchOllamaTimeout,
         LoopDetector,
         STDERR_CAPTURE_LIMIT,
         STDOUT_CAPTURE_LIMIT,
         _strip_provider_prefix,
         is_task_complete,
+        ollama_chat,
         parse_bash_block,
         wrap_command_with_timeout,
     )
@@ -48,11 +51,13 @@ except ModuleNotFoundError as exc:
     AGENT_TESTS_SKIP_REASON = str(exc)
     BASH_BLOCK_RE = None
     BenchAgent = None
+    BenchOllamaTimeout = None
     LoopDetector = None
     STDERR_CAPTURE_LIMIT = None
     STDOUT_CAPTURE_LIMIT = None
     _strip_provider_prefix = None
     is_task_complete = None
+    ollama_chat = None
     parse_bash_block = None
     wrap_command_with_timeout = None
 
@@ -213,6 +218,37 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
+class TestOllamaChatFailures(TestCase):
+    """Invariant: Ollama decode timeouts are classified separately from
+    generic HTTP failures so timeout tickets are triaged correctly."""
+
+    def test_timeout_raises_timeout_block_reason(self):
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            with self.assertRaises(BenchOllamaTimeout):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
+
+    def test_urlerror_timeout_raises_timeout_block_reason(self):
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=urllib_error.URLError(TimeoutError("timed out")),
+        ):
+            with self.assertRaises(BenchOllamaTimeout):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
+
+    def test_non_timeout_urlerror_stays_generic(self):
+        from swarm.chitin_bench.agent import BenchOllamaError
+        with mock.patch(
+            "swarm.chitin_bench.agent.urllib_request.urlopen",
+            side_effect=urllib_error.URLError("connection refused"),
+        ):
+            with self.assertRaises(BenchOllamaError):
+                ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
 
 
 class TestLegacyIcarusImportPath(TestCase):
