@@ -28,11 +28,6 @@ export const appRoutes: Route[] = [
     data: { title: 'Threads' },
   },
   {
-    path: 'board',
-    loadComponent: () => import('./pages/board.page').then(m => m.BoardPage),
-    data: { title: 'Board' },
-  },
-  {
     path: 'tickets',
     loadComponent: () => import('./pages/tickets.page').then(m => m.TicketsPage),
     data: { title: 'Tickets' },
@@ -66,6 +61,12 @@ export const appRoutes: Route[] = [
     path: 'sdlc',
     loadComponent: () => import('./pages/sdlc-diagram.page').then(m => m.SdlcDiagramPage),
     data: { title: 'Swarm × SDLC' },
+  },
+  {
+    path: 'orchestrator',
+    loadComponent: () =>
+      import('./pages/orchestrator-diagram.page').then(m => m.OrchestratorDiagramPage),
+    data: { title: 'Orchestrator' },
   },
   { path: '**', redirectTo: 'overview' },
 ];
