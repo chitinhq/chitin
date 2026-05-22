@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -178,6 +179,20 @@ def is_task_complete(response: str) -> bool:
         if stripped == TASK_COMPLETE_SENTINEL:
             return True
     return False
+
+
+def wrap_command_with_timeout(command: str, timeout_s: int) -> str:
+    """Execute ``command`` under GNU ``timeout`` inside the container.
+
+    Harness-side ``asyncio.wait_for`` only times out the await; it does
+    not guarantee the in-container subprocess is reaped. Wrapping the
+    command ensures package managers and similar long-running tools do
+    not leak into later turns and consume the rest of the step budget.
+    """
+    return (
+        f"timeout --kill-after=5s {timeout_s}s "
+        f"bash -lc {shlex.quote(command)}"
+    )
 
 
 # ── Loop detector ──────────────────────────────────────────────────
@@ -409,11 +424,14 @@ class BenchAgent(BaseAgent):
                         f"(len={len(response)})"
                     )
 
-                # Exec inside the container.
+                # Exec inside the container. Timeout is enforced in the
+                # container process itself so long-running commands do
+                # not survive into later turns and cause lock thrash.
+                wrapped_cmd = wrap_command_with_timeout(cmd, self._step_timeout_sec)
                 try:
                     result = await asyncio.wait_for(
-                        environment.exec(cmd),
-                        timeout=self._step_timeout_sec,
+                        environment.exec(wrapped_cmd),
+                        timeout=self._step_timeout_sec + 10,
                     )
                 except asyncio.TimeoutError:
                     result = ExecResult(
