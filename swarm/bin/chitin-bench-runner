@@ -249,9 +249,14 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
                     except (TypeError, ValueError, KeyError):
                         pass
 
-            # steps_used: agent_result.steps or agent_result.step_count
+            # steps_used: prefer the Icarus metadata field written by the
+            # Harbor adapter; fall back to older top-level shapes.
             if isinstance(agent_result, dict):
-                steps = agent_result.get("steps") or agent_result.get("step_count")
+                steps = (
+                    metadata.get("icarus_steps_used")
+                    or agent_result.get("steps")
+                    or agent_result.get("step_count")
+                )
                 if steps is not None:
                     try:
                         meta["steps_used"] = int(steps)

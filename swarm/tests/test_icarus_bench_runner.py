@@ -192,6 +192,25 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
 
+    def test_extracts_steps_used_from_icarus_metadata(self):
+        """Invariant: the current Icarus artifact shape stores steps in
+        agent_result.metadata.icarus_steps_used, and the runner must
+        preserve that in the gov-decision row metadata."""
+        self._write_trial_result("icarus-meta", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "icarus_block_reason": "ollama_error",
+                    "icarus_steps_used": 8,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "icarus-meta"}
+        meta = _runner["_extract_tick_metadata"](result, "icarus-meta")
+        self.assertEqual(meta["block_reason"], "ollama_error")
+        self.assertEqual(meta["reward"], 0.0)
+        self.assertEqual(meta["steps_used"], 8)
+
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward
         when that key path exists (current harbor format)."""
