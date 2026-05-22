@@ -11,8 +11,9 @@ import (
 // Spec 081 US2 tests for the Schedule-backed cron migration pattern. T009
 // migrated swarm-audit; T010–T012 add the remaining six periodic crons —
 // architecture-audit, the three Argus ingesters, and the two codex jobs — so
-// the Registry holds exactly seven JobSpecs, each on the cadence of its
-// retired systemd timer.
+// the Registry holds at least these seven US2 JobSpecs, each on the cadence of
+// its retired systemd timer. Later specs append further jobs to the Registry
+// (e.g. spec 085's operator-heartbeat), so this set is a subset, not the total.
 
 // us2Jobs is the expected US2 Registry: every periodic cron migrated by
 // T009–T012, with the cron cadence the retired systemd timer fired on
@@ -43,8 +44,8 @@ var us2Jobs = []struct {
 // migrated by spec 081 US2 (T009–T012) with the cadence of its retired timer.
 func TestRegistry_HasUS2Jobs(t *testing.T) {
 	reg := Registry()
-	if len(reg) != len(us2Jobs) {
-		t.Fatalf("Registry() returned %d jobs, want exactly %d (US2 T009–T012); got %+v",
+	if len(reg) < len(us2Jobs) {
+		t.Fatalf("Registry() returned %d jobs, want at least %d (the US2 T009–T012 set); got %+v",
 			len(reg), len(us2Jobs), reg)
 	}
 
