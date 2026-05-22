@@ -27,7 +27,7 @@ story is independently implementable and testable.
 
 **Purpose**: Confirm a clean baseline before changing kernel/orchestrator code.
 
-- [ ] T001 Confirm a green baseline — `go build ./... && go test ./...` in both `go/execution-kernel/` and `go/orchestrator/`; record any pre-existing failures.
+- [X] T001 Confirm a green baseline — `go build ./... && go test ./...` in both `go/execution-kernel/` and `go/orchestrator/`; record any pre-existing failures.
 
 ---
 
@@ -69,14 +69,15 @@ redeploy failures are surfaced.
 **Independent Test**: Merge a trivial kernel change; the running kernel reflects
 it within the redeploy cadence, with no manual step.
 
-- [ ] T007 [US2] Replace `git pull --ff-only origin main` in `scripts/install-kernel.sh` with `git fetch origin main` + `git merge --ff-only origin/main`, preserving the autostash behaviour via an explicit stash/pop around the merge (research Decision 5).
-- [ ] T008 [P] [US2] Implement kernel-staleness detection in `go/execution-kernel/internal/health/` — compare the running binary's build revision against the merged kernel source HEAD.
-- [ ] T009 [US2] Surface kernel staleness through the `chitin health` command in `go/execution-kernel/cmd/chitin-kernel/` — report `stale` vs `current` with the revision delta.
-- [ ] T010 [US2] Make a redeploy failure operator-visible — emit an alert/health signal beyond the line in `~/.cache/chitin/install-kernel.jsonl` (FR-010).
-- [ ] T011 [P] [US2] Unit-test the staleness detector in `go/execution-kernel/internal/health/health_test.go`.
-- [ ] T012 [US2] Verify — merge a trivial kernel-relevant change; confirm the running kernel reflects it within one redeploy cadence and `chitin health` reports `current`.
+- [X] T007 [US2] Replace `git pull --ff-only origin main` in `scripts/install-kernel.sh` with `git fetch origin main` + `git merge --ff-only origin/main`, preserving the autostash behaviour via an explicit stash/pop around the merge (research Decision 5).
+- [X] T008 [P] [US2] Implement kernel-staleness detection in `go/execution-kernel/internal/health/` — compare the running binary's build revision against the merged kernel source HEAD.
+- [X] T009 [US2] Surface kernel staleness through the `chitin health` command in `go/execution-kernel/cmd/chitin-kernel/` — report `stale` vs `current` with the revision delta.
+- [X] T010 [US2] Make a redeploy failure operator-visible — emit an alert/health signal beyond the line in `~/.cache/chitin/install-kernel.jsonl` (FR-010).
+- [X] T011 [P] [US2] Unit-test the staleness detector in `go/execution-kernel/internal/health/health_test.go`.
+- [X] T012 [US2] Verify — merge a trivial kernel-relevant change; confirm the running kernel reflects it within one redeploy cadence and `chitin health` reports `current`.
 
-**Checkpoint**: Kernel fixes can no longer strand silently.
+**Checkpoint**: ✅ US2 done — kernel fixes can no longer strand silently;
+`chitin health` reports kernel staleness + last-redeploy status.
 
 ---
 
