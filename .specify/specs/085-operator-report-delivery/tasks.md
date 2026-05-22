@@ -76,14 +76,14 @@ click-through links into chitin-console.
 **Independent Test**: Trigger the digest; a four-section message arrives in
 Discord, each detail line linking to a working chitin-console view.
 
-- [ ] T014 [P] [US2] Write `go/execution-kernel/internal/report/sources_test.go` — telemetry adapters: gov-decisions grouping by driver, PR-per-driver attribution from `agent/<driver>-*` branches, the source-unavailable path.
-- [ ] T015 [US2] Implement `go/execution-kernel/internal/report/sources.go` — adapters over `chitin health`, `chitin-kernel decisions recent` (gov-decisions), and `gh pr list`; each returns data-or-unavailable, never an error that aborts the digest (FR-009). Make T014 pass.
-- [ ] T016 [US2] Write `go/execution-kernel/internal/report/digest_test.go` — `ComposeDigest`: all four sections always present; an unavailable source → section marked unavailable, not dropped; console links on detail lines; bounded rendered length on a large fixture.
-- [ ] T017 [US2] Implement `go/execution-kernel/internal/report/digest.go` — the `TelemetryDigest` type + `ComposeDigest()` — four sections (orchestration, kernel, drivers, PRs), console deep-links, degradation. Make T016 pass.
-- [ ] T018 [US2] Add `chitin-kernel report digest` to `go/execution-kernel/cmd/chitin-kernel/report.go` — flags `--board`, `--window-hours`, `--console-base`; compose → render → print (contract C1; Constitution §5 board-aware).
-- [ ] T019 [US2] Extend `swarm/bin/deliver-operator-report.sh` with the `digest` mode, `--on-demand`, and the rapid-repeat cooldown (contract C2, FR-014).
+- [X] T014 [P] [US2] Write `go/execution-kernel/internal/report/sources_test.go` — telemetry adapters: gov-decisions grouping by driver, PR-per-driver attribution from `agent/<driver>-*` branches, the source-unavailable path.
+- [X] T015 [US2] Implement `go/execution-kernel/internal/report/sources.go` — adapters over `chitin health`, `chitin-kernel decisions recent` (gov-decisions), and `gh pr list`; each returns data-or-unavailable, never an error that aborts the digest (FR-009). Make T014 pass.
+- [X] T016 [US2] Write `go/execution-kernel/internal/report/digest_test.go` — `ComposeDigest`: all four sections always present; an unavailable source → section marked unavailable, not dropped; console links on detail lines; bounded rendered length on a large fixture.
+- [X] T017 [US2] Implement `go/execution-kernel/internal/report/digest.go` — the `TelemetryDigest` type + `ComposeDigest()` — four sections (orchestration, kernel, drivers, PRs), console deep-links, degradation. Make T016 pass.
+- [X] T018 [US2] Add `chitin-kernel report digest` to `go/execution-kernel/cmd/chitin-kernel/report.go` — flags `--board`, `--window-hours`, `--console-base`; compose → render → print (contract C1; Constitution §5 board-aware).
+- [X] T019 [US2] Extend `swarm/bin/deliver-operator-report.sh` with the `digest` mode, `--on-demand`, and the rapid-repeat cooldown (contract C2, FR-014).
 - [ ] T020 [US2] Wire the on-demand trigger — route an operator Discord command through Clawta to `deliver-operator-report.sh digest --on-demand`.
-- [ ] T021 [US2] Add the `operator-digest` Temporal Schedule `JobSpec` in `go/orchestrator/schedules/operator_digest.go` (daily, operator TZ), register it in `Registry()`, and extend `operator_report_test.go` to cover it.
+- [X] T021 [US2] Add the `operator-digest` Temporal Schedule `JobSpec` in `go/orchestrator/schedules/operator_digest.go` (daily, operator TZ), register it in `Registry()`, and extend `operator_report_test.go` to cover it.
 - [ ] T022 [P] [US2] Add read-only digest-detail endpoints/routes in `apps/chitin-console-api/src/server.mjs` for any digest link target not already served (per-driver activity, PR rollup).
 - [ ] T023 [US2] Verify US2 via `quickstart.md` — the digest composes with four sections and working console links; an on-demand request is delivered within 2 minutes; a degraded source is marked not dropped; the daily job fires.
 
