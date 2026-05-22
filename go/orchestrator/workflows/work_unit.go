@@ -68,6 +68,9 @@ const (
 	// branch push, and a `gh pr create`; network I/O, but far shorter than an
 	// agent invocation.
 	deliverActivityTimeout = 10 * time.Minute
+	// notifyActivityTimeout bounds one human-notification post — a single
+	// best-effort Discord webhook call, off the work-unit critical path.
+	notifyActivityTimeout = 1 * time.Minute
 )
 
 // WorkUnitWorkflow is the per-node child workflow (spec 076 FR-008): it
@@ -158,17 +161,29 @@ func WorkUnitWorkflow(ctx workflow.Context, in WorkUnitInput) (WorkUnitResult, e
 	// --- run the node's work in the fresh worktree -------------------------
 	// A deterministic node runs a mechanical command via RunDeterministicStep;
 	// an agent node invokes the scheduler-selected driver (spec 076 FR-017).
+	var res WorkUnitResult
+	var err error
 	if deterministic {
-		return runDeterministicStep(ctx, logger, node, created.Path)
+		res, err = runDeterministicStep(ctx, logger, node, created.Path)
+	} else {
+		res, err = invokeDriver(ctx, logger, node, in.DriverID, created.Path)
+		if err == nil && res.Succeeded {
+			// The agent's work succeeded — commit it, push the dedicated
+			// branch, and open a PR (spec 070 PR-out gate) before the deferred
+			// teardown reclaims the worktree. Delivery degrades gracefully and
+			// never un-succeeds the work; it only enriches the result.
+			res = deliverWorkProduct(ctx, logger, in.SchedulerRunID, node, created.Path, res)
+		}
 	}
-	res, err := invokeDriver(ctx, logger, node, in.DriverID, created.Path)
-	if err == nil && res.Succeeded {
-		// The agent's work succeeded — commit it, push the dedicated branch,
-		// and open a PR (spec 070 PR-out gate) before the deferred teardown
-		// reclaims the worktree. Delivery degrades gracefully and never
-		// un-succeeds the work; it only enriches the result.
-		res = deliverWorkProduct(ctx, logger, node, created.Path, res)
-	}
+
+	// Surface the settled work unit to the human notification channel
+	// (spec 080 US2). Write-only and best-effort — it never affects the result.
+	emitNotification(ctx, activities.NotificationEvent{
+		Kind:    activities.NotifyWorkUnitSettled,
+		RunID:   in.SchedulerRunID,
+		NodeID:  node.ID,
+		Summary: fmt.Sprintf("%s — %s", res.Status, res.Explanation),
+	})
 	return res, err
 }
 
@@ -240,7 +255,7 @@ func invokeDriver(
 // no changes, is still reclaimed by teardown).
 func deliverWorkProduct(
 	ctx workflow.Context, logger log.Logger,
-	node dag.Node, worktreePath string, res WorkUnitResult,
+	runID string, node dag.Node, worktreePath string, res WorkUnitResult,
 ) WorkUnitResult {
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: deliverActivityTimeout,
@@ -271,11 +286,36 @@ func deliverWorkProduct(
 	switch {
 	case d.PRURL != "":
 		res.OutputRef = d.PRURL
+		// A pull request opened — surface it to the human notification
+		// channel (spec 080 US2).
+		emitNotification(ctx, activities.NotificationEvent{
+			Kind:    activities.NotifyPROpened,
+			RunID:   runID,
+			NodeID:  node.ID,
+			Summary: "pull request opened for the work product",
+			URL:     d.PRURL,
+		})
 	case d.CommitSHA != "":
 		res.OutputRef = d.CommitSHA
 	}
 	res.Explanation += "; " + d.Explanation
 	return res
+}
+
+// emitNotification posts one NotificationEvent to the human notification
+// channel via the DiscordNotify activity (spec 080 US2). It is write-only and
+// strictly best-effort: a notification fault is logged, never propagated, so it
+// can never fail or stall the calling workflow (spec 080 FR-007). It is shared
+// by WorkUnitWorkflow and SchedulerWorkflow.
+func emitNotification(ctx workflow.Context, ev activities.NotificationEvent) {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: notifyActivityTimeout,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
+	})
+	if err := workflow.ExecuteActivity(actx, "DiscordNotify", ev).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Warn("notification emit failed (non-fatal)",
+			"kind", ev.Kind, "err", err)
+	}
 }
 
 // runDeterministicStep runs the deterministic-node middle leg: it executes the

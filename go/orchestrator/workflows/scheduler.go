@@ -198,9 +198,25 @@ func SchedulerWorkflow(ctx workflow.Context, in SchedulerInput) (SchedulerStatus
 		state.project(ctx, transitions)
 		state.emitTelemetry(ctx, tickRec)
 
+		// Surface every node that became blocked-unroutable this tick to the
+		// human notification channel (spec 080 US2) — write-only, best-effort.
+		for _, id := range tickRec.BlockedUnroutable {
+			emitNotification(ctx, activities.NotificationEvent{
+				Kind:    activities.NotifyNodeBlocked,
+				RunID:   state.runID,
+				NodeID:  id,
+				Summary: "blocked-unroutable — no ready driver satisfies the node's capability",
+			})
+		}
+
 		// Terminal: every node settled — the run is complete.
 		if state.complete() {
 			logger.Info("scheduler: DAG complete", "run", state.runID, "tick", state.tick)
+			emitNotification(ctx, activities.NotificationEvent{
+				Kind:    activities.NotifyRunTerminal,
+				RunID:   state.runID,
+				Summary: fmt.Sprintf("run complete at tick %d — every node settled", state.tick),
+			})
 			return state.snapshot(runningIDs(running)), nil
 		}
 
@@ -210,6 +226,11 @@ func SchedulerWorkflow(ctx workflow.Context, in SchedulerInput) (SchedulerStatus
 		if tickRec.Stalled {
 			logger.Warn("scheduler: DAG stalled — no runnable and no running nodes remain",
 				"run", state.runID, "tick", state.tick)
+			emitNotification(ctx, activities.NotificationEvent{
+				Kind:    activities.NotifyRunTerminal,
+				RunID:   state.runID,
+				Summary: fmt.Sprintf("run STALLED at tick %d — no runnable or running nodes remain", state.tick),
+			})
 			return state.snapshot(runningIDs(running)), nil
 		}
 
