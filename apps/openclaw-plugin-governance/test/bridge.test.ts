@@ -227,8 +227,11 @@ exit 0`);
     try {
       await handler({ toolName: 'exec', params: { cmd: 'git commit -m x' } }, { agentId: 'clawta' });
 
-      expect(readFileSync(argsPath, 'utf8').trim()).toBe(
-        'gate evaluate --hook-stdin --agent clawta',
+      // The bridge appends `--policy-file <repo-root chitin.yaml>` so the
+      // kernel resolves a policy instead of failing open (bug #3). The path
+      // is an environment-dependent absolute path, hence the regex.
+      expect(readFileSync(argsPath, 'utf8').trim()).toMatch(
+        /^gate evaluate --hook-stdin --agent clawta --policy-file \S+chitin\.yaml$/,
       );
       const payload = JSON.parse(readFileSync(stdinPath, 'utf8')) as {
         tool_name?: string;

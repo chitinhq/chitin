@@ -194,6 +194,16 @@ type Decision struct {
 	Agent            string `json:"agent,omitempty"`
 	Ts               string `json:"ts"`
 
+	// ChainID and SessionID correlate this Decision to the kernel
+	// event-chain and the dispatching agent's session, independently of
+	// envelope presence. The console groups decisions into sessions by
+	// chain_id || session_id || envelope_id; before these fields that
+	// grouping rode solely on envelope_id, so an envelope regression
+	// silently un-chained an agent from the console (Hermes, 2026-05).
+	// Both omitempty so v1 audit-log readers tolerate the extension.
+	ChainID   string `json:"chain_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+
 	EnvelopeID  string  `json:"envelope_id,omitempty"`
 	Tier        Tier    `json:"tier,omitempty"`
 	CostUSD     float64 `json:"cost_usd,omitempty"` // informational; cap fires on calls + bytes

@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import time
@@ -48,6 +49,8 @@ DEFAULT_STEP_BUDGET = int(os.environ.get("CHITIN_BENCH_STEP_BUDGET", "30"))
 DEFAULT_STEP_TIMEOUT_SEC = int(os.environ.get("CHITIN_BENCH_STEP_TIMEOUT_SEC", "60"))
 DEFAULT_WALLCLOCK_SEC = int(os.environ.get("CHITIN_BENCH_WALLCLOCK_SEC", "900"))
 DEFAULT_LLM_TIMEOUT_SEC = int(os.environ.get("CHITIN_BENCH_LLM_TIMEOUT_SEC", "180"))
+STDOUT_CAPTURE_LIMIT = 3000
+STDERR_CAPTURE_LIMIT = 1000
 
 TASK_COMPLETE_SENTINEL = "TASK_COMPLETE"
 
@@ -187,6 +190,20 @@ def is_task_complete(response: str) -> bool:
         if stripped == TASK_COMPLETE_SENTINEL:
             return True
     return False
+
+
+def wrap_command_with_timeout(command: str, timeout_s: int) -> str:
+    """Execute ``command`` under GNU ``timeout`` inside the container.
+
+    Harness-side ``asyncio.wait_for`` only times out the await; it does
+    not guarantee the in-container subprocess is reaped. Wrapping the
+    command ensures package managers and similar long-running tools do
+    not leak into later turns and consume the rest of the step budget.
+    """
+    return (
+        f"timeout --kill-after=5s {timeout_s}s "
+        f"bash -lc {shlex.quote(command)}"
+    )
 
 
 # ── Loop detector ──────────────────────────────────────────────────
@@ -418,11 +435,14 @@ class BenchAgent(BaseAgent):
                         f"(len={len(response)})"
                     )
 
-                # Exec inside the container.
+                # Exec inside the container. Timeout is enforced in the
+                # container process itself so long-running commands do
+                # not survive into later turns and cause lock thrash.
+                wrapped_cmd = wrap_command_with_timeout(cmd, self._step_timeout_sec)
                 try:
                     result = await asyncio.wait_for(
-                        environment.exec(cmd),
-                        timeout=self._step_timeout_sec,
+                        environment.exec(wrapped_cmd),
+                        timeout=self._step_timeout_sec + 10,
                     )
                 except asyncio.TimeoutError:
                     result = ExecResult(
@@ -458,16 +478,55 @@ class BenchAgent(BaseAgent):
     # ── helpers ────────────────────────────────────────────────────
 
     @staticmethod
+    def _truncate_stream(
+        text: str | None,
+        *,
+        limit: int,
+        label: str,
+        tail: int,
+    ) -> str:
+        """Preserve both the beginning and end of long output.
+
+        A head-only truncation makes broad reads like ``cat`` look
+        incomplete, which can push the model into rereading the same
+        file and tripping loop detection. Keeping the tail visible
+        preserves end-of-file assertions and stack traces.
+        """
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        head = max(limit - tail, 0)
+        omitted = len(text) - head - tail
+        return (
+            f"{text[:head]}\n"
+            f"[{label} truncated: omitted {omitted} chars; showing head+tail, "
+            "re-run a narrower read for the middle]\n"
+            f"{text[-tail:]}"
+        )
+
+    @staticmethod
     def _format_observation(cmd: str, result: ExecResult) -> str:
         """Format the exec result as the next user message.
 
-        Truncated to 4000 chars total to protect the context window —
-        the model can re-issue a narrower command if more output is
-        needed."""
+        Long output preserves both head and tail so end-of-file asserts
+        and tracebacks do not disappear behind a silent prefix cut."""
         head = f"$ {cmd}"
         rc = f"[return_code={result.return_code}]"
-        out = (result.stdout or "")[:3000]
-        err = (result.stderr or "")[:1000]
+        full_out = result.stdout or ""
+        full_err = result.stderr or ""
+        out = BenchAgent._truncate_stream(
+            full_out,
+            limit=STDOUT_CAPTURE_LIMIT,
+            label="stdout",
+            tail=700,
+        )
+        err = BenchAgent._truncate_stream(
+            full_err,
+            limit=STDERR_CAPTURE_LIMIT,
+            label="stderr",
+            tail=300,
+        )
         parts = [head, rc]
         if out:
             parts.append("STDOUT:\n" + out)

@@ -14,7 +14,7 @@ The kernel and the contract it enforces — exhaustively three things:
 2. **Driver plugins** — `go/execution-kernel/internal/driver/{claudecode,codex,gemini,hermes,copilot}/normalize.go` + the OpenClaw `before_tool_call` plugin. Adapters between each vendor's tool vocabulary and the kernel's canonical action enum.
 3. **The data** — `~/.chitin/{gov-decisions-*.jsonl, events-*.jsonl, gov.db, chain_index.sqlite}`. Tamper-evident chain + the read-side analysis surface (`python/analysis/`).
 
-Plus the scaffolding to keep those healthy: systemd timers for kernel redeploy, agent-unlock, chain-watch, envelope-rotate. Internal, not orchestration.
+Plus the scaffolding to keep those healthy: systemd timers for kernel redeploy, agent-unlock, chain-watch, envelope-rotate, codex-chain-ingest, codex-usage-feed, and judge-backfill. Internal, not orchestration.
 
 ## What chitin is NOT
 
@@ -56,19 +56,19 @@ Asymmetric strengths nothing else in the ecosystem provides:
 
 Hermes is the kanban substrate; OpenClaw is the agent-runtime substrate (Lobster workflows + acpx gateway). Chitin gates every tool call against one policy and owns the four-hop dispatch pipeline (`hermes → clawta → openclaw/Lobster → frontier-coder CLI`) that composes those substrates. The chain is the unifying contract; `gov.Gate` is the unifying enforcement point.
 
-## Constitution + spec-kit (the swarm's operating rules)
+## Constitution + spec-kit
 
 The kernel above gates each tool call. The **constitution + spec-kit layer** governs how the swarm dispatches and coordinates around the kernel:
 
 - **`.specify/constitution.md`** — repo-level overlay; extends the workspace constitution at `~/workspace/.specify/constitution.md`. Both ratified via agent-bus standup threads.
-- **`.specify/specs/NNN-<slug>/spec.md`** — every ticket promoted `triage → ready` MUST have a matching spec-kit entry. Enforced by `has_spec_kit_entry()` in `swarm/bin/clawta-poller` and `swarm/workflows/hermes-clawta-bridge.py`. Forward binding (ticket body references spec path) and reverse binding (spec mentions ticket id) are both accepted.
-- **Empty-branch gate** — `swarm/workflows/kanban-dispatch.lobster` refuses to push if `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`. Prevents zombie branches when workers exit without committing.
-- **PR lifecycle close-intent** — `swarm/bin/clawta-pr-lifecycle` closes a ticket on PR merge when either (a) the branch name matches a trusted prefix (default `DEFAULT_PREFIXES = ("swarm/", "clawta/")`; pass `--prefix agent/` to extend) AND maps to a ticket suffix, or (b) the body contains an explicit `Closes/Fixes/Resolves t_xxx`. `Refs t_xxx` is traceability only — it never closes.
-- **Loop-detected auto-unblock skip** — `swarm/bin/clawta-poller` will not auto-unblock tickets carrying `loop_detected=true`; the watchdog owns them until manual repair.
-- **Tracked source over local patches** — shared swarm runtime scripts (bridge, poller, lifecycle, dispatch workflow, watchdog prompt) ship with tracked sources + idempotent installers at `swarm/bin/install-*.sh`. Drift between repo source and deployed runtime is a bug.
+- **`.specify/specs/NNN-<slug>/spec.md`** — every ticket promoted `triage → ready` MUST have a matching spec-kit entry. Enforced by `has_spec_kit_entry()` in `swarm/bin/clawta-poller` and `swarm/workflows/hermes-clawta-bridge.py`.
+- **Empty-branch gate** — `swarm/workflows/kanban-dispatch.lobster` refuses to push if `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`.
+- **PR lifecycle close-intent** — `swarm/bin/clawta-pr-lifecycle` closes a ticket on PR merge when the branch name matches a trusted prefix or the body contains `Closes/Fixes/Resolves t_xxx`. `Refs t_xxx` is traceability only.
+- **Loop-detected auto-unblock skip** — `swarm/bin/clawta-poller` will not auto-unblock tickets carrying `loop_detected=true`; the watchdog owns them.
+- **Tracked source over local patches** — shared swarm runtime scripts ship with tracked sources + idempotent installers at `swarm/bin/install-*.sh`.
 - **Worktree discipline** — `~/workspace/chitin/` is the primary checkout and is read-only for branch work; sibling worktrees (`~/workspace/chitin-*`) are the dispatch targets.
 
-Specs (see [`.specify/specs/`](./.specify/specs/)) — current set runs 001-017. Status varies: some are shipped, some draft, some explicitly **blocked** (e.g. 004-driver-allowlist is blocked on `chitin-kernel drivers list --json`, tracked by `t_7c9d02b7`). Coverage: agent-bus (001), scripts manifest (002), kanban mutation isolation (003), driver allowlist (004, **blocked**), drift-guard (005), wiki pipeline (006), analyzer cron (007), watchdog spec-aware (008), poller respects spec-kit (009), pr-lifecycle exact match (010), Bats per-script coverage (011-014), diagnostics separation (015-016), poller dependency-unblock veto (017). Each spec's actual status is in its own front-matter — check there before quoting.
+76 specs (001–730) live in [`.specify/specs/`](./.specify/specs/). See [`INDEX.md`](./.specify/specs/INDEX.md) for current status. Spec 004 (driver-allowlist) is explicitly **blocked** on `chitin-kernel drivers list --json` (tracked by `t_7c9d02b7`).
 
 ## Quick start
 
@@ -91,8 +91,7 @@ chitin-kernel envelope status
 chitin-kernel health
 ```
 
-See [`docs/governance-setup.md`](./docs/governance-setup.md) for per-driver
-install paths, the policy schema, kill switches, and the escalation ladder.
+See [`docs/governance-setup.md`](./docs/governance-setup.md) for per-driver install paths, the policy schema, kill switches, and the escalation ladder.
 
 ## Repo layout
 
@@ -111,33 +110,40 @@ install paths, the policy schema, kill switches, and the escalation ladder.
 │   ├── contracts/               # canonical wire schemas (TS)
 │   ├── run-sdk/                 # standalone TS run-event SDK for third-party tools
 │   ├── telemetry/               # read/query side over the event chain
-│   ├── router-plugin-api/       # typed API for external router plugins
-│   └── adapters/                # operator-installed driver-side adapters
+│   ├── router-plugin-api/      # typed API for external router plugins
+│   ├── adapters/                # operator-installed driver-side adapters
+│   ├── governance/              # governance policy utilities
+│   └── scheduler/               # scheduling primitives for swarm workflows
 ├── go/run-sdk/                  # standalone Go run-event SDK (no kernel dependency)
 ├── apps/
-│   ├── cli/                     # operator CLI (`chitin` — events, replay, health, ledger,
-│   │                            #   wiki ingest/compile/ask/lint per spec 006)
-│   ├── chitin-console/          # operator-facing Angular UI (mobile-first; tailscale-served)
+│   ├── cli/                     # operator CLI (`chitin` — events, replay, health,
+│   │                            #   ledger, wiki ingest/compile/ask/lint)
+│   ├── chitin-console/          # operator-facing Angular UI (mobile-first)
 │   ├── chitin-console-api/      # Node API for chitin-console (kanban + bus + suggestions)
+│   ├── chitin-dashboard/        # web dashboard for chain visualization
+│   ├── agentguard-vscode/       # VS Code extension for agent guardrails
+│   ├── mcp-server/              # MCP server exposing chain queries
+│   ├── runner/                  # kernel runner / process manager
+│   ├── slack-app/               # Slack integration for chain alerts
 │   └── openclaw-plugin-governance/ # openclaw before_tool_call plugin
 ├── python/analysis/             # gate-derived analyzers (decisions, debt, predict, detect,
 │                                #   analyzer cron per spec 007)
 ├── swarm/                       # swarm tooling — kept here until 3+ active dispatch repos
 │   ├── workflows/               #   kanban-dispatch.lobster, hermes-clawta-bridge.py,
 │   │                            #   _pick_driver.py, analyzer-cron.lobster
-│   ├── bin/                     #   clawta-poller, clawta-pr-lifecycle, install-*.sh,
-│   │                            #   board_resolver, board-aware audit scripts
+│   ├── bin/                     #   55 scripts — clawta-poller, pr-lifecycle,
+│   │                            #   board-watchdog, spec-kit-audit, installers, etc.
 │   ├── prompts/                 #   board-watchdog.md (tracked cron prompt source)
 │   └── tests/                   #   regression tests for poller/bridge/lifecycle gates
 ├── .specify/                    # spec-kit layer (per Constitution §5)
 │   ├── constitution.md          #   chitin repo overlay; extends workspace constitution
-│   └── specs/NNN-<slug>/spec.md #   spec-kit entries (the dispatch gate)
-├── infra/systemd/               # user-mode timers (redeploy, agent-unlock, chain-watch,
-│                                # envelope-rotate, codex-chain-ingest, codex-usage-feed)
+│   └── specs/NNN-<slug>/spec.md #   76 specs (001–730) — the dispatch gate
+├── infra/systemd/               # 7 user-mode timers (redeploy, unlock, chain-watch,
+│                                #   envelope-rotate, codex-ingest, codex-usage, judge-backfill)
 ├── examples/                    # copyable examples: policy packs and router plugins
-├── docs/decisions/              # durable boundary docs (positioning, scope, culls)
-├── docs/runbooks/               # operator runbooks (health, router, dispatch-pipeline…)
-├── docs/superpowers/specs/      # active spec set + auto-generated INDEX.md
+├── docs/decisions/              # 8 durable boundary docs (positioning, scope, culls)
+├── docs/runbooks/               # 17 operator runbooks (health, router, dispatch-pipeline…)
+├── docs/superpowers/specs/      # auto-generated INDEX.md from spec-kit
 ├── chitin.yaml                  # policy (signed)
 ├── scripts/                     # installers, MANIFEST.yaml + check-scripts-manifest.sh
 │                                #   (per spec 002), regen-spec-index, lint helpers
@@ -165,9 +171,9 @@ $HOME/.chitin/
 
 - [`docs/thesis.md`](./docs/thesis.md) — what chitin is in one paragraph
 - [`docs/decisions/2026-05-06-execution-governance-runtime-positioning.md`](./docs/decisions/2026-05-06-execution-governance-runtime-positioning.md) — the moat
-- [`docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`](./docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md) — original "kernel-only" boundary
-- [`docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md`](./docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md) — current shape: chitin composes hermes + openclaw substrates
-- [`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`](./docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md) — why operator-approval lives in hermes, not chitin
+- [`docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md`](./docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md) — the boundary
+- [`docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md`](./docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md) — composing hermes + openclaw substrates
+- [`docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md`](./docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md) — operator approvals live in hermes
 
 **Architecture**
 
@@ -175,16 +181,16 @@ $HOME/.chitin/
 - [`docs/architecture/layer-contracts.md`](./docs/architecture/layer-contracts.md) — the four locked invariants
 - [`docs/event-model.md`](./docs/event-model.md) — canonical envelope + chain shape
 - [`docs/operating-model.md`](./docs/operating-model.md) — topology, subsystem ownership, what's live
-- [`libs/run-sdk/README.md`](./libs/run-sdk/README.md) and [`go/run-sdk/README.md`](./go/run-sdk/README.md) — third-party SDK quickstarts for emitting chitin-compatible run events
+- [`libs/run-sdk/README.md`](./libs/run-sdk/README.md) and [`go/run-sdk/README.md`](./go/run-sdk/README.md) — third-party SDK quickstarts
 
 **Operate**
 
 - [`docs/governance-setup.md`](./docs/governance-setup.md) — per-driver install paths, policy schema, kill switches
-- [`docs/driver-conformance.md`](./docs/driver-conformance.md) — current driver hook matrix and normalizer gaps
+- [`docs/driver-conformance.md`](./docs/driver-conformance.md) — driver hook matrix and normalizer gaps
 - [`docs/roadmap.md`](./docs/roadmap.md) — strategic arc + what's in flight
 - [`examples/README.md`](./examples/README.md) — copyable examples, including stack-specific policy packs
 - [`docs/runbooks/`](./docs/runbooks/) — health, router, sandbox, regression-gate, spec lifecycle, swarm SDLC
-- [`docs/superpowers/specs/INDEX.md`](./docs/superpowers/specs/INDEX.md) — active spec index (auto-generated)
+- [`.specify/specs/INDEX.md`](./.specify/specs/INDEX.md) — spec index (76 entries, 001–730)
 
 **Mirrored from substrate**
 
@@ -193,6 +199,17 @@ $HOME/.chitin/
 **Archived history**
 
 - [`docs/archive/`](./docs/archive/) — observation logs and dated audits preserved out of the main path
+
+## Recent posture (2026-05-08 cull pass)
+
+Three lenses (Knuth correctness, da Vinci architecture, Sun Tzu positioning) audited the repo. Convergent finding: chitin drifted into building parallel-to-substrate features (operator approvals, in-gate LLM advisor, MCP server hosting, TS governance substrate, half-finished orchestration). All culled. Read the decisions in order:
+
+1. `docs/decisions/2026-05-06-execution-governance-runtime-positioning.md` — the moat narrative
+2. `docs/decisions/2026-05-06-chitin-scope-narrow-to-kernel.md` — the boundary
+3. `docs/decisions/2026-05-08-cull-escalate-defer-to-hermes.md` — operator approvals → hermes
+4. `docs/decisions/2026-05-08-cull-advisor-out-of-kernel-hot-path.md` — in-gate LLM removed; signals stay
+5. `docs/decisions/2026-05-08-cull-libs-governance-ts-substrate.md` — parallel TS adjudicator deleted
+6. `docs/decisions/2026-05-08-cull-mcp-server-tools-as-subcommands.md` — MCP hosting deleted; tools → kernel subcommands
 
 ## License
 

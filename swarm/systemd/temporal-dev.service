@@ -1,0 +1,14 @@
+[Unit]
+Description=Temporal dev server for the Chitin Orchestrator (spec 070)
+Documentation=file:///home/red/workspace/chitin/.specify/specs/070-chitin-orchestrator/spec.md
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/temporal server start-dev --ui-port 8233
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

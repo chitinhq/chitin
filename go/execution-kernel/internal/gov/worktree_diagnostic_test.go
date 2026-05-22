@@ -206,3 +206,62 @@ func runGit(t *testing.T, dir string, args ...string) {
 func bytesTrimSpace(b []byte) []byte {
 	return []byte(strings.TrimSpace(string(b)))
 }
+
+func TestGate_EnforcesWorktreeRequirementForPrimarySideEffect(t *testing.T) {
+	// Autonomous agent (no operator in the loop): a side-effect action
+	// from the primary checkout is denied when worktree-required=enforce.
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "")
+	repo, linked := tempGitRepoWithLinkedWorktree(t)
+	mkGate := func(cwd string) *Gate {
+		g, _ := newTestGate(t)
+		g.Cwd = cwd
+		if g.Policy.InvariantModes == nil {
+			g.Policy.InvariantModes = map[string]string{}
+		}
+		g.Policy.InvariantModes["worktree-required"] = "enforce"
+		g.Policy.Rules = append(g.Policy.Rules, Rule{
+			ID: "allow-write", Action: ActionMatcher{string(ActFileWrite)},
+			Effect: "allow", Reason: "writes ok",
+		})
+		return g
+	}
+
+	d := mkGate(repo).Evaluate(Action{Type: ActFileWrite, Target: "src/main.go"}, "clawta", nil)
+	if d.Allowed {
+		t.Fatalf("side-effect from primary checkout must be denied under worktree-required=enforce: %+v", d)
+	}
+	if d.RuleID != "worktree-required" {
+		t.Fatalf("RuleID=%q want worktree-required", d.RuleID)
+	}
+
+	d = mkGate(linked).Evaluate(Action{Type: ActFileWrite, Target: "src/main.go"}, "clawta", nil)
+	if !d.Allowed {
+		t.Fatalf("side-effect from a linked worktree must be allowed: %+v", d)
+	}
+
+	d = mkGate(repo).Evaluate(Action{Type: ActFileRead, Target: "README.md"}, "clawta", nil)
+	if !d.Allowed {
+		t.Fatalf("read-only action from primary checkout must stay allowed: %+v", d)
+	}
+}
+
+func TestGate_WorktreeRequirementHonorsOperatorPresence(t *testing.T) {
+	// With the operator in the loop, the worktree requirement does not
+	// fire — it targets autonomous agents, not interactive operator work.
+	t.Setenv("CHITIN_GOV_OPERATOR_AUTHORIZED", "1")
+	repo, _ := tempGitRepoWithLinkedWorktree(t)
+	g, _ := newTestGate(t)
+	g.Cwd = repo
+	if g.Policy.InvariantModes == nil {
+		g.Policy.InvariantModes = map[string]string{}
+	}
+	g.Policy.InvariantModes["worktree-required"] = "enforce"
+	g.Policy.Rules = append(g.Policy.Rules, Rule{
+		ID: "allow-write", Action: ActionMatcher{string(ActFileWrite)},
+		Effect: "allow", Reason: "writes ok",
+	})
+	d := g.Evaluate(Action{Type: ActFileWrite, Target: "src/main.go"}, "operator", nil)
+	if !d.Allowed {
+		t.Fatalf("operator-present side effect from primary checkout must be allowed: %+v", d)
+	}
+}
