@@ -25,15 +25,27 @@ import "os"
 // which for an idempotent read-mostly ingester is an acceptable, more
 // inspectable cadence. UTC is used — these jobs have no calendar dependence,
 // so the evaluation zone does not affect their behavior.
+//
+// Command path: the retired .service units ran ExecStart=%h/.local/bin/argus.
+// That install symlink resolves not to a repo script but to a uv tool install
+// (~/.local/share/uv/tools/chitin-argus/bin/argus) — argus ships as the
+// chitin-argus Python package, not a standalone file. A %h/.local/bin pointer
+// can also be left dangling by a culled worktree, the failure loop
+// verification caught for the sibling swarm-audit symlink. So each Command
+// runs argus from its tracked repo source, python/argus/, via
+// `uv run --project <repo>/python/argus argus …` — reproducible, no install
+// symlink, and the same console-script entry point (argus.cli:main) the
+// retired units invoked.
 
 // argusIngestBeliefsSpec is the JobSpec for the Argus beliefs ingester (agent
 // cards + clawta_elo), formerly argus-ingest-beliefs.timer (every 30 minutes).
 func argusIngestBeliefsSpec() JobSpec {
 	return JobSpec{
 		Name: "argus-ingest-beliefs",
-		// ExecStart=%h/.local/bin/argus ingest-beliefs
-		Command:     os.ExpandEnv("$HOME/.local/bin/argus"),
-		Args:        []string{"ingest-beliefs"},
+		// Retired unit: ExecStart=%h/.local/bin/argus ingest-beliefs.
+		// Run the tracked repo package via uv instead of the install symlink.
+		Command:     os.ExpandEnv("$HOME/.local/bin/uv"),
+		Args:        []string{"run", "--project", os.ExpandEnv("$HOME/workspace/chitin/python/argus"), "argus", "ingest-beliefs"},
 		Cron:        "*/30 * * * *",
 		TimeZone:    "",
 		Description: "Argus beliefs ingester (agent cards + clawta_elo)",
@@ -46,9 +58,13 @@ func argusIngestBeliefsSpec() JobSpec {
 func argusIngestGitSpec() JobSpec {
 	return JobSpec{
 		Name: "argus-ingest-git",
-		// ExecStart=%h/.local/bin/argus ingest-git --root %h/workspace
-		Command:     os.ExpandEnv("$HOME/.local/bin/argus"),
-		Args:        []string{"ingest-git", "--root", os.ExpandEnv("$HOME/workspace")},
+		// Retired unit: ExecStart=%h/.local/bin/argus ingest-git --root %h/workspace.
+		// Run the tracked repo package via uv instead of the install symlink.
+		Command: os.ExpandEnv("$HOME/.local/bin/uv"),
+		Args: []string{
+			"run", "--project", os.ExpandEnv("$HOME/workspace/chitin/python/argus"),
+			"argus", "ingest-git", "--root", os.ExpandEnv("$HOME/workspace"),
+		},
 		Cron:        "*/10 * * * *",
 		TimeZone:    "",
 		Description: "Argus git ingester (read-only snapshot of commits + PR metadata)",
@@ -61,9 +77,10 @@ func argusIngestGitSpec() JobSpec {
 func argusIngestLogsSpec() JobSpec {
 	return JobSpec{
 		Name: "argus-ingest-logs",
-		// ExecStart=%h/.local/bin/argus ingest-logs
-		Command:     os.ExpandEnv("$HOME/.local/bin/argus"),
-		Args:        []string{"ingest-logs"},
+		// Retired unit: ExecStart=%h/.local/bin/argus ingest-logs.
+		// Run the tracked repo package via uv instead of the install symlink.
+		Command:     os.ExpandEnv("$HOME/.local/bin/uv"),
+		Args:        []string{"run", "--project", os.ExpandEnv("$HOME/workspace/chitin/python/argus"), "argus", "ingest-logs"},
 		Cron:        "*/2 * * * *",
 		TimeZone:    "",
 		Description: "Argus log ingester (hermes + openclaw structured logs)",
