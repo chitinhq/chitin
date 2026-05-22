@@ -75,7 +75,6 @@ python/argus/.pytest_cache/
 python/argus/build/
 __pycache__/
 *.pyc
-chitin.yaml.sig
 
 # Minnie/Octi per-goal session state (never committed) — spec 038
 .swarm/
