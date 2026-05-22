@@ -503,7 +503,7 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 		errMsg := err.Error()
 		if !strings.HasPrefix(errMsg, "no_policy_found") {
 			if gov.IsPolicySignatureError(err) {
-				auditPolicySignatureDeny(chitinDir(), action, agent, errMsg)
+				auditPolicySignatureDeny(chitinDir(), action, agent, payload.SessionID, errMsg)
 				writeBlockDecision(out, "policy_signature_invalid", "policy_invalid: "+errMsg)
 				return claudecode.ExitBlock
 			}
@@ -607,27 +607,35 @@ func evalHookStdin(r io.Reader, out, errOut io.Writer, agent, envelopeFlag, poli
 	// noRecord=true also skips this wiring: OnDecision writes a v2 chain
 	// event via the decision emitter, which is a second persistence
 	// path that NoRecord must mute. Mirrors cmdGateEvaluate's behavior.
+	// Chain/session correlation. hookChainID is the agent's session id
+	// when the hook payload supplies one (claude-code, hermes, codex all
+	// do) so every decision in a session shares one id; otherwise a fresh
+	// per-evaluation id. Stamped onto the Gate so every Decision row
+	// carries chain_id + session_id — the console groups sessions by
+	// chain_id || session_id || envelope_id, and pre-fix that grouping
+	// rode solely on envelope_id.
+	hookChainID := payload.SessionID
+	if hookChainID == "" {
+		hookChainID = newChainID()
+	}
+	gate.ChainID = hookChainID
+	gate.SessionID = payload.SessionID
+
 	var decisionEvents *decisionEmitter
-	if !noRecord {
-		hookChainID := payload.SessionID
-		if hookChainID == "" {
-			hookChainID = newChainID()
+	if !noRecord && hookChainID != "" {
+		// Surface label tracks the dispatched driver so chain
+		// telemetry doesn't mislabel codex/gemini events as
+		// claude-code. The agent flag drives this — claude-code
+		// is the default when the flag is empty.
+		surface := agent
+		if surface == "" {
+			surface = "claude-code"
 		}
-		if hookChainID != "" {
-			// Surface label tracks the dispatched driver so chain
-			// telemetry doesn't mislabel codex/gemini events as
-			// claude-code. The agent flag drives this — claude-code
-			// is the default when the flag is empty.
-			surface := agent
-			if surface == "" {
-				surface = "claude-code"
-			}
-			de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
-			if deErr == nil {
-				defer deClose()
-				decisionEvents = de
-				gate.OnDecision = de.emitDecision
-			}
+		de, deClose, deErr := newDecisionEmitter(cdir, hookChainID, surface, func() string { return hookChainID })
+		if deErr == nil {
+			defer deClose()
+			decisionEvents = de
+			gate.OnDecision = de.emitDecision
 		}
 	}
 	// Operator-recovery commands (chitin-kernel envelope grant, use, etc.)

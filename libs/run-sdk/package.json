@@ -18,35 +18,6 @@
   "scripts": {
     "test": "vitest run tests"
   },
-  "nx": {
-    "sourceRoot": "libs/run-sdk/src",
-    "projectType": "library",
-    "tags": [
-      "type:lib",
-      "scope:sdk",
-      "layer:sdk",
-      "lang:ts"
-    ],
-    "targets": {
-      "test": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec vitest run libs/run-sdk/tests",
-          "cwd": "{workspaceRoot}"
-        }
-      },
-      "validate": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec tsc -b libs/run-sdk/tsconfig.lib.json && pnpm exec vitest run libs/run-sdk/tests",
-          "cwd": "{workspaceRoot}"
-        },
-        "dependsOn": [
-          "^validate"
-        ]
-      }
-    }
-  },
   "dependencies": {
     "@chitin/contracts": "workspace:*"
   }

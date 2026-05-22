@@ -1,0 +1,51 @@
+{
+  "date": "2026-05-20",
+  "window": "7d",
+  "commits": 278,
+  "contributors": 1,
+  "prs_merged": 186,
+  "insertions": 204178,
+  "deletions": 17226,
+  "net_loc": 186952,
+  "test_ins": 7696,
+  "test_ratio": 3.7,
+  "fix_ratio": 23,
+  "sessions": 52,
+  "active_hours": 29.0,
+  "loc_per_hour": 6447,
+  "active_days": 8,
+  "peak_hour": 21,
+  "focus_score": 65,
+  "streak": 8,
+  "commit_types": {
+    "feat": 106,
+    "fix": 64,
+    "docs": 33,
+    "spec": 28,
+    "chore": 12,
+    "test": 6,
+    "refactor": 3
+  },
+  "ship_of_week": {
+    "pr": "#683",
+    "desc": "Jira-competitive UI — board, comments, cycle/lead KPIs",
+    "loc": 72718
+  },
+  "top_hotspots": [
+    "swarm/workflows/kanban-dispatch.lobster",
+    "swarm/bin/clawta-poller",
+    "docs/governance-setup-extras/kanban-dispatch.lobster",
+    "swarm/tests/test_clawta_poller.py",
+    ".github/workflows/ci.yml"
+  ],
+  "tweetable_summary": "Week of May 13: 278 commits (solo), 186 PRs, 187k net LOC, 4% tests, peak: 9pm | Streak: 8d",
+  "authors": {
+    "Jared Pleva": {
+      "commits": 278,
+      "insertions": 204178,
+      "deletions": 17226,
+      "peak_hours": [10, 12, 19, 21],
+      "focus_area": "swarm/"
+    }
+  }
+}

@@ -1,0 +1,39 @@
+# workflowcheck configuration for the Self-Improvement Loop (spec 078).
+#
+# workflowcheck (go.temporal.io/sdk/contrib/tools/workflowcheck) is the
+# determinism gate for ImprovementLoopWorkflow (spec 078 FR-001, plan
+# Constraints: the loop workflow is a Temporal workflow and MUST be
+# deterministic). Run it — with the go1.25 toolchain — as:
+#
+#   workflowcheck -config loop/workflowcheck.config.yaml ./loop/...
+#
+# ImprovementLoopWorkflow is strictly deterministic by construction:
+#
+#   - It reads NO wall clock. The telemetry-window bounds are workflow input
+#     (US1) or, under US3, workflow.Now — a deterministic source. It never
+#     calls time.Now / time.Sleep.
+#   - Every side effect runs in an activity: telemetry reads (IngestTelemetry),
+#     the proposal-queue projection (ProjectProposalQueue), and — once wired —
+#     the spec-catalog scan. The workflow body only ever calls
+#     workflow.ExecuteActivity and pure functions over the results.
+#   - The analyzer, the synthesis, and the duplicate/rejection filters are
+#     PURE functions (window.go / finding.go / proposal.go / analysis.go /
+#     synthesis.go — no Temporal import). They iterate maps only to build a
+#     result that is immediately SORTED (SuppressDuplicates, the analyzer's
+#     grouping, AllGateableCategories), so their output is a deterministic
+#     mapping from input — but the loop WORKFLOW itself ranges no map, so
+#     workflowcheck raises no false positive on the workflow layer.
+#
+# The decls block is intentionally EMPTY: workflowcheck reports no finding on
+# ./loop/..., so there is nothing to override. It is kept as the declared,
+# version-controlled determinism contract for the loop package — the CI gate
+# references this file, and any future loop-workflow change that introduces a
+# range-then-sort helper reachable from workflow code is added here with a
+# `false` override, exactly as workflows/workflowcheck.config.yaml does.
+#
+# TODO(spec-078): once main wires loop.Register and the orchestrator CI job is
+# extended, add `./loop/...` to the workflowcheck invocation alongside the
+# existing `./workflows/...` target so the loop workflow's determinism is gated
+# on every PR (spec 078 plan Testing: workflowcheck in CI as the determinism
+# gate; tasks.md T003, T030).
+decls: {}
