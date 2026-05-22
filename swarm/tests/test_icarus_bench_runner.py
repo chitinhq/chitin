@@ -266,6 +266,31 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["block_reason"], "none")
 
 
+class TestBenchModelDefaults(TestCase):
+    """Invariant: the runner, loop, and cron installer stay aligned on the
+    coder-tuned default model so bench tasks do not silently route back to
+    qwen3.6:27b."""
+
+    def test_runner_defaults_to_qwen3_coder(self):
+        self.assertEqual(
+            _runner["DEFAULT_MODEL"],
+            "ollama/qwen3-coder:30b-32k",
+        )
+
+    def test_shell_wrappers_default_to_qwen3_coder(self):
+        loop_script = (RUNNER_DIR / "chitin-bench-loop").read_text()
+        install_script = (RUNNER_DIR / "install-chitin-bench-cron.sh").read_text()
+
+        self.assertIn(
+            'CHITIN_BENCH_MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            loop_script,
+        )
+        self.assertIn(
+            'MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            install_script,
+        )
+
+
 if __name__ == "__main__":
     from unittest import main as unittest_main
     unittest_main()
