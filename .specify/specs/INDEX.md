@@ -190,7 +190,7 @@ triage rationale.
 |------|-------|--------|--------------|-------|
 | 074 | polyglot-monorepo-layout | draft | — | P0 cull drift → P1 registration gap → P2 convention → P3 layout convergence |
 
-## Chitin Orchestrator — specs 070 + 075-080
+## Chitin Orchestrator — specs 070 + 075-081
 
 > The agent-agnostic, Temporal-based orchestration platform, and the
 > self-improvement loop built on it. Spec 070 (operator-ratified engine:
@@ -210,6 +210,7 @@ triage rationale.
 | **078** | self-improvement-loop | draft | Telemetry → analysis → spec proposals → [human gate] → implementation; generalizes Sentinel (064) |
 | **079** | information-ingestion-pipeline | draft | External-knowledge front-end: broad-net gathering + signal/noise filter feeding 078's proposals |
 | **080** | orchestrator-ops-completion | draft | Gemini + Copilot agent drivers (roster 5→7); write-only Discord notification surface; chitin-console as a first-class systemd service |
+| **081** | cron-migration-board-retirement | draft | Phase 3–5: migrate the ~15 swarm crons/watchdogs to Temporal scheduled workflows; retire the kanban-era board read-model |
 
 ## Workspace-overlay & retro specs
 
