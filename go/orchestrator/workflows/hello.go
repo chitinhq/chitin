@@ -16,6 +16,13 @@ import (
 func Register(w worker.Worker) {
 	w.RegisterWorkflow(HelloWorkflow)
 	w.RegisterWorkflow(SequenceWorkflow)
+	w.RegisterWorkflow(SchedulerWorkflow)
+	w.RegisterWorkflow(WorkUnitWorkflow)
+	// ScheduledJobWorkflow registers under its function name —
+	// "ScheduledJobWorkflow" — which is exactly the type name
+	// schedules.EnsureSchedules names as the Schedule's action workflow
+	// (spec 081 US2).
+	w.RegisterWorkflow(ScheduledJobWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

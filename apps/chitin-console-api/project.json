@@ -3,7 +3,7 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
   "sourceRoot": "apps/chitin-console-api/src",
-  "tags": ["scope:app"],
+  "tags": ["type:app", "scope:app", "layer:console", "lang:ts"],
   "targets": {
     "serve": {
       "executor": "nx:run-commands",
@@ -11,6 +11,14 @@
         "command": "node apps/chitin-console-api/src/server.mjs",
         "cwd": "{workspaceRoot}"
       }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --check apps/chitin-console-api/src/server.mjs",
+        "cwd": "{workspaceRoot}"
+      },
+      "dependsOn": ["^validate"]
     }
   }
 }
