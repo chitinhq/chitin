@@ -37,8 +37,13 @@ func WithCommand(command string) Option {
 }
 
 // New returns a Copilot AgentDriver.
+//
+// The default command is "chitin-kernel": Copilot is driven through the
+// `chitin-kernel drive copilot` shim, not the raw `copilot` binary. The
+// Copilot CLI has no working hook surface, so the shim is the only path that
+// places every Copilot tool call under chitin governance (spec 083 US3).
 func New(opts ...Option) *Driver {
-	d := &Driver{command: "copilot"}
+	d := &Driver{command: "chitin-kernel"}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -71,28 +76,30 @@ func (d *Driver) Card() driver.CapabilityCard {
 	}
 }
 
-// Ready reports whether the Copilot CLI binary is available.
+// Ready reports whether the chitin-kernel binary (the Copilot governance
+// shim) is available.
 func (d *Driver) Ready(ctx context.Context) (bool, string) {
 	if err := ctx.Err(); err != nil {
 		return false, err.Error()
 	}
 	if _, err := exec.LookPath(d.command); err != nil {
-		return false, fmt.Sprintf("Copilot runtime %q not found: %v", d.command, err)
+		return false, fmt.Sprintf("Copilot governance shim %q not found: %v", d.command, err)
 	}
 	return true, ""
 }
 
-// Invoke shells out to the GitHub Copilot CLI in the work unit's dedicated
-// worktree. `-p` runs the CLI headless; `--allow-all-tools` is required for
-// non-interactive mode and `--allow-all-paths` lets the agent edit within its
-// worktree — the work unit is isolated and the chitin kernel governs every
-// tool call regardless.
+// Invoke runs Copilot through the `chitin-kernel drive copilot` shim in the
+// work unit's dedicated worktree. The shim wraps the Copilot SDK and routes
+// every tool call through the chitin kernel's gov.Gate — the Copilot CLI has
+// no hook surface, so this shim is what makes Copilot work governed and
+// telemetered (spec 083 US3). `--cwd` scopes the kernel's policy to the
+// worktree; the prompt is the single positional argument.
 func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result, error) {
 	ctx, cancel := invocationContext(ctx, wu.Deadline)
 	defer cancel()
 
 	prompt := promptFor(wu)
-	cmd := exec.CommandContext(ctx, d.command, "-p", prompt, "--allow-all-tools", "--allow-all-paths")
+	cmd := exec.CommandContext(ctx, d.command, "drive", "copilot", "--cwd", wu.WorktreePath, prompt)
 	cmd.Dir = wu.WorktreePath
 
 	var stdout, stderr bytes.Buffer
