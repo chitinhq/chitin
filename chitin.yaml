@@ -235,7 +235,13 @@ rules:
     action: shell.exec
     effect: deny
     driver: hermes
-    target_regex: '(?:^|[;&|]\s*|\s)(?:[\w./-]+/)?(?:codex|claude|gemini)(?:\s|$)'
+    # Matches codex/claude/gemini in command position (optionally
+    # path-prefixed, e.g. `/usr/bin/codex`) or as a bare-name argument
+    # (e.g. `npx codex`). Deliberately does NOT match path arguments
+    # like `./driver/codex` — a Go package path, not a spawn. The old
+    # over-broad `\s` alternative matched any whitespace-preceded token
+    # and was a false-positive lockdown source.
+    target_regex: '(?:(?:^|[;&|]\s*)(?:[\w./-]+/)?|\s)(?:codex|claude|gemini)(?:\s|$)'
     reason: "Hermes does not dispatch frontier coders directly. Use `clawta` to request dispatch via OpenClaw + Lobster."
     suggestion: "clawta --text \"dispatch ticket t_X to <agent>\" — OpenClaw routes to the right worker."
     escalation_weight: 2

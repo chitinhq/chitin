@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/chitinhq/chitin/go/chainhash"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/event"
-	"github.com/chitinhq/chitin/go/execution-kernel/internal/hash"
 )
 
 // ErrSessionEnded is returned by Emit when the chain's tail is already
@@ -120,7 +120,7 @@ func (e *Emitter) Emit(ev *event.Event) error {
 	}
 	delete(m, "this_hash")
 
-	h, err := hash.HashEvent(m)
+	h, err := chainhash.HashEvent(m)
 	if err != nil {
 		return fmt.Errorf("hash event: %w", err)
 	}

@@ -170,6 +170,7 @@ Per Clawta vote (agent-bus thread 9 msgs 4475-4476): **Week 1 ships only `lint-f
 
 1. **Channel:** Icarus gets its own #icarus Discord channel, or shares #swarm? (Argus has #argus already; precedent supports own channel.)
 2. **Default model:** qwen3-coder:30b-32k vs qwen2.5-coder:32b vs DeepSeek-Coder-V2 Lite 16B? Operator runs a 1-hour benchmark on 5 lint-fix tickets each, picks winner.
+   Follow-up evidence from terminal-bench triage on 2026-05-21: the `adaptive-rejection-sampler` trial on 2026-05-19 with `ollama/qwen3-coder:30b-32k` stalled at step 2 on `apt-get update && apt-get install -y r-base` (60s per-step timeout), then spent the remaining turns thrashing on package installation and declared `TASK_COMPLETE` at step 20 despite missing the required verified R outputs. Treat that run as a capability-ceiling datapoint for `qwen3-coder:30b-32k`, not as a harness defect or verifier flake, and include a stronger terminal-bench-style install-and-recovery task in the model swap benchmark before ratifying the default.
 3. **Cron tick interval:** 1 min (matches swarm-invoker) or 5 min (more conservative for local LLM)?
 4. **Escalation target:** Clawta (her lane is heavy-codegen, fits "harder than Icarus") or operator directly?
 5. **Argus consolidation:** Long-term, is Icarus the right place to also do argus's analysis layer (which is mostly LLM-driven anyway)? Or stay separate? Don't decide in v1; revisit Week 4.

@@ -1,0 +1,16 @@
+[Unit]
+Description=Chitin Console — operator web UI (spec 080 US3)
+Documentation=file:///home/red/workspace/chitin/.specify/specs/080-orchestrator-ops-completion/spec.md
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/chitin
+ExecStart=%h/.vite-plus/bin/npx nx serve chitin-console --host 127.0.0.1 --port 4280
+Environment=PATH=%h/.vite-plus/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target

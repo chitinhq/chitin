@@ -13,6 +13,13 @@ in one of these outcomes:
 - A structured cross-driver warning when another driver's tool name leaked
   through the wrong hook.
 
+This matrix is about **action-vocabulary coverage** — whether a tool call
+that *reaches* the gate normalizes to the right canonical action. It is
+orthogonal to **effect-mediation coverage** — whether a side effect can
+reach the OS without producing a gated tool call at all. For that second
+question, and for the observability precondition behind every enforcement
+claim, see [`architecture/effect-observability.md`](./architecture/effect-observability.md).
+
 ## Current surfaces
 
 | Driver | Integration | Normalizer | Coverage | Current gaps |

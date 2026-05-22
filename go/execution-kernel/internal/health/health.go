@@ -29,6 +29,12 @@ type Report struct {
 	// The remaining files are still scanned — one bad file must not black-box
 	// the health signal for the rest.
 	FailedFiles []string `json:"failed_files,omitempty"`
+	// KernelStaleness and RedeployHealth are populated by `chitin health`
+	// (cmdHealth), not by Gather — Gather scans the .chitin event dir, while
+	// these inspect the kernel binary and the install-kernel log. Both are nil
+	// when the caller did not run those checks.
+	KernelStaleness *KernelStaleness `json:"kernel_staleness,omitempty"`
+	RedeployHealth  *RedeployHealth  `json:"redeploy_health,omitempty"`
 }
 
 // clockSkewFutureTolerance bounds how far ahead of wall-clock an event ts may

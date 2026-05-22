@@ -1,0 +1,70 @@
+[
+  {
+    "name": "ordinary-event",
+    "expected_hash": "77097ab4bcac101e9abcb8598dffb63055b6ead58fcb93a2fa42524d33490485",
+    "event": {
+      "schema_version": "2",
+      "chain_id": "sess-ordinary",
+      "event_type": "intended",
+      "seq": 0,
+      "prev_hash": null,
+      "payload": { "tool": "Read", "target": "/etc/hosts" }
+    }
+  },
+  {
+    "name": "historical-chain-record",
+    "expected_hash": "59f32b72558fdca1a2ee05ea6744503b5952994d8ca3e6114d1d05cecbe9a56a",
+    "event": {
+      "schema_version": "2",
+      "run_id": "run-historical",
+      "session_id": "sess-historical",
+      "chain_id": "sess-historical",
+      "event_type": "session_start",
+      "seq": 0,
+      "prev_hash": null,
+      "this_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "ts": "2026-01-01T00:00:00Z",
+      "payload": {}
+    }
+  },
+  {
+    "name": "empty-payload",
+    "expected_hash": "9abb81ac636a467d3e85a873a4dc93b17dbba71ab69d6465bed76a81c2025f37",
+    "event": {
+      "schema_version": "2",
+      "chain_id": "sess-empty",
+      "event_type": "session_end",
+      "seq": 1,
+      "prev_hash": null,
+      "payload": {}
+    }
+  },
+  {
+    "name": "deeply-nested-object",
+    "expected_hash": "4f79699150026947bdab1644610f15014e55fd14f5008b6dfd110c134932585a",
+    "event": {
+      "chain_id": "sess-nested",
+      "payload": {
+        "z_last": { "y": { "x": [3, 2, 1], "a": true }, "b": "deep" },
+        "a_first": "shallow",
+        "m_mid": { "n": null, "k": 7 }
+      }
+    }
+  },
+  {
+    "name": "unicode-strings",
+    "expected_hash": "9927004819694d812fa01c1b3699701182d25ca3d93223a614dab43b19ca85ca",
+    "event": {
+      "chain_id": "sess-unicode",
+      "payload": { "msg": "héllo wörld 日本語 ☃", "emoji": "🎯✓", "rtl": "مرحبا" }
+    }
+  },
+  {
+    "name": "numeric-extremes",
+    "expected_hash": "4569fe709475c048f4994f166308c5ea3084b4b3c938b7e4c533122dfb199d77",
+    "event": {
+      "chain_id": "sess-numeric",
+      "payload": { "max_safe_int": 9007199254740991, "float": 1.5, "zero": 0, "negative": -42 }
+    }
+  }
+]
