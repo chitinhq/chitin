@@ -73,21 +73,6 @@ func main() {
 		log.Fatalf("chitin-orchestrator: cannot build worktree manager at %s: %v", worktreeRoot, err)
 	}
 
-	// Build the spec-076 FR-014 board projector — the write-only sink that
-	// projects node-state onto the Chitin Board read-model. The board is a
-	// read-projection of scheduler state (spec 070 FR-016); a board that is
-	// missing or unopenable must not stop the scheduler, so a failure here
-	// degrades to the logging projector rather than aborting.
-	var board activities.BoardProjector
-	boardProjector, err := activities.NewSQLiteBoardProjector("")
-	if err != nil {
-		log.Printf("chitin-orchestrator: board projection disabled (logging only): %v", err)
-		board = activities.NewLogBoardProjector()
-	} else {
-		defer func() { _ = boardProjector.Close() }()
-		board = boardProjector
-	}
-
 	// Build the spec-070 FR-008 telemetry sink — the OTLP/HTTP exporter for
 	// per-tick scheduler telemetry. It is a no-op when no collector is
 	// configured (OTEL_EXPORTER_OTLP_* unset); Emit then logs and drops.
@@ -104,7 +89,6 @@ func main() {
 	activities.RegisterSchedulerActivities(w, activities.SchedulerActivityDeps{
 		Registry:  registry,
 		Worktrees: worktrees,
-		Board:     board,
 		Telemetry: telemetrySink,
 		Notifier:  notifier,
 	})

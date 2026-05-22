@@ -18,11 +18,11 @@ import (
 // Spec 076 replay/determinism tests for SchedulerWorkflow (FR-005, SC-001):
 // replaying a tick over the same DAG and node states must yield identical
 // dispatch decisions. Each test mocks every side effect — driver selection,
-// the per-node child work unit, board projection, telemetry — so the
-// scheduler runs hermetically and its decisions are a pure function of the
-// DAG. The TestWorkflowEnvironment drives a replay-equivalent execution and
-// panics on any non-determinism; running the scheduler many times over and
-// asserting identical output is the direct proof of SC-001.
+// the per-node child work unit, telemetry — so the scheduler runs
+// hermetically and its decisions are a pure function of the DAG. The
+// TestWorkflowEnvironment drives a replay-equivalent execution and panics on
+// any non-determinism; running the scheduler many times over and asserting
+// identical output is the direct proof of SC-001.
 
 // schedDeps captures the dispatch decisions one scheduler execution made — the
 // observable output the determinism assertion compares.
@@ -119,14 +119,10 @@ func runScheduler(
 			}, nil
 		})
 
-	// Mock the write-only side effects — board projection and telemetry. The
-	// telemetry mock is the authoritative record of the scheduler's dispatch
-	// decisions: tickRec.Dispatched is appended in the scheduler's own
-	// deterministic frontier order, on the tick the dispatch happened.
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
+	// Mock the write-only side effect — telemetry. The telemetry mock is the
+	// authoritative record of the scheduler's dispatch decisions:
+	// tickRec.Dispatched is appended in the scheduler's own deterministic
+	// frontier order, on the tick the dispatch happened.
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, rec activities.TickRecord) error {
 			for _, d := range rec.Dispatched {
@@ -330,10 +326,6 @@ func TestScheduler_AppendJoinsGraph(t *testing.T) {
 				Succeeded: true, Status: "succeeded"}, nil
 		})
 	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
-	env.RegisterActivityWithOptions(
 		func(_ context.Context, rec activities.TickRecord) error {
 			for _, d := range rec.Dispatched {
 				dispatched[d.NodeID] = true
@@ -406,10 +398,6 @@ func TestScheduler_RejectsCyclicAppend(t *testing.T) {
 				Succeeded: true, Status: "succeeded"}, nil
 		})
 	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
-	env.RegisterActivityWithOptions(
 		func(_ context.Context, _ activities.TickRecord) error { return nil },
 		activityOpts("EmitTickTelemetry"),
 	)
@@ -481,10 +469,6 @@ func TestScheduler_SurfacesStalledGraph(t *testing.T) {
 			return WorkUnitResult{NodeID: in.Node.ID, DriverID: in.DriverID,
 				Succeeded: true, Status: "succeeded"}, nil
 		})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
 	stalledSeen := false
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, rec activities.TickRecord) error {
@@ -576,10 +560,6 @@ func TestScheduler_DeterministicNodeBypassesDriverSelection(t *testing.T) {
 			return WorkUnitResult{NodeID: in.Node.ID, DriverID: in.DriverID,
 				Succeeded: true, Status: "succeeded"}, nil
 		})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
 	dispatchReason := map[string]string{}
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, rec activities.TickRecord) error {
@@ -677,10 +657,6 @@ func TestScheduler_DeterministicStepFailurePropagates(t *testing.T) {
 			return WorkUnitResult{NodeID: in.Node.ID, DriverID: in.DriverID,
 				Succeeded: succeeded, Status: status}, nil
 		})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, _ activities.BoardProjectionInput) error { return nil },
-		activityOpts("ProjectToBoard"),
-	)
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, _ activities.TickRecord) error { return nil },
 		activityOpts("EmitTickTelemetry"),

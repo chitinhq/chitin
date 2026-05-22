@@ -109,8 +109,8 @@ func (a *SurfaceActivity) Execute(ctx context.Context, in SurfaceInput) (Surface
 
 // logKnowledgeBase is the fallback KnowledgeBase used when no real sink is
 // bound. It logs each surfaced item and discards it — the pipeline runs end
-// to end, but nothing is persisted. It mirrors the orchestrator's
-// logBoardProjector fallback pattern (activities/board_projection.go).
+// to end, but nothing is persisted. It follows the orchestrator's
+// log-fallback pattern for write-only sinks bound at worker-host startup.
 //
 // TODO(spec 079 / spec 078 integration): bind the production KnowledgeBase to
 // spec 078's knowledge-base read-model at worker-host startup. The store's

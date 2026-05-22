@@ -19,10 +19,6 @@ type SchedulerActivityDeps struct {
 	// Worktrees is the spec-070 worktree Manager the CreateWorktree and
 	// TeardownWorktree activities use. Required.
 	Worktrees *worktree.Manager
-	// Board is the write-only board read-model sink for ProjectToBoard. A nil
-	// Board falls back to the logging projector — see the TODO on
-	// logBoardProjector in board_projection.go.
-	Board BoardProjector
 	// Telemetry is the write-only per-tick telemetry sink for
 	// EmitTickTelemetry. A nil Telemetry falls back to the logging sink.
 	Telemetry TickTelemetrySink
@@ -47,7 +43,6 @@ type SchedulerActivityDeps struct {
 //     agent work unit's worktree (spec 070 PR-out gate).
 //   - "DiscordNotify"         — post a work event to the human notification
 //     channel (spec 080 US2).
-//   - "ProjectToBoard"        — node-state projection to the board (FR-014).
 //   - "EmitTickTelemetry"     — per-tick telemetry emission (FR-015).
 //   - "InvokeDriver:<id>"     — one per registered driver, for the driver
 //     invocation inside WorkUnitWorkflow (spec 075 FR-007).
@@ -77,9 +72,6 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)
 	w.RegisterActivityWithOptions(notify.Execute, registerAs(notify.ActivityName()))
-
-	board := NewBoardProjection(deps.Board)
-	w.RegisterActivityWithOptions(board.Execute, registerAs(board.ActivityName()))
 
 	tel := NewTickTelemetry(deps.Telemetry)
 	w.RegisterActivityWithOptions(tel.Execute, registerAs(tel.ActivityName()))
