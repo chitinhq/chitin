@@ -56,6 +56,8 @@ func main() {
 		cmdUninstall(args)
 	case "health":
 		cmdHealth(args)
+	case "report":
+		cmdReport(args)
 	case "board-config":
 		cmdBoardConfig(args)
 	case "kanban":

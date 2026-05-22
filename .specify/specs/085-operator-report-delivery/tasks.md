@@ -26,7 +26,7 @@ story is independently implementable and testable.
 
 **Purpose**: Confirm a clean baseline before changing kernel/orchestrator code.
 
-- [ ] T001 Confirm a green baseline — `go build ./... && go test ./...` in both `go/execution-kernel/` and `go/orchestrator/`; record any pre-existing failures.
+- [X] T001 Confirm a green baseline — `go build ./... && go test ./...` in both `go/execution-kernel/` and `go/orchestrator/`; record any pre-existing failures.
 
 ---
 
@@ -37,9 +37,9 @@ both the heartbeat (US1) and the digest (US2) build on.
 
 **⚠️ CRITICAL**: US1 and US2 both depend on this phase.
 
-- [ ] T002 Create the `go/execution-kernel/internal/report/` package (package doc) and register a `report` subcommand dispatcher in `go/execution-kernel/cmd/chitin-kernel/main.go` routing `heartbeat`/`digest` to handler stubs in `go/execution-kernel/cmd/chitin-kernel/report.go`.
-- [ ] T003 Write `go/execution-kernel/internal/report/render_test.go` — the shared renderer: skimmable length-bounded output, link inclusion on detail lines, fixed section/line ordering, degraded-line rendering.
-- [ ] T004 Implement the shared renderer in `go/execution-kernel/internal/report/render.go` — titled sections of `(text, optional link)` → a skimmable, length-bounded Discord message string (contract C4). Make T003 pass.
+- [X] T002 Create the `go/execution-kernel/internal/report/` package (package doc) and register a `report` subcommand dispatcher in `go/execution-kernel/cmd/chitin-kernel/main.go` routing `heartbeat`/`digest` to handler stubs in `go/execution-kernel/cmd/chitin-kernel/report.go`.
+- [X] T003 Write `go/execution-kernel/internal/report/render_test.go` — the shared renderer: skimmable length-bounded output, link inclusion on detail lines, fixed section/line ordering, degraded-line rendering.
+- [X] T004 Implement the shared renderer in `go/execution-kernel/internal/report/render.go` — titled sections of `(text, optional link)` → a skimmable, length-bounded Discord message string (contract C4). Make T003 pass.
 
 **Checkpoint**: `internal/report` exists with a tested renderer — user stories can proceed.
 
@@ -53,14 +53,14 @@ redeploy) is delivered to the operator's Discord on a schedule.
 **Independent Test**: Wait one heartbeat interval; a liveness message arrives in
 Discord stating per-component status and the last kernel-redeploy outcome.
 
-- [ ] T005 [US1] Write `go/execution-kernel/internal/report/heartbeat_test.go` — `ComposeHeartbeat` over healthy / degraded / unreachable-source fixtures; `missed_reports` derivation; the never-healthy-on-an-absent-signal invariant (FR-003).
-- [ ] T006 [US1] Implement `go/execution-kernel/internal/report/heartbeat.go` — the `Heartbeat` type + `ComposeHeartbeat()` reading `chitin health` (component statuses, kernel staleness, last redeploy) and the delivery log for `missed_reports`. Make T005 pass.
-- [ ] T007 [US1] Implement `chitin-kernel report heartbeat` in `go/execution-kernel/cmd/chitin-kernel/report.go` — compose → render → print to stdout; exit 0 on a partial report; side-effect-free (contract C1).
-- [ ] T008 [P] [US1] Write the delivery-script test `go/execution-kernel/cmd/chitin-kernel/operator_report_script_test.go` — a bash harness (mock `chitin-kernel` and `openclaw`) asserting the audit record, exit codes, and the delivery-failure path (contract C2).
-- [ ] T009 [US1] Implement `swarm/bin/deliver-operator-report.sh` (heartbeat mode) — run `chitin-kernel report heartbeat`, post via `openclaw message send --channel discord`, append one `ReportDeliveryRecord` to `~/.cache/chitin/operator-report.jsonl` (contract C2). Make T008 pass.
-- [ ] T010 [P] [US1] Add the tracked installer `swarm/bin/install-operator-report.sh` (Constitution §4) — symlink the delivery script to its runtime location.
-- [ ] T011 [US1] Add the `operator-heartbeat` Temporal Schedule `JobSpec` in `go/orchestrator/schedules/operator_heartbeat.go` (hourly) and register it in `Registry()` in `go/orchestrator/schedules/schedules.go` (contract C3).
-- [ ] T012 [P] [US1] Test JobSpec registration in `go/orchestrator/schedules/operator_report_test.go` — `operator-heartbeat` is in `Registry()` with the expected name and cron shape.
+- [X] T005 [US1] Write `go/execution-kernel/internal/report/heartbeat_test.go` — `ComposeHeartbeat` over healthy / degraded / unreachable-source fixtures; `missed_reports` derivation; the never-healthy-on-an-absent-signal invariant (FR-003).
+- [X] T006 [US1] Implement `go/execution-kernel/internal/report/heartbeat.go` — the `Heartbeat` type + `ComposeHeartbeat()` reading `chitin health` (component statuses, kernel staleness, last redeploy) and the delivery log for `missed_reports`. Make T005 pass.
+- [X] T007 [US1] Implement `chitin-kernel report heartbeat` in `go/execution-kernel/cmd/chitin-kernel/report.go` — compose → render → print to stdout; exit 0 on a partial report; side-effect-free (contract C1).
+- [X] T008 [P] [US1] Write the delivery-script test `go/execution-kernel/cmd/chitin-kernel/operator_report_script_test.go` — a bash harness (mock `chitin-kernel` and `openclaw`) asserting the audit record, exit codes, and the delivery-failure path (contract C2).
+- [X] T009 [US1] Implement `swarm/bin/deliver-operator-report.sh` (heartbeat mode) — run `chitin-kernel report heartbeat`, post via `openclaw message send --channel discord`, append one `ReportDeliveryRecord` to `~/.cache/chitin/operator-report.jsonl` (contract C2). Make T008 pass.
+- [X] T010 [P] [US1] Add the tracked installer `swarm/bin/install-operator-report.sh` (Constitution §4) — symlink the delivery script to its runtime location.
+- [X] T011 [US1] Add the `operator-heartbeat` Temporal Schedule `JobSpec` in `go/orchestrator/schedules/operator_heartbeat.go` (hourly) and register it in `Registry()` in `go/orchestrator/schedules/schedules.go` (contract C3).
+- [X] T012 [P] [US1] Test JobSpec registration in `go/orchestrator/schedules/operator_report_test.go` — `operator-heartbeat` is in `Registry()` with the expected name and cron shape.
 - [ ] T013 [US1] Verify US1 via `quickstart.md` — `chitin-kernel report heartbeat` composes; `deliver-operator-report.sh heartbeat` posts to Discord; a stale kernel shows `degraded`; the scheduled job fires.
 
 **Checkpoint**: ✅ US1 — heartbeat delivered to Discord, scheduled, side-effect-free.
