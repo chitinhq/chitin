@@ -40,6 +40,7 @@ try:
         LoopDetector,
         STDERR_CAPTURE_LIMIT,
         STDOUT_CAPTURE_LIMIT,
+        gather_environment_bootstrap,
         _strip_provider_prefix,
         is_task_complete,
         ollama_chat,
@@ -55,6 +56,7 @@ except ModuleNotFoundError as exc:
     LoopDetector = None
     STDERR_CAPTURE_LIMIT = None
     STDOUT_CAPTURE_LIMIT = None
+    gather_environment_bootstrap = None
     _strip_provider_prefix = None
     is_task_complete = None
     ollama_chat = None
@@ -218,6 +220,27 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
+class TestEnvironmentBootstrap(TestCase):
+    """Invariant: the bootstrap advertises the interpreters it can find."""
+
+    def test_surfaces_perl_when_python_is_absent(self):
+        class FakeEnvironment:
+            async def exec(self, cmd: str) -> ExecResult:
+                if cmd == "uname -a":
+                    return ExecResult(stdout="Linux test\n", return_code=0)
+                if cmd == "pwd":
+                    return ExecResult(stdout="/app\n", return_code=0)
+                if cmd == "ls -la":
+                    return ExecResult(stdout="total 4\n", return_code=0)
+                if "command -v" in cmd:
+                    return ExecResult(stdout="/usr/bin/perl\n", return_code=0)
+                raise AssertionError(f"unexpected probe command: {cmd}")
+
+        bootstrap = asyncio.run(gather_environment_bootstrap(FakeEnvironment()))
+        self.assertIn("/usr/bin/perl", bootstrap)
 
 
 @skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")

@@ -252,7 +252,7 @@ BOOTSTRAP_PROBE_CMDS = [
     "uname -a",
     "pwd",
     "ls -la",
-    "command -v python3 python pip pip3 node npm pnpm go cargo rustc make gcc g++ git curl wget jq sqlite3 ruff black eslint pytest 2>/dev/null | head -50",
+    "command -v python3 python perl pip pip3 node npm pnpm go cargo rustc make gcc g++ git curl wget jq sqlite3 ruff black eslint pytest 2>/dev/null | head -50",
 ]
 
 
