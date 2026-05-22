@@ -241,10 +241,90 @@ case "$*" in
   "diff --quiet oldsha newsha -- go/ chitin.yaml")
     exit 1
     ;;
-  "pull --ff-only --autostash --quiet origin main")
+  "diff --quiet HEAD")
+    exit 1
+    ;;
+  "stash push"*)
+    ;;
+  "merge --ff-only --quiet origin/main")
+    ;;
+  "stash pop --quiet")
     ;;
   "diff --name-only oldsha newsha -- go/ chitin.yaml")
     printf 'go/execution-kernel/cmd/chitin-kernel/main.go\n'
+    ;;
+  *)
+    printf 'unexpected git args: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+`
+}
+
+// TestInstallKernelScript_MergeConflictExitsPullConflict exercises the exact
+// failure T007 hardens against: `git merge --ff-only origin/main` cannot
+// fast-forward. The script must restore the autostash, emit pull-conflict, and
+// exit 1 — never silently leave the operator's work stashed.
+func TestInstallKernelScript_MergeConflictExitsPullConflict(t *testing.T) {
+	skipIfCIWithoutTrustKey(t)
+	env := newInstallKernelHarness(t)
+	writeExecutable(t, filepath.Join(env.stubDir, "git"), gitStubMergeConflictBody())
+
+	cmd := exec.Command("bash", env.scriptPath)
+	cmd.Env = env.environ()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("install-kernel.sh unexpectedly succeeded on a merge conflict\n%s", out)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("want ExitError, got %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("exit code=%d want 1\n%s", exitErr.ExitCode(), out)
+	}
+
+	logData := env.readLog(t)
+	for _, want := range []string{
+		`"msg":"pull-conflict"`,
+		`"msg":"autostash-restored-after-conflict"`,
+	} {
+		if !strings.Contains(logData, want) {
+			t.Fatalf("log missing %s\n%s", want, logData)
+		}
+	}
+}
+
+// gitStubMergeConflictBody is gitStubBody with `merge --ff-only` failing — the
+// FETCH_HEAD-divergence case. stash push/pop still succeed so the script can
+// restore the operator's work before exiting.
+func gitStubMergeConflictBody() string {
+	return `#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "rev-parse --abbrev-ref HEAD")
+    printf 'main\n'
+    ;;
+  "rev-parse HEAD")
+    printf 'oldsha\n'
+    ;;
+  "fetch --quiet origin main")
+    ;;
+  "rev-parse origin/main")
+    printf 'newsha\n'
+    ;;
+  "diff --quiet oldsha newsha -- go/ chitin.yaml")
+    exit 1
+    ;;
+  "diff --quiet HEAD")
+    exit 1
+    ;;
+  "stash push"*)
+    ;;
+  "merge --ff-only --quiet origin/main")
+    exit 1
+    ;;
+  "stash pop --quiet")
     ;;
   *)
     printf 'unexpected git args: %s\n' "$*" >&2
