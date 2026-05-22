@@ -95,6 +95,13 @@ def _on_pre_tool_call(tool_name: str, args: Dict[str, Any], session_id: str = ""
     policy_file = os.environ.get("CHITIN_POLICY_FILE", "").strip()
     if policy_file:
         cmd.extend(["--policy-file", policy_file])
+    # Forward hermes's session id so the kernel stamps chain_id +
+    # session_id onto the decision row. Without it the console — which
+    # groups decisions into sessions by chain_id||session_id||envelope_id
+    # — cannot see hermes: this CLI path resolves an envelope only when
+    # one is active, so envelope_id alone is not a reliable anchor.
+    if session_id:
+        cmd.extend(["--session-id", session_id])
     try:
         cp = subprocess.run(
             cmd,

@@ -15,42 +15,6 @@
   "scripts": {
     "test": "vitest run 000-boundary-coverage.test.ts tests"
   },
-  "nx": {
-    "sourceRoot": "apps/cli/src",
-    "projectType": "application",
-    "tags": [
-      "type:app",
-      "scope:app",
-      "layer:cli",
-      "lang:ts"
-    ],
-    "targets": {
-      "test": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
-          "cwd": "{workspaceRoot}"
-        }
-      },
-      "run": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec tsx apps/cli/src/main.ts",
-          "cwd": "{workspaceRoot}"
-        }
-      },
-      "validate": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec tsc -b apps/cli/tsconfig.json && pnpm exec vitest run apps/cli/000-boundary-coverage.test.ts apps/cli/tests",
-          "cwd": "{workspaceRoot}"
-        },
-        "dependsOn": [
-          "^validate"
-        ]
-      }
-    }
-  },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
     "tsx": "^4.21.0",

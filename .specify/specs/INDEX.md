@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-20 (spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066).
+> Last updated 2026-05-21 (INDEX backfill: 025, 037, 039, 728; collision flags at 036/038/067/071).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -152,6 +152,12 @@ spec 049 §R6.
 |------|-------|------|--------|---------------|
 | 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
 
+## Dispatch invariants — spec 025
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| 025 | dispatch-atomicity-invariant | draft | — | Block↔close single-owner invariant |
+
 ## Spec stubs from 2026-05-18 chitin spec-kit audit
 
 > Filed during the overnight goal's Ares-lane audit. Cross-lane
@@ -171,6 +177,8 @@ spec 049 §R6.
 | 033 | typed-egress-mcp-trust-policy | t_c7bb6c64 | draft (stub) |
 | 034 | argus-standup-fold | t_da209102 | draft (stub) |
 | 035 | copilot-driver-chitin-policy-env | t_6bfe83b7 | draft (stub) |
+| 037 | sw-011-heartbeat-proof-tests | — | draft (stub) |
+| 039 | mini-discord-inbound | — | draft |
 
 10 other chitin tickets recommended for **archive** (operator-
 attended; tracking epics, research deferred, operator-audit planning
@@ -190,11 +198,49 @@ triage rationale.
 |------|-------|--------|--------------|-------|
 | 074 | polyglot-monorepo-layout | draft | — | P0 cull drift → P1 registration gap → P2 convention → P3 layout convergence |
 
+## Chitin Orchestrator — specs 070 + 075-081
+
+> The agent-agnostic, Temporal-based orchestration platform, and the
+> self-improvement loop built on it. Spec 070 (operator-ratified engine:
+> Temporal Go, 2026-05-20) is the durable-execution foundation; 075 the
+> agent-driver contract; 076 the spec-DAG scheduler that replaces the
+> kanban pull-loop; 077 the kit-agnostic spec adapter; 078-079 the
+> self-improvement loop and its information-ingestion front-end. Octi
+> specs 040-048 are re-homed here. Implementation: PR #886. Strategy:
+> `docs/strategy/chitin-orchestrator-options-2026-05-20.md`.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **070** | chitin-orchestrator | draft | Temporal Go durable-execution platform; worktree isolation; migration off cron/script sprawl |
+| **075** | agent-driver-contract | draft | The `AgentDriver` interface, driver registry, capability cards — plug in any agent, zero core change |
+| **076** | spec-dag-scheduler | draft | Specs → dependency DAG; deterministic scheduler; agent vs deterministic nodes; replaces the kanban pull-loop (070 FR-015) |
+| **077** | spec-kit-adapter | draft | Kit-agnostic compile (spec-kit / OpenSpec / superpowers) → the normalized 076 DAG |
+| **078** | self-improvement-loop | draft | Telemetry → analysis → spec proposals → [human gate] → implementation; generalizes Sentinel (064) |
+| **079** | information-ingestion-pipeline | draft | External-knowledge front-end: broad-net gathering + signal/noise filter feeding 078's proposals |
+| **080** | orchestrator-ops-completion | draft | Gemini + Copilot agent drivers (roster 5→7); write-only Discord notification surface; chitin-console as a first-class systemd service |
+| **081** | cron-migration-board-retirement | draft | Phase 3–5: migrate the ~15 swarm crons/watchdogs to Temporal scheduled workflows; retire the kanban-era board read-model |
+
 ## Workspace-overlay & retro specs
 
 | Spec | Title | Status | Notes |
 |------|-------|--------|-------|
+| 728 | dispatch-default-branch-fix | shipped | Respect board default_branch in worker commit gate |
 | 730 | path-scope-race-guards | shipped | Day-0 readybench portal retro fix (3-layer scope defense) |
+
+## ⚠️ Spec-number collisions — operator resolution needed
+
+These spec-dir prefixes are claimed by more than one directory on disk.
+Each needs an operator ruling (renumber or suffix) before the registry
+can show a single canonical row:
+
+- **036** — `036-dispatch-fault-tolerance-invariants`,
+  `036-ic-001-icarus-local-llm-driver`, `036-icarus-harbor-agent-adapter`
+- **038** — `038-icarus-harbor-agent-adapter`,
+  `038-octi-persistent-claude-session`
+- **067** — `067-clawta-implementer-lanes`, `067-tasks-to-tickets`
+  (the section above lists `clawta-implementer-lanes`; the other is unlisted)
+- **071** — `071-chitin-coach`, `071-kanban-block-invariant-fix`
+  (both unlisted pending the ruling)
 
 ## How this file is maintained
 
