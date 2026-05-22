@@ -1,7 +1,7 @@
 import BetterSqlite3 from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { ensureIndexed } from '../telemetry.js';
+import { ensureIndexed } from '@chitin/telemetry';
 
 export interface ListOpts {
   workspace?: string;
