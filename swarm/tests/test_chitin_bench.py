@@ -11,6 +11,7 @@ states the invariant up front in the docstring.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from unittest import TestCase, main
 
@@ -147,7 +148,7 @@ class TestEmitterClassifier(TestCase):
     """Invariant: every trial result either passes (reward >= 1.0) or
     produces exactly one (is_failure=True, block_reason, evidence) tuple."""
 
-    def _classify(self, trial: dict):
+    def _classify(self, trial: dict, trial_dir: Path | None = None):
         # Import lazily; the emitter module imports nothing heavy.
         import importlib.util
         from pathlib import Path
@@ -160,7 +161,7 @@ class TestEmitterClassifier(TestCase):
         )
         mod = importlib.util.module_from_spec(loader_spec)
         loader_spec.loader.exec_module(mod)
-        return mod.classify_failure(trial)
+        return mod.classify_failure(trial, trial_dir)
 
     def test_pass_when_reward_one(self):
         is_fail, reason, _ = self._classify(
@@ -215,6 +216,26 @@ class TestEmitterClassifier(TestCase):
         is_fail, reason, _ = self._classify({})
         self.assertTrue(is_fail)
         self.assertEqual(reason, "verifier_missing")
+
+    def test_verifier_bootstrap_failure_classified_from_stdout(self):
+        """Verifier bootstrap breakage in sibling logs must not collapse
+        into a generic verifier_failed ticket."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            verifier_dir = Path(tmpdir) / "verifier"
+            verifier_dir.mkdir(parents=True, exist_ok=True)
+            (verifier_dir / "test-stdout.txt").write_text(
+                "E: The repository 'http://cran.rstudio.com/bin/linux/ubuntu focal/ Release' "
+                "does not have a Release file.\n"
+                "/tests/test.sh: line 8: curl: command not found\n"
+                "/tests/test.sh: line 19: uvx: command not found\n"
+            )
+            is_fail, reason, evidence = self._classify(
+                {"verifier_result": {"rewards": {"reward": 0.0}}},
+                Path(tmpdir),
+            )
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "environment_setup_failed")
+        self.assertIn("curl: command not found", evidence)
 
 
 if __name__ == "__main__":
