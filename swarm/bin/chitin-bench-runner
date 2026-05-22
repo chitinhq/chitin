@@ -197,6 +197,28 @@ def acquire_lock() -> "object":
     return fh
 
 
+def _classify_exception_block_reason(exc_info: dict) -> str:
+    """Map Harbor exception_info into a stable block_reason.
+
+    Environment startup/build failures happen before agent execution and
+    should not be recorded as generic harness exceptions.
+    """
+    exc_type = str(exc_info.get("exception_type", "unknown"))
+    exc_message = str(exc_info.get("exception_message", "")).lower()
+    env_markers = (
+        "environment",
+        "docker",
+        "container",
+        "image pull",
+        "compose",
+    )
+    if exc_type.startswith("Environment") or exc_type.startswith("Docker"):
+        return f"environment_setup_failed:{exc_type}"
+    if any(marker in exc_message for marker in env_markers):
+        return f"environment_setup_failed:{exc_type}"
+    return f"harness_exception:{exc_type}"
+
+
 def _extract_tick_metadata(result: dict, job_name: str) -> dict:
     """Read the trial result.json written by harbor to extract
     reward, steps_used, and block_reason for the gov-decision row.
@@ -239,7 +261,7 @@ def _extract_tick_metadata(result: dict, job_name: str) -> dict:
                 meta["block_reason"] = block_reason
             elif trial.get("exception_info"):
                 exc_info = trial["exception_info"]
-                meta["block_reason"] = f"harness_exception:{exc_info.get('exception_type', 'unknown')}"
+                meta["block_reason"] = _classify_exception_block_reason(exc_info)
             elif result.get("status") == "timeout":
                 meta["block_reason"] = "timeout"
 

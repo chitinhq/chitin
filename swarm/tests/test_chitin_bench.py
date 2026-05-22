@@ -14,30 +14,55 @@ import asyncio
 import importlib
 import json
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest import TestCase, main, mock
+from unittest import TestCase, main, mock, skipUnless
 from urllib import error as urllib_error
 
-from harbor.environments.base import ExecResult
+try:
+    from harbor.environments.base import ExecResult
+except ModuleNotFoundError:
+    @dataclass
+    class ExecResult:
+        stdout: str = ""
+        stderr: str = ""
+        return_code: int = 0
 
-from swarm.chitin_bench.agent import (
-    BASH_BLOCK_RE,
-    BenchAgent,
-    BenchOllamaError,
-    BenchOllamaTimeout,
-    LoopDetector,
-    STDERR_CAPTURE_LIMIT,
-    STDOUT_CAPTURE_LIMIT,
-    _strip_provider_prefix,
-    is_task_complete,
-    ollama_chat,
-    parse_bash_block,
-    wrap_command_with_timeout,
-)
+AGENT_TESTS_AVAILABLE = True
+AGENT_TESTS_SKIP_REASON = ""
+try:
+    from swarm.chitin_bench.agent import (
+        BASH_BLOCK_RE,
+        BenchAgent,
+        BenchOllamaTimeout,
+        LoopDetector,
+        STDERR_CAPTURE_LIMIT,
+        STDOUT_CAPTURE_LIMIT,
+        _strip_provider_prefix,
+        is_task_complete,
+        ollama_chat,
+        parse_bash_block,
+        wrap_command_with_timeout,
+    )
+except ModuleNotFoundError as exc:
+    AGENT_TESTS_AVAILABLE = False
+    AGENT_TESTS_SKIP_REASON = str(exc)
+    BASH_BLOCK_RE = None
+    BenchAgent = None
+    BenchOllamaTimeout = None
+    LoopDetector = None
+    STDERR_CAPTURE_LIMIT = None
+    STDOUT_CAPTURE_LIMIT = None
+    _strip_provider_prefix = None
+    is_task_complete = None
+    ollama_chat = None
+    parse_bash_block = None
+    wrap_command_with_timeout = None
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestBashBlockParser(TestCase):
     """Invariant: parse_bash_block extracts the FIRST fenced block."""
 
@@ -68,6 +93,7 @@ class TestBashBlockParser(TestCase):
         self.assertEqual(parse_bash_block(text), "ls -la \\\n  /tmp")
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestTaskCompleteSentinel(TestCase):
     """Invariant: TASK_COMPLETE is recognized on its OWN line."""
 
@@ -90,6 +116,7 @@ class TestTaskCompleteSentinel(TestCase):
         self.assertFalse(is_task_complete("TASK_COMPLETED"))
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestLoopDetector(TestCase):
     """Invariant: trips on (a) 3 consecutive identical commands, OR
     (b) 3 consecutive non-zero with identical captured output.
@@ -133,6 +160,7 @@ class TestLoopDetector(TestCase):
         self.assertFalse(ld.is_looping())
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestObservationFormatting(TestCase):
     """Invariant: truncated observations are labeled so the model can
     narrow the next read instead of repeating the same command."""
@@ -170,6 +198,7 @@ class TestObservationFormatting(TestCase):
         self.assertIn(trailer, observation)
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestStripProviderPrefix(TestCase):
     """Invariant: ``ollama/<model>`` becomes ``<model>``; everything
     else is untouched. Idempotent."""
@@ -191,6 +220,7 @@ class TestStripProviderPrefix(TestCase):
         self.assertEqual(_strip_provider_prefix(once), once)
 
 
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
 class TestOllamaChatFailures(TestCase):
     """Invariant: Ollama decode timeouts are classified separately from
     generic HTTP failures so timeout tickets are triaged correctly."""
@@ -212,6 +242,7 @@ class TestOllamaChatFailures(TestCase):
                 ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
 
     def test_non_timeout_urlerror_stays_generic(self):
+        from swarm.chitin_bench.agent import BenchOllamaError
         with mock.patch(
             "swarm.chitin_bench.agent.urllib_request.urlopen",
             side_effect=urllib_error.URLError("connection refused"),
@@ -331,7 +362,17 @@ class TestEmitterClassifier(TestCase):
             }}
         )
         self.assertTrue(is_fail)
-        self.assertIn("DockerBuildError", reason)
+        self.assertEqual(reason, "environment_setup_failed:DockerBuildError")
+
+    def test_environment_start_timeout_classified_as_environment_setup_failure(self):
+        is_fail, reason, _ = self._classify(
+            {"exception_info": {
+                "exception_type": "EnvironmentStartTimeoutError",
+                "exception_message": "Environment start timed out after 600.0 seconds",
+            }}
+        )
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "environment_setup_failed:EnvironmentStartTimeoutError")
 
     def test_chitin_bench_block_reason_classified(self):
         is_fail, reason, _ = self._classify({
