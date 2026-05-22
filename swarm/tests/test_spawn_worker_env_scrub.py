@@ -1,7 +1,7 @@
 """Regression test for Clawta's PR #773 dispatch-readiness ask (msg 5392):
 
 > scrub CHITIN_GOV_OPERATOR_AUTHORIZED=1 before any worker/sub-worker
-> spawn path, including kanban-dispatch.lobster -> clawta-poller
+> spawn path, including the kanban-dispatch.lobster worker-launch
 > dispatch. Operator authorization should be a local parent-process
 > affordance, not inherited ambient capability. Add a regression that
 > spawned worker env does not contain it.

@@ -2,22 +2,23 @@ package schedules
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/temporal"
 )
 
-// Spec 081 US2 tests for the Schedule-backed cron migration pattern. T009
-// migrated swarm-audit; T010–T012 add the remaining six periodic crons —
-// architecture-audit, the three Argus ingesters, and the two codex jobs — so
-// the Registry holds at least these seven US2 JobSpecs, each on the cadence of
-// its retired systemd timer. Later specs append further jobs to the Registry
-// (e.g. spec 085's operator-heartbeat), so this set is a subset, not the total.
+// Spec 081 tests for the Schedule-backed cron migration pattern. With US2
+// T009–T012 and US3 T015–T019 landed, Registry() holds the seven periodic
+// read-mostly jobs plus the five watchdog / mutation / ops jobs. Later specs
+// (e.g. spec 085) append further jobs to the Registry, so the US3 set is a
+// verified subset, not the total.
 
-// us2Jobs is the expected US2 Registry: every periodic cron migrated by
-// T009–T012, with the cron cadence the retired systemd timer fired on
-// (spec 081 FR-005 — same cadence as the retired timer).
+// expectedJobs is the migrated Registry: every JobSpec landed by spec 081's
+// US2 + the landed US3 cron migrations, with the cadence of its retired timer
+// or cron source of truth (spec 081 FR-005 — same cadence as the retired
+// runner).
 //
 //	swarm-audit                OnCalendar=*-*-* 08:00:00      → "0 8 * * *"
 //	architecture-audit         OnCalendar=Sun *-*-* 06:00:00  → "0 6 * * 0"
@@ -26,7 +27,12 @@ import (
 //	argus-ingest-logs          OnUnitActiveSec=2min           → "*/2 * * * *"
 //	chitin-codex-chain-ingest  OnUnitActiveSec=1h             → "0 * * * *"
 //	chitin-codex-usage-feed    OnUnitActiveSec=10min          → "*/10 * * * *"
-var us2Jobs = []struct {
+//	chitin-chain-watch         OnUnitActiveSec=1min           → "* * * * *"
+//	chitin-agent-unlock        OnUnitActiveSec=15min          → "*/15 * * * *"
+//	chitin-envelope-rotate     OnUnitActiveSec=5min           → "*/5 * * * *"
+//	chitin-kernel-redeploy     OnUnitActiveSec=15min          → "*/15 * * * *"
+//	openclaw-gateway-restart   spec 036 hourly cron           → "0 * * * *"
+var expectedJobs = []struct {
 	name string
 	cron string
 	tz   string
@@ -38,15 +44,21 @@ var us2Jobs = []struct {
 	{"argus-ingest-logs", "*/2 * * * *", ""},
 	{"chitin-codex-chain-ingest", "0 * * * *", ""},
 	{"chitin-codex-usage-feed", "*/10 * * * *", ""},
+	{"chitin-chain-watch", "* * * * *", ""},
+	{"chitin-agent-unlock", "*/15 * * * *", ""},
+	{"chitin-envelope-rotate", "*/5 * * * *", ""},
+	{"chitin-kernel-redeploy", "*/15 * * * *", ""},
+	{"openclaw-gateway-restart", "0 * * * *", ""},
 }
 
-// TestRegistry_HasUS2Jobs proves Registry() returns every periodic cron
-// migrated by spec 081 US2 (T009–T012) with the cadence of its retired timer.
-func TestRegistry_HasUS2Jobs(t *testing.T) {
+// TestRegistry_HasMigratedJobs proves Registry() returns every JobSpec
+// migrated by spec 081 US2 + the landed US3 cron migrations, with the cadence
+// of its retired timer / cron source of truth.
+func TestRegistry_HasMigratedJobs(t *testing.T) {
 	reg := Registry()
-	if len(reg) < len(us2Jobs) {
-		t.Fatalf("Registry() returned %d jobs, want at least %d (the US2 T009–T012 set); got %+v",
-			len(reg), len(us2Jobs), reg)
+	if len(reg) < len(expectedJobs) {
+		t.Fatalf("Registry() returned %d jobs, want at least %d (spec 081 US2 + landed US3); got %+v",
+			len(reg), len(expectedJobs), reg)
 	}
 
 	byName := make(map[string]JobSpec, len(reg))
@@ -57,7 +69,7 @@ func TestRegistry_HasUS2Jobs(t *testing.T) {
 		byName[job.Name] = job
 	}
 
-	for _, want := range us2Jobs {
+	for _, want := range expectedJobs {
 		job, ok := byName[want.name]
 		if !ok {
 			t.Errorf("Registry() is missing job %q", want.name)
@@ -71,6 +83,9 @@ func TestRegistry_HasUS2Jobs(t *testing.T) {
 		}
 		if job.Command == "" {
 			t.Errorf("job %q Command is empty — the activity has no script to run", want.name)
+		}
+		if !filepath.IsAbs(job.Command) {
+			t.Errorf("job %q Command = %q, want an absolute on-disk executable path", want.name, job.Command)
 		}
 		if job.Description == "" {
 			t.Errorf("job %q Description is empty — the Schedule note would be blank", want.name)

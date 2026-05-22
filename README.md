@@ -61,11 +61,11 @@ Hermes is the kanban substrate; OpenClaw is the agent-runtime substrate (Lobster
 The kernel above gates each tool call. The **constitution + spec-kit layer** governs how the swarm dispatches and coordinates around the kernel:
 
 - **`.specify/constitution.md`** — repo-level overlay; extends the workspace constitution at `~/workspace/.specify/constitution.md`. Both ratified via agent-bus standup threads.
-- **`.specify/specs/NNN-<slug>/spec.md`** — every ticket promoted `triage → ready` MUST have a matching spec-kit entry. Enforced by `has_spec_kit_entry()` in `swarm/bin/clawta-poller` and `swarm/workflows/hermes-clawta-bridge.py`.
-- **Empty-branch gate** — `swarm/workflows/kanban-dispatch.lobster` refuses to push if `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`.
-- **PR lifecycle close-intent** — `swarm/bin/clawta-pr-lifecycle` closes a ticket on PR merge when the branch name matches a trusted prefix or the body contains `Closes/Fixes/Resolves t_xxx`. `Refs t_xxx` is traceability only.
-- **Loop-detected auto-unblock skip** — `swarm/bin/clawta-poller` will not auto-unblock tickets carrying `loop_detected=true`; the watchdog owns them.
-- **Tracked source over local patches** — shared swarm runtime scripts ship with tracked sources + idempotent installers at `swarm/bin/install-*.sh`.
+- **`.specify/specs/NNN-<slug>/spec.md`** — every ticket promoted `triage → ready` MUST have a matching spec-kit entry. Forward binding (ticket body references spec path) and reverse binding (spec mentions ticket id) are both accepted.
+- **Empty-branch gate** — `swarm/workflows/kanban-dispatch.lobster` refuses to push if `git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" == 0`. Prevents zombie branches when workers exit without committing.
+- **PR lifecycle close-intent** — `swarm/bin/clawta-pr-lifecycle` closes a ticket on PR merge when either (a) the branch name matches a trusted prefix (default `DEFAULT_PREFIXES = ("swarm/", "clawta/")`; pass `--prefix agent/` to extend) AND maps to a ticket suffix, or (b) the body contains an explicit `Closes/Fixes/Resolves t_xxx`. `Refs t_xxx` is traceability only — it never closes.
+- **Loop-detected auto-unblock skip** — tickets carrying `loop_detected=true` stay with the watchdog/manual-repair path until the flag is cleared.
+- **Tracked source over local patches** — shared swarm runtime scripts (bridge, controller, lifecycle, dispatch workflow, watchdog prompt) ship with tracked sources + idempotent installers at `swarm/bin/install-*.sh`. Drift between repo source and deployed runtime is a bug.
 - **Worktree discipline** — `~/workspace/chitin/` is the primary checkout and is read-only for branch work; sibling worktrees (`~/workspace/chitin-*`) are the dispatch targets.
 
 76 specs (001–730) live in [`.specify/specs/`](./.specify/specs/). See [`INDEX.md`](./.specify/specs/INDEX.md) for current status. Spec 004 (driver-allowlist) is explicitly **blocked** on `chitin-kernel drivers list --json` (tracked by `t_7c9d02b7`).
@@ -131,8 +131,8 @@ See [`docs/governance-setup.md`](./docs/governance-setup.md) for per-driver inst
 ├── swarm/                       # swarm tooling — kept here until 3+ active dispatch repos
 │   ├── workflows/               #   kanban-dispatch.lobster, hermes-clawta-bridge.py,
 │   │                            #   _pick_driver.py, analyzer-cron.lobster
-│   ├── bin/                     #   55 scripts — clawta-poller, pr-lifecycle,
-│   │                            #   board-watchdog, spec-kit-audit, installers, etc.
+│   ├── bin/                     #   swarm-controller, clawta-pr-lifecycle, install-*.sh,
+│   │                            #   board_resolver, board-aware audit scripts
 │   ├── prompts/                 #   board-watchdog.md (tracked cron prompt source)
 │   └── tests/                   #   regression tests for poller/bridge/lifecycle gates
 ├── .specify/                    # spec-kit layer (per Constitution §5)
