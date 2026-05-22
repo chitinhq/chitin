@@ -28,11 +28,6 @@ export const appRoutes: Route[] = [
     data: { title: 'Threads' },
   },
   {
-    path: 'board',
-    loadComponent: () => import('./pages/board.page').then(m => m.BoardPage),
-    data: { title: 'Board' },
-  },
-  {
     path: 'tickets',
     loadComponent: () => import('./pages/tickets.page').then(m => m.TicketsPage),
     data: { title: 'Tickets' },

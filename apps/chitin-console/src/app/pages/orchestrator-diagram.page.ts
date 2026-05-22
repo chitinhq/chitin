@@ -69,15 +69,12 @@ const DIAGRAM = `flowchart TB
 
   subgraph GT["5 · Governance and telemetry — observe, never drive"]
     KRN["Chitin Kernel<br/>gates every tool call vs chitin.yaml"]
-    BRD["Board read-model<br/>ProjectToBoard activity"]
     TLM["OTLP tick telemetry<br/>EmitTickTelemetry activity"]
     CHN["chitin chain<br/>durable audit trail"]
   end
   DRV -.->|every tool call| KRN
-  SCHED --> BRD
   SCHED --> TLM
   KRN --> CHN
-  BRD --> LOOP
   TLM --> LOOP
   CHN --> LOOP
   INGEST -.->|curated knowledge| LOOP
@@ -85,12 +82,11 @@ const DIAGRAM = `flowchart TB
 
   subgraph HUMAN["6 · Human surfaces — review and observe, never dispatch"]
     DISCORD["Discord channels<br/>notifications — posted out, never in"]
-    CONSOLE["chitin-console<br/>board · KPIs · this diagram"]
+    CONSOLE["chitin-console<br/>KPIs · this diagram"]
     REVIEW["GitHub PR review<br/>a human reads and merges"]
   end
   SCHED -.->|work events| DISCORD
   WUW -.->|work events| DISCORD
-  BRD --> CONSOLE
   PR --> REVIEW
   REVIEW -->|merge → main| TLM
 `;

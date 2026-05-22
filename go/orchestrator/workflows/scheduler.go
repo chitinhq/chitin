@@ -24,8 +24,7 @@ import (
 // that hands the updated slices forward loses no node-state progress.
 type SchedulerInput struct {
 	// RunID identifies this scheduler run — stable across every
-	// Continue-As-New of the run. It correlates board projection and tick
-	// telemetry.
+	// Continue-As-New of the run. It correlates this run's tick telemetry.
 	RunID string `json:"run_id"`
 	// Nodes is every node in the DAG, carrying its current Status. On the
 	// first run every node is dag.StatusPending; a Continue-As-New hands the
@@ -94,9 +93,9 @@ const (
 	// selectActivityTimeout bounds the SelectDriver activity — a fast
 	// in-memory registry lookup plus driver Ready probes.
 	selectActivityTimeout = 1 * time.Minute
-	// projectionActivityTimeout bounds the board-projection and telemetry
-	// activities — write-only side effects off the critical path.
-	projectionActivityTimeout = 1 * time.Minute
+	// telemetryActivityTimeout bounds the telemetry activity — a write-only
+	// side effect off the critical path.
+	telemetryActivityTimeout = 1 * time.Minute
 )
 
 // SchedulerWorkflow is the durable Spec-DAG Scheduler (spec 076). It walks a
@@ -108,9 +107,9 @@ const (
 // Determinism (spec 076 FR-005, SC-007): SchedulerWorkflow is strictly
 // deterministic. It reads time only through workflow.Now and pauses only
 // through workflow.Sleep — never time.Now / time.Sleep. Every side effect —
-// driver selection, worktree create/teardown, the driver invocation, board
-// projection, telemetry — runs in an activity. All ordering comes from the
-// pure dag library (dag.Frontier / dag.Order), never from Go map iteration.
+// driver selection, worktree create/teardown, the driver invocation,
+// telemetry — runs in an activity. All ordering comes from the pure dag
+// library (dag.Frontier / dag.Order), never from Go map iteration.
 // Replaying a tick over the same node states yields identical dispatch
 // decisions.
 //
@@ -187,15 +186,13 @@ func SchedulerWorkflow(ctx workflow.Context, in SchedulerInput) (SchedulerStatus
 		// (spec 076 FR-012, acceptance scenario 1).
 		state.applyAppends(ctx, &pendingAppends)
 
-		tickRec, transitions, err := state.runTick(ctx, running)
+		tickRec, err := state.runTick(ctx, running)
 		if err != nil {
 			return SchedulerStatus{}, err
 		}
 
-		// Project node-state transitions to the board read-model (write-only)
-		// and emit per-tick telemetry. Neither is on the scheduling critical
-		// path: a projection or telemetry fault is logged, never fatal.
-		state.project(ctx, transitions)
+		// Emit per-tick telemetry. It is not on the scheduling critical path:
+		// a telemetry fault is logged, never fatal.
 		state.emitTelemetry(ctx, tickRec)
 
 		// Surface every node that became blocked-unroutable this tick to the
@@ -239,8 +236,7 @@ func SchedulerWorkflow(ctx workflow.Context, in SchedulerInput) (SchedulerStatus
 		// updated node/edge slices forward (spec 076 FR-006). Draining first
 		// means the next run starts with no orphaned in-flight dispatch.
 		if state.tick >= continueAsNewTickThreshold {
-			drainRec, drainTransitions := state.drain(ctx, running)
-			state.project(ctx, drainTransitions)
+			drainRec := state.drain(ctx, running)
 			state.emitTelemetry(ctx, drainRec)
 			logger.Info("scheduler: Continue-As-New to bound history",
 				"run", state.runID, "tick", state.tick)
@@ -420,7 +416,7 @@ func (s *schedulerState) applyAppends(ctx workflow.Context, pending *[]appendSig
 // runTick runs one scheduler tick: it rebuilds the DAG, propagates any newly
 // failed dependencies, computes and orders the runnable frontier, routes and
 // dispatches each runnable node, and records the tick. It returns the tick
-// telemetry record and the node-state transitions to project.
+// telemetry record.
 //
 // runTick mutates s.nodes (statuses) and the running map (new children). It is
 // deterministic: the dag library produces every ordering; the only side
@@ -429,27 +425,13 @@ func (s *schedulerState) applyAppends(ctx workflow.Context, pending *[]appendSig
 func (s *schedulerState) runTick(
 	ctx workflow.Context,
 	running map[string]workflow.ChildWorkflowFuture,
-) (activities.TickRecord, []activities.NodeTransition, error) {
+) (activities.TickRecord, error) {
 	s.tick++
 	logger := workflow.GetLogger(ctx)
 
 	d, err := s.buildDAG()
 	if err != nil {
-		return activities.TickRecord{}, nil, err
-	}
-
-	var transitions []activities.NodeTransition
-	record := func(id, from, to string) {
-		n, _ := d.Node(id)
-		transitions = append(transitions, activities.NodeTransition{
-			NodeID:     id,
-			SpecRef:    n.SpecRef,
-			TaskRef:    n.TaskRef,
-			FromStatus: from,
-			ToStatus:   to,
-			Capability: n.Capability,
-			TargetRepo: n.TargetRepo,
-		})
+		return activities.TickRecord{}, err
 	}
 
 	// 1. Fold in completed children: a settled child becomes done or failed,
@@ -458,7 +440,6 @@ func (s *schedulerState) runTick(
 	completed := collectCompleted(ctx, running)
 	tickRec := activities.TickRecord{SchedulerRunID: s.runID, Tick: s.tick}
 	for _, c := range completed {
-		from := dag.StatusRunning.String()
 		to := dag.StatusDone
 		if !c.Succeeded {
 			to = dag.StatusFailed
@@ -467,14 +448,12 @@ func (s *schedulerState) runTick(
 			logger.Error("scheduler: cannot settle completed node", "node", c.NodeID, "err", err)
 			continue
 		}
-		record(c.NodeID, from, to.String())
 		tickRec.Completed = append(tickRec.Completed, c.NodeID)
 
 		if to == dag.StatusFailed {
 			// Propagate the permanent failure to every transitive dependent.
 			blocked := d.PropagateFailure(c.NodeID)
 			for _, b := range blocked {
-				record(b, dag.StatusPending.String(), dag.StatusBlockedDependencyFailed.String())
 				tickRec.BlockedDependencyFailed = append(tickRec.BlockedDependencyFailed, b)
 			}
 		}
@@ -512,7 +491,7 @@ func (s *schedulerState) runTick(
 				// A genuine activity fault (not a blocked-unroutable outcome):
 				// surface it so the workflow can retry. The frontier is
 				// ordered, so a retry resumes deterministically.
-				return activities.TickRecord{}, nil, selErr
+				return activities.TickRecord{}, selErr
 			}
 			if sel.Unroutable {
 				// No driver satisfies the node's capability — mark it
@@ -522,7 +501,6 @@ func (s *schedulerState) runTick(
 					logger.Error("scheduler: cannot mark node blocked-unroutable", "node", n.ID, "err", err)
 					continue
 				}
-				record(n.ID, n.Status.String(), dag.StatusBlockedUnroutable.String())
 				tickRec.BlockedUnroutable = append(tickRec.BlockedUnroutable, n.ID)
 				logger.Warn("scheduler: node blocked-unroutable",
 					"node", n.ID, "capability", sel.MissingCapability)
@@ -545,7 +523,6 @@ func (s *schedulerState) runTick(
 			logger.Error("scheduler: cannot mark node running", "node", n.ID, "err", err)
 			continue
 		}
-		record(n.ID, n.Status.String(), dag.StatusRunning.String())
 
 		future := dispatchWorkUnit(ctx, s.runID, n, driverID)
 		running[n.ID] = future
@@ -562,14 +539,14 @@ func (s *schedulerState) runTick(
 	// 5. Recompute stall: after dispatching, is anything runnable or running?
 	d2, err := s.buildDAG()
 	if err != nil {
-		return activities.TickRecord{}, nil, err
+		return activities.TickRecord{}, err
 	}
 	tickRec.Stalled = d2.Stalled() && len(running) == 0
 
 	sort.Strings(tickRec.BlockedUnroutable)
 	sort.Strings(tickRec.BlockedDependencyFailed)
 	sort.Strings(tickRec.Completed)
-	return tickRec, transitions, nil
+	return tickRec, nil
 }
 
 // drain waits for every in-flight child to finish and folds the results in.
@@ -579,15 +556,14 @@ func (s *schedulerState) runTick(
 func (s *schedulerState) drain(
 	ctx workflow.Context,
 	running map[string]workflow.ChildWorkflowFuture,
-) (activities.TickRecord, []activities.NodeTransition) {
+) activities.TickRecord {
 	logger := workflow.GetLogger(ctx)
 	rec := activities.TickRecord{SchedulerRunID: s.runID, Tick: s.tick}
-	var transitions []activities.NodeTransition
 
 	d, err := s.buildDAG()
 	if err != nil {
 		logger.Error("scheduler: cannot rebuild DAG to drain", "err", err)
-		return rec, transitions
+		return rec
 	}
 
 	// Wait for the remaining children in deterministic id order.
@@ -605,19 +581,9 @@ func (s *schedulerState) drain(
 			logger.Error("scheduler: cannot settle drained node", "node", id, "err", err)
 			continue
 		}
-		n, _ := d.Node(id)
-		transitions = append(transitions, activities.NodeTransition{
-			NodeID: id, SpecRef: n.SpecRef, TaskRef: n.TaskRef,
-			FromStatus: dag.StatusRunning.String(), ToStatus: to.String(),
-			Capability: n.Capability, TargetRepo: n.TargetRepo,
-		})
 		rec.Completed = append(rec.Completed, id)
 		if to == dag.StatusFailed {
 			for _, b := range d.PropagateFailure(id) {
-				transitions = append(transitions, activities.NodeTransition{
-					NodeID: b, FromStatus: dag.StatusPending.String(),
-					ToStatus: dag.StatusBlockedDependencyFailed.String(),
-				})
 				rec.BlockedDependencyFailed = append(rec.BlockedDependencyFailed, b)
 			}
 		}
@@ -626,7 +592,7 @@ func (s *schedulerState) drain(
 	s.syncFromDAG(d)
 	sort.Strings(rec.Completed)
 	sort.Strings(rec.BlockedDependencyFailed)
-	return rec, transitions
+	return rec
 }
 
 // waitForProgress blocks the tick loop until there is something to react to:
@@ -664,32 +630,11 @@ func (s *schedulerState) waitForProgress(
 	sel.Select(ctx)
 }
 
-// project hands a tick's node-state transitions to the board-projection
-// activity (write-only — spec 076 FR-014). A projection fault is logged, not
-// fatal — the board is a read-model, never on the scheduling critical path.
-func (s *schedulerState) project(ctx workflow.Context, transitions []activities.NodeTransition) {
-	if len(transitions) == 0 {
-		return
-	}
-	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: projectionActivityTimeout,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
-	})
-	err := workflow.ExecuteActivity(actx, "ProjectToBoard", activities.BoardProjectionInput{
-		SchedulerRunID: s.runID,
-		Transitions:    transitions,
-	}).Get(actx, nil)
-	if err != nil {
-		workflow.GetLogger(ctx).Error("scheduler: board projection failed (non-fatal)",
-			"run", s.runID, "err", err)
-	}
-}
-
 // emitTelemetry hands the per-tick record to the telemetry activity
 // (write-only — spec 076 FR-015). A telemetry fault is logged, not fatal.
 func (s *schedulerState) emitTelemetry(ctx workflow.Context, rec activities.TickRecord) {
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: projectionActivityTimeout,
+		StartToCloseTimeout: telemetryActivityTimeout,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
 	err := workflow.ExecuteActivity(actx, "EmitTickTelemetry", rec).Get(actx, nil)
