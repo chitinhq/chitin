@@ -13,28 +13,6 @@
     },
     "./package.json": "./package.json"
   },
-  "nx": {
-    "sourceRoot": "libs/adapters/claude-code/src",
-    "projectType": "library",
-    "tags": [
-      "type:adapter",
-      "scope:plugin",
-      "layer:adapter",
-      "lang:ts"
-    ],
-    "targets": {
-      "validate": {
-        "executor": "nx:run-commands",
-        "options": {
-          "command": "pnpm exec tsc -p libs/adapters/claude-code/tsconfig.json --noEmit",
-          "cwd": "{workspaceRoot}"
-        },
-        "dependsOn": [
-          "^validate"
-        ]
-      }
-    }
-  },
   "dependencies": {
     "@chitin/contracts": "workspace:*"
   }

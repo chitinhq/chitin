@@ -56,6 +56,15 @@ type Gate struct {
 	// keep writing the smaller schema with no breakage.
 	Fingerprint FingerprintContext
 
+	// ChainID and SessionID correlate every Decision this Gate writes to
+	// the kernel event-chain and the dispatching agent's session. The CLI
+	// hook layer sets them from the hook payload's session id (or the
+	// `gate evaluate --session-id` flag). Empty values omit the JSON
+	// field. Stamped independently of the envelope so a decision groups
+	// into its session in the console even when no envelope is active.
+	ChainID   string
+	SessionID string
+
 	// NoRecord, when true, suppresses persistent side effects: no
 	// Counter.RecordDenial increment, no WriteLog chain-event append.
 	// Read-only state (Counter.IsLocked, Counter.Level) is still
@@ -243,6 +252,7 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 		stampEnvelope(&d, envelope, g, a, agent)
 		stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
 		stampWorktreeDiagnostic(&d, a, g.Cwd)
+		stampSession(&d, g.ChainID, g.SessionID)
 		if !g.NoRecord {
 			_ = WriteLog(d, g.LogDir)
 		}
@@ -376,10 +386,20 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 			break
 		}
 	}
-	envelopeDeny := d.RuleID == "envelope-exhausted" ||
+	// Denials exempt from escalation toward lockdown. Envelope-budget
+	// denials are operator-imposed caps, not agent misbehavior. The
+	// "wrong-place" denials — committing to a protected branch, a
+	// side-effect from the primary checkout — are redirections: the deny
+	// already prevented the harm, so escalating the agent toward lockdown
+	// on top just deadlocks it during normal work (ticket t_2356307a).
+	// Genuinely dangerous repeats (rm -rf, governance self-mod) are NOT
+	// exempt and still escalate.
+	escalationExempt := d.RuleID == "envelope-exhausted" ||
 		d.RuleID == "envelope-closed" ||
-		d.RuleID == "envelope-not-found"
-	if !d.Allowed && !envelopeDeny && g.Counter != nil {
+		d.RuleID == "envelope-not-found" ||
+		d.RuleID == "no-commit-to-protected" ||
+		d.RuleID == "worktree-required"
+	if !d.Allowed && !escalationExempt && g.Counter != nil {
 		if !g.NoRecord {
 			// Log on failure rather than silently swallow — a SQLite
 			// failure here is the "agent never locks" path. We still
@@ -413,10 +433,29 @@ func (g *Gate) Evaluate(a Action, agent string, envelope *BudgetEnvelope) (final
 	// row carries (model, role, workflow_id, fingerprint) for joining
 	// against PR/review outcomes downstream.
 	stampFingerprint(&d, g.Fingerprint, g.Policy.Authority)
-	// 7b. Stamp audit-only worktree posture. This deliberately does not
-	// alter d.Allowed or the policy RuleID; it gives downstream readers
-	// chain evidence before the worktree requirement graduates to enforce.
+	// 7b. Stamp worktree posture, and — when the policy graduates it to an
+	// enforced invariant (invariantModes: worktree-required: enforce) —
+	// deny a side-effect action evaluated from the primary git checkout.
+	// Kernel-side, so --no-verify / CHITIN_KERNEL_BIN tricks cannot reach
+	// around it. Honors operator presence: an operator working
+	// interactively in the primary checkout is not an autonomous agent.
+	// Placed after step 6 so a worktree deny does NOT increment the
+	// lockdown counter — the agent is redirected to a worktree, not
+	// escalated toward lockdown.
 	stampWorktreeDiagnostic(&d, a, g.Cwd)
+	if d.Allowed && d.WorktreeStatus == "primary" &&
+		g.Policy.InvariantModes["worktree-required"] == "enforce" &&
+		!operatorPresenceBypass() {
+		d.Allowed = false
+		d.RuleID = "worktree-required"
+		d.Mode = "enforce"
+		d.Reason = "side-effect action from the primary git checkout is denied; " +
+			"create a linked worktree and work on a feature branch"
+		d.Suggestion = "git worktree add ../<repo>-<slug> -b <type>/<slug> origin/main, then cd into it"
+	}
+	// 7c. Stamp chain/session correlation so the console can group this
+	// decision into its agent session even when no envelope is present.
+	stampSession(&d, g.ChainID, g.SessionID)
 
 	// 8. Log. Suppressed by NoRecord so smoke evaluations don't pollute
 	// daily chain rollups (fingerprint_outcomes, swarm_health) with
@@ -513,6 +552,19 @@ func stampFingerprint(d *Decision, ctx FingerprintContext, authority AuthorityCo
 	d.Authority = ResolveTrustedAuthority(ctx, authority)
 	d.WorkflowID = ctx.WorkflowID
 	d.Fingerprint = agentFingerprint
+}
+
+// stampSession writes the chain/session correlation ids onto d. Empty
+// values are pass-through — Decision's omitempty tags drop them, so
+// pre-session dispatches keep the smaller schema. Single call site
+// pattern (lockdown path + main flow) prevents drift, mirroring
+// stampFingerprint. The console groups decisions into sessions by
+// chain_id || session_id || envelope_id; before these ids were stamped
+// that grouping rode solely on envelope_id, so an envelope regression
+// silently un-chained an agent from the console (Hermes, 2026-05).
+func stampSession(d *Decision, chainID, sessionID string) {
+	d.ChainID = chainID
+	d.SessionID = sessionID
 }
 
 func ResolveTrustedAuthority(ctx FingerprintContext, authority AuthorityConfig) string {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -14,6 +15,14 @@ import (
 func Register(w worker.Worker) {
 	w.RegisterActivity(Greet)
 	w.RegisterActivity(ParseTasks)
+
+	// RunScheduledJob — the spec 081 US2 activity that runs a migrated cron's
+	// existing script. Registered under its stable ActivityName so the
+	// ScheduledJobWorkflow can dispatch to it by name.
+	scheduledJob := NewScheduledJob()
+	w.RegisterActivityWithOptions(scheduledJob.Execute, activity.RegisterOptions{
+		Name: scheduledJob.ActivityName(),
+	})
 }
 
 // Greet is the Phase 0 smoke activity (tasks.md T010) — the activity half of
