@@ -19,6 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+# R1: board_resolver is the single source of truth for board→spec-root
+# resolution. No code outside board_resolver constructs a spec_root path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from board_resolver import resolve_db as _resolve_db, spec_dir_for_board as _spec_dir, spec_source_resolution as _spec_source_resolution
+
 # Paths are parameterized via env vars with sensible defaults so the script
 # works on any operator box without source edits (Constitution §6).
 KANBAN_BOARDS_DIR = Path(os.environ.get(
@@ -34,24 +39,10 @@ CHITIN_REPO = Path(os.environ.get(
     str(WORKSPACE_ROOT / "chitin"),
 ))
 
-BOARDS = {
-    "chitin": {
-        "db": KANBAN_BOARDS_DIR / "chitin" / "kanban.db",
-        "spec_root": CHITIN_REPO / ".specify" / "specs",
-    },
-    "readybench": {
-        "db": KANBAN_BOARDS_DIR / "readybench" / "kanban.db",
-        # bench-devs-platform/.specify/specs is the source of truth. The
-        # earlier workspace-overlay path treated wjcmurphy/bench-devs-platform
-        # as a team repo, so the watchdog couldn't find readybench specs and
-        # demoted every ready ticket back to triage. Per board-config
-        # owned_orgs=wjcmurphy this is an owned repo; the poller (via
-        # board_resolver.spec_dir_for_board) already resolves correctly.
-        # Follow-up: unify both code paths through board_resolver (filed as
-        # a separate spec) so this hardcoded BOARDS dict stops drifting.
-        "spec_root": WORKSPACE_ROOT / "bench-devs-platform" / ".specify" / "specs",
-    },
-}
+# Board configuration is resolved through board_resolver (R1/R2 of spec 022).
+# The hardcoded BOARDS dict has been removed; board_resolver.spec_dir_for_board
+# and board_resolver.resolve_db are the single source of truth.
+BOARDS_LIST = ["chitin", "readybench"]
 
 AUTHOR = "board-watchdog"
 NOW = dt.datetime.now(dt.timezone.utc)
@@ -72,7 +63,7 @@ class Task:
 
 
 def connect(board: str) -> sqlite3.Connection:
-    con = sqlite3.connect(BOARDS[board]["db"])
+    con = sqlite3.connect(str(_resolve_db(board=board)))
     con.row_factory = sqlite3.Row
     return con
 
@@ -191,7 +182,7 @@ def command_available_check() -> str:
 
 
 def classify(board: str, t: Task, kernel_check: str) -> tuple[str, str, list[Path]]:
-    root = BOARDS[board]["spec_root"]
+    root = _spec_dir(board=board)
     reverse = find_reverse_specs(root, t.id)
     forward = find_forward_specs(root, t.body)
     specs = sorted(set(reverse + forward))
@@ -260,7 +251,11 @@ def maybe_update_dependency_block(board: str, t: Task, classification: str, reas
 def report_board(board: str) -> tuple[list[str], int]:
     tasks = load_tasks(board)
     kernel_check = command_available_check() if board == "chitin" else "not checked"
+    # R5: spec-root decision telemetry — visible in every watchdog report.
+    spec_root, spec_source_tag = _spec_source_resolution(board=board)
     lines = [f"### {board} board", ""]
+    lines.append(f"spec root: `{spec_root}` (source: {spec_source_tag})")
+    lines.append("")
     if board == "chitin":
         lines.append(f"Dependency probe: `chitin-kernel drivers list --json` → `{kernel_check}`")
         lines.append("")
@@ -275,7 +270,7 @@ def report_board(board: str) -> tuple[list[str], int]:
         action = maybe_update_dependency_block(board, t, cls, reason)
         if action:
             actions.append(f"- `{t.id}`: {action}")
-        spec_label = ", ".join(str(p.relative_to(BOARDS[board]["spec_root"]).parent) for p in specs[:2]) or "—"
+        spec_label = ", ".join(str(p.relative_to(_spec_dir(board=board)).parent) for p in specs[:2]) or "—"
         rows.append((t.id, t.title, loop, cls, reason, spec_label))
         if cls in {"needs spec", "needs reviewed spec", "needs spec review"}:
             spec_queue.append((t.id, t.title, reason))
@@ -340,13 +335,13 @@ def main() -> int:
         "",
     ]
     examined = 0
-    for board in ["chitin", "readybench"]:
+    for board in BOARDS_LIST:
         board_lines, n = report_board(board)
         lines.extend(board_lines)
         examined += n
     lines.extend([
         "---",
-        f"Examined {examined} blocked/triage tickets across {len(BOARDS)} boards.",
+        f"Examined {examined} blocked/triage tickets across {len(BOARDS_LIST)} boards.",
         "Completed normally.",
     ])
     print("\n".join(lines))

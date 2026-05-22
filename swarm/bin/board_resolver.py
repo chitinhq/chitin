@@ -105,12 +105,29 @@ def workspace_spec_root() -> Path:
 def spec_dir_for_board(board: str | None = None) -> Path:
     """Return the directory containing spec-kit entries for this board.
 
-    Owned repos keep specs in the target checkout (`<repo>/.specify/specs`).
-    Shared/team repos use the workspace overlay (`~/workspace/.specify/specs`)
-    so personal swarm governance files are not committed to someone else's repo.
+    Resolution uses the explicit `spec_source` field from board config.
+    The legacy `owned_orgs` default-set is no longer used as an implicit
+    fallback — boards MUST declare `spec_source`.
+
+    Valid spec_source values:
+      "repo"              → <workspace_root>/.specify/specs
+      "workspace_overlay"  → ~/workspace/.specify/specs
+      "owned_orgs"         → legacy: same as repo but derived from owned_orgs
     """
-    if is_owned_repo(board):
+    cfg = board_config(board)
+    source = cfg.get("spec_source", "")
+    if source == "repo":
         return board_workspace(board) / ".specify" / "specs"
+    if source == "workspace_overlay":
+        return workspace_spec_root()
+    if source == "owned_orgs":
+        # Legacy opt-in: derive from owned_orgs set.
+        if is_owned_repo(board):
+            return board_workspace(board) / ".specify" / "specs"
+        return workspace_spec_root()
+    # No spec_source declared — fall back to workspace overlay.
+    # This is intentional: new boards without config default to the
+    # shared overlay rather than silently deriving from owned_orgs.
     return workspace_spec_root()
 
 
@@ -155,12 +172,24 @@ def warn_implicit_default_board(script_name: str, argv: Sequence[str] | None = N
         )
 
 
+def spec_source_resolution(board: str | None = None) -> tuple[Path, str]:
+    """Return (spec_dir, source_tag) for telemetry.
+
+    source_tag is one of "repo", "workspace_overlay", "owned_orgs", or
+    "default" (no spec_source declared).
+    """
+    cfg = board_config(board)
+    source = cfg.get("spec_source", "")
+    tag = source if source in ("repo", "workspace_overlay", "owned_orgs") else "default"
+    return spec_dir_for_board(board), tag
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Resolve board-config fields for shell callers.")
     parser.add_argument("--board", help="board slug override (defaults to KANBAN_BOARD or chitin)")
     parser.add_argument(
         "field",
-        choices=("board", "db", "repo", "workspace", "spec-dir", "config"),
+        choices=("board", "db", "repo", "workspace", "spec-dir", "spec-source", "config"),
         help="field to print",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -173,6 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "repo": lambda: board_repo(),
         "workspace": lambda: str(board_workspace()),
         "spec-dir": lambda: str(spec_dir_for_board()),
+        "spec-source": lambda: spec_source_resolution()[1],
         "config": lambda: str(BOARDS_DIR / resolve_board() / "config.json"),
     }
     print(field_map[args.field]())

@@ -839,6 +839,13 @@ case "$cmd" in
     id="${REST[0]:-}"; require_id "$id"
     from="$(ticket_status "$id")"
     [[ "$from" == triage || "$from" == blocked ]] || die "$id is in '$from'; can only mark ready from triage|blocked"
+    # R3: Reject promotion when assignee is NULL/empty and no --assignee override.
+    # This enforces the dispatch-readiness contract: every ready ticket must
+    # carry a terminal driver, routing lane, or operator assignee.
+    current_assignee="$(sqlite3 "$DB" "SELECT COALESCE(assignee,'') FROM tasks WHERE id='$id'")"
+    if [[ -z "$assignee_override" && -z "$current_assignee" ]]; then
+      die "$id cannot be marked ready with no assignee. Set one of: codex, copilot, claude-code, gemini (terminal driver), clawta (routing lane), or red (operator). Use --assignee."
+    fi
     # Refuse to auto-promote tracking epics — they intentionally lack
     # invariants_and_boundaries + a terminal-lane assignee, and will spin
     # in a promote-demote loop with clawta-poller. Operator can override
