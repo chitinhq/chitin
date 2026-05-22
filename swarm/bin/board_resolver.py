@@ -78,11 +78,14 @@ def _split_csv(value: str | Iterable[str] | None) -> list[str]:
 def owned_orgs(board: str | None = None) -> set[str]:
     """Return org/user names whose repos keep swarm specs repo-locally.
 
-    Defaults are intentionally small and can be extended either in board
-    config (`owned_orgs`) or via `CLAWTA_OWNED_ORGS=org,user`.
+    .. deprecated:: 022
+        Use explicit ``spec_source`` in board config instead of relying on
+        owned_orgs defaults. This function is retained for boards that
+        explicitly opt in with ``spec_source: "owned_orgs"``, but the
+        implicit default-set (``{"chitinhq", "red"}``) is removed.
     """
     cfg = board_config(board)
-    orgs = {"chitinhq", "red"}
+    orgs: set[str] = set()
     orgs.update(_split_csv(cfg.get("owned_orgs")))
     orgs.update(_split_csv(os.environ.get("CLAWTA_OWNED_ORGS")))
     return {org.lower() for org in orgs}
@@ -105,13 +108,48 @@ def workspace_spec_root() -> Path:
 def spec_dir_for_board(board: str | None = None) -> Path:
     """Return the directory containing spec-kit entries for this board.
 
-    Owned repos keep specs in the target checkout (`<repo>/.specify/specs`).
-    Shared/team repos use the workspace overlay (`~/workspace/.specify/specs`)
-    so personal swarm governance files are not committed to someone else's repo.
+    Resolution is explicit per the dispatch readiness contract (spec 022):
+    board config MUST declare ``spec_source`` with one of:
+      - ``"repo"``: specs live in the board's repo checkout
+        (``<workspace_root>/.specify/specs/``)
+      - ``"workspace_overlay"``: specs live in the shared workspace overlay
+        (``~/workspace/.specify/specs/``)
+      - ``"owned_orgs"``: legacy — derives from ``owned_orgs`` in config
+        (deprecated; use explicit ``"repo"`` or ``"workspace_overlay"``)
+
+    If ``spec_source`` is missing, falls back to the old owned_orgs heuristic
+    with a deprecation warning.
     """
-    if is_owned_repo(board):
+    cfg = board_config(board)
+    source = cfg.get("spec_source")
+    if source == "repo":
         return board_workspace(board) / ".specify" / "specs"
-    return workspace_spec_root()
+    elif source == "workspace_overlay":
+        return workspace_spec_root()
+    elif source == "owned_orgs":
+        import warnings
+        warnings.warn(
+            f"Board {board or resolve_board()!r}: spec_source='owned_orgs' is deprecated. "
+            "Set spec_source to 'repo' or 'workspace_overlay' explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if is_owned_repo(board):
+            return board_workspace(board) / ".specify" / "specs"
+        return workspace_spec_root()
+    else:
+        # Missing spec_source: fall back to old heuristic with deprecation warning
+        import warnings
+        warnings.warn(
+            f"Board {board or resolve_board()!r}: no spec_source in config; "
+            "falling back to owned_orgs heuristic. "
+            "Set spec_source to 'repo' or 'workspace_overlay' to silence this warning.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if is_owned_repo(board):
+            return board_workspace(board) / ".specify" / "specs"
+        return workspace_spec_root()
 
 
 def board_flag(argv: Sequence[str] | None = None) -> str | None:

@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+# Board resolution is routed through board_resolver.spec_dir_for_board
+# per the dispatch readiness contract (spec 022). No hardcoded BOARDS dict.
+from board_resolver import resolve_db, spec_dir_for_board
+
 # Paths are parameterized via env vars with sensible defaults so the script
 # works on any operator box without source edits (Constitution §6).
-KANBAN_BOARDS_DIR = Path(os.environ.get(
-    "KANBAN_BOARDS_DIR",
-    str(Path.home() / ".hermes" / "kanban" / "boards"),
-))
 WORKSPACE_ROOT = Path(os.environ.get(
     "WORKSPACE_ROOT",
     str(Path.home() / "workspace"),
@@ -34,24 +34,7 @@ CHITIN_REPO = Path(os.environ.get(
     str(WORKSPACE_ROOT / "chitin"),
 ))
 
-BOARDS = {
-    "chitin": {
-        "db": KANBAN_BOARDS_DIR / "chitin" / "kanban.db",
-        "spec_root": CHITIN_REPO / ".specify" / "specs",
-    },
-    "readybench": {
-        "db": KANBAN_BOARDS_DIR / "readybench" / "kanban.db",
-        # bench-devs-platform/.specify/specs is the source of truth. The
-        # earlier workspace-overlay path treated wjcmurphy/bench-devs-platform
-        # as a team repo, so the watchdog couldn't find readybench specs and
-        # demoted every ready ticket back to triage. Per board-config
-        # owned_orgs=wjcmurphy this is an owned repo; the poller (via
-        # board_resolver.spec_dir_for_board) already resolves correctly.
-        # Follow-up: unify both code paths through board_resolver (filed as
-        # a separate spec) so this hardcoded BOARDS dict stops drifting.
-        "spec_root": WORKSPACE_ROOT / "bench-devs-platform" / ".specify" / "specs",
-    },
-}
+BOARDS = ("chitin", "readybench")
 
 AUTHOR = "board-watchdog"
 NOW = dt.datetime.now(dt.timezone.utc)
@@ -72,7 +55,8 @@ class Task:
 
 
 def connect(board: str) -> sqlite3.Connection:
-    con = sqlite3.connect(BOARDS[board]["db"])
+    db_path = resolve_db(board)
+    con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     return con
 
@@ -191,7 +175,7 @@ def command_available_check() -> str:
 
 
 def classify(board: str, t: Task, kernel_check: str) -> tuple[str, str, list[Path]]:
-    root = BOARDS[board]["spec_root"]
+    root = spec_dir_for_board(board)
     reverse = find_reverse_specs(root, t.id)
     forward = find_forward_specs(root, t.body)
     specs = sorted(set(reverse + forward))
@@ -265,6 +249,14 @@ def report_board(board: str) -> tuple[list[str], int]:
         lines.append(f"Dependency probe: `chitin-kernel drivers list --json` → `{kernel_check}`")
         lines.append("")
 
+    # R5 telemetry: show spec-root resolution decision per board
+    root = spec_dir_for_board(board)
+    from board_resolver import board_config
+    cfg = board_config(board)
+    source = cfg.get("spec_source", "(unset — using heuristic)")
+    lines.append(f"spec root: `{root}` (source: {source})")
+    lines.append("")
+
     rows = []
     spec_queue = []
     actions = []
@@ -275,7 +267,7 @@ def report_board(board: str) -> tuple[list[str], int]:
         action = maybe_update_dependency_block(board, t, cls, reason)
         if action:
             actions.append(f"- `{t.id}`: {action}")
-        spec_label = ", ".join(str(p.relative_to(BOARDS[board]["spec_root"]).parent) for p in specs[:2]) or "—"
+        spec_label = ", ".join(str(p.relative_to(spec_dir_for_board(board)).parent) for p in specs[:2]) or "—"
         rows.append((t.id, t.title, loop, cls, reason, spec_label))
         if cls in {"needs spec", "needs reviewed spec", "needs spec review"}:
             spec_queue.append((t.id, t.title, reason))
@@ -340,7 +332,7 @@ def main() -> int:
         "",
     ]
     examined = 0
-    for board in ["chitin", "readybench"]:
+    for board in BOARDS:
         board_lines, n = report_board(board)
         lines.extend(board_lines)
         examined += n

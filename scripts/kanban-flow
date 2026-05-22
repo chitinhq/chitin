@@ -846,6 +846,14 @@ case "$cmd" in
     if (( force_flag == 0 )) && is_tracking_epic_id "$id"; then
       die "$id is marked 'Tracking-epic: true' — auto-promotion blocked. Pass --force to override (operator-explicit promotion)."
     fi
+
+    # R3 (spec 022): readiness fails fast at the boundary. Tickets without an
+    # assignee cannot dispatch — the poller would silently demote them. Reject
+    # here with a named error so the caller knows the valid values.
+    current_assignee="$(sqlite3 "$DB" "SELECT COALESCE(assignee,'') FROM tasks WHERE id='$id'")"
+    if [[ -z "$current_assignee" && -z "$assignee_override" ]]; then
+      die "$id has no assignee — set one before marking ready. Valid values: codex, copilot, claude-code, gemini, clawta, red. Use --assignee."
+    fi
     add_comment "$id" "$author" "Marked ready by $author at $(date -Iseconds)"
     flip_status "$id" ready 0 0
 
