@@ -80,7 +80,41 @@ def find_recent_results(window_hours: int) -> list[Path]:
     return out
 
 
-def classify_failure(trial: dict) -> tuple[bool, str, str]:
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text()
+    except OSError:
+        return ""
+
+
+def _verifier_bootstrap_failed(trial_dir: Path | None) -> str | None:
+    """Detect verifier bootstrap failures from sibling artifact logs.
+
+    Harbor's ``result.json`` only carries the scalar reward, so verifier
+    setup failures (missing curl/uvx, poisoned apt sources, dpkg lock
+    contention) otherwise collapse into a generic ``verifier_failed``.
+    """
+    if trial_dir is None:
+        return None
+
+    verifier_stdout = _read_text(trial_dir / "verifier" / "test-stdout.txt")
+    if not verifier_stdout:
+        return None
+
+    infra_markers = (
+        "does not have a Release file",
+        "Could not get lock /var/lib/dpkg/lock-frontend",
+        "Unable to acquire the dpkg frontend lock",
+        "curl: command not found",
+        "/root/.local/bin/env: No such file or directory",
+        "uvx: command not found",
+    )
+    if any(marker in verifier_stdout for marker in infra_markers):
+        return verifier_stdout[:500]
+    return None
+
+
+def classify_failure(trial: dict, trial_dir: Path | None = None) -> tuple[bool, str, str]:
     """Inspect a TrialResult dict. Returns
     ``(is_failure, block_reason, evidence_excerpt)``.
 
@@ -123,6 +157,10 @@ def classify_failure(trial: dict) -> tuple[bool, str, str]:
             return False, "passed", ""
     except (TypeError, ValueError):
         return True, "verifier_malformed", str(reward)[:200]
+
+    verifier_bootstrap_excerpt = _verifier_bootstrap_failed(trial_dir)
+    if verifier_bootstrap_excerpt:
+        return True, "environment_setup_failed", verifier_bootstrap_excerpt
 
     return True, "verifier_failed", _verifier_excerpt(verifier_result)
 
@@ -178,9 +216,13 @@ Reproduce locally with:
 
 Then inspect the trajectory in jobs/chitin-bench/chitin-bench-repro-{task_name}/<trial>/agent/chitin-bench-trajectory.jsonl
 and decide:
-- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/chitin_bench_test.py.
+- Is this a harness bug (parse, loop, timeout)? Add a regression test in swarm/tests/test_chitin_bench.py.
 - Is this a model-capability ceiling? Note the step it stalls and file a follow-up to swap models.
 - Is this a verifier flake? Re-run; if it passes, close as flake.
+
+Heuristic: if the trajectory reaches `TASK_COMPLETE` without a harness loud-fail
+and the verifier reports only a wrong final answer, treat it as a model-capability
+miss before you patch the harness.
 
 This ticket auto-merges follow-up occurrences via idempotency-key. Comments accumulate; status stays open until you close it.
 """
@@ -344,7 +386,7 @@ def main() -> int:
             log(f"skip {results_path}: {exc}")
             continue
 
-        is_failure, reason, evidence = classify_failure(trial)
+        is_failure, reason, evidence = classify_failure(trial, results_path.parent)
         task_name = trial.get("task_name", "unknown")
         agent_info = trial.get("agent_info") or {}
 

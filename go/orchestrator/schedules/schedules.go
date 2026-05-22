@@ -100,6 +100,10 @@ func Registry() []JobSpec {
 		chitinEnvelopeRotateSpec(),
 		chitinKernelRedeploySpec(),
 		openclawGatewayRestartSpec(),
+		// spec 085 US1 — the hourly operator heartbeat.
+		operatorHeartbeatSpec(),
+		// spec 085 US2 — the daily operator telemetry digest.
+		operatorDigestSpec(),
 	}
 }
 

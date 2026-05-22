@@ -11,7 +11,9 @@ import (
 
 // Spec 081 tests for the Schedule-backed cron migration pattern. With US2
 // T009–T012 and US3 T015–T019 landed, Registry() holds the seven periodic
-// read-mostly jobs plus the five watchdog / mutation / ops jobs.
+// read-mostly jobs plus the five watchdog / mutation / ops jobs. Later specs
+// (e.g. spec 085) append further jobs to the Registry, so the US3 set is a
+// verified subset, not the total.
 
 // expectedJobs is the migrated Registry: every JobSpec landed by spec 081's
 // US2 + the landed US3 cron migrations, with the cadence of its retired timer
@@ -54,8 +56,8 @@ var expectedJobs = []struct {
 // of its retired timer / cron source of truth.
 func TestRegistry_HasMigratedJobs(t *testing.T) {
 	reg := Registry()
-	if len(reg) != len(expectedJobs) {
-		t.Fatalf("Registry() returned %d jobs, want exactly %d (spec 081 US2 + landed US3); got %+v",
+	if len(reg) < len(expectedJobs) {
+		t.Fatalf("Registry() returned %d jobs, want at least %d (spec 081 US2 + landed US3); got %+v",
 			len(reg), len(expectedJobs), reg)
 	}
 
