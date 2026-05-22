@@ -17,7 +17,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = ROOT / "swarm" / "workflows" / "kanban-dispatch.lobster"
 MIRROR = ROOT / "docs" / "governance-setup-extras" / "kanban-dispatch.lobster"
-POLLER = ROOT / "swarm" / "bin" / "clawta-poller"
 CONTROLLER = ROOT / "swarm" / "bin" / "swarm-controller"
 
 
@@ -62,15 +61,13 @@ class DispatchBaseFreshnessRegressionTests(unittest.TestCase):
         self.assertGreater(start_idx, 0)
         self.assertGreater(worktree_add_idx, start_idx)
 
-    def test_python_dispatchers_start_with_dedicated_worktree(self):
-        """Poller/controller must record the same worktree path the Lobster
+    def test_python_controller_starts_with_dedicated_worktree(self):
+        """The controller must record the same worktree path the Lobster
         worker spawn will use, instead of letting kanban-flow fall back to a
         task workspace or operator checkout."""
-        for path in (POLLER, CONTROLLER):
-            text = path.read_text()
-            with self.subTest(path=path):
-                self.assertIn('".cache" / "chitin" / "swarm-worktrees"', text)
-                self.assertIn('"--worktree", str(worktree_path)', text)
+        text = CONTROLLER.read_text()
+        self.assertIn('".cache" / "chitin" / "swarm-worktrees"', text)
+        self.assertIn('"--worktree", str(worktree_path)', text)
 
     def test_fetch_failure_aborts_spawn(self):
         """R1 fail-loud: if fetch fails, spawn aborts (does not fall through

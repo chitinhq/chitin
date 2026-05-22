@@ -3,7 +3,7 @@
 Captures the end-to-end walk of one real research ticket
 (`t_e1d0e815` — "Research: explain why lockdown dominates copilot-cli
 denies") by Claude Code in the `researcher` role, to validate that
-Slices A–E hang together before clawta-poller starts dispatching
+Slices A–E hang together before swarm-controller starts dispatching
 autonomously.
 
 ## What we validated
@@ -12,13 +12,13 @@ autonomously.
 |-------|----------------------------------------------------------|
 | A     | `kanban-flow start` / `done` transitioned + audited      |
 | B     | `researcher` role lifecycle (ready→in_progress→done, no PR) |
-| C     | (Not validated yet; poller dry-run only — Slice F doesn't dispatch via poller) |
+| C     | (Not validated yet; controller dry-run only — Slice F doesn't dispatch via controller) |
 | D     | (Not validated yet; lobster workflow not invoked — manual flow) |
 | E     | (Out of scope — separate repo)                           |
 
 Slice F validates the **manual** path through the SDLC. The autonomous
-path (clawta-poller → lobster → worker) gets validated when the
-operator marks a ticket `ready` and lets the poller pick it up.
+path (swarm-controller → lobster → worker) gets validated when the
+operator marks a ticket `ready` and lets the controller pick it up.
 
 ## The walk
 
@@ -124,10 +124,10 @@ the closing operator chose (or chose not) to file.
 ## Next dogfood — autonomous path
 
 The manual walk validates the lifecycle. The autonomous walk
-(clawta-poller → lobster → worker with role inlining) needs a
+(swarm-controller → lobster → worker with role inlining) needs a
 separate ticket: mark a ticket `ready` with `--assignee codex` or
-similar, install the poller/runtime guards via
-`swarm/bin/install-clawta-poller.sh`, and watch the board state
+similar, install the controller/runtime guards via
+`swarm/bin/install-swarm-controller-cron.sh`, and watch the board state
 transitions arrive without operator intervention. The repo-owned
 runtime guard thresholds and OpenClaw cron ownership are documented in
 `docs/runbooks/swarm-runtime-guards.md`.

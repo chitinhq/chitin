@@ -1,42 +1,41 @@
 # Swarm Runtime Guards
 
 These helpers are the repo-audited runtime guardrails around the autonomous
-swarm loop. They are intended to run under **OpenClaw cron**, not as hidden
-operator-local shell glue.
+swarm loop. Dispatch now runs through the tracked `swarm-controller` path, not
+through the retired poller cron.
 
 ## Ownership
 
-- `swarm/bin/clawta-poller` owns dispatch.
+- `swarm/bin/swarm-controller` owns dispatch.
 - `swarm/bin/clawta-blocked-escalator` owns blocked-ticket escalation.
 - `swarm/bin/clawta-stale-worker-watchdog` owns stale `in_progress` cleanup.
-- `swarm/bin/install-clawta-poller.sh openclaw` registers the OpenClaw cron
-  jobs for all three.
+- `swarm/bin/install-swarm-controller-cron.sh` installs the tracked controller
+  loop; the old bundled poller installer path is retired.
 
-Systemd remains a fallback only for `clawta-poller` on boxes without
-OpenClaw. The guard scripts depend on OpenClaw-era process/log surfaces, so
-their canonical owner is the OpenClaw cron substrate.
+The guard scripts still rely on the same process/log surfaces, but the
+controller loop is now the canonical dispatch scheduler.
 
 ## Guard behavior
 
 ### Router circuit breaker
 
-If `~/.openclaw/logs/clawta-poller.log` shows `_pick_driver.py` timeouts
+If `~/.openclaw/logs/swarm-controller.log` shows `_pick_driver.py` timeouts
 repeatedly over a short window, treat the OpenClaw router as degraded and trip
-the poller-side circuit breaker.
+the controller-side circuit breaker.
 
 Recommended v1 procedure:
 
 - If `_pick_driver.py timed out` fires 3 times in 10 minutes, set
-  `CLAWTA_ROUTER_MODE=deterministic` in the poller environment and restart the
-  poller.
+  `ROUTER_MODE=deterministic` in the controller environment and restart the
+  controller loop.
 - If you need to pin all routing to one lane during the incident, also set
-  `CLAWTA_FORCE_DRIVER=codex` or `CLAWTA_FORCE_DRIVER=gemini` before the
+  `FORCE_DRIVER=codex` or `FORCE_DRIVER=gemini` before the
   restart.
 - Remove the override after the OpenClaw gateway is healthy again so routing
   can return to the normal `_pick_driver.py` mode.
 
-These `CLAWTA_*` env vars are consumed by `swarm/bin/clawta-poller`, which
-passes them through to `_pick_driver.py` as `ROUTER_MODE` and `FORCE_DRIVER`.
+These env vars are consumed by `_pick_driver.py`; `swarm-controller` passes
+them through from its process environment.
 
 ### Blocked escalator
 
@@ -75,16 +74,11 @@ Dry-run:
 clawta-stale-worker-watchdog --dry-run --json
 ```
 
-## OpenClaw cron schedules
+## Scheduling
 
-The installer registers these jobs:
-
-- `clawta-kanban-poller` every `2m`
-- `clawta-blocked-escalator` every `10m`
-- `clawta-stale-worker-watchdog` every `10m`
-
-Each cron job is idempotent and responds with a closing `ok` token so OpenClaw
-records the run as successful.
+The old bundled poller schedule retired with the legacy poller. Verify the
+current controller and guard cadences from their
+tracked installers before relying on them operationally.
 
 ## Diagnostics
 

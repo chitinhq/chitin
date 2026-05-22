@@ -50,7 +50,7 @@ Single-box. One Linux workstation with an RTX 3090 hosts the entire dev + dogfoo
 | OTEL emit (projection) | Go kernel `internal/emit` | ✅ F4 shipped before 2026-05-07 talk |
 | Router signal stamping | Go kernel `internal/router` + `cmd/chitin-kernel/router_hook.go` | ✅ post-cull shape: pure-Go signals, no in-gate LLM advisor |
 | Removed in-tree orchestration | `apps/runner`, scheduler, Temporal, Slack app, in-gate peer spawn | ❌ culled 2026-05-06 to 2026-05-08; replaced by substrate composition |
-| Swarm (substrate composition) | `swarm/bin/clawta-poller`, `swarm/workflows/kanban-dispatch.lobster`, `scripts/kanban-flow` | ✅ shipping incrementally since 2026-05-11; composes hermes (kanban) + openclaw (Lobster) |
+| Swarm (substrate composition) | `swarm/bin/swarm-controller`, `swarm/workflows/kanban-dispatch.lobster`, `scripts/kanban-flow` | ✅ shipping incrementally since 2026-05-11; composes hermes (kanban) + openclaw (Lobster) |
 | Hermes (operations agent) | `docs/hermes-role.md` + `~/.hermes/scripts/` | ✅ own P0/P1, board engine, clawta bridge, blocked digest |
 | Souls library | `souls/canonical/` + `souls/experimental/` | historical analytics/reference artifact; not a kernel runtime surface |
 
@@ -60,7 +60,7 @@ Older docs stated "observability → governance → automation, in that order, p
 
 1. **Observability** is always-on. Every driver emits events to the chain by default.
 2. **Governance** is on by default in `mode: enforce` for the baseline policy. Policies tighten as the debt ledger surfaces real-world denials worth enforcing.
-3. **Automation** is composed, not re-implemented. The chitin-owned swarm (`swarm/`) drives the four-hop pipeline `hermes kanban → clawta tick → openclaw Lobster → frontier-coder CLI`. Hermes owns the kanban substrate; openclaw owns the workflow runtime + agent runtime; chitin owns the tick scripts, the workflow definition, and the chain/policy contracts that unify the hops. Approval flow still lives in hermes' `tools/approval.py`. See `docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md`.
+3. **Automation** is composed, not re-implemented. The chitin-owned swarm (`swarm/`) drives the four-hop pipeline `hermes kanban → swarm-controller tick → openclaw Lobster → frontier-coder CLI`. Hermes owns the kanban substrate; openclaw owns the workflow runtime + agent runtime; chitin owns the controller scripts, the workflow definition, and the chain/policy contracts that unify the hops. Approval flow still lives in hermes' `tools/approval.py`. See `docs/decisions/2026-05-13-swarm-readopted-composing-substrates.md`.
 
 ## The three analysis output streams
 
