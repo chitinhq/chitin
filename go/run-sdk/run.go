@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/chitinhq/chitin/go/chainhash"
 )
 
 type EmitOptions struct {
@@ -120,7 +122,7 @@ func (r *Run) EmitEvent(eventType string, payload any, opts EmitOptions) (Event,
 	if err != nil {
 		return Event{}, err
 	}
-	thisHash, err := hashEvent(eventMap)
+	thisHash, err := chainhash.HashEvent(eventMap)
 	if err != nil {
 		return Event{}, err
 	}

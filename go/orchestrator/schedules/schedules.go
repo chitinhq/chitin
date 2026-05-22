@@ -94,6 +94,10 @@ func Registry() []JobSpec {
 		// T012 — the codex telemetry jobs.
 		codexChainIngestSpec(),
 		codexUsageFeedSpec(),
+		// spec 085 US1 — the hourly operator heartbeat.
+		operatorHeartbeatSpec(),
+		// spec 085 US2 — the daily operator telemetry digest.
+		operatorDigestSpec(),
 	}
 }
 

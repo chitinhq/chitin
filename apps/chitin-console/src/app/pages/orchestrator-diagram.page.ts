@@ -25,7 +25,9 @@ const DIAGRAM = `flowchart TB
   ADP --> DAG
 
   subgraph ORCH["2 · Chitin Orchestrator — one Temporal worker host · 070"]
+    TSRV["Temporal Server · 081<br/>durable state · history · Schedules"]
     SCHED["SchedulerWorkflow · 076<br/>runnable frontier · priority order<br/>append signal · Continue-As-New every 500 ticks"]
+    TSCH["Temporal Schedules · 081<br/>cron expressions → scheduled workflow"]
     SEL["SelectDriver activity<br/>capability tag → driver"]
     subgraph WUW["WorkUnitWorkflow — one durable child per node · 076"]
       CW["CreateWorktree<br/>fresh isolated git worktree"]
@@ -41,6 +43,8 @@ const DIAGRAM = `flowchart TB
       DET --> DLV
       DLV --> TDN
     end
+    TSRV -->|durable execution| SCHED
+    TSRV --> TSCH
     SCHED -->|per runnable node| SEL
     SCHED -->|dispatch durable child| WUW
     SEL -.->|selected driver| WUW
@@ -62,10 +66,13 @@ const DIAGRAM = `flowchart TB
   PR["Pull Request on a chitin/wu/* branch<br/>— the PR-out gate"]
   DLV --> PR
 
-  subgraph SIDE["4 · Continuous workflows"]
+  subgraph SIDE["4 · Continuous and scheduled workflows"]
+    SJOB["ScheduledJobWorkflows · 081<br/>former crons — audits · ingest · watchdog · ops"]
     LOOP["ImprovementLoopWorkflow · 078<br/>telemetry → analysis → spec proposals → human gate"]
     INGEST["IngestionWorkflow · 079<br/>research and sources → knowledge base"]
   end
+  TSCH -->|trigger scheduled jobs| SJOB
+  TSRV -->|durable execution| SJOB
 
   subgraph GT["5 · Governance and telemetry — observe, never drive"]
     KRN["Chitin Kernel<br/>gates every tool call vs chitin.yaml"]

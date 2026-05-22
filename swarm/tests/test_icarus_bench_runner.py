@@ -1,4 +1,4 @@
-"""Tests for icarus-bench-runner — emit_gov_decision and _extract_tick_metadata.
+"""Tests for chitin-bench-runner — emit_gov_decision and _extract_tick_metadata.
 
 Covers the gov-decision row emission that this ticket (t_bb2a1575)
 introduced. These tests do NOT require harbor/ollama/docker; they
@@ -26,7 +26,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 # won't work. We load it via exec() against a fresh namespace dict.
 # The script references __file__ at module level (REPO_ROOT), so we
 # inject it.
-_runner_path = RUNNER_DIR / "icarus-bench-runner"
+_runner_path = RUNNER_DIR / "chitin-bench-runner"
 _runner: dict = {"__file__": str(_runner_path), "__name__": "icarus_bench_runner"}
 exec(_runner_path.read_text(), _runner)
 
@@ -192,6 +192,25 @@ class TestExtractTickMetadata(TestCase):
         self.assertEqual(meta["reward"], 0.75)
         self.assertEqual(meta["steps_used"], 12)
 
+    def test_extracts_steps_used_from_icarus_metadata(self):
+        """Invariant: the current Icarus artifact shape stores steps in
+        agent_result.metadata.icarus_steps_used, and the runner must
+        preserve that in the gov-decision row metadata."""
+        self._write_trial_result("icarus-meta", "trial-0", {
+            "agent_result": {
+                "metadata": {
+                    "icarus_block_reason": "ollama_error",
+                    "icarus_steps_used": 8,
+                },
+            },
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        })
+        result = {"status": "ran", "job_name": "icarus-meta"}
+        meta = _runner["_extract_tick_metadata"](result, "icarus-meta")
+        self.assertEqual(meta["block_reason"], "ollama_error")
+        self.assertEqual(meta["reward"], 0.0)
+        self.assertEqual(meta["steps_used"], 8)
+
     def test_extracts_reward_from_rewards_dict(self):
         """Invariant: reward is extracted from verifier_result.rewards.reward
         when that key path exists (current harbor format)."""
@@ -245,6 +264,31 @@ class TestExtractTickMetadata(TestCase):
         result = {"status": "ran", "job_name": "icarus-bad"}
         meta = _runner["_extract_tick_metadata"](result, "icarus-bad")
         self.assertEqual(meta["block_reason"], "none")
+
+
+class TestBenchModelDefaults(TestCase):
+    """Invariant: the runner, loop, and cron installer stay aligned on the
+    coder-tuned default model so bench tasks do not silently route back to
+    qwen3.6:27b."""
+
+    def test_runner_defaults_to_qwen3_coder(self):
+        self.assertEqual(
+            _runner["DEFAULT_MODEL"],
+            "ollama/qwen3-coder:30b-32k",
+        )
+
+    def test_shell_wrappers_default_to_qwen3_coder(self):
+        loop_script = (RUNNER_DIR / "chitin-bench-loop").read_text()
+        install_script = (RUNNER_DIR / "install-chitin-bench-cron.sh").read_text()
+
+        self.assertIn(
+            'CHITIN_BENCH_MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            loop_script,
+        )
+        self.assertIn(
+            'MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"',
+            install_script,
+        )
 
 
 if __name__ == "__main__":
