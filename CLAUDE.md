@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/070-chitin-orchestrator/plan.md`
+`specs/082-agent-cron-audit/plan.md`
 <!-- SPECKIT END -->
