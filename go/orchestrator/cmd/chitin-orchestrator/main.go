@@ -18,6 +18,8 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/copilot"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/gemini"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/hermes"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
@@ -49,6 +51,8 @@ func main() {
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
 		codex.New(),
+		copilot.New(),
+		gemini.New(),
 		hermes.New(),
 		openclaw.New(),
 		local.New(),
