@@ -164,7 +164,7 @@ watchdog blocks and assigns to operator. New tickets always start in
 | File | Purpose |
 |---|---|
 | `~/.local/bin/clawta` | Dispatch wrapper (`--board`, PATH fix, `LOBSTER_REPO`) |
-| `~/workspace/chitin/swarm/bin/clawta-poller` | Autonomous ticket dispatcher |
+| `~/workspace/chitin/swarm/bin/swarm-controller` | Deterministic dispatch controller |
 | `~/.hermes/scripts/hermes-clawta-bridge.py` | Failure-escalation bridge |
 | `~/.openclaw/workflows/kanban-dispatch.lobster` | Lobster dispatch pipeline |
 | `~/.openclaw/workflows/_pick_driver.py` | Driver/model selection |
