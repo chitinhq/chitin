@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/084-sdd-admission-gate/plan.md`
+`specs/085-operator-report-delivery/plan.md`
 <!-- SPECKIT END -->
