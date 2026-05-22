@@ -161,8 +161,8 @@ no reference to a removed duplicate.
   check 100% of the time, and is blocked before it can merge.
 - **SC-004**: Zero events in any existing audit chain fail verification after the change —
   historical chains verify exactly as before.
-- **SC-005**: Tools that embed the standalone run SDK can continue to do so with no
-  increase in dependencies.
+- **SC-005**: Tools that embed the standalone run SDK can continue to do so with no new
+  external or third-party dependency.
 
 ## Assumptions
 

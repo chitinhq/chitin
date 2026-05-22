@@ -51,7 +51,8 @@ a "no regression" bar, not a new target.
 **Constraints**: `go/chainhash` MUST stay zero-external-dependency (FR-007); hash output
 MUST remain byte-identical to the current implementation for all valid events (FR-004);
 the kernel and run SDK are separate Go modules, so cross-module sharing uses local
-`replace` directives (no repo-wide `go.work`).
+`replace` directives (no repo-wide `go.work`); the new module must be registered in the
+Nx project graph like its sibling Go modules so CI builds and tests it (`tasks.md` T002).
 
 **Scale/Scope**: ~110 lines of hash logic consolidated into one module; 2 existing Go
 modules updated (`go.mod` + call sites), 1 new module created; ~6 kernel import sites and
