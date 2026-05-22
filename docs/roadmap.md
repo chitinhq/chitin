@@ -110,7 +110,7 @@ Four-hop pipeline from
 
 ```
 hermes kanban (substrate)
-  → clawta tick (chitin: poller + dispatch wrapper)
+  → swarm-controller tick (chitin: controller + dispatch wrapper)
     → openclaw kanban-dispatch.lobster (substrate: workflow + acpx)
       → frontier-coder CLI (gov.Gate at the leaf)
 ```
@@ -124,8 +124,8 @@ Concretely:
 - `swarm/workflows/kanban-dispatch.lobster` — workflow expressed in
   Lobster; calls clawta for classification, picks driver via
   `_pick_driver.py`, spawns the leaf CLI via `spawn_worker`
-- `swarm/bin/clawta-poller` + `swarm/systemd/clawta-poller.timer` —
-  dispatch tick reading the hermes kanban
+- `swarm/bin/swarm-controller` + `swarm/bin/install-swarm-controller-cron.sh` —
+  dispatch loop reading the hermes kanban
 - `swarm/bin/clawta-pr-lifecycle` — PR-state → kanban reflection
 - `swarm/data/agent-cards/{claude-code,codex,gemini,copilot}.json` —
   git-tracked agent-card source (symlink-deployed to
@@ -168,7 +168,7 @@ boundaries.)
 
 - **Own the kanban data.** Hermes ships the SQLite DB + UI; chitin reads and writes via `kanban-flow` (which goes through the hermes CLI). Don't denormalize kanban into chitin.
 - **Ship a workflow engine.** Lobster (openclaw-side) executes `kanban-dispatch.lobster`. Chitin authors the workflow; it doesn't ship a runner.
-- **Run a TypeScript/Temporal worker.** `apps/runner/` stays deleted. The clawta-poller tick + Lobster workflow replaces it.
+- **Run a TypeScript/Temporal worker.** `apps/runner/` stays deleted. The swarm-controller loop + Lobster workflow replaces it.
 - **Speak to LLM backends directly.** Each vendor's CLI talks to its own backend under its own auth. Chitin governs the actions those CLIs take.
 - **Run as SaaS.** Local-only: operator's box, operator's data.
 

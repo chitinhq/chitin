@@ -24,10 +24,10 @@ This runbook describes the Chitin swarm dispatch path from a Hermes kanban ticke
    - `loop_detected` tickets are never auto-unblocked.
    - Operator-owned/red-assigned tickets are sacred unless red explicitly authorizes mutation in-thread.
 
-3. **Poller selection**
-   - `swarm/bin/clawta-poller` reads board config, filters dispatchable tickets, applies the spec-kit gate, routes `clawta` assignments, and dispatches bounded batches.
+3. **Controller selection**
+   - `swarm/bin/swarm-controller` reads board config, filters dispatchable tickets, routes `clawta` assignments, and dispatches bounded batches.
    - Tracking epics / `no_dispatch` tickets must not dispatch.
-   - Missing-spec tickets demote/block with an explicit missing spec-kit reason.
+   - Missing-spec tickets must fail the spec-kit gate with an explicit reason.
 
 4. **Driver selection**
    - `_pick_driver.py` / driver selection should prefer board-aware configuration and tracked driver metadata.
@@ -75,7 +75,7 @@ This runbook describes the Chitin swarm dispatch path from a Hermes kanban ticke
 - **Prefix drift:** default lifecycle prefixes historically included only `swarm/` and `clawta/`; current worker branches are `agent/*`. If lifecycle appears idle, pass `--prefix agent/` and fix the default before relying on cron.
 - **Primary-checkout dirt:** untracked specs in `~/workspace/chitin` can make file-based gates appear to pass before review. Preserve useful drafts in a worktree PR, then remove untracked primary copies.
 - **Lazy ticket matching:** arbitrary comments or `Refs` text must not close tickets. Close only from trusted branch/body close intent.
-- **Runtime drift:** poller, bridge, lifecycle, watchdog prompt, and workflows are live behavior. Install/verify from tracked source and treat deployed drift as a bug.
+- **Runtime drift:** controller, bridge, lifecycle, watchdog prompt, and workflows are live behavior. Install/verify from tracked source and treat deployed drift as a bug.
 
 ## Minimal verification commands
 
@@ -95,4 +95,4 @@ git rev-list --count origin/main..HEAD
 
 ## Escalation
 
-Use the bus channel before waking red. Include ticket id, PR/branch, command, exact output, and whether the failure is spec gate, watchdog, poller, driver picker, worker finalize, PR checks, or lifecycle close.
+Use the bus channel before waking red. Include ticket id, PR/branch, command, exact output, and whether the failure is spec gate, watchdog, controller, driver picker, worker finalize, PR checks, or lifecycle close.

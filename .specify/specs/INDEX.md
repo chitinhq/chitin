@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-21 (INDEX backfill: 025, 037, 039, 728; collision flags at 036/038/067/071).
+> Last updated 2026-05-21 (added spec 068 INDEX entry; spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066; INDEX backfill: 025, 037, 039, 728; collision flags at 036/038/067/071).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -151,6 +151,17 @@ spec 049 §R6.
 | Spec | Layer | Slug | Status | Bound ticket |
 |------|-------|------|--------|---------------|
 | 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
+
+## Icarus bench loop revival — spec 068
+
+> Spec 068 reverses the retirement of the Icarus terminal-bench loop (PR
+> #794) to get bench runs flowing immediately while the v2 Harbor agent
+> (specs 036/038) is spec'd but not yet implemented. Review ticket
+> `t_1615b319` (done). T001 shipped; T002–T007 pending.
+
+| Spec | Title | Status | Bound ticket | Notes |
+|------|-------|--------|--------------|-------|
+| 068 | icarus-bench-loop-revival | ratified | `t_1615b319` | Non-stop bench loop; PR #826 |
 
 ## Dispatch invariants — spec 025
 
