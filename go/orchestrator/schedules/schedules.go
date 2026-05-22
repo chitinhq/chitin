@@ -75,10 +75,10 @@ type JobSpec struct {
 // for an already-registered job collides on this ID and is a no-op.
 func (s JobSpec) ScheduleID() string { return schedulePrefix + s.Name }
 
-// Registry returns every cron migrated to a Temporal Schedule. Spec 081 US2
-// migrates the periodic read-mostly crons; with T010–T012 landed it holds all
-// seven US2 jobs — the two audits and the five telemetry ingesters. Later US3
-// tasks (the watchdog, mutation, ops, and bench jobs) append to this slice.
+// Registry returns every cron migrated to a Temporal Schedule. With spec 081
+// US2 and US3 T015–T019 landed it holds the seven periodic read-mostly jobs
+// plus the five watchdog / mutation / ops jobs. Later US3 bench work appends
+// to this slice.
 //
 // The slice is returned fresh on each call (never a shared mutable global) so
 // no caller can mutate the canonical inventory.
@@ -94,6 +94,12 @@ func Registry() []JobSpec {
 		// T012 — the codex telemetry jobs.
 		codexChainIngestSpec(),
 		codexUsageFeedSpec(),
+		// T015–T019 — watchdog / mutation / ops jobs.
+		chitinChainWatchSpec(),
+		chitinAgentUnlockSpec(),
+		chitinEnvelopeRotateSpec(),
+		chitinKernelRedeploySpec(),
+		openclawGatewayRestartSpec(),
 	}
 }
 
