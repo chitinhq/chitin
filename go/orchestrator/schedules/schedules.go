@@ -76,15 +76,24 @@ type JobSpec struct {
 func (s JobSpec) ScheduleID() string { return schedulePrefix + s.Name }
 
 // Registry returns every cron migrated to a Temporal Schedule. Spec 081 US2
-// migrates the periodic read-mostly crons one task at a time; this PR (T009)
-// migrates exactly one — swarm-audit — so the Registry holds exactly one
-// entry. Later US2/US3 tasks append to this slice.
+// migrates the periodic read-mostly crons; with T010–T012 landed it holds all
+// seven US2 jobs — the two audits and the five telemetry ingesters. Later US3
+// tasks (the watchdog, mutation, ops, and bench jobs) append to this slice.
 //
 // The slice is returned fresh on each call (never a shared mutable global) so
 // no caller can mutate the canonical inventory.
 func Registry() []JobSpec {
 	return []JobSpec{
+		// T009 — the daily/weekly audits.
 		swarmAuditSpec(),
+		architectureAuditSpec(),
+		// T011 — the Argus telemetry ingesters.
+		argusIngestBeliefsSpec(),
+		argusIngestGitSpec(),
+		argusIngestLogsSpec(),
+		// T012 — the codex telemetry jobs.
+		codexChainIngestSpec(),
+		codexUsageFeedSpec(),
 	}
 }
 
