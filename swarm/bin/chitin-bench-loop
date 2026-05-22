@@ -14,7 +14,7 @@
 # lease to the lint-fix watcher if it is waiting.
 #
 # Env:
-#   CHITIN_BENCH_MODEL       model passed to the runner (default qwen3.6:27b)
+#   CHITIN_BENCH_MODEL       model passed to the runner (default qwen3-coder:30b-32k)
 #   CHITIN_BENCH_N_TASKS     tasks per tick (default 1)
 #   CHITIN_BENCH_LOOP_PAUSE  seconds to sleep between ticks (default 60)
 
@@ -37,7 +37,7 @@ set +a
 # systemd user services get a minimal PATH — harbor lives in ~/.local/bin.
 export PATH="${HOME}/.local/bin:${PATH}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
-export CHITIN_BENCH_MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3.6:27b}"
+export CHITIN_BENCH_MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"
 export CHITIN_BENCH_N_TASKS="${CHITIN_BENCH_N_TASKS:-1}"
 PAUSE="${CHITIN_BENCH_LOOP_PAUSE:-60}"
 
