@@ -11,6 +11,7 @@ states the invariant up front in the docstring.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import tempfile
 from pathlib import Path
@@ -184,6 +185,15 @@ class TestStripProviderPrefix(TestCase):
     def test_idempotent(self):
         once = _strip_provider_prefix("ollama/qwen3-coder")
         self.assertEqual(_strip_provider_prefix(once), once)
+
+
+class TestLegacyIcarusImportPath(TestCase):
+    """Invariant: older Harbor commands can still import IcarusAgent."""
+
+    def test_legacy_icarus_agent_aliases_bench_agent(self):
+        mod = importlib.import_module("swarm.icarus_harness.agent")
+        self.assertIs(mod.IcarusAgent, importlib.import_module("swarm.icarus_harness").IcarusAgent)
+        self.assertTrue(issubclass(mod.IcarusAgent, importlib.import_module("swarm.chitin_bench.agent").BenchAgent))
 
 
 class TestCommandTimeoutWrapper(TestCase):
