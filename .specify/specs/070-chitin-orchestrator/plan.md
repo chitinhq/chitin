@@ -10,11 +10,12 @@ Replace the orchestration sprawl — ~36 cron jobs across the Hermes and
 OpenClaw gateways, ~52 `swarm/bin/` shell scripts, lobster dispatch, the
 agent-bus — with **one deterministic, observable orchestrator built on
 Temporal (Go SDK)**. Each former cron/script becomes a durable Temporal
-workflow. Migration is incremental: the kanban pull-loop first (running
+workflow. Migration is incremental: the **spec-DAG scheduler** first
+(spec 076 — it *replaces* the human-managed kanban pull-loop, running
 beside the existing cron until proven), then the dispatch pipeline, then
-pollers/watchdogs/board-engine, then the Icarus bench loop — each
-cron/script retired as its workflow proves out. Every work unit runs as a
-worker in its own dedicated git worktree (FR-013/14).
+pollers/watchdogs, then the Icarus bench loop — each cron/script retired
+as its workflow proves out. Every work unit runs as a worker in its own
+dedicated git worktree (FR-013/14).
 
 The engine choice (Temporal) is settled — see
 `docs/strategy/chitin-orchestrator-options-2026-05-20.md`. This plan does
@@ -26,7 +27,7 @@ not re-litigate it.
 
 **Primary Dependencies**: Temporal (self-hosted via `temporal server start-dev`, a single binary) + the Temporal Go SDK + `workflowcheck` (determinism static analysis).
 
-**Storage**: Temporal's own persistence holds workflow state and history (the dev server uses an embedded store). The Chitin Board (SQLite) and the chitin chain are read/written **by activities**, not the workflow engine.
+**Storage**: Temporal's own persistence holds workflow state and history (the dev server uses an embedded store). The Chitin Board (SQLite) is a **read-projection written by activities** — orchestrator state rendered for humans, never read back to decide what runs next (FR-016). The chitin chain is likewise written by activities, not the workflow engine.
 
 **Testing**: `go test`; Temporal's `testsuite` for workflow replay/determinism tests; `workflowcheck` in CI as a determinism gate.
 
@@ -73,7 +74,7 @@ specs/070-chitin-orchestrator/
 ```text
 go/orchestrator/
 ├── cmd/chitin-orchestrator/   # the worker-host entrypoint
-├── workflows/                 # one file per migrated unit (pull-loop, dispatch, …)
+├── workflows/                 # one file per migrated unit (scheduler, dispatch, …)
 ├── activities/                # side-effecting steps (board ops, gh calls, agent invokes)
 ├── worktree/                  # worktree create/teardown/GC — enforces FR-013/14
 └── telemetry/                 # OTel export → Chitin Telemetry
@@ -97,12 +98,14 @@ worktree.
 - **Phase 0 — Foundation.** Stand up `temporal server start-dev`; scaffold
   `go/orchestrator/`; a hello-world workflow; `workflowcheck` CI gate; OTel
   export to Chitin Telemetry. Exit: a trivial workflow runs and is inspectable.
-- **Phase 1 — Pull-loop (the P1 slice).** Migrate the kanban pull-loop to a
-  durable workflow (Continue-As-New for the never-ending loop). Run beside
-  the existing cron 7 days (SC-005); confirm every tick inspectable + replayable.
+- **Phase 1 — Scheduler (the P1 slice).** Build the spec-DAG scheduler
+  (spec 076) as a durable workflow — Continue-As-New for the never-ending
+  loop. It *replaces* the human-managed kanban pull-loop; it does not port
+  it. Run beside the existing cron 7 days (SC-005); confirm every tick
+  inspectable + replayable.
 - **Phase 2 — Dispatch (the P2 slice).** Migrate the Clawta dispatch pipeline;
   exactly-once PR/ticket transitions; kill-and-restart test (US2).
-- **Phase 3 — Pollers / watchdogs / board-engine.** Migrate as scheduled workflows.
+- **Phase 3 — Pollers / watchdogs.** Migrate as scheduled workflows. (The legacy board-engine is retired, not migrated — the board is now a read-projection, FR-016.)
 - **Phase 4 — Icarus bench loop.** Migrate `icarus-bench.service` to a workflow.
 - **Phase 5 — Retirement.** Delete each cron/script as its workflow is proven;
   the orchestrator becomes the single origin of orchestration (SC-001, SC-004).

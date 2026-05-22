@@ -44,6 +44,8 @@ func WriteLog(d Decision, dir string) error {
 		ActionType       string  `json:"action_type"`
 		ActionTarget     string  `json:"action_target"`
 		Ts               string  `json:"ts"`
+		ChainID          string  `json:"chain_id,omitempty"`
+		SessionID        string  `json:"session_id,omitempty"`
 		EnvelopeID       string  `json:"envelope_id,omitempty"`
 		Tier             Tier    `json:"tier,omitempty"`
 		CostUSD          float64 `json:"cost_usd,omitempty"`
@@ -89,6 +91,7 @@ func WriteLog(d Decision, dir string) error {
 		CorrectedCommand: d.CorrectedCommand, Escalation: d.Escalation,
 		Agent: d.Agent, ActionType: string(d.Action.Type), ActionTarget: d.Action.Target,
 		Ts:         d.Ts,
+		ChainID:    d.ChainID, SessionID: d.SessionID,
 		EnvelopeID: d.EnvelopeID, Tier: d.Tier, CostUSD: d.CostUSD,
 		InputBytes: d.InputBytes, OutputBytes: d.OutputBytes, ToolCalls: d.ToolCalls,
 		CallerOrigin:             d.CallerOrigin,
