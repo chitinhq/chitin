@@ -67,7 +67,7 @@ Per-lane thresholds (override via env if needed):
 | Lane | Stale threshold |
 |---|---|
 | `triage` | 48h since created (operator hasn't groomed it) |
-| `ready` | 6h since promoted (clawta-poller should have picked it up) |
+| `ready` | 6h since promoted (swarm-controller should have picked it up) |
 | `in_progress` | 24h with no kanban comment activity |
 | `blocked` | 12h since blocked (operator decision overdue) |
 

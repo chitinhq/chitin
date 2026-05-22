@@ -88,9 +88,9 @@ spec-writing, implementation, dispatch, review routing — the agents do
 themselves. "I don't know what to do next" is not a block; it is a
 grooming task.
 
-## What the poller does
+## What the controller does
 
-`clawta-poller` is the **dispatch executor**, not a router of people:
+`swarm-controller` is the **dispatch executor**, not a router of people:
 
 - It spawns worker CLIs for tickets assigned to a driver lane.
 - It does **not** demote unassigned `ready` tickets — those are the open
@@ -100,7 +100,7 @@ grooming task.
 
 ## Migration
 
-1. Land the poller change: stop demoting unassigned `ready` tickets.
+1. Land the controller change: stop demoting unassigned `ready` tickets.
 2. De-role the board: unassign the queued `ready`/`todo` pool currently
    parked on `ares`/`clawta`. `in_progress` tickets keep their owner.
 3. Agents adopt the tick loop (operator directive on the agent-bus;
@@ -108,7 +108,7 @@ grooming task.
 
 ## Follow-ups (swarm-owned)
 
-- Poller pool-aware dispatch: optionally auto-dispatch code-ready pool
+- Controller pool-aware dispatch: optionally auto-dispatch code-ready pool
   tickets when no agent has claimed them within N ticks.
 - Codify the tick loop into `swarm/roles/*` and agent souls.
 - Formalize the `review` state in the kanban schema if it is not a

@@ -37,7 +37,7 @@ Layers:
 2. **Execution kernel** (`go/execution-kernel/internal/{gov,driver,router,chain,canon,emit,envelope,…}`) — the only layer with side effects.
 3. **Driver normalizers** (`internal/driver/{claudecode,codex,gemini,hermes,copilot}/normalize.go` + `apps/openclaw-plugin-governance/`). The four PreToolUse-class drivers all share `bin/chitin-router-hook`.
 4. **Read-side analysis** (`python/analysis/`, `libs/telemetry/`, `apps/chitin-dashboard/`).
-5. **Swarm composition** (`swarm/workflows/kanban-dispatch.lobster`, `swarm/bin/clawta-poller`, `scripts/kanban-flow`).
+5. **Swarm composition** (`swarm/workflows/kanban-dispatch.lobster`, `swarm/bin/swarm-controller`, `scripts/kanban-flow`).
 
 ### Production-readiness `[repo M/H]`
 - **CI:** four GitHub workflows (`ci.yml`, `governance-bench.yml`, `hermes-plan-schema.yml`, `kanban-dispatch-lobster-sync.yml`, `pages.yml`). CI runs Go vet, vitest, governance bench, signed-policy verification, mirror-sync invariants.
