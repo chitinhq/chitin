@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
 	"github.com/chitinhq/chitin/go/orchestrator/ingest"
 	"github.com/chitinhq/chitin/go/orchestrator/loop"
+	"github.com/chitinhq/chitin/go/orchestrator/schedules"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 	"github.com/chitinhq/chitin/go/orchestrator/worktree"
 )
@@ -115,6 +117,18 @@ func main() {
 		HTTP:          nil,
 		KnowledgeBase: nil,
 	})
+
+	// Register the spec-081 US2 Schedule-backed cron migrations — create a
+	// Temporal Schedule for every migrated job (currently swarm-audit). This
+	// is IDEMPOTENT: a Schedule that already exists is left in place, so a
+	// restarted worker host re-runs EnsureSchedules every boot harmlessly.
+	// A failure here is logged, not fatal — the worker host must come up even
+	// if a Schedule cannot be registered; a missing Schedule is visible (the
+	// systemd-timer retirement is gated on the Schedule being proven), never
+	// silent.
+	if err := schedules.EnsureSchedules(context.Background(), c); err != nil {
+		log.Printf("chitin-orchestrator: ensuring Temporal Schedules: %v", err)
+	}
 
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d drivers, worktrees at %s",
 		TaskQueue, hostPort, registry.Len(), worktreeRoot)
