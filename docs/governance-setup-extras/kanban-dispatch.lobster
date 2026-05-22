@@ -453,8 +453,22 @@ steps:
         fi
         printf '%s' "$FS_SCOPE_JSON" > "$WORKTREE_GIT_DIR/swarm-scope.json"
         mkdir -p "$WORKTREE_GIT_DIR/hooks"
-        ln -sfn "$HOOK_SOURCE" "$WORKTREE_GIT_DIR/hooks/pre-commit"
-        echo "spawn_worker: pre-commit scope hook installed at $WORKTREE_GIT_DIR/hooks/pre-commit" >&2
+        # ── Pre-commit hook chain (scope + L1 + L2 per spec 020) ───
+        # Install a wrapper script that chains all three checks in order:
+        # scope (§1.1), no-code-without-test (L1), spec-has-test-coverage (L2).
+        # Each hook exits non-zero on violation; the chain stops at first failure.
+        cat > "$WORKTREE_GIT_DIR/hooks/pre-commit" <<PRECOMMIT_WRAPPER
+#!/usr/bin/env bash
+# Chitin pre-commit hook chain: scope → L1 (no-code-without-test) → L2 (spec-has-test-coverage)
+# Each hook exits non-zero on violation; the chain stops at first failure.
+# Installed by kanban-dispatch.lobster spawn_worker step.
+set -uo pipefail
+"$HOME/workspace/chitin/swarm/bin/worker-pre-commit-scope-hook.sh" || exit 1
+"$HOME/workspace/chitin/swarm/bin/worker-pre-commit-no-code-without-test.sh" || exit 1
+"$HOME/workspace/chitin/swarm/bin/worker-pre-commit-spec-has-test-coverage.sh" || exit 1
+PRECOMMIT_WRAPPER
+        chmod +x "$WORKTREE_GIT_DIR/hooks/pre-commit"
+        echo "spawn_worker: pre-commit hook chain installed at $WORKTREE_GIT_DIR/hooks/pre-commit (scope + L1 + L2)" >&2
       fi
 
       # Inject the file-system scope INTO the prompt as a hard rule so the
@@ -739,6 +753,27 @@ steps:
       if [[ -n "$EXISTING" ]]; then
         PR_URL="$EXISTING"
       else
+        # ── L3 gate: no-pr-without-spec (spec 020) ──────────────────────
+        # Before creating a PR, verify the diff touches a spec file OR
+        # the PR body references an existing spec. This is the chitin
+        # governance gate enforcing spec-driven development. Per spec 020
+        # Layer 3, this fires at gh pr create only — not gh pr edit.
+        SPEC_IN_DIFF=$(git diff "origin/$DEFAULT_BRANCH...$BRANCH" --name-only --diff-filter=AMDR -- '.specify/specs/*/spec.md' 2>/dev/null || true)
+        PR_BODY="Closes ticket ${ticket_id} (dispatched via clawta to $DRIVER). Auto-opened by kanban-dispatch.lobster finalize step. Branch $BRANCH."
+        SPEC_IN_BODY=$(printf '%s' "$PR_BODY" | grep -cE 'Spec: [0-9]+-[a-z0-9-]+' || true)
+        if [[ -z "$SPEC_IN_DIFF" && "$SPEC_IN_BODY" -eq 0 ]]; then
+          MSG="🦞 ${ticket_id}: L3 gate rejected — no spec in diff and no Spec: reference in PR body (spec 020 L3). Add a spec or reference one."
+          BLOCK_REASON="L3 spec gate: PR diff has no .specify/specs/*/spec.md and PR body has no Spec: NNN-<slug> reference"
+          python3 "$HOME/.openclaw/workflows/clawta_decisions.py" mark-outcome \
+            --ticket-id ${ticket_id} \
+            --outcome failure \
+            --failure-kind gh_pr_create_fail >/dev/null 2>&1 || true
+          printf '%s\n' "$BLOCK_REASON"
+          kanban-flow crash ${ticket_id} "$BLOCK_REASON" --author clawta --run-status failed --outcome failed --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
+          hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
+          # Do NOT create the PR. Exit this branch of the finalize step.
+          PR_URL=""
+        else
         # gh pr create writes the PR URL on stdout when it succeeds, but
         # the useful diagnostics are often on stderr when it fails. Keep
         # both streams so the block comment and dispatch log preserve the
@@ -790,6 +825,7 @@ steps:
         # GitHub state is the review-phase truth).
         kanban-flow pr ${ticket_id} "$PR_URL" --author clawta --event-chain-hash "$WORKER_EVENT_CHAIN_HASH" 2>/dev/null || true
       fi
+      # ── end L3 gate (spec 020) ──────────────────────────────────────
       hermes kanban --board $resolve_board.json.board comment ${ticket_id} --author clawta "$MSG" 2>/dev/null || true
       # Broadcast to Clawta's default channel (operator-facing log).
       openclaw message send --channel discord --account default --text "$MSG" 2>/dev/null || true

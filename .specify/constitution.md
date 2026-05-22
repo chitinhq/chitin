@@ -25,6 +25,20 @@ through the kernel directly.
 state, it goes through hermes or the lobster workflow. Never bypass the
 kernel to write chain events; never bypass hermes to write kanban state.
 
+## 1.2 Spec→test contract
+
+Every spec under `.specify/specs/NNN-<slug>/spec.md` MUST contain a `## Test
+coverage` section binding each acceptance criterion to a named test case.
+**The default test layer is e2e** — playwright for UI flows, real-stack
+integration tests for HTTP APIs / CLIs / jobs. A non-e2e binding (unit,
+static-analysis, regression) is allowed ONLY when the spec adds a `### Why
+<layer> not e2e for this spec` subsection justifying the exception (the
+artifact IS the surface, the behavior has no observable boundary, or the
+e2e cost is prohibitive with operator ratification). Every test file MUST
+reference its spec via `// spec: NNN-<slug>` (or `# spec:` / `/* spec:`) in
+the first 20 lines. Chitin enforces shape at commit time (spec 020);
+reviewers enforce that the exception justification is honest.
+
 ## 2. Branch and worktree conventions
 
 - Worker branches: `agent/<driver>-<hash>` (current), `swarm/<driver>-<hash>` (legacy)
