@@ -19,6 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase, main, mock, skipUnless
+from unittest.mock import AsyncMock, patch
 from urllib import error as urllib_error
 
 try:
@@ -36,6 +37,7 @@ try:
     from swarm.chitin_bench.agent import (
         BASH_BLOCK_RE,
         BenchAgent,
+        BenchOllamaError,
         BenchOllamaTimeout,
         LoopDetector,
         STDERR_CAPTURE_LIMIT,
@@ -52,6 +54,7 @@ except ModuleNotFoundError as exc:
     AGENT_TESTS_SKIP_REASON = str(exc)
     BASH_BLOCK_RE = None
     BenchAgent = None
+    BenchOllamaError = None
     BenchOllamaTimeout = None
     LoopDetector = None
     STDERR_CAPTURE_LIMIT = None
@@ -265,13 +268,55 @@ class TestOllamaChatFailures(TestCase):
                 ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
 
     def test_non_timeout_urlerror_stays_generic(self):
-        from swarm.chitin_bench.agent import BenchOllamaError
         with mock.patch(
             "swarm.chitin_bench.agent.urllib_request.urlopen",
             side_effect=urllib_error.URLError("connection refused"),
         ):
             with self.assertRaises(BenchOllamaError):
                 ollama_chat("ollama/qwen3.6:27b", [{"role": "user", "content": "hi"}], timeout_s=3)
+
+
+class _FakeEnvironment:
+    async def exec(self, cmd: str) -> ExecResult:
+        return ExecResult(stdout=f"ran {cmd}", return_code=0)
+
+
+@skipUnless(AGENT_TESTS_AVAILABLE, AGENT_TESTS_SKIP_REASON or "agent deps unavailable")
+class TestOllamaTimeoutLoudFail(TestCase):
+    """Invariant: an Ollama timeout after observable progress stays a
+    structured loud-fail with block_reason=ollama_error."""
+
+    def test_timeout_sets_context_metadata_and_exit_record(self):
+        logs_dir = Path(tempfile.mkdtemp())
+        agent = BenchAgent(logs_dir=logs_dir, model_name="ollama/test")
+        context = SimpleNamespace(metadata=None)
+
+        with (
+            patch(
+                "swarm.chitin_bench.agent.gather_environment_bootstrap",
+                new=AsyncMock(return_value=""),
+            ),
+            patch(
+                "swarm.chitin_bench.agent.ollama_chat",
+                side_effect=[
+                    "```bash\ncat /app/feal.py\n```",
+                    BenchOllamaError("ollama HTTP failed: timed out"),
+                ],
+            ),
+        ):
+            asyncio.run(agent.run("recover key[5]", _FakeEnvironment(), context))
+
+        self.assertEqual(context.metadata["chitin_bench_block_reason"], "ollama_error")
+        self.assertEqual(context.metadata["chitin_bench_steps_used"], 2)
+
+        trajectory = (logs_dir / "chitin-bench-trajectory.jsonl").read_text().splitlines()
+        final_record = json.loads(trajectory[-1])
+        self.assertEqual(final_record["role"], "exit")
+        self.assertIn("loud_fail: ollama_error", final_record["content"])
+
+        summary = json.loads((logs_dir / "chitin-bench-summary.json").read_text())
+        self.assertEqual(summary["block_reason"], "ollama_error")
+        self.assertEqual(summary["steps"], 2)
 
 
 class TestLegacyIcarusImportPath(TestCase):
