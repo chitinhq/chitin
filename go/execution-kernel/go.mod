@@ -3,6 +3,7 @@ module github.com/chitinhq/chitin/go/execution-kernel
 go 1.25.0
 
 require (
+	github.com/chitinhq/chitin/go/chainhash v0.0.0
 	github.com/github/copilot-sdk/go v0.2.2
 	go.opentelemetry.io/proto/otlp v1.10.0
 	google.golang.org/protobuf v1.36.11
@@ -31,3 +32,5 @@ require (
 )
 
 replace github.com/github/copilot-sdk/go => ./third_party/copilot-sdk-go
+
+replace github.com/chitinhq/chitin/go/chainhash => ../chainhash
