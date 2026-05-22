@@ -33,9 +33,14 @@ bounds:
 escalation:
   elevated_threshold: 3
   high_threshold: 7
-  lockdown_threshold: 10
+  # Raised 2026-05-21 (ticket t_2356307a): the prior 10 / 4-in-300s
+  # thresholds locked Ares 4x, claude-code once, and Clawta once during
+  # normal autonomous work. Worktree-posture denials no longer escalate
+  # toward lockdown (see gate.go step 7b), which removes the main source
+  # of spurious denial accumulation.
+  lockdown_threshold: 25
   max_retries_per_action: 3
-  deny_cascade_count: 4
+  deny_cascade_count: 12
   deny_cascade_window_seconds: 300
 
 invariantModes:
@@ -51,6 +56,11 @@ invariantModes:
   protected-system-path-write: enforce
   protected-credential-path-write: enforce
   protected-system-path-shell-write: enforce
+  # Autonomous agents must make repo changes in a linked worktree on a
+  # feature branch, never the primary checkout. Kernel-enforced (gate.go
+  # step 7b); honors operator presence so interactive operator work in
+  # the primary checkout is unaffected.
+  worktree-required: enforce
 
 rules:
   # Direct rm-recursive — closes #58 (whitespace, quoted-flag, split-flag,
@@ -225,7 +235,13 @@ rules:
     action: shell.exec
     effect: deny
     driver: hermes
-    target_regex: '(?:^|[;&|]\s*|\s)(?:[\w./-]+/)?(?:codex|claude|gemini)(?:\s|$)'
+    # Matches codex/claude/gemini in command position (optionally
+    # path-prefixed, e.g. `/usr/bin/codex`) or as a bare-name argument
+    # (e.g. `npx codex`). Deliberately does NOT match path arguments
+    # like `./driver/codex` — a Go package path, not a spawn. The old
+    # over-broad `\s` alternative matched any whitespace-preceded token
+    # and was a false-positive lockdown source.
+    target_regex: '(?:(?:^|[;&|]\s*)(?:[\w./-]+/)?|\s)(?:codex|claude|gemini)(?:\s|$)'
     reason: "Hermes does not dispatch frontier coders directly. Use `clawta` to request dispatch via OpenClaw + Lobster."
     suggestion: "clawta --text \"dispatch ticket t_X to <agent>\" — OpenClaw routes to the right worker."
     escalation_weight: 2

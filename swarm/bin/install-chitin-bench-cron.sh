@@ -37,7 +37,7 @@ EMITTER_WRAPPER="$WRAPPER_DIR/$EMITTER_WRAPPER_NAME"
 
 MARKER="# chitin-bench-cron-managed"
 
-MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3.6:27b}"
+MODEL="${CHITIN_BENCH_MODEL:-ollama/qwen3-coder:30b-32k}"
 N_TASKS="${CHITIN_BENCH_N_TASKS:-1}"
 
 JOB_NAME_RUNNER="chitin-bench-runner"

@@ -1,0 +1,32 @@
+{
+  "name": "@chitin/contracts",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/contracts/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:analytics", "layer:contracts", "lang:ts"],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm exec vitest run libs/contracts/tests",
+        "cwd": "{workspaceRoot}"
+      }
+    },
+    "generate-go-types": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm exec tsx libs/contracts/tools/generate-go-types.ts",
+        "cwd": "{workspaceRoot}"
+      },
+      "outputs": ["{workspaceRoot}/go/execution-kernel/internal/event/event.go"]
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm exec tsc -b libs/contracts/tsconfig.lib.json && pnpm exec vitest run libs/contracts/tests",
+        "cwd": "{workspaceRoot}"
+      },
+      "dependsOn": ["^validate"]
+    }
+  }
+}

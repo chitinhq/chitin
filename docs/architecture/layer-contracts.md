@@ -12,6 +12,13 @@ All execution passes through `gov.Gate.Evaluate`. The kernel is the
 only enforcement point. No driver, orchestrator, or adapter may
 bypass it.
 
+This clause is normative — nothing is *permitted* to route around the
+gate. Its operational precondition — which effects are actually
+*observable* to the gate, and where an effect can structurally travel
+un-mediated — is documented in
+[`effect-observability.md`](./effect-observability.md). Enforcement
+claims must be scoped to that surface.
+
 ## 2. Driver Constraint
 
 An execution request carries `allowed_drivers` as a typed, schema-

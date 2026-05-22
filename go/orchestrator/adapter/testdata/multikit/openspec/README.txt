@@ -1,0 +1,1 @@
+fixture: openspec marker dir

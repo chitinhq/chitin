@@ -1,4 +1,20 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// The kernel resolves chitin.yaml by walking up from cwd. The OpenClaw
+// gateway's cwd is never inside a governed tree, so that walk returns
+// no_policy_found and the gate FAILS OPEN with no decision row — the bug
+// that made clawta/main tool calls invisible to chitin telemetry. Pin an
+// explicit policy file: $CHITIN_POLICY_FILE override, else the chitin.yaml
+// at the repo root (resolved relative to this plugin file). Mirrors the
+// hermes plugin's CHITIN_POLICY_FILE handling.
+function resolvePolicyFile() {
+  const env = (process.env.CHITIN_POLICY_FILE ?? '').trim();
+  if (env) return env;
+  return fileURLToPath(new URL('../../../chitin.yaml', import.meta.url));
+}
+
+const POLICY_FILE = resolvePolicyFile();
 
 /**
  * @typedef {object} GateInput
@@ -41,6 +57,7 @@ export async function evaluateGate(input, opts) {
     '-cwd',
     input.cwd ?? process.cwd(),
   ];
+  if (POLICY_FILE) args.push('-policy-file', POLICY_FILE);
 
   let stdout = '';
   let stderr = '';
@@ -176,6 +193,11 @@ async function evaluateHookInvocation(input, opts, args, label) {
     session_id: input.sessionId ?? `openclaw-${input.agent}`,
   };
 
+  // Pin the policy file (see resolvePolicyFile) so the kernel uses an
+  // explicit policy instead of a cwd-walk that fails open from the
+  // gateway's ungoverned cwd.
+  const kernelArgs = POLICY_FILE ? [...args, '--policy-file', POLICY_FILE] : args;
+
   let stdout = '';
   let stderr = '';
   let timedOut = false;
@@ -183,7 +205,7 @@ async function evaluateHookInvocation(input, opts, args, label) {
 
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn(opts.kernelPath, args, {
+      const child = spawn(opts.kernelPath, kernelArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       const killTimer = setTimeout(() => {

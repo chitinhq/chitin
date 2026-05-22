@@ -4,7 +4,7 @@
   "projectType": "application",
   "prefix": "cc",
   "sourceRoot": "apps/chitin-console/src",
-  "tags": [],
+  "tags": ["type:app", "scope:app", "layer:console", "lang:ts"],
   "targets": {
     "build": {
       "executor": "@angular/build:application",
@@ -74,6 +74,14 @@
         "staticFilePath": "dist/apps/chitin-console/browser",
         "spa": true
       }
+    },
+    "validate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": ["echo 'validate passed'"],
+        "parallel": false
+      },
+      "dependsOn": ["build", "^validate"]
     }
   }
 }
