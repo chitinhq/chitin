@@ -315,6 +315,60 @@ class TestEmitterClassifier(TestCase):
         self.assertTrue(is_fail)
         self.assertEqual(reason, "verifier_missing")
 
+    def test_cleanup_after_success_is_classified_separately(self):
+        """Invariant: a trial that tears down state before TASK_COMPLETE is
+        classified as a false-success cleanup, not generic verifier failure."""
+        with TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp)
+            agent_dir = trial_dir / "agent"
+            agent_dir.mkdir()
+            trajectory = agent_dir / "chitin-bench-trajectory.jsonl"
+            trajectory.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "step": 11,
+                                "role": "exec",
+                                "content": "$ curl -s http://localhost:8080/hello.html\n[return_code=0]\nSTDOUT:\nhello world",
+                                "metadata": {"cmd": "curl -s http://localhost:8080/hello.html", "return_code": 0},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "step": 12,
+                                "role": "exec",
+                                "content": "$ cd /git/server && git branch -D master && rm -rf /var/www/html/*\n[return_code=0]",
+                                "metadata": {
+                                    "cmd": "cd /git/server && git branch -D master && rm -rf /var/www/html/*",
+                                    "return_code": 0,
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "step": 15,
+                                "role": "assistant",
+                                "content": "```bash\necho \"Setup complete\"\n```\n\nTASK_COMPLETE",
+                                "metadata": {},
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+
+            is_fail, reason, evidence = self._classify(
+                {
+                    "trial_uri": trial_dir.as_uri(),
+                    "verifier_result": {"rewards": {"reward": 0.0}},
+                }
+            )
+
+        self.assertTrue(is_fail)
+        self.assertEqual(reason, "false_success_cleanup")
+        self.assertIn("git branch -D master", evidence)
+
     def test_verifier_bootstrap_failure_classified_from_stdout(self):
         """Verifier bootstrap breakage in sibling logs must not collapse
         into a generic verifier_failed ticket."""

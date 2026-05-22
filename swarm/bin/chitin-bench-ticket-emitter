@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = REPO_ROOT / "jobs" / "chitin-bench"
@@ -39,6 +41,10 @@ KANBAN_BOARD = os.environ.get("CHITIN_BENCH_KANBAN_BOARD", "chitin-bench")
 TICKET_ASSIGNEE = os.environ.get("CHITIN_BENCH_TICKET_ASSIGNEE", "clawta")
 EMITTED_LOG = Path.home() / ".chitin-bench" / "emitted-tickets.jsonl"
 SCAN_WINDOW_HOURS = int(os.environ.get("CHITIN_BENCH_EMITTER_WINDOW_H", "48"))
+DESTRUCTIVE_CMD_PATTERNS = (
+    re.compile(r"\bgit\s+branch\s+-D\b"),
+    re.compile(r"\brm\s+-rf\b"),
+)
 
 
 def log(msg: str) -> None:
@@ -158,6 +164,10 @@ def classify_failure(trial: dict, trial_dir: Path | None = None) -> tuple[bool, 
     except (TypeError, ValueError):
         return True, "verifier_malformed", str(reward)[:200]
 
+    cleanup_signal = _cleanup_after_completion_excerpt(trial)
+    if cleanup_signal is not None:
+        return True, "false_success_cleanup", cleanup_signal
+
     verifier_bootstrap_excerpt = _verifier_bootstrap_failed(trial_dir)
     if verifier_bootstrap_excerpt:
         return True, "environment_setup_failed", verifier_bootstrap_excerpt
@@ -177,6 +187,70 @@ def _verifier_excerpt(verifier_result: dict) -> str:
     if "stdout" in verifier_result:
         pieces.append(f"stdout(tail)=\n{(verifier_result['stdout'] or '')[-500:]}")
     return "\n".join(pieces) if pieces else json.dumps(verifier_result)[:500]
+
+
+def _cleanup_after_completion_excerpt(trial: dict) -> str | None:
+    """Detect trajectories that declare success after destructive cleanup.
+
+    This is not a verifier flake: the agent reached a working state, then
+    tore it down before emitting ``TASK_COMPLETE``. Surface that pattern as a
+    distinct triage class so follow-up work is routed to prompt/model behavior
+    instead of being flattened into generic verifier noise.
+    """
+    records = _load_trajectory_records(trial)
+    if not records:
+        return None
+
+    completion_index = None
+    for index, record in enumerate(records):
+        if record.get("role") == "assistant" and "TASK_COMPLETE" in str(record.get("content", "")):
+            completion_index = index
+            break
+    if completion_index is None:
+        return None
+
+    destructive_event = None
+    for record in records[:completion_index]:
+        if record.get("role") != "exec":
+            continue
+        metadata = record.get("metadata") or {}
+        cmd = str(metadata.get("cmd") or "")
+        if any(pattern.search(cmd) for pattern in DESTRUCTIVE_CMD_PATTERNS):
+            destructive_event = (record.get("step"), cmd)
+
+    if destructive_event is None:
+        return None
+
+    step, cmd = destructive_event
+    return f"trajectory declared completion after destructive cleanup at step {step}: {cmd}"[:500]
+
+
+def _load_trajectory_records(trial: dict) -> list[dict]:
+    trial_uri = trial.get("trial_uri")
+    if not isinstance(trial_uri, str) or not trial_uri.startswith("file://"):
+        return []
+
+    trial_dir = Path(urlparse(trial_uri).path)
+    if not trial_dir.is_dir():
+        return []
+
+    candidates = sorted((trial_dir / "agent").glob("*trajectory.jsonl"))
+    if not candidates:
+        return []
+
+    records: list[dict] = []
+    try:
+        with candidates[0].open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    records.append(row)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return records
 
 
 def idempotency_key(task_name: str, block_reason: str) -> str:
