@@ -56,6 +56,8 @@ func main() {
 		cmdUninstall(args)
 	case "health":
 		cmdHealth(args)
+	case "report":
+		cmdReport(args)
 	case "board-config":
 		cmdBoardConfig(args)
 	case "kanban":
@@ -748,6 +750,8 @@ func cmdHealth(args []string) {
 	fs := flag.NewFlagSet("health", flag.ExitOnError)
 	dir := fs.String("dir", ".chitin", "path to .chitin state dir")
 	windowHours := fs.Int("window-hours", 24, "window size in hours")
+	kernelBin := fs.String("kernel-bin", "", "installed kernel binary to check for staleness (default: this executable)")
+	repo := fs.String("repo", "", "chitin source repo for the staleness check (default: $CHITIN_REPO, else discovered from cwd)")
 	fs.Parse(args)
 	if *windowHours <= 0 {
 		exitErr("invalid_window_hours", "--window-hours must be > 0")
@@ -760,11 +764,69 @@ func cmdHealth(args []string) {
 	if err != nil {
 		exitErr("health", err.Error())
 	}
+
+	// Kernel-delivery health (spec 083 US2): is the running kernel stale
+	// relative to merged source (FR-011), and did the last redeploy succeed
+	// (FR-010)? Both detectors degrade to status=unknown rather than failing
+	// the command, so `chitin health` stays usable even off-box.
+	binPath := *kernelBin
+	if binPath == "" {
+		if exe, exeErr := os.Executable(); exeErr == nil {
+			binPath = exe
+		}
+	}
+	ks := health.GatherKernelStaleness(binPath, resolveKernelRepo(*repo))
+	rep.KernelStaleness = &ks
+	rh := health.GatherRedeployHealth(installKernelLogPath())
+	rep.RedeployHealth = &rh
+
 	out, err := json.Marshal(rep)
 	if err != nil {
 		exitErr("health_marshal", err.Error())
 	}
 	fmt.Println(string(out))
+}
+
+// resolveKernelRepo finds the chitin source checkout for the staleness check:
+// the --repo flag, then $CHITIN_REPO, then a walk up from cwd for the repo root
+// (a directory holding both .git and chitin.yaml). Empty if none is found —
+// GatherKernelStaleness then reports staleness as unknown.
+func resolveKernelRepo(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if env := os.Getenv("CHITIN_REPO"); env != "" {
+		return env
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for d := cwd; ; {
+		_, gitErr := os.Stat(filepath.Join(d, ".git"))
+		_, ymlErr := os.Stat(filepath.Join(d, "chitin.yaml"))
+		if gitErr == nil && ymlErr == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
+
+// installKernelLogPath mirrors install-kernel.sh's own resolution:
+// $CHITIN_INSTALL_KERNEL_LOG, else ~/.cache/chitin/install-kernel.jsonl.
+func installKernelLogPath() string {
+	if env := os.Getenv("CHITIN_INSTALL_KERNEL_LOG"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "chitin", "install-kernel.jsonl")
 }
 
 func exitErr(kind, msg string) {

@@ -82,6 +82,48 @@ emit() {
   printf '%s\n' "$line" | tee -a "$LOG" >&2
 }
 
+# Fast-forward the current branch to the already-fetched origin/main.
+#
+# Replaces `git pull --ff-only --autostash origin main` (research Decision 5,
+# spec 083 US2). `git pull origin main` can abort with "Cannot fast-forward to
+# multiple branches" when FETCH_HEAD carries more than one merge candidate;
+# `git merge --ff-only origin/main` takes exactly one explicit ref and cannot.
+#
+# The autostash that protected service-written uncommitted docs (roadmap.md,
+# swarm-lessons.md — tracked files those services overwrite without committing)
+# is reproduced explicitly: a stash-pop conflict is surfaced as `emit fail`
+# instead of being silently swallowed the way `git pull --autostash` hides it.
+# The stash is left in place on any pop failure so the operator can recover it.
+#
+# Emits its own failure reason and returns non-zero; the caller just exits 1.
+ff_merge_origin_main() {
+  local stashed=0
+  if ! git diff --quiet HEAD 2>/dev/null; then
+    if git stash push --quiet --message "install-kernel autostash $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+      stashed=1
+    else
+      emit fail autostash-failed "old_sha=$old_sha" "new_sha=$new_sha"
+      return 1
+    fi
+  fi
+  if ! git merge --ff-only --quiet origin/main; then
+    emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
+    if [[ $stashed -eq 1 ]]; then
+      if git stash pop --quiet; then
+        emit ok autostash-restored-after-conflict
+      else
+        emit fail autostash-pop-failed-after-conflict "stash kept — operator must resolve"
+      fi
+    fi
+    return 1
+  fi
+  if [[ $stashed -eq 1 ]] && ! git stash pop --quiet; then
+    emit fail autostash-pop-conflict "merge succeeded but stash pop conflicts — stash kept, operator must resolve"
+    return 1
+  fi
+  return 0
+}
+
 if ! cd "$REPO" 2>/dev/null; then
   emit fail chdir-failed "repo=$REPO"
   exit 1
@@ -124,29 +166,15 @@ relevant_changes_since_last="(none)"
 
 if [[ "$old_sha" != "$new_sha" ]]; then
   if git diff --quiet "$old_sha" "$new_sha" -- go/ chitin.yaml; then
-    # --autostash keeps the operator's uncommitted working-tree changes
-    # (e.g. docs/roadmap.md from chitin-researcher.service, docs/swarm-
-    # lessons.md from chitin-lessons.service — neither commits its
-    # writes). Without it, those uncommitted modifications block
-    # `--ff-only` and the redeploy timer fires fail-pull-conflict every
-    # 15 min. Auto-stash → fast-forward → auto-pop, transparent to the
-    # operator.
-    if ! git pull --ff-only --autostash --quiet origin main; then
-      emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
+    # No kernel-relevant changes — fast-forward to origin/main and stop.
+    if ! ff_merge_origin_main; then
       exit 1
     fi
     emit noop "no kernel-relevant changes" "old_sha=$old_sha" "new_sha=$new_sha"
     exit 0
   else
-    # --autostash keeps the operator's uncommitted working-tree changes
-    # (e.g. docs/roadmap.md from chitin-researcher.service, docs/swarm-
-    # lessons.md from chitin-lessons.service — neither commits its
-    # writes). Without it, those uncommitted modifications block
-    # `--ff-only` and the redeploy timer fires fail-pull-conflict every
-    # 15 min. Auto-stash → fast-forward → auto-pop, transparent to the
-    # operator.
-    if ! git pull --ff-only --autostash --quiet origin main; then
-      emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
+    # Kernel-relevant changes — fast-forward to origin/main, then rebuild.
+    if ! ff_merge_origin_main; then
       exit 1
     fi
     need_rebuild=1
