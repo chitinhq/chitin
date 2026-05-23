@@ -66,6 +66,10 @@ func runMain(args []string) int {
 			return cmdStatus(args[2:])
 		case "cancel":
 			return cmdCancel(args[2:])
+		case "factory-listen":
+			return cmdFactoryListen(args[2:])
+		case "simulate-webhook":
+			return cmdSimulateWebhook(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -216,6 +220,8 @@ USAGE
   chitin-orchestrator schedule <spec-ref> [opts]   # compile a spec and start a SchedulerWorkflow run
   chitin-orchestrator status [-run-id <id>] [--text]    # list active runs OR inspect one
   chitin-orchestrator cancel -run-id <id> [-reason <text>]  # cancel a running scheduler
+  chitin-orchestrator factory-listen [opts]                 # run the webhook trigger surface (spec 098)
+  chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
