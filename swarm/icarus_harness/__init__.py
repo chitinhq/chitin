@@ -1,8 +1,9 @@
-"""Backward-compatible Icarus harness import surface.
+"""Icarus harness — a deterministic, bash-only Harbor agent.
 
-The canonical Harbor agent lives under ``swarm.chitin_bench.agent``.
-This package preserves the historical ``swarm.icarus_harness`` import
-path used by older bench tickets and repro commands.
+Cleanroomed from mini-swe-agent (Princeton/SWE-agent team) with three
+additions distinctive to Icarus: environment bootstrap, loop detection,
+and loud-fail (no silent retries). See ``agent.py:IcarusAgent`` for the
+entry point Harbor invokes.
 """
 
 from swarm.icarus_harness.agent import IcarusAgent
