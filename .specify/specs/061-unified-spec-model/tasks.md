@@ -88,9 +88,13 @@
 
 **Purpose**: Clean up the Python package and finalize grooming artifacts.
 
-- [ ] T029 [P] Restore Python `spec_adapter/` package source files (currently only `.pyc` remains)
-- [ ] T030 [P] Resolve spec open questions Q1 (model owner), Q3 (OpenSpec format), Q4 (adapter priority)
-- [ ] T031 Update spec status from DRAFT to RATIFIED after all open questions resolved
+- [x] T029 [P] Restore Python `spec_adapter/` package source files (currently only `.pyc` remains)
+- [x] T030 [P] Resolve spec open questions Q1 (model owner), Q3 (OpenSpec format), Q4 (adapter priority)
+  - Q1 resolved: JSON Schema as contract, Go + Python bindings
+  - Q2 resolved: one package, one registry
+  - Q4 resolved: Superpowers second, OpenSpec third
+  - Q3 still open: OpenSpec on-disk format needs operator confirmation
+- [ ] T031 Update spec status from DRAFT to RATIFIED after all open questions resolved (blocked on Q3)
 
 ---
 
