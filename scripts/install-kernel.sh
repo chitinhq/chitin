@@ -13,14 +13,24 @@
 # files; only the docs landed. This PR ships the actual code.)
 #
 # Decision tree:
-#   1. fetch origin/main; if behind, pull.
-#   2. if either (a) the new commits touch go/ or chitin.yaml OR
-#      (b) the binary is older than tracked sources → rebuild.
-#   3. smoke-test the freshly-built binary; on failure, roll back
-#      to the prior binary (saved aside in $BIN.prev) and exit
-#      non-zero so the systemd unit reports failure.
-#   4. log structured JSON to ~/.cache/chitin/install-kernel.jsonl
-#      (one line per run) for grep-ability.
+#   1. fetch origin/main into a DEDICATED worktree (~/.cache/chitin/redeploy-worktree
+#      by default). The operator's primary checkout at $REPO is NEVER touched.
+#   2. compare the new origin/main sha against the sha stamped next to the
+#      installed binary ($BIN.sha). If either (a) the new commits touch go/ or
+#      chitin.yaml OR (b) the binary is older than tracked sources → rebuild.
+#   3. build from the worktree; smoke-test; on failure roll back to the prior
+#      binary (saved aside in $BIN.prev) and exit non-zero so the systemd unit
+#      reports failure. Stamp the new commit sha in $BIN.sha on success.
+#   4. log structured JSON to ~/.cache/chitin/install-kernel.jsonl (one line
+#      per run) for grep-ability.
+#
+# Constitution §2 compliance (2026-05-23):
+#   The pre-2026-05-23 version ran `git checkout main` inside the operator's
+#   primary checkout to ensure it was on the right branch before pulling. That
+#   violated §2 (operator's primary checkout is sacred — automation runs in
+#   dedicated worktrees). The fix moves all git state mutation into a dedicated
+#   worktree; $REPO is now read-only-from-this-script. See PR #937 for the
+#   git-ops recorder that detected the hijack pattern.
 #
 # Exit codes:
 #   0  no-op (no relevant changes since last run)
@@ -37,6 +47,15 @@ REPO="${CHITIN_REPO:-$(python3 "$REPO_ROOT/swarm/bin/board_resolver.py" workspac
 BIN="${CHITIN_KERNEL_BIN:-$HOME/.local/bin/chitin-kernel}"
 PREV="$BIN.prev"
 LOG="${CHITIN_INSTALL_KERNEL_LOG:-$HOME/.cache/chitin/install-kernel.jsonl}"
+
+# Dedicated worktree for the redeploy build. Detached HEAD on origin/main;
+# persistent across runs for speed (avoids re-cloning on every timer fire).
+# Per constitution §2: automation NEVER touches the operator's primary
+# checkout. All git state mutations happen in this worktree.
+#
+# Override via CHITIN_KERNEL_REDEPLOY_WORKTREE. Override sparingly — the
+# default location is intentional (under ~/.cache so it's reclaimable).
+WORKTREE="${CHITIN_KERNEL_REDEPLOY_WORKTREE:-$HOME/.cache/chitin/redeploy-worktree}"
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$BIN")"
 
@@ -82,43 +101,66 @@ emit() {
   printf '%s\n' "$line" | tee -a "$LOG" >&2
 }
 
-# Fast-forward the current branch to the already-fetched origin/main.
+# Ensure the dedicated redeploy worktree exists, is healthy, and is reset
+# to origin/main. Idempotent — safe to call on every run.
 #
-# Replaces `git pull --ff-only --autostash origin main` (research Decision 5,
-# spec 083 US2). `git pull origin main` can abort with "Cannot fast-forward to
-# multiple branches" when FETCH_HEAD carries more than one merge candidate;
-# `git merge --ff-only origin/main` takes exactly one explicit ref and cannot.
+# Why a dedicated worktree (constitution §2):
+#   The operator's primary checkout at $REPO is sacred. Hijacking it
+#   (mid-session `git checkout main` from a timer-triggered script,
+#   silently `git stash`-ing the operator's in-progress work) breaks the
+#   agent / operator's mental model of "what branch am I on" and burrows
+#   load-bearing changes into stash refs. The pre-2026-05-23 version of
+#   this script attempted both, was caught by the git-ops recorder at
+#   2026-05-23 14:53:14, and is fixed in this commit. See PR #937 for
+#   the recorder + investigation, this PR for the canonical §2 fix.
 #
-# The autostash that protected service-written uncommitted docs (roadmap.md,
-# swarm-lessons.md — tracked files those services overwrite without committing)
-# is reproduced explicitly: a stash-pop conflict is surfaced as `emit fail`
-# instead of being silently swallowed the way `git pull --autostash` hides it.
-# The stash is left in place on any pop failure so the operator can recover it.
+# Algorithm:
+#   1. If $WORKTREE doesn't exist as a directory → `git worktree add --detach`
+#      it from $REPO at origin/main (after a fresh fetch).
+#   2. If $WORKTREE exists but isn't recognized by $REPO's git worktree list
+#      → remove the stale directory and add it fresh.
+#   3. If $WORKTREE exists and IS a healthy worktree → fetch + hard-reset to
+#      origin/main inside it.
 #
-# Emits its own failure reason and returns non-zero; the caller just exits 1.
-ff_merge_origin_main() {
-  local stashed=0
-  if ! git diff --quiet HEAD 2>/dev/null; then
-    if git stash push --quiet --message "install-kernel autostash $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
-      stashed=1
-    else
-      emit fail autostash-failed "old_sha=$old_sha" "new_sha=$new_sha"
-      return 1
-    fi
-  fi
-  if ! git merge --ff-only --quiet origin/main; then
-    emit fail pull-conflict "old_sha=$old_sha" "new_sha=$new_sha"
-    if [[ $stashed -eq 1 ]]; then
-      if git stash pop --quiet; then
-        emit ok autostash-restored-after-conflict
-      else
-        emit fail autostash-pop-failed-after-conflict "stash kept — operator must resolve"
-      fi
-    fi
+# Returns non-zero on any failure; caller exits 1.
+ensure_redeploy_worktree() {
+  # Fetch into $REPO's gitdir — but do NOT touch $REPO's working tree or
+  # branch refs. `git fetch` is read-only against the working tree; it
+  # only updates remote-tracking refs in .git/.
+  if ! git -C "$REPO" fetch --quiet origin main; then
+    emit fail fetch-failed "phase=ensure-worktree"
     return 1
   fi
-  if [[ $stashed -eq 1 ]] && ! git stash pop --quiet; then
-    emit fail autostash-pop-conflict "merge succeeded but stash pop conflicts — stash kept, operator must resolve"
+
+  local known_worktree=""
+  if [[ -d "$WORKTREE/.git" ]] || [[ -f "$WORKTREE/.git" ]]; then
+    # $WORKTREE looks like a git worktree. Verify $REPO knows about it.
+    if known_worktree=$(git -C "$REPO" worktree list --porcelain 2>/dev/null \
+                        | awk -v w="$WORKTREE" '$1=="worktree" && $2==w {print $2}'); then
+      :
+    fi
+  fi
+
+  if [[ -z "$known_worktree" ]]; then
+    # No healthy worktree present. If the directory exists, remove it.
+    if [[ -e "$WORKTREE" ]]; then
+      rm -rf "$WORKTREE" || {
+        emit fail worktree-cleanup-failed "path=$WORKTREE"
+        return 1
+      }
+    fi
+    mkdir -p "$(dirname "$WORKTREE")"
+    if ! git -C "$REPO" worktree add --detach --quiet "$WORKTREE" origin/main 2>/dev/null; then
+      emit fail worktree-add-failed "path=$WORKTREE"
+      return 1
+    fi
+    emit ok worktree-created "path=$WORKTREE"
+    return 0
+  fi
+
+  # Existing healthy worktree: refresh it.
+  if ! git -C "$WORKTREE" reset --hard --quiet origin/main; then
+    emit fail worktree-reset-failed "path=$WORKTREE"
     return 1
   fi
   return 0
@@ -129,83 +171,75 @@ if ! cd "$REPO" 2>/dev/null; then
   exit 1
 fi
 
-# Ensure we're on `main` before pulling. Cron scripts (e.g. the
-# chitin-shipped-entry-flipper) can leave the working tree on a branch
-# they created; `git pull --ff-only` against an unrelated branch fails.
-#
-# A *clean* switch to main is safe — it means the prior branch carried
-# no uncommitted work, so nothing is lost. But if the switch is blocked
-# by uncommitted changes, an operator or an agent is actively working
-# in this checkout. Do NOT stash their work out from under them: that
-# silently moves HEAD and buries an entire feature branch's worth of
-# in-progress work in a stash. Constitution §2 makes the operator's
-# primary checkout sacred — automation runs in dedicated worktrees,
-# never by hijacking the working tree. Defer the redeploy instead; the
-# timer retries in ~15 min and proceeds once the tree is back on a
-# clean main. (Uncommitted service-written docs on main itself are
-# still handled below by `git pull --autostash`.)
-current_branch=$(git rev-parse --abbrev-ref HEAD)
-if [[ "$current_branch" != "main" ]]; then
-  if git -c advice.detachedHead=false checkout main 2>/dev/null; then
-    emit ok auto-switched-to-main "from=$current_branch"
-  else
-    emit deferred operator-working-tree-active "branch=$current_branch"
-    exit 0
-  fi
-fi
+# Record the current branch for telemetry only — we no longer mutate it.
+operator_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "(detached)")
 
-old_sha=$(git rev-parse HEAD)
-if ! git fetch --quiet origin main; then
-  emit fail fetch-failed "old_sha=$old_sha"
+if ! ensure_redeploy_worktree; then
   exit 1
 fi
-new_sha=$(git rev-parse origin/main)
+
+# Read state from the dedicated worktree. $WORKTREE is at origin/main
+# (just reset/added). old_sha = whatever the kernel binary was built from
+# (best-effort: read from the binary's accompanying .sha file, otherwise
+# treat as "unknown" and force a rebuild).
+new_sha=$(git -C "$WORKTREE" rev-parse HEAD)
+old_sha_file="$BIN.sha"
+if [[ -r "$old_sha_file" ]]; then
+  old_sha=$(cat "$old_sha_file" 2>/dev/null || echo "")
+else
+  old_sha=""
+fi
 
 need_rebuild=0
 relevant_changes_since_last="(none)"
 
-if [[ "$old_sha" != "$new_sha" ]]; then
-  if git diff --quiet "$old_sha" "$new_sha" -- go/ chitin.yaml; then
-    # No kernel-relevant changes — fast-forward to origin/main and stop.
-    if ! ff_merge_origin_main; then
-      exit 1
+if [[ -z "$old_sha" ]]; then
+  need_rebuild=1
+  relevant_changes_since_last="no-prior-sha-record"
+elif [[ "$old_sha" != "$new_sha" ]]; then
+  # Compare in the WORKTREE — old_sha may not even be reachable from
+  # the operator's REPO (e.g., they're on a feature branch).
+  if git -C "$WORKTREE" cat-file -e "$old_sha^{commit}" 2>/dev/null; then
+    if git -C "$WORKTREE" diff --quiet "$old_sha" "$new_sha" -- go/ chitin.yaml; then
+      emit noop "no kernel-relevant changes" "old_sha=$old_sha" "new_sha=$new_sha" "operator_branch=$operator_branch"
+      exit 0
     fi
-    emit noop "no kernel-relevant changes" "old_sha=$old_sha" "new_sha=$new_sha"
-    exit 0
+    relevant_changes_since_last=$(git -C "$WORKTREE" diff --name-only "$old_sha" "$new_sha" -- go/ chitin.yaml | tr '\n' ',' | sed 's/,$//')
   else
-    # Kernel-relevant changes — fast-forward to origin/main, then rebuild.
-    if ! ff_merge_origin_main; then
-      exit 1
-    fi
-    need_rebuild=1
-    relevant_changes_since_last=$(git diff --name-only "$old_sha" "$new_sha" -- go/ chitin.yaml | tr '\n' ',' | sed 's/,$//')
+    relevant_changes_since_last="old-sha-unreachable"
   fi
+  need_rebuild=1
 fi
 
 if [[ $need_rebuild -eq 0 ]]; then
   if [[ ! -x "$BIN" ]]; then
     need_rebuild=1
     relevant_changes_since_last="binary-missing"
-  elif find go chitin.yaml -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
-    need_rebuild=1
-    relevant_changes_since_last="binary-stale-relative-to-source"
+  else
+    # Check the worktree's tracked sources (not $REPO's — operator's REPO
+    # may have local modifications irrelevant to the kernel build).
+    if find "$WORKTREE/go" "$WORKTREE/chitin.yaml" -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
+      need_rebuild=1
+      relevant_changes_since_last="binary-stale-relative-to-source"
+    fi
   fi
 fi
 
 if [[ $need_rebuild -eq 0 ]]; then
-  emit noop "no rebuild needed" "old_sha=$old_sha"
+  emit noop "no rebuild needed" "old_sha=$old_sha" "new_sha=$new_sha"
   exit 0
 fi
 
-# Save prev binary for rollback
+# Save prev binary for rollback (and its sha record if we have one).
 if [[ -x "$BIN" ]]; then
   cp -a "$BIN" "$PREV"
 fi
 
-# Build. Chitin's go module is nested at go/execution-kernel/go.mod
-# (no top-level go.mod), so `go build` runs from inside that module.
+# Build inside the dedicated worktree. Chitin's go module is nested at
+# go/execution-kernel/go.mod (no top-level go.mod), so `go build` runs
+# from inside that module. The operator's $REPO is untouched throughout.
 build_start_ns=$(date +%s%N)
-if ! ( cd "$REPO/go/execution-kernel" && go build -o "$BIN" ./cmd/chitin-kernel ) 2>&1; then
+if ! ( cd "$WORKTREE/go/execution-kernel" && go build -o "$BIN" ./cmd/chitin-kernel ) 2>&1; then
   emit fail build-failed "old_sha=$old_sha" "new_sha=$new_sha"
   if [[ -x "$PREV" ]]; then
     cp -a "$PREV" "$BIN"
@@ -214,6 +248,12 @@ if ! ( cd "$REPO/go/execution-kernel" && go build -o "$BIN" ./cmd/chitin-kernel 
   exit 2
 fi
 build_dur_ms=$(( ($(date +%s%N) - build_start_ns) / 1000000 ))
+
+# Stamp the build's commit sha next to the binary so the NEXT run knows
+# which commit the current binary was built from. Avoids re-using $REPO's
+# HEAD as the proxy (which it never was reliably — $REPO can be on any
+# branch — but now isn't read at all).
+printf '%s\n' "$new_sha" > "$BIN.sha"
 
 # Smoke-test: a `Task` PreToolUse evaluate must exit 0.
 smoke_payload=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{"description":"redeploy-smoke"},"cwd":"%s","session_id":"redeploy-smoke"}' "$REPO")
@@ -285,7 +325,7 @@ if [[ -x "$ROTATOR" ]]; then
   rm -f "$rotator_log"
 fi
 
-emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last"
+emit ok redeploy-success "old_sha=$old_sha" "new_sha=$new_sha" "build_dur_ms=$build_dur_ms" "changed=$relevant_changes_since_last" "operator_branch=$operator_branch"
 
 # (apps/runner/src/ TS worker restart logic removed 2026-05-08 — the
 # TS dispatcher/worker source was culled in the orchestration deletion
