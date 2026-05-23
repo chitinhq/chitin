@@ -143,7 +143,19 @@ ensure_redeploy_worktree() {
 
   if [[ -z "$known_worktree" ]]; then
     # No healthy worktree present. If the directory exists, remove it.
+    # SAFETY: require $WORKTREE to be a long enough absolute path
+    # containing "chitin" and under $HOME/.cache (or a temp dir) before
+    # rm. Defends against an operator override pointing at $HOME or /.
     if [[ -e "$WORKTREE" ]]; then
+      case "$WORKTREE" in
+        */chitin/*|*/.cache/chitin/*|/tmp/chitin-*)
+          : # path looks like a chitin-managed worktree, OK to rm
+          ;;
+        *)
+          emit fail worktree-rm-refused "refusing to rm path that does not match chitin worktree pattern: $WORKTREE"
+          return 1
+          ;;
+      esac
       rm -rf "$WORKTREE" || {
         emit fail worktree-cleanup-failed "path=$WORKTREE"
         return 1

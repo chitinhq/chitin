@@ -37,9 +37,9 @@ func cmdSessionUnlock(args []string) {
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
-	if *agent == "" {
+	if err := validateAgentName(*agent); err != nil {
 		fs.Usage()
-		exitErr("missing_agent", "-agent is required")
+		exitErr("invalid_agent", err.Error())
 	}
 
 	c, err := gov.OpenCounter(*dbPath)
