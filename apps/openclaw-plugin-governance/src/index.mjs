@@ -1,6 +1,24 @@
+import { spawn } from 'node:child_process';
 import { evaluateHookGate, evaluateRouter, isExecShapedTool } from './chitin-bridge.mjs';
 
 const PLUGIN_ID = 'chitin-governance';
+
+// Spec 091 (FR-008/FR-009): per-session state for the stop-hook reentrancy
+// guard and the forced-continuation counter.
+//   stopHookActive[sid]    — true ⇒ session is in lockdown; subsequent calls
+//                            short-circuit to {block,stop} without invoking
+//                            the kernel. Sticky once set within a process.
+//   forcedContinuations[sid] — count of block-decisions for this session that
+//                              did NOT carry continue:false. When it reaches
+//                              FORCED_CONTINUATION_CAP, set stopHookActive
+//                              and emit `stop_signal_ignored` to the chain.
+// Both are module-scoped Maps; lifetime = openclaw process. The kernel-side
+// lockdown counter handles cross-restart durability (existing mechanism).
+// sessionId construction matches the existing pattern below at line 58:
+//   `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`
+const stopHookActive = new Map();
+const forcedContinuations = new Map();
+const FORCED_CONTINUATION_CAP = 3;
 
 const plugin = {
   id: PLUGIN_ID,
@@ -46,6 +64,25 @@ const plugin = {
 
     // ── pre-tool gate (pi runtime) ───────────────────────────────────────
     api.on('before_tool_call', async (event, ctx) => {
+      const sessionId = `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`;
+
+      // Spec 091 FR-008: stop-hook reentrancy guard. If the kernel already
+      // emitted continue:false (or the FR-009 cap fired) for this session,
+      // short-circuit subsequent calls to a fast {block,stop} response
+      // WITHOUT invoking the kernel again. This breaks the lockdown loop:
+      // even though openclaw's harness will keep calling before_tool_call
+      // (it does not consume the `stop` field — R1 Case B), each retry
+      // returns instantly with a non-escalating block, so the kernel's
+      // lockdown_loop_detected counter never accumulates more deny events
+      // for the same rule.
+      if (stopHookActive.get(sessionId)) {
+        return {
+          block: true,
+          blockReason: 'chitin: stop signal previously emitted; agent loop must terminate',
+          stop: true,
+        };
+      }
+
       const evaluate = isExecShapedTool(event.toolName) ? evaluateHookGate : evaluateRouter;
       const decision = await evaluate(
         {
@@ -55,7 +92,7 @@ const plugin = {
           cwd: process.cwd(),
           // Stable session id per (agent, cwd) so the floundering
           // heuristic can read prior chain events for this session.
-          sessionId: `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`,
+          sessionId,
         },
         cfg,
       );
@@ -69,6 +106,56 @@ const plugin = {
           `[observe] would-deny ${event.toolName}: ${decision.reason ?? 'no reason'} (rule=${decision.ruleId ?? 'unknown'})`,
         );
         return undefined;
+      }
+
+      // Spec 091 FR-007: honor continue:false from the kernel. Set the
+      // reentrancy guard and emit a high-signal log line that the
+      // openclaw-gateway journal captures, so operators (or an outer
+      // watcher) can detect the stop attempt even though the openclaw
+      // harness loop won't honor the `stop` field directly (R1 Case B).
+      if (decision.continue === false) {
+        stopHookActive.set(sessionId, true);
+        log.error(
+          `chitin-stop-signal sessionId=${sessionId} rule=${decision.ruleId ?? 'unknown'} reason=${decision.stopReason ?? decision.reason ?? '(none)'}`,
+        );
+        return {
+          block: true,
+          blockReason: decision.stopReason ?? decision.reason ?? 'denied by chitin policy',
+          stop: true,
+        };
+      }
+
+      // Spec 091 FR-009: track forced continuations on regular denies. If we
+      // see CAP consecutive denies for a session without a continue:false
+      // signal, treat that as evidence the harness is ignoring our stops
+      // (or the kernel's lockdown counter hasn't fired yet) and force-stop
+      // the session ourselves. Emit a stop_signal_ignored chain event so
+      // the orchestrator side can route the failure.
+      const count = (forcedContinuations.get(sessionId) ?? 0) + 1;
+      forcedContinuations.set(sessionId, count);
+      if (count >= FORCED_CONTINUATION_CAP) {
+        stopHookActive.set(sessionId, true);
+        log.error(
+          `chitin: ${count} forced continuations for sessionId=${sessionId} — marking session failed (stop_signal_ignored)`,
+        );
+        // Fire-and-forget — telemetry emission failure must not break the deny path.
+        emitStopSignalIgnored({
+          sessionId,
+          agentId: ctx.agentId,
+          count,
+          cap: FORCED_CONTINUATION_CAP,
+          lastRuleId: decision.ruleId,
+          lastReason: decision.reason,
+          kernelPath: cfg.kernelPath,
+          log,
+        }).catch((err) => {
+          log.error(`chitin: emitStopSignalIgnored failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        return {
+          block: true,
+          blockReason: 'chitin: forced-continuation cap exceeded — session terminated',
+          stop: true,
+        };
       }
 
       log.warn(
@@ -160,5 +247,76 @@ export function resolveConfig(raw) {
     timeoutMs: typeof r.timeoutMs === 'number' && r.timeoutMs >= 100 ? r.timeoutMs : 30000,
   };
 }
+
+/**
+ * Spec 091 FR-009: emit a `stop_signal_ignored` chain event when the plugin's
+ * forced-continuation counter hits the cap. Routes through `chitin-kernel emit`
+ * so the kernel remains the only chain-writer (constitution §1).
+ *
+ * Fire-and-forget: telemetry failure must not corrupt the deny path. Caller
+ * .catch()es and logs.
+ *
+ * Event schema: see specs/091-fix-clawta-lockdown-loop/contracts/stop-signal-ignored-event.md
+ *
+ * @param {{
+ *   sessionId: string,
+ *   agentId: string | undefined,
+ *   count: number,
+ *   cap: number,
+ *   lastRuleId: string | undefined,
+ *   lastReason: string | undefined,
+ *   kernelPath: string,
+ *   log: { warn: (msg: string) => void, error: (msg: string) => void },
+ * }} args
+ */
+export async function emitStopSignalIgnored(args) {
+  const event = {
+    event_type: 'stop_signal_ignored',
+    agent_instance_id: args.agentId ?? 'openclaw-plugin',
+    session_id: args.sessionId,
+    payload: {
+      continuation_count: args.count,
+      cap: args.cap,
+      last_rule_id: args.lastRuleId ?? null,
+      last_reason: args.lastReason ?? null,
+    },
+    ts: new Date().toISOString(),
+  };
+  return new Promise((resolve, reject) => {
+    const child = spawn(args.kernelPath, ['emit', '-event-json', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code === 0) resolve(undefined);
+      else reject(new Error(`chitin-kernel emit exited ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
+    });
+    child.stdin.end(JSON.stringify(event));
+  });
+}
+
+/**
+ * Spec 091: test-only helpers to inspect / reset module state. The plugin's
+ * stop-hook map and counter map are intentionally process-scoped (per the
+ * data-model.md); these helpers exist to let vitest assert on state cleanly
+ * without exporting the raw Maps (which would invite production misuse).
+ *
+ * @internal — test surface only.
+ */
+export function __test_resetState() {
+  stopHookActive.clear();
+  forcedContinuations.clear();
+}
+export function __test_isStopHookActive(sessionId) {
+  return stopHookActive.get(sessionId) === true;
+}
+export function __test_getForcedContinuationCount(sessionId) {
+  return forcedContinuations.get(sessionId) ?? 0;
+}
+export const __test_FORCED_CONTINUATION_CAP = FORCED_CONTINUATION_CAP;
 
 export default plugin;
