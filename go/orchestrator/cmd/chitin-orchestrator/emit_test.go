@@ -10,18 +10,31 @@ import (
 	"testing"
 )
 
-// fakeKernelBin writes a tiny bash script that captures stdin to a file
-// alongside it (sentinel.bin/sentinel.json) and exits 0. Used to verify
-// the emit subcommand was actually invoked with the expected JSON.
+// fakeKernelBin writes a tiny bash script that copies the file passed
+// via `-event-file <path>` to a sentinel for inspection and exits with
+// the given code. Mirrors the live chitin-kernel emit interface verified
+// against the live binary on 2026-05-23 (`Usage of emit: -event-file string`).
 func fakeKernelBin(t *testing.T, exitCode int) (binPath, sentinelPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	binPath = filepath.Join(dir, "chitin-kernel")
 	sentinelPath = filepath.Join(dir, "captured.json")
+	// argv: chitin-kernel emit -dir <chitin-dir> -event-file <path>
+	// (the -dir flag was added in 2026-05-23 emit refactor to point at
+	// ~/.chitin explicitly so the chain state is found from any cwd.)
+	// Find the value following "-event-file" in argv via shell-fu.
 	script := "#!/usr/bin/env bash\n" +
 		"set -e\n" +
-		"# args expected: emit -event-json -\n" +
-		"cat > " + sentinelPath + "\n" +
+		"event_file=\"\"\n" +
+		"while [[ $# -gt 0 ]]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -event-file) event_file=\"$2\"; shift 2 ;;\n" +
+		"    *) shift ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"if [[ -n \"$event_file\" ]]; then\n" +
+		"  cp \"$event_file\" " + sentinelPath + "\n" +
+		"fi\n" +
 		"exit " + itoa(exitCode) + "\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("setup fake kernel: %v", err)
