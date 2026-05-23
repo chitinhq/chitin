@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/094-pr-review-mechanism/plan.md` (spec 094 plan complete — phase 0 research, phase 1 data-model/contracts/quickstart all landed; spec 093 plan at specs/093-merge-queue-orchestrator/plan.md awaits 094's policy-table amendment)
+`specs/096-operator-session-state-surface/plan.md` (spec 096 phase 0+1+2 complete — research, data-model, contracts/, quickstart, tasks all landed; adds kernel-side session unlock/lock/status CLI + additive agent_state schema delta + two new chain event types; first consumer is spec 091 v1.1)
 <!-- SPECKIT END -->
