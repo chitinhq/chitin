@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/092-codify-swarm-orchestrator/plan.md`
+`specs/091-fix-clawta-lockdown-loop/plan.md`
 <!-- SPECKIT END -->
