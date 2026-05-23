@@ -27,10 +27,13 @@
   Depends: T004. Satisfies AC4. Verified 2026-05-22: 3 tickets created
   on first run, same IDs on second run (idempotent).
 
-- [ ] T006 Hand off: post to Ares and Clawta on the agent-bus that the
+- [x] T006 Hand off: post to Ares and Clawta on the agent-bus that the
   loop is live; they own "decide what's next." Depends: T004. Satisfies AC5.
+  Verified: kanban ticket t_34639186 "Icarus bench loop is live —
+  decide what's next" posted to chitin board in `ready` status.
 
-- [ ] T007 Commit spec 068 + restored machinery on branch
+- [x] T007 Commit spec 068 + restored machinery on branch
   `068-icarus-bench-loop-revival`; open PR. Depends: T006.
   Note: all restored machinery was already on main (renamed icarus→chitin
   in spec 073). Only operational changes (systemd enable) were needed.
+  This PR contains only the tasks.md updates marking T001–T007 complete.
