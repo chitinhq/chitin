@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-21 (added spec 068 INDEX entry; spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066; INDEX backfill: 025, 037, 039, 728; collision flags at 036/038/067/071).
+> Last updated 2026-05-23 (added spec 095 Continue Checks pilot; preserved active spec corpus and collision flags at 036/038/067/071).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -246,6 +246,17 @@ triage rationale.
 |------|-------|--------|--------------|
 | **093** | merge-queue-orchestrator | draft | `MergeQueueWorkflow` parent + `PRMergeWorkflow` child; 6-class policy table (governance / live-fix / spec-only / research-docs / impl / bookkeeping); pointer-file auto-resolve invariant; lease-protected force-push; signal-blocked governance gate honoring spec 092's no-bypass invariant. v1.0 ships standalone; v1.1.0 amendment adds `review_required` + `arbiter_type` columns once 094 ratifies. |
 | **094** | pr-review-mechanism | draft | `reviewer` capability tag on the spec 075 driver registry; `SelectDriver` extended with capability-filter + no-self-review exclusion; `PRReviewWorkflow` child spawned by 093's PRMergeWorkflow; parallel two-primary dispatch; dialectic short-circuit on agreement; class-routed arbiter (operator via structured GitHub PR comment for governance/spec-only; third machine driver for impl/research-docs once a 3rd reviewer driver lands); 4-value `StructuredVerdict` (approve / approve-with-comments / request-changes / abstain) with FR-014 invariants; `re-review` + `override-review` signals (governance non-overridable); OTLP per-invocation audit trail with content hashes. |
+
+## Continue Checks pilot — spec 095
+
+> Lightweight PR-governance experiment: evaluate Continue Checks as a narrow
+> check surface for spec-first linkage, e2e-default discipline, and
+> no-driver-bypass review signal. This is explicitly not a Hermes replacement,
+> not an orchestrator, and not an inbound webhook surface.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **095** | continue-checks-pilot | draft | `.continue/checks/` pilot rules, local dry-run/runbook, five-PR evidence window before any required-gate discussion. |
 
 ## Workspace-overlay & retro specs
 
