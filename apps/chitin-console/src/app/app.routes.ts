@@ -68,5 +68,10 @@ export const appRoutes: Route[] = [
       import('./pages/orchestrator-diagram.page').then(m => m.OrchestratorDiagramPage),
     data: { title: 'Orchestrator' },
   },
+  {
+    path: 'system-state',
+    loadComponent: () => import('./pages/system-state.page').then(m => m.SystemStatePage),
+    data: { title: 'System state' },
+  },
   { path: '**', redirectTo: 'overview' },
 ];
