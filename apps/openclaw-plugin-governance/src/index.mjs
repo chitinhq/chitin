@@ -7,16 +7,24 @@ const PLUGIN_ID = 'chitin-governance';
 // guard and the forced-continuation counter.
 //   stopHookActive[sid]    — true ⇒ session is in lockdown; subsequent calls
 //                            short-circuit to {block,stop} without invoking
-//                            the kernel. Sticky once set within a process.
+//                            the kernel. Sticky within a process UNTIL the
+//                            v1.1 unlock check clears it (see AFR-003 below).
 //   forcedContinuations[sid] — count of block-decisions for this session that
 //                              did NOT carry continue:false. When it reaches
 //                              FORCED_CONTINUATION_CAP, set stopHookActive
 //                              and emit `stop_signal_ignored` to the chain.
-// Both are module-scoped Maps; lifetime = openclaw process. The kernel-side
-// lockdown counter handles cross-restart durability (existing mechanism).
-// sessionId construction matches the existing pattern below at line 58:
-//   `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`
+//   stopHookActiveEpoch[sid] — (v1.1 AFR-002) the kernel's lock_epoch at the
+//                              moment stopHookActive was set. Used by the
+//                              two-condition clear path in AFR-003. null when
+//                              the status query at lock-set time failed; in
+//                              that case any future `locked:false` response
+//                              triggers a clear.
+// All three are module-scoped Maps; lifetime = openclaw process. The kernel-
+// side lockdown counter handles cross-restart durability (existing mechanism).
+// sessionId construction matches the existing pattern at the api.on('before_tool_call')
+// callback below: `openclaw-${ctx.agentId ?? 'plugin'}-${process.pid}`
 const stopHookActive = new Map();
+const stopHookActiveEpoch = new Map();
 const forcedContinuations = new Map();
 const FORCED_CONTINUATION_CAP = 3;
 
@@ -75,12 +83,78 @@ const plugin = {
       // returns instantly with a non-escalating block, so the kernel's
       // lockdown_loop_detected counter never accumulates more deny events
       // for the same rule.
+      //
+      // Spec 091 v1.1 AFR-003: BEFORE returning the sticky block, consult
+      // the kernel's session status. The two-condition clear path:
+      //   (a) kernel reports locked:false → operator unlocked → clear
+      //   (b) kernel reports lock_epoch > cached → new lock generation
+      //       has happened (e.g., operator re-locked) and may have been
+      //       unlocked since; the cached epoch is stale, clear and let
+      //       the next call re-evaluate naturally.
+      // If neither condition is met → sticky block stands.
+      // If the status query fails → fail-closed (sticky block stands;
+      // AFR-005). Absence of a positive unlock signal means "stay stopped".
       if (stopHookActive.get(sessionId)) {
-        return {
-          block: true,
-          blockReason: 'chitin: stop signal previously emitted; agent loop must terminate',
-          stop: true,
-        };
+        const agentForStatus = ctx.agentId ?? 'openclaw-plugin';
+        let cleared = false;
+        let kernelLockEpoch = null;
+        try {
+          const status = await querySessionStatus(agentForStatus, cfg.kernelPath);
+          if (status !== null) {
+            const cachedEpoch = stopHookActiveEpoch.get(sessionId);
+            kernelLockEpoch = status.lock_epoch;
+            const epochAdvanced =
+              typeof cachedEpoch === 'number' && typeof status.lock_epoch === 'number'
+                ? status.lock_epoch > cachedEpoch
+                : false;
+            // null cachedEpoch (status query failed at lock-set) means
+            // ANY locked:false response clears the flag — there's no
+            // meaningful epoch to compare. AFR-002 fallback path.
+            if (status.locked === false || epochAdvanced) {
+              cleared = true;
+            }
+          }
+        } catch (err) {
+          // AFR-005: fail-closed. Status query failure means we cannot
+          // verify an unlock; keep the sticky block. Log so the operator
+          // can see the failed query in stderr.
+          log.warn(
+            `chitin: session status query failed for ${agentForStatus}: ${err instanceof Error ? err.message : String(err)} — keeping sticky stop`,
+          );
+        }
+
+        if (cleared) {
+          stopHookActive.delete(sessionId);
+          stopHookActiveEpoch.delete(sessionId);
+          forcedContinuations.delete(sessionId);
+          log.warn(
+            `chitin: cleared sticky stop for sessionId=${sessionId} (kernel reports unlocked or epoch advanced to ${kernelLockEpoch ?? '?'})`,
+          );
+          // AFR-004: emit stop_hook_cleared chain event so the chain
+          // distinguishes "kernel cleared the lock" (kernel side, via
+          // spec 096's session_unlocked event) from "plugin actually
+          // noticed and resumed" (this event). Fire-and-forget.
+          emitStopHookCleared({
+            sessionId,
+            agentId: ctx.agentId,
+            kernelLockEpoch,
+            kernelPath: cfg.kernelPath,
+            log,
+          }).catch((err) => {
+            log.error(`chitin: emitStopHookCleared failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+          // Fall through to the normal evaluateRouter / evaluateHookGate
+          // path so the current tool call is gated against the (now-
+          // relaxed) policy. The flag-clear MUST NOT cause us to allow
+          // unconditionally; the operator unlock is a permission to
+          // re-evaluate, not a blanket allow.
+        } else {
+          return {
+            block: true,
+            blockReason: 'chitin: stop signal previously emitted; agent loop must terminate',
+            stop: true,
+          };
+        }
       }
 
       const evaluate = isExecShapedTool(event.toolName) ? evaluateHookGate : evaluateRouter;
@@ -115,6 +189,12 @@ const plugin = {
       // harness loop won't honor the `stop` field directly (R1 Case B).
       if (decision.continue === false) {
         stopHookActive.set(sessionId, true);
+        // Spec 091 v1.1 AFR-002: capture lock_epoch at lock-set time
+        // so AFR-003's two-condition clear can detect transitions later.
+        // null on query failure — AFR-003 treats null as "any locked:false
+        // clears" (fallback path; without an epoch reference any unlock
+        // is by definition a transition).
+        await captureLockEpoch(sessionId, ctx.agentId ?? 'openclaw-plugin', cfg.kernelPath, log);
         log.error(
           `chitin-stop-signal sessionId=${sessionId} rule=${decision.ruleId ?? 'unknown'} reason=${decision.stopReason ?? decision.reason ?? '(none)'}`,
         );
@@ -135,6 +215,10 @@ const plugin = {
       forcedContinuations.set(sessionId, count);
       if (count >= FORCED_CONTINUATION_CAP) {
         stopHookActive.set(sessionId, true);
+        // Spec 091 v1.1 AFR-002: capture lock_epoch here too — this is the
+        // other path that sets stopHookActive (the forced-continuation cap).
+        // Same fallback semantics as the continue:false path above.
+        await captureLockEpoch(sessionId, ctx.agentId ?? 'openclaw-plugin', cfg.kernelPath, log);
         log.error(
           `chitin: ${count} forced continuations for sessionId=${sessionId} — marking session failed (stop_signal_ignored)`,
         );
@@ -249,6 +333,160 @@ export function resolveConfig(raw) {
 }
 
 /**
+ * Spec 091 v1.1 AFR-002: query `chitin-kernel session status -agent <id>` and
+ * return the parsed JSON, or null if the query failed (binary missing, exit
+ * non-zero, malformed output, agent unknown). Used by AFR-003's two-condition
+ * clear and by captureLockEpoch at lock-set time.
+ *
+ * The kernel's session subcommand (spec 096) emits JSON on stdout like:
+ *   {"agent":"clawta","locked":false,"locked_ts":"...","unlock_ts":"...",
+ *    "lock_epoch":6,"total":12,"level":"normal"}
+ * On unknown agent it exits non-zero with an error envelope on stderr; we
+ * return null in that case (no row = no transition signal to read).
+ *
+ * @param {string} agentId
+ * @param {string} kernelPath
+ * @returns {Promise<{locked: boolean, lock_epoch: number|null} | null>}
+ */
+export async function querySessionStatus(agentId, kernelPath) {
+  return new Promise((resolve) => {
+    const child = spawn(kernelPath, ['session', 'status', '-agent', agentId], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d.toString();
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        // Unknown agent or kernel error — caller treats null as "no
+        // unlock signal available; keep sticky block" (AFR-005 fail-closed).
+        resolve(null);
+        return;
+      }
+      try {
+        const obj = JSON.parse(stdout);
+        if (typeof obj.locked !== 'boolean') {
+          resolve(null);
+          return;
+        }
+        resolve({
+          locked: obj.locked,
+          lock_epoch: typeof obj.lock_epoch === 'number' ? obj.lock_epoch : null,
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * Spec 091 v1.1 AFR-002 helper: snapshot the kernel's lock_epoch into
+ * stopHookActiveEpoch at the moment stopHookActive[sessionId] is set, so
+ * AFR-003 can later detect "epoch advanced past my cached value" as a
+ * transition signal.
+ *
+ * On query failure caches null. Future AFR-003 invocations treat null
+ * as "any locked:false clears" (the fallback path — without a reference
+ * epoch, any positive unlock signal is a real transition).
+ *
+ * @param {string} sessionId
+ * @param {string} agentId
+ * @param {string} kernelPath
+ * @param {{ warn: (msg: string) => void }} log
+ */
+async function captureLockEpoch(sessionId, agentId, kernelPath, log) {
+  try {
+    const status = await querySessionStatus(agentId, kernelPath);
+    if (status !== null && typeof status.lock_epoch === 'number') {
+      stopHookActiveEpoch.set(sessionId, status.lock_epoch);
+      return;
+    }
+    stopHookActiveEpoch.set(sessionId, null);
+    log.warn(
+      `chitin: captureLockEpoch for ${agentId} returned no epoch — AFR-003 will use locked:false fallback`,
+    );
+  } catch {
+    stopHookActiveEpoch.set(sessionId, null);
+  }
+}
+
+/**
+ * Spec 091 v1.1 AFR-004: emit a `stop_hook_cleared` chain event when the
+ * plugin clears its in-memory sticky stop in response to an observed
+ * kernel unlock (AFR-003). Distinct from spec 096's `session_unlocked`
+ * event:
+ *   - session_unlocked says "the kernel cleared the lock state"
+ *   - stop_hook_cleared says "the plugin observed the kernel's clear
+ *     and resumed normal evaluation"
+ * Both events together let the chain reconstruct the full recovery
+ * sequence.
+ *
+ * Fire-and-forget per D8: telemetry failure does not block the deny→
+ * allow transition. Caller .catch()es.
+ *
+ * @param {{
+ *   sessionId: string,
+ *   agentId: string | undefined,
+ *   kernelLockEpoch: number | null,
+ *   kernelPath: string,
+ *   log: { warn: (msg: string) => void, error: (msg: string) => void },
+ * }} args
+ */
+export async function emitStopHookCleared(args) {
+  // Write the event JSON to a temp file. The kernel's emit subcommand
+  // takes `-event-file <path>` not `-event-json -` (verified against
+  // the live binary 2026-05-23; see spec 097's emit.go for the same
+  // correction in the orchestrator-side emitter).
+  const event = {
+    schema_version: '2',
+    event_type: 'stop_hook_cleared',
+    run_id: `session-${args.agentId ?? 'openclaw-plugin'}`,
+    session_id: args.sessionId,
+    surface: 'openclaw-plugin-governance',
+    agent_instance_id: args.agentId ?? 'openclaw-plugin',
+    chain_type: 'plugin-runtime',
+    payload: {
+      session_id: args.sessionId,
+      agent: args.agentId ?? 'openclaw-plugin',
+      kernel_lock_epoch: args.kernelLockEpoch,
+      cleared_at: new Date().toISOString(),
+    },
+    ts: new Date().toISOString(),
+  };
+  const { writeFile, mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'chitin-stop-hook-cleared-'));
+  const path = join(dir, 'event.json');
+  await writeFile(path, JSON.stringify(event));
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(args.kernelPath, ['emit', '-event-file', path], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (d) => {
+        stderr += d.toString();
+      });
+      child.on('error', (err) => reject(err));
+      child.on('close', (code) => {
+        if (code === 0) resolve(undefined);
+        else reject(new Error(`chitin-kernel emit exited ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
+      });
+    });
+  } finally {
+    rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
  * Spec 091 FR-009: emit a `stop_signal_ignored` chain event when the plugin's
  * forced-continuation counter hits the cap. Routes through `chitin-kernel emit`
  * so the kernel remains the only chain-writer (constitution §1).
@@ -309,6 +547,7 @@ export async function emitStopSignalIgnored(args) {
  */
 export function __test_resetState() {
   stopHookActive.clear();
+  stopHookActiveEpoch.clear();
   forcedContinuations.clear();
 }
 export function __test_isStopHookActive(sessionId) {
@@ -316,6 +555,11 @@ export function __test_isStopHookActive(sessionId) {
 }
 export function __test_getForcedContinuationCount(sessionId) {
   return forcedContinuations.get(sessionId) ?? 0;
+}
+// Spec 091 v1.1 test surface: read the cached lock_epoch so AFR-002 +
+// AFR-003 tests can assert capture-and-compare behavior.
+export function __test_getStopHookActiveEpoch(sessionId) {
+  return stopHookActiveEpoch.get(sessionId);
 }
 export const __test_FORCED_CONTINUATION_CAP = FORCED_CONTINUATION_CAP;
 
