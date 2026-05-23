@@ -231,6 +231,22 @@ triage rationale.
 | **080** | orchestrator-ops-completion | draft | Gemini + Copilot agent drivers (roster 5→7); write-only Discord notification surface; chitin-console as a first-class systemd service |
 | **081** | cron-migration-board-retirement | draft | Phase 3–5: migrate the ~15 swarm crons/watchdogs to Temporal scheduled workflows; retire the kanban-era board read-model |
 
+## Merge orchestration + review — specs 093 + 094
+
+> The PR-merge workload itself becomes a first-class orchestrator
+> workflow. Direct dogfood of constitution §7 ("the swarm is the
+> orchestrator"): no more ad-hoc `gh pr merge` calls. Multi-repo,
+> queue-aware, policy-gated. Lives in the same Go worker as 070-081.
+> Spec 094 adds the dialectic PR-review mechanism (two primary
+> reviewer drivers + class-routed arbiter) that 093's policy table
+> subscribes to for governance, spec-only, impl, and research-docs
+> classes via a v1.1.0 amendment after 094 ratifies.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **093** | merge-queue-orchestrator | draft | `MergeQueueWorkflow` parent + `PRMergeWorkflow` child; 6-class policy table (governance / live-fix / spec-only / research-docs / impl / bookkeeping); pointer-file auto-resolve invariant; lease-protected force-push; signal-blocked governance gate honoring spec 092's no-bypass invariant. v1.0 ships standalone; v1.1.0 amendment adds `review_required` + `arbiter_type` columns once 094 ratifies. |
+| **094** | pr-review-mechanism | draft | `reviewer` capability tag on the spec 075 driver registry; `SelectDriver` extended with capability-filter + no-self-review exclusion; `PRReviewWorkflow` child spawned by 093's PRMergeWorkflow; parallel two-primary dispatch; dialectic short-circuit on agreement; class-routed arbiter (operator via structured GitHub PR comment for governance/spec-only; third machine driver for impl/research-docs once a 3rd reviewer driver lands); 4-value `StructuredVerdict` (approve / approve-with-comments / request-changes / abstain) with FR-014 invariants; `re-review` + `override-review` signals (governance non-overridable); OTLP per-invocation audit trail with content hashes. |
+
 ## Workspace-overlay & retro specs
 
 | Spec | Title | Status | Notes |
