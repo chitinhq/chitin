@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/chain"
 	"github.com/chitinhq/chitin/go/execution-kernel/internal/emit"
@@ -110,6 +111,30 @@ func emitSessionEvent(chitinDir string, ev *event.Event) {
 
 func warnSession(format string, args ...any) {
 	fmt.Fprintln(os.Stderr, "warning: "+fmt.Sprintf(format, args...))
+}
+
+// validAgentName matches a strict allowlist for agent identifiers:
+// alphanumeric, dash, underscore, dot. This is enforced by the CLI
+// subcommands before any agent name is used as a filename component
+// (sessionRunID flows into events-session-<agent>.jsonl). Without this
+// guard, an operator passing `-agent "../../tmp/oops"` would create
+// chain event files in unexpected subdirectories of ~/.chitin/ — not
+// an external-attack vector but a sharp edge worth filing down.
+var validAgentName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validateAgentName returns nil if agent is a well-formed identifier,
+// or an error suitable for exitErr with kind="invalid_agent".
+func validateAgentName(agent string) error {
+	if agent == "" {
+		return fmt.Errorf("agent name is required")
+	}
+	if !validAgentName.MatchString(agent) {
+		return fmt.Errorf("agent name %q contains characters outside the allowlist [A-Za-z0-9._-]", agent)
+	}
+	if len(agent) > 128 {
+		return fmt.Errorf("agent name longer than 128 chars")
+	}
+	return nil
 }
 
 // payloadJSON marshals an arbitrary payload to JSON for embedding in a

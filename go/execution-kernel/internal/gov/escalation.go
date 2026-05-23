@@ -3,6 +3,7 @@ package gov
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -110,15 +111,42 @@ func migrateAgentStateSchema(db *sql.DB) error {
 
 	if !present["unlock_ts"] {
 		if _, err := db.Exec(`ALTER TABLE agent_state ADD COLUMN unlock_ts TEXT`); err != nil {
-			return fmt.Errorf("add unlock_ts: %w", err)
+			// Tolerate the concurrent-migration race: two kernel processes
+			// can both pass the PRAGMA table_info check and both attempt
+			// the ALTER. SQLite serializes writes, so the second one's
+			// ALTER returns "duplicate column name" — same as if the
+			// migration had already run. Treat as success.
+			if !isDuplicateColumnErr(err, "unlock_ts") {
+				return fmt.Errorf("add unlock_ts: %w", err)
+			}
 		}
 	}
 	if !present["lock_epoch"] {
 		if _, err := db.Exec(`ALTER TABLE agent_state ADD COLUMN lock_epoch INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("add lock_epoch: %w", err)
+			if !isDuplicateColumnErr(err, "lock_epoch") {
+				return fmt.Errorf("add lock_epoch: %w", err)
+			}
 		}
 	}
 	return nil
+}
+
+// isDuplicateColumnErr matches the SQLite error returned when ALTER TABLE
+// ADD COLUMN names a column that already exists. Used by
+// migrateAgentStateSchema to tolerate the concurrent-migration race
+// (two processes seeing the same "column missing" state and both
+// issuing the ALTER; SQLite serializes them so the second one races
+// into "duplicate column name" — semantically equivalent to "migration
+// already done", so we treat it as success).
+func isDuplicateColumnErr(err error, column string) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// modernc.org/sqlite reports this as `duplicate column name: <col>`;
+	// some forks also report `column "<col>" already exists`.
+	return (strings.Contains(msg, "duplicate column name") && strings.Contains(msg, column)) ||
+		(strings.Contains(msg, "already exists") && strings.Contains(msg, column))
 }
 
 // Close the underlying DB.

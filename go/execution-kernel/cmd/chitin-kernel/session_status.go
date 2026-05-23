@@ -57,6 +57,17 @@ func cmdSessionStatus(args []string) {
 		os.Exit(1)
 	}
 
+	// agent is optional for status (list mode uses empty); when present
+	// validate it against the same allowlist as unlock/lock so a path
+	// traversal attempt is rejected even though status doesn't write
+	// chain events (defense in depth — keeps the input surface uniform).
+	if *agent != "" {
+		if err := validateAgentName(*agent); err != nil {
+			fs.Usage()
+			exitErr("invalid_agent", err.Error())
+		}
+	}
+
 	c, err := gov.OpenCounter(*dbPath)
 	if err != nil {
 		exitErr("open_govdb", fmt.Sprintf("cannot open gov.db at %s: %v", *dbPath, err))

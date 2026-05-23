@@ -91,6 +91,18 @@ func cancelWithClient(ctx context.Context, c client.Client, runID, reason string
 	}
 
 	if err := c.CancelWorkflow(ctx, runID, ""); err != nil {
+		// TOCTOU window: the workflow may have transitioned to terminal
+		// between DescribeWorkflowExecution above and CancelWorkflow here.
+		// Temporal returns an error in that case; classify as user-error
+		// "already in terminal state" to match the spec'd exit-code contract.
+		msg := err.Error()
+		if strings.Contains(msg, "completed") || strings.Contains(msg, "Completed") ||
+			strings.Contains(msg, "canceled") || strings.Contains(msg, "Canceled") ||
+			strings.Contains(msg, "terminated") || strings.Contains(msg, "Terminated") ||
+			strings.Contains(msg, "WorkflowExecutionAlreadyCompleted") {
+			fmt.Fprintf(stderr, "error: run_id %q already in terminal state (raced with cancel): %v\n", runID, err)
+			return exitUserError
+		}
 		fmt.Fprintf(stderr, "error: cancel failed: %v\n", err)
 		return exitRuntimeError
 	}
