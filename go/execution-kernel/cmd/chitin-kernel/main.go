@@ -96,6 +96,8 @@ func main() {
 		}
 	case "speckit-lint":
 		os.Exit(cmdSpeckitLint(args))
+	case "session":
+		cmdSession(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}

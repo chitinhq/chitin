@@ -21,6 +21,15 @@ type Counter struct {
 const denialEventRetention = 7 * 24 * time.Hour
 
 // OpenCounter opens/creates the SQLite DB at dbPath with WAL mode.
+//
+// Schema notes (spec 096):
+//   - A fresh database is created with the full extended `agent_state`
+//     schema in one shot (the CREATE TABLE below includes `unlock_ts`
+//     and `lock_epoch`).
+//   - A pre-existing database created before spec 096 is migrated by
+//     migrateAgentStateSchema(), which uses PRAGMA table_info to detect
+//     missing columns and ALTER TABLE them in place. Idempotent — safe
+//     to re-run on every kernel invocation.
 func OpenCounter(dbPath string) (*Counter, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -42,7 +51,9 @@ func OpenCounter(dbPath string) (*Counter, error) {
 			agent TEXT PRIMARY KEY,
 			total INTEGER NOT NULL DEFAULT 0,
 			locked INTEGER NOT NULL DEFAULT 0,
-			locked_ts TEXT
+			locked_ts TEXT,
+			unlock_ts TEXT,
+			lock_epoch INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS denial_events (
 			agent TEXT NOT NULL,
@@ -55,7 +66,59 @@ func OpenCounter(dbPath string) (*Counter, error) {
 	`); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	if err := migrateAgentStateSchema(db); err != nil {
+		return nil, fmt.Errorf("migrate agent_state: %w", err)
+	}
 	return &Counter{db: db}, nil
+}
+
+// migrateAgentStateSchema brings a pre-spec-096 agent_state table up to
+// the post-spec-096 shape by adding the unlock_ts and lock_epoch columns
+// if they're absent. Idempotent — uses PRAGMA table_info to detect what's
+// already present.
+//
+// Order of operations matters: SQLite ALTER TABLE ADD COLUMN is fast
+// (metadata-only) but each column is its own statement. We check both
+// columns up front and add the missing ones; a SIGKILL between the two
+// adds leaves a half-migrated DB that the NEXT invocation of this
+// function finishes. No data is rewritten — adds use a backward-
+// compatible default (NULL for unlock_ts, 0 for lock_epoch).
+func migrateAgentStateSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(agent_state)`)
+	if err != nil {
+		return fmt.Errorf("pragma table_info: %w", err)
+	}
+	defer rows.Close()
+	present := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typ       string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table_info row: %w", err)
+		}
+		present[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table_info: %w", err)
+	}
+
+	if !present["unlock_ts"] {
+		if _, err := db.Exec(`ALTER TABLE agent_state ADD COLUMN unlock_ts TEXT`); err != nil {
+			return fmt.Errorf("add unlock_ts: %w", err)
+		}
+	}
+	if !present["lock_epoch"] {
+		if _, err := db.Exec(`ALTER TABLE agent_state ADD COLUMN lock_epoch INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add lock_epoch: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close the underlying DB.
@@ -116,11 +179,23 @@ func (c *Counter) RecordActionDenial(agent, actionType, fp string, weight int) e
 	}
 
 	var total int
-	if err := tx.QueryRow(`SELECT total FROM agent_state WHERE agent = ?`, agent).Scan(&total); err != nil {
+	var wasLocked int
+	if err := tx.QueryRow(`SELECT total, locked FROM agent_state WHERE agent = ?`, agent).Scan(&total, &wasLocked); err != nil {
 		return fmt.Errorf("read agent_state.total: %w", err)
 	}
-	if total >= 10 {
-		if _, err := tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ? WHERE agent = ?`, nowText, agent); err != nil {
+	if total >= 10 && wasLocked == 0 {
+		// Spec 096 FR-005: lock_epoch advances on every lock transition,
+		// including the auto-escalation path. Only advance when the
+		// agent was not already locked — re-running RecordActionDenial
+		// against an already-locked agent must not bump the epoch.
+		if _, err := tx.Exec(`UPDATE agent_state SET locked = 1, locked_ts = ?, lock_epoch = lock_epoch + 1 WHERE agent = ?`, nowText, agent); err != nil {
+			return fmt.Errorf("set locked: %w", err)
+		}
+	} else if total >= 10 {
+		// Already locked — keep the existing behavior of touching
+		// locked_ts so the most-recent-denial timestamp stays fresh,
+		// but don't advance the epoch.
+		if _, err := tx.Exec(`UPDATE agent_state SET locked_ts = ? WHERE agent = ?`, nowText, agent); err != nil {
 			return fmt.Errorf("set locked: %w", err)
 		}
 	}
@@ -186,12 +261,15 @@ func (c *Counter) IsLocked(agent string) bool {
 }
 
 // Lockdown forces an agent into lockdown immediately (operator kill-switch).
+// Advances lock_epoch on every invocation (spec 096 R6), including
+// repeated calls against an already-locked agent — re-locking is an
+// audit-meaningful operator action, distinct from no-op.
 func (c *Counter) Lockdown(agent string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = c.db.Exec(`
-		INSERT INTO agent_state (agent, total, locked, locked_ts)
-		VALUES (?, 10, 1, ?)
-		ON CONFLICT(agent) DO UPDATE SET locked = 1, locked_ts = excluded.locked_ts
+		INSERT INTO agent_state (agent, total, locked, locked_ts, lock_epoch)
+		VALUES (?, 10, 1, ?, 1)
+		ON CONFLICT(agent) DO UPDATE SET locked = 1, locked_ts = excluded.locked_ts, lock_epoch = lock_epoch + 1
 	`, agent, now)
 }
 
