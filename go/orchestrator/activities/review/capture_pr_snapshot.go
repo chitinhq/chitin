@@ -156,13 +156,25 @@ func (a *CapturePRSnapshot) Execute(ctx context.Context, in PRReviewInput) (PRSn
 	}
 	perFile := splitUnifiedDiff(string(diffOut))
 
+	// Per-file diff caps protect against Temporal's 2 MB activity-output
+	// payload limit. A large refactor PR can blow past 2 MB easily —
+	// 100 files × 30 KB diff each is already 3 MB. We cap each file's
+	// diff at MaxPerFileDiffBytes and the total Files[].Diff budget at
+	// MaxTotalDiffBytes; reviewer drivers see a "[diff truncated]" marker
+	// where content was elided so they know to fetch via gh themselves
+	// when they need the full hunks.
 	files := make([]PRFile, len(view.Files))
+	var totalDiffBytes int
 	for i, f := range view.Files {
+		raw := perFile[f.Path] // empty string is fine for pure rename/binary
+		diff, originalSize := capDiff(raw, totalDiffBytes)
+		totalDiffBytes += len(diff)
+		_ = originalSize // could surface in a future Warnings field
 		files[i] = PRFile{
 			Path:      f.Path,
 			Additions: f.Additions,
 			Deletions: f.Deletions,
-			Diff:      perFile[f.Path], // empty string is fine for pure rename/binary
+			Diff:      diff,
 		}
 	}
 
@@ -214,6 +226,64 @@ func (a *CapturePRSnapshot) Execute(ctx context.Context, in PRReviewInput) (PRSn
 		SpecArtifacts: artifacts,
 		CapturedAt:    time.Now().UTC(),
 	}, nil
+}
+
+// MaxPerFileDiffBytes is the cap on a single PRFile.Diff field, in bytes.
+// Above this, the file's diff is truncated with a marker. 32 KB is large
+// enough to comfortably hold the typical code-review diff (a few hundred
+// lines of unified diff) and small enough that 60+ such files still fit
+// under MaxTotalDiffBytes.
+const MaxPerFileDiffBytes = 32 * 1024
+
+// MaxTotalDiffBytes is the cap on the SUM of Files[].Diff across the whole
+// snapshot. Temporal's default activity-output payload limit is 2 MiB;
+// 1.5 MiB leaves room for metadata + SpecArtifacts + ULID/timestamp
+// fields without crossing the limit. Above this, subsequent files get
+// an empty Diff with a marker.
+const MaxTotalDiffBytes = 1536 * 1024 // 1.5 MiB
+
+// truncatedMarker is the trailing line appended to a per-file diff that
+// was truncated by the per-file cap. The marker is human-readable and
+// deterministic so reviewer prompts can detect it without parsing.
+const truncatedMarker = "\n[diff truncated by chitin snapshot cap; fetch full diff via `gh pr diff <PR>`]\n"
+
+// capDiff applies the per-file and total-budget caps. Returns the
+// possibly-truncated diff text and the original (uncapped) byte length.
+// `usedBytes` is the running total of Diff bytes already added to the
+// snapshot's Files[] (NOT including this file's contribution).
+//
+// Post-budget behavior: returns an empty Diff. The Files[] entry still
+// retains Path + Additions + Deletions so the reviewer driver knows
+// the file changed; only the diff text is omitted. The first file that
+// triggered truncation carries the truncatedMarker, signaling the
+// reviewer that subsequent empty Diffs are intentional (not the
+// pure-rename / binary-file case).
+func capDiff(raw string, usedBytes int) (capped string, originalSize int) {
+	originalSize = len(raw)
+	remaining := MaxTotalDiffBytes - usedBytes
+	if remaining <= 0 {
+		// Total budget exhausted — emit nothing further to keep the
+		// snapshot bounded. The activity logs each skip so operators
+		// can see the truncation footprint in worker-host logs.
+		log.Printf("CapturePRSnapshot: diff budget exhausted, omitting %d bytes", originalSize)
+		return "", originalSize
+	}
+	if originalSize <= MaxPerFileDiffBytes && originalSize <= remaining {
+		return raw, originalSize
+	}
+	// Need to truncate. Take the smaller of the two caps.
+	max := MaxPerFileDiffBytes
+	if remaining < max {
+		max = remaining
+	}
+	// Reserve room for the marker so the FINAL length still fits.
+	if max <= len(truncatedMarker) {
+		// Too little room left for even the marker; emit empty.
+		log.Printf("CapturePRSnapshot: diff budget too small for marker, omitting %d bytes", originalSize)
+		return "", originalSize
+	}
+	cut := max - len(truncatedMarker)
+	return raw[:cut] + truncatedMarker, originalSize
 }
 
 // encodeURLPath URL-encodes a file path per-segment for use in a GitHub

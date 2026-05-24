@@ -343,6 +343,149 @@ func TestCapturePRSnapshot_PathWithSpecialChars(t *testing.T) {
 	}
 }
 
+// TestCapDiff covers the per-file + total-budget truncation logic
+// added after a real production failure: a 100-file cleanup PR produced
+// a 7.1 MiB activity output that exceeded Temporal's 2 MiB payload
+// limit, causing the dialectic to halt-retry-halt indefinitely.
+//
+// Invariants:
+//   - small diff under both caps → returned verbatim
+//   - diff over the per-file cap → truncated with marker; final length
+//     fits in MaxPerFileDiffBytes
+//   - cumulative budget exhausted → diff replaced with budget marker
+//   - the per-file marker itself never exceeds the per-file cap
+func TestCapDiff(t *testing.T) {
+	small := strings.Repeat("x", 1000)
+	t.Run("small fits verbatim", func(t *testing.T) {
+		got, _ := capDiff(small, 0)
+		if got != small {
+			t.Errorf("small diff was modified: len=%d", len(got))
+		}
+	})
+
+	huge := strings.Repeat("x", 100*1024) // 100 KiB
+	t.Run("over per-file cap is truncated", func(t *testing.T) {
+		got, origSize := capDiff(huge, 0)
+		if origSize != len(huge) {
+			t.Errorf("originalSize = %d, want %d", origSize, len(huge))
+		}
+		if len(got) > MaxPerFileDiffBytes {
+			t.Errorf("truncated diff len=%d exceeds per-file cap=%d", len(got), MaxPerFileDiffBytes)
+		}
+		if !strings.HasSuffix(got, truncatedMarker) {
+			t.Errorf("truncated diff missing marker; tail=%q", got[len(got)-80:])
+		}
+	})
+
+	t.Run("budget exhausted returns empty", func(t *testing.T) {
+		// Pretend we've already used the full budget.
+		got, _ := capDiff(huge, MaxTotalDiffBytes)
+		if got != "" {
+			t.Errorf("got %q, want empty (budget exhausted)", got[:min(40, len(got))])
+		}
+	})
+
+	t.Run("budget partially exhausted truncates harder", func(t *testing.T) {
+		// 1 KiB left in the budget — much less than the per-file cap.
+		got, _ := capDiff(huge, MaxTotalDiffBytes-1024)
+		if len(got) > 1024 {
+			t.Errorf("len=%d exceeds remaining budget=1024", len(got))
+		}
+	})
+
+	t.Run("cumulative budget enforced across many files", func(t *testing.T) {
+		fileSize := 30 * 1024 // each file just under per-file cap
+		filesThatFit := MaxTotalDiffBytes / fileSize
+		used := 0
+		for i := 0; i <= filesThatFit+5; i++ {
+			diff, _ := capDiff(strings.Repeat("y", fileSize), used)
+			used += len(diff)
+			// Post-budget files return empty, so used never grows past
+			// MaxTotalDiffBytes (the boundary file may add a marker, but
+			// capDiff sizes the boundary cut so cut+marker <= remaining).
+			if used > MaxTotalDiffBytes {
+				t.Fatalf("after %d files, total bytes=%d exceeded budget %d", i, used, MaxTotalDiffBytes)
+			}
+		}
+	})
+}
+
+// TestCapturePRSnapshot_LargePRPayload integration-tests the cap path
+// against the regression that triggered this fix: a PR with many files
+// whose total raw diff is multi-megabyte. The snapshot's total
+// Files[].Diff size MUST stay under MaxTotalDiffBytes so the activity
+// output fits Temporal's 2 MiB payload limit.
+func TestCapturePRSnapshot_LargePRPayload(t *testing.T) {
+	// 50 files × 100 KiB each = 5 MiB raw — well over the limit.
+	const nFiles = 50
+	const perFileSize = 100 * 1024
+
+	var filesJSON []string
+	var diffParts []string
+	for i := 0; i < nFiles; i++ {
+		filesJSON = append(filesJSON, fmt.Sprintf(`{"path": "file%d.go", "additions": 1, "deletions": 0}`, i))
+		// Per-file unified diff section; the payload is what blows up.
+		body := strings.Repeat("y", perFileSize)
+		diffParts = append(diffParts, fmt.Sprintf("diff --git a/file%d.go b/file%d.go\n@@\n+%s\n", i, i, body))
+	}
+	viewJSON := fmt.Sprintf(`{
+		"title": "huge cleanup",
+		"headRefOid": "abc",
+		"baseRefName": "main",
+		"author": {"login": "u"},
+		"files": [%s]
+	}`, strings.Join(filesJSON, ","))
+	diff := strings.Join(diffParts, "")
+
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: diff},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Every file's path is still present — the reviewer sees the full
+	// list of changed files even when content is truncated.
+	if len(snap.Files) != nFiles {
+		t.Errorf("Files len = %d, want %d", len(snap.Files), nFiles)
+	}
+
+	// The aggregate Diff payload size MUST fit under the cap.
+	totalDiffBytes := 0
+	for _, f := range snap.Files {
+		totalDiffBytes += len(f.Diff)
+	}
+	if totalDiffBytes > MaxTotalDiffBytes {
+		t.Errorf("aggregate diff bytes = %d, exceeds cap %d", totalDiffBytes, MaxTotalDiffBytes)
+	}
+
+	// At least one file should carry the per-file truncation marker
+	// (the boundary file where budget ran out); subsequent files have
+	// empty Diff (budget-exhausted, no marker).
+	sawTruncMarker := false
+	emptyDiffCount := 0
+	for _, f := range snap.Files {
+		if strings.HasSuffix(f.Diff, truncatedMarker) {
+			sawTruncMarker = true
+		}
+		if f.Diff == "" {
+			emptyDiffCount++
+		}
+	}
+	if !sawTruncMarker {
+		t.Errorf("expected at least one file with truncated marker; saw %d empty-diff files across %d total",
+			emptyDiffCount, nFiles)
+	}
+	if emptyDiffCount == 0 {
+		t.Errorf("expected at least one budget-exhausted (empty Diff) file in a %d-MiB synthetic PR",
+			(nFiles*perFileSize)/1024/1024)
+	}
+}
+
+
 // TestCapturePRSnapshot_RequiresRepoAndPR ensures the activity rejects
 // the obvious caller bug of an empty Repo or zero PRNumber before
 // spending a gh call. Cheap defensive validation per spec 097 plan's
