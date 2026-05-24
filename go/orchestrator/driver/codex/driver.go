@@ -67,6 +67,7 @@ func (d *Driver) Card() driver.CapabilityCard {
 			driver.CapCodeImplement,
 			driver.CapCodeReview,
 			driver.CapCodeRefactor,
+			driver.CapTestAuthor,
 		},
 		Tier:      driver.TierFrontier,
 		CostClass: driver.CostHigh,

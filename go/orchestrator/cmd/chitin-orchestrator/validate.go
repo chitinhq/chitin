@@ -86,7 +86,11 @@ func ValidateForDispatch(ctx context.Context, d *dag.DAG, reg *driver.Registry) 
 				})
 				continue
 			}
-			drivers := reg.DriversFor(ctx, driver.Capability(n.Capability))
+			// Spec 105 FR-003: use DriversDeclaring (taxonomic) NOT DriversFor
+			// (operational). Coverage is a declaration check — a driver
+			// missing from PATH at scheduling time may be Ready by dispatch
+			// time. Operational filtering happens later in SelectDriver.
+			drivers := reg.DriversDeclaring(driver.Capability(n.Capability))
 			if len(drivers) == 0 {
 				errs = append(errs, ValidationError{
 					NodeID:     n.ID,

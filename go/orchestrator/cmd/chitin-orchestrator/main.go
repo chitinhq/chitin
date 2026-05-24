@@ -74,6 +74,8 @@ func runMain(args []string) int {
 			return cmdSimulateWebhook(args[2:])
 		case "pr-review":
 			return cmdPRReview(args[2:])
+		case "validate-driver-coverage":
+			return cmdValidateDriverCoverage(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
