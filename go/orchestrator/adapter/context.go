@@ -118,23 +118,59 @@ type capabilityKeyword struct {
 // capabilityKeywords is the ordered keyword table. Order does not affect the
 // result — every entry is checked and a match count is kept — but a stable
 // table keeps the mapping auditable.
+// capabilityKeywords is the ordered keyword table.
+//
+// Note: spec 106 removed "add the" from CapTestAuthor (too generic — it
+// false-positive-matched code-implementation tasks like "Add the flag"
+// or "Add the subcommand dispatcher"). Test-authoring still matches via
+// the specific patterns "add a test" / "author test" / "_test.go" / etc.
 var capabilityKeywords = []capabilityKeyword{
-	{driver.CapTestAuthor, []string{"unit-test", "unit test", "test suite", "table-driven test", "fixture test", "write tests", "author test", "add a test", "add the", "_test.go"}},
+	{driver.CapTestAuthor, []string{"unit-test", "unit test", "test suite", "table-driven test", "fixture test", "write tests", "author test", "add a test", "_test.go", "integration test", "regression test", "smoke test", "argv parsing test"}},
 	{driver.CapCodeReview, []string{"review the code", "code review", "review a code"}},
 	{driver.CapCodeRefactor, []string{"refactor", "restructure"}},
 	{driver.CapResearchWeb, []string{"research against the web", "research the open web", "web research"}},
 	{driver.CapResearchX, []string{"research against x", "research on x"}},
-	{driver.CapDocsWrite, []string{"documentation", "write docs", "runbook", "author the doc", "update the doc"}},
-	{driver.CapSpecAuthor, []string{"author a spec", "write a spec", "author the spec", "spec.md", "plan.md", "tasks.md"}},
+	{driver.CapDocsWrite, []string{"documentation", "write docs", "runbook", "author the doc", "update the doc", "operator runbook", "developer doc", "update docs", "changelog entry", "changelog"}},
+	{driver.CapSpecAuthor, []string{"author a spec", "write a spec", "author the spec", "spec.md", "plan.md", "tasks.md", "draft a spec", "update the spec", "create spec.md", "fixture spec"}},
 	{driver.CapBulkCodegen, []string{"scaffold", "boilerplate", "bulk", "generate in bulk", "codegen"}},
-	{driver.CapCodeImplement, []string{"implement", "define the", "wire ", "add the import", "create the", "build the"}},
+	{driver.CapCodeImplement, []string{"implement", "define the", "wire ", "add the import", "create the", "build the", "add a", "create a", "add the flag", "add the option", "extract the", "construction helper", "add the subcommand"}},
+}
+
+// capabilityPrecedence is the spec 106 FR-002 disambiguation order for
+// multi-match cases. When MapCapability finds the description matches
+// keywords from multiple capabilities, the higher-rank capability wins.
+//
+// Rationale: the specialized capabilities (test.author / docs.write /
+// spec.author / code.refactor / bulk.codegen) carry stronger signal —
+// their keywords are more specific than code.implement's catch-all
+// patterns. code.implement is the right answer when nothing else fits
+// but the wrong answer when a more specific tag also matches.
+//
+// Lower rank = higher precedence (wins).
+var capabilityPrecedence = map[driver.Capability]int{
+	driver.CapTestAuthor:      0,
+	driver.CapDocsWrite:       1,
+	driver.CapSpecAuthor:      2,
+	driver.CapCodeRefactor:    3,
+	driver.CapBulkCodegen:     4,
+	driver.CapCodeReview:      5,
+	driver.CapResearchWeb:     6,
+	driver.CapResearchX:       7,
+	driver.CapBrowserAutomate: 8,
+	driver.CapCodeImplement:   9, // catch-all loses every tie
 }
 
 // MapCapability maps a task description to exactly one closed-taxonomy
-// capability tag (FR-014). It returns the matched tag and ok=true only when
-// the description matches the keyword set of precisely one capability. When
-// it matches none, or matches more than one, it returns ok=false — the
-// caller MUST then mark the node NeedsClarification rather than invent a tag.
+// capability tag (FR-014, spec 106 FR-001/002).
+//
+// Match semantics:
+//   - zero keyword matches: returns ("", false). Caller marks node
+//     NeedsClarification; spec author must tighten the wording.
+//   - one keyword match: returns (cap, true).
+//   - multiple keyword matches: spec 106 FR-002 disambiguation — returns
+//     the highest-precedence cap per capabilityPrecedence
+//     (test.author > docs.write > spec.author > … > code.implement).
+//     The catch-all code.implement loses every tie.
 //
 // The returned capability, when ok, is guaranteed to satisfy
 // driver.IsKnownCapability.
@@ -149,17 +185,31 @@ func MapCapability(description string) (driver.Capability, bool) {
 			}
 		}
 	}
-	if len(matched) != 1 {
+	if len(matched) == 0 {
 		return "", false
 	}
+	// Pick the highest-precedence (lowest rank) capability that matched.
+	// Ties at the same rank are not expected — the precedence map enforces
+	// a total order over the closed taxonomy.
+	var winner driver.Capability
+	winnerRank := -1
 	for c := range matched {
-		// Defence in depth: only return tags the closed taxonomy admits.
 		if !driver.IsKnownCapability(string(c)) {
-			return "", false
+			continue // defence in depth — should not happen
 		}
-		return c, true
+		rank, ok := capabilityPrecedence[c]
+		if !ok {
+			continue // capability not in precedence map; conservative skip
+		}
+		if winnerRank == -1 || rank < winnerRank {
+			winner = c
+			winnerRank = rank
+		}
 	}
-	return "", false
+	if winnerRank == -1 {
+		return "", false
+	}
+	return winner, true
 }
 
 // NewTaskContext builds a TaskContext from a task's identifying fields and
