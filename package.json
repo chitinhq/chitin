@@ -14,7 +14,13 @@
       "@swc/core",
       "esbuild",
       "nx"
-    ]
+    ],
+    "overrides": {
+      "axios@<1.15.2": ">=1.15.2",
+      "fast-uri@<3.1.2": ">=3.1.2",
+      "fast-xml-builder@<1.1.7": ">=1.1.7",
+      "@babel/plugin-transform-modules-systemjs@<7.29.4": ">=7.29.4"
+    }
   },
   "devDependencies": {
     "@angular-devkit/core": "~21.2.0",
