@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -187,7 +188,18 @@ func runWorkerHost(ctx context.Context) int {
 // prevention per spec 097 plan.md R2 — the SelectDriver activity at
 // runtime and the schedule subcommand's pre-validation must consult the
 // same registry shape, so they construct from this one function.
+//
+// Optional filter — `CHITIN_DRIVER_ALLOW` env var, comma-or-space
+// separated driver IDs. When set, only drivers whose ID appears in the
+// allow set are registered; others are skipped. Empty / unset = all
+// drivers register (existing behavior). Useful for cost-control demos
+// where the operator wants to pin dispatch to a specific cheaper
+// driver (e.g. `CHITIN_DRIVER_ALLOW=codex`) without changing the spec
+// or waiting for spec 099 US1's `--driver` flag. Per-spec routing is
+// out of scope for this hook — it gates the whole registry, not a
+// single dispatch.
 func buildRegistry() (*driver.Registry, error) {
+	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
@@ -198,11 +210,28 @@ func buildRegistry() (*driver.Registry, error) {
 		openclaw.New(),
 		local.New(),
 	} {
+		if len(allowSet) > 0 && !allowSet[d.ID()] {
+			continue
+		}
 		if err := registry.Register(d); err != nil {
 			return nil, fmt.Errorf("registering driver %q: %w", d.ID(), err)
 		}
 	}
 	return registry, nil
+}
+
+// parseDriverAllowEnv tokenizes CHITIN_DRIVER_ALLOW. Accepts comma or
+// whitespace separators so the operator can write either
+// `codex,copilot` or `codex copilot`. Empty input returns an empty
+// map (= no filter applied).
+func parseDriverAllowEnv(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if tok != "" {
+			out[tok] = true
+		}
+	}
+	return out
 }
 
 // printUsage writes a one-screen reference of the binary's invocation modes
