@@ -89,7 +89,15 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	defer cancel()
 
 	prompt := promptFor(wu)
-	cmd := exec.CommandContext(ctx, d.command, "-p", prompt)
+	// --dangerously-skip-permissions is mandatory for dispatch-mode
+	// invocations: the chitin worker spawns claude headlessly inside a
+	// fresh worktree, and without this flag claude's sandbox refuses
+	// `Write` and `touch` against the worktree path (surfaced by the
+	// 2026-05-24 dogfood; claudecode would author its proposed code in
+	// the explanation but produce no commits → no PR). claude's own
+	// help text recommends the flag "for sandboxes with no internet
+	// access" — chitin's worker context matches that intent.
+	cmd := exec.CommandContext(ctx, d.command, "--dangerously-skip-permissions", "-p", prompt)
 	cmd.Dir = wu.WorktreePath
 
 	var stdout, stderr bytes.Buffer

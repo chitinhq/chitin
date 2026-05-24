@@ -2,6 +2,8 @@ package claudecode
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,5 +44,41 @@ func TestReadyReportsUnavailableRuntime(t *testing.T) {
 	}
 	if !strings.Contains(reason, "not found") {
 		t.Fatalf("Ready() reason = %q, want it to explain the runtime was not found", reason)
+	}
+}
+
+// TestInvoke_PassesSkipPermissions verifies the driver passes
+// --dangerously-skip-permissions to claude. The dispatch-mode sandbox
+// would otherwise block worktree writes (2026-05-24 dogfood bug #5).
+// claude help describes the flag: "Bypass all permission checks.
+// Recommended only for sandboxes with no internet access."
+func TestInvoke_PassesSkipPermissions(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	argvPath := filepath.Join(dir, "argv.log")
+	// Fake claude binary: dump argv to a file, exit 0 so the driver
+	// treats it as a successful invocation.
+	script := "#!/usr/bin/env bash\n" +
+		"for a in \"$@\"; do echo \"$a\" >> " + argvPath + "; done\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "test-wu-001",
+		WorktreePath: dir,
+	}
+	_, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	argv, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("read captured argv: %v", err)
+	}
+	if !strings.Contains(string(argv), "--dangerously-skip-permissions") {
+		t.Errorf("argv missing --dangerously-skip-permissions\nargv=%q", string(argv))
 	}
 }
