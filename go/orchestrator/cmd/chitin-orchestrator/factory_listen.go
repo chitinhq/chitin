@@ -234,6 +234,28 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		resp.SkippedReason = elig.Reasons[0]
 	}
 
+	// Slice 4: dedup-gated PRReviewWorkflow dispatch (FR-008 + FR-009).
+	if elig.Eligible {
+		dispatchOut := dispatchPRReview(r.Context(), prDispatchInput{
+			Repo:         p.Repository.FullName,
+			PRNumber:     prNumber,
+			PRURL:        p.PullRequest.URL,
+			SpecRef:      elig.SpecRef,
+			IssueNumber:  elig.IssueNumber,
+			Commits:      p.PullRequest.Commits,
+			Additions:    p.PullRequest.Additions,
+			Deletions:    p.PullRequest.Deletions,
+			ChangedFiles: p.PullRequest.Changed,
+			TemporalHost: h.temporalHost,
+		}, nil, h.stderr)
+		resp.ReviewStarted = dispatchOut.ReviewStarted
+		resp.ReviewRunID = dispatchOut.ReviewRunID
+		resp.DedupSkipped = dispatchOut.DedupSkipped
+		if dispatchOut.FailureKind != "" {
+			resp.SkippedReason = dispatchOut.FailureKind
+		}
+	}
+
 	// FR-013: always-on telemetry. Emit copilot_pr_activity for any
 	// event on a PR carrying the chitin-dispatch label, regardless of
 	// eligibility outcome. (Activity events ARE deduped by delivery ID

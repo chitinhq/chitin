@@ -70,6 +70,39 @@ type CopilotPRActivityPayload struct {
 	ReceivedAt  string          `json:"received_at"`
 }
 
+// CopilotPRDetectedPayload is the spec 099 "copilot_pr_detected" event
+// payload (contracts/chain-events.md Event 2). Emitted by the
+// factory-listen /webhook/pr handler on the first eligible PR event
+// per (repo, pr_number) — at most one per PR per FR-008 (dedup
+// enforced by chain query before emit).
+type CopilotPRDetectedPayload struct {
+	Repo                string `json:"repo"`
+	PRNumber            int    `json:"pr_number"`
+	PRURL               string `json:"pr_url"`
+	SpecRef             string `json:"spec_ref"` // "unknown" if Closes ref not recoverable
+	IssueNumber         int    `json:"issue_number"`
+	Commits             int    `json:"commits"`
+	Additions           int    `json:"additions"`
+	Deletions           int    `json:"deletions"`
+	ChangedFiles        int    `json:"changed_files"`
+	DetectedAt          string `json:"detected_at"`
+	ReviewWorkflowRunID string `json:"review_workflow_run_id,omitempty"`
+}
+
+// CopilotReviewFailedPayload is the spec 099 "copilot_review_failed"
+// event payload (contracts/chain-events.md Event 4). Emitted when the
+// PRReviewWorkflow start fails synchronously (e.g. Temporal
+// unreachable). Workflow-runtime failures are emitted by the workflow
+// itself in a follow-up slice.
+type CopilotReviewFailedPayload struct {
+	Repo         string `json:"repo"`
+	PRNumber     int    `json:"pr_number"`
+	ReviewRunID  string `json:"review_run_id"`
+	FailureKind  string `json:"failure_kind"`
+	Detail       string `json:"detail"`
+	FailedAt     string `json:"failed_at"`
+}
+
 // emitSchedulerStarted writes a scheduler_started chain event via the
 // kernel's emit subcommand. The workflowRunID is used as the chain RunID
 // so the resulting events-*.jsonl filename matches the Temporal RunID
@@ -102,6 +135,22 @@ func emitCopilotDispatched(ctx context.Context, payload CopilotDispatchedPayload
 // Same fail-soft contract as emitSchedulerStarted.
 func emitCopilotPRActivity(ctx context.Context, payload CopilotPRActivityPayload, stderr io.Writer) {
 	emitChainEvent(ctx, "copilot_pr_activity", "", payload, stderr)
+}
+
+// emitCopilotPRDetected writes a copilot_pr_detected chain event
+// (contracts/chain-events.md Event 2). The workflowRunID is the
+// PRReviewWorkflow's Temporal run ID so the chain entry can be joined
+// to the workflow in audit replay.
+func emitCopilotPRDetected(ctx context.Context, payload CopilotPRDetectedPayload, stderr io.Writer) {
+	emitChainEvent(ctx, "copilot_pr_detected", payload.ReviewWorkflowRunID, payload, stderr)
+}
+
+// emitCopilotReviewFailed writes a copilot_review_failed chain event
+// (contracts/chain-events.md Event 4). Synchronous start failures
+// only; workflow runtime failures land via the workflow's own emit
+// (slice 5).
+func emitCopilotReviewFailed(ctx context.Context, payload CopilotReviewFailedPayload, stderr io.Writer) {
+	emitChainEvent(ctx, "copilot_review_failed", payload.ReviewRunID, payload, stderr)
 }
 
 // emitChainEvent constructs a chain-event JSON record, writes it to a
