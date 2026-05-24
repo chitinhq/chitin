@@ -98,10 +98,6 @@ entries:
     category: ci
     purpose: install the chitin governance hook into Claude Code settings
 
-  - path: scripts/install-clawta-judge-backfill.sh
-    category: ci
-    purpose: install the clawta judge backfill systemd units on an operator host
-
   - path: scripts/install-codex-hook.sh
     category: ci
     purpose: install the chitin governance hook into Codex CLI settings
@@ -176,10 +172,6 @@ entries:
     category: operator
     purpose: reject direct pushes to protected branches from local worktrees
 
-  - path: scripts/smoke-hermes-clawta-chain.sh
-    category: ci
-    purpose: exercise the hermes to clawta to lobster dispatch chain with seeded smoke tickets
-
   - path: scripts/swarm-bus
     category: operator
     purpose: thin CLI over agent-bus MCP tools (bus_reply, bus_post_thread, bus_inbox, etc.) so any agent can post to threads via shell
@@ -192,10 +184,6 @@ entries:
     category: runtime-critical
     purpose: render assigned-ticket inbox for an agent at claude-code session start
     tested_by: scripts/swarm-sessionstart-hook/tests/test_swarm_tickets_for.sh
-
-  - path: scripts/sync-kanban-dispatch.sh
-    category: ci
-    purpose: verify the mirrored kanban-dispatch lobster workflow matches the canonical source
 
   - path: scripts/trace-lifecycle.sh
     category: operator
