@@ -47,8 +47,8 @@ const TaskQueue = "chitin"
 
 // Exit codes for subcommand handlers — spec 097 FR-011.
 const (
-	exitSuccess     = 0
-	exitUserError   = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
+	exitSuccess      = 0
+	exitUserError    = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
 	exitRuntimeError = 2 // Temporal unreachable, IO failure, kernel-binary missing
 )
 
@@ -76,6 +76,8 @@ func runMain(args []string) int {
 			return cmdPRReview(args[2:])
 		case "validate-driver-coverage":
 			return cmdValidateDriverCoverage(args[2:])
+		case "tasks-lint":
+			return cmdTasksLint(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -276,6 +278,7 @@ USAGE
   chitin-orchestrator factory-listen [opts]                 # run the webhook trigger surface (spec 098)
   chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
   chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
+  chitin-orchestrator tasks-lint <spec-ref> [opts] # validate tasks.md capability classification
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
