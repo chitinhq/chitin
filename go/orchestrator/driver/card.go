@@ -98,6 +98,33 @@ type Constraints struct {
 	WorktreeRequired bool `json:"worktree_required"`
 }
 
+// ReviewMode declares a reviewer-eligible driver's review-mode contract
+// (spec 094 FR-002). A driver that declares CapCodeReview SHOULD also
+// populate ReviewMode so the orchestrator knows which tool name to invoke
+// for the review-mode dispatch and the driver's self-declared input-byte
+// budget. The orchestrator does not prescribe the prompt content — that is
+// the driver's own (FR-003) — only the input/output contract.
+//
+// ReviewMode is an optional sidecar: a nil ReviewMode on a CapCodeReview
+// driver is legal at v1 (the dispatch falls back to a conventional tool
+// name) but a v1.x amendment will require it.
+type ReviewMode struct {
+	// ToolName is the name of the tool the driver exposes for review-mode
+	// dispatch — by convention "review". The dispatch activity invokes
+	// the driver's tool registry with this name.
+	ToolName string `json:"tool_name"`
+	// PromptTemplate is the driver's own review-mode prompt. Opaque to
+	// the orchestrator; recorded in the registry for audit and operator
+	// inspection (FR-003).
+	PromptTemplate string `json:"prompt_template,omitempty"`
+	// MaxBytesIn is the driver's self-declared upper bound on the size of
+	// the PRSnapshot input it accepts (bytes). The dispatch activity may
+	// truncate the snapshot at this boundary and flag the truncation in
+	// the outcome; the driver may treat a truncation flag as cause for
+	// abstain.
+	MaxBytesIn int `json:"max_bytes_in,omitempty"`
+}
+
 // CapabilityCard is one driver's declared contract — the metadata the
 // Registry routes on and the kernel enforces against (FR-003, FR-011). It
 // is modeled on the A2A Agent Card and is recorded in the chitin chain at
@@ -128,6 +155,17 @@ type CapabilityCard struct {
 	CostClass CostClass `json:"cost_class"`
 	// Constraints are the driver's declared operational limits.
 	Constraints Constraints `json:"constraints"`
+	// GitIdentity is the git author identifier the driver uses when it
+	// authors commits or PRs — e.g., "hermes-bot", "clawta-bot". It is
+	// the bridge between PR-author attribution and driver identity for the
+	// no-self-review exclusion (spec 094 FR-005, R-AUTHORID). Empty for
+	// drivers that do not author git artifacts on their own behalf.
+	GitIdentity string `json:"git_identity,omitempty"`
+	// ReviewMode is the driver's review-mode contract (spec 094 FR-002).
+	// Required when the driver declares CapCodeReview and intends to be
+	// dispatched as a reviewer; ignored otherwise. Nil-safe: the dispatch
+	// activity falls back to a conventional default when absent.
+	ReviewMode *ReviewMode `json:"review_mode,omitempty"`
 }
 
 // HasCapability reports whether the card declares capability c.

@@ -4,7 +4,7 @@
 
 **Created**: 2026-05-22
 
-**Status**: Draft
+**Status**: Ratified (v1.0 shipped in [#923](https://github.com/chitinhq/chitin/pull/923) on 2026-05-23; v1.1 amendment in design — see [Amendments](#amendments))
 
 **Input**: User description: "Clawta hits governance denies and keeps retrying instead of stopping. The chitin gate emits the deny with `continue:false` — the agent harness/driver is supposed to honor that signal and terminate the agent loop. Today it doesn't. The kernel's lockdown rule fires repeatedly (3+ denies within 90 seconds), which trips `lockdown_loop_detected` and the chain logs: 'primary continue:false stop signal likely not honored — operator should investigate harness/driver.' This bug means: a deny that should be a single hard stop becomes a runaway loop that floods the chain, eats resources, and obscures the original violation."
 
@@ -78,3 +78,12 @@ A Clawta session attempts a tool call. The chitin governance gate denies it with
 - **Investigation predecessor**: today's investigation (2026-05-22) which surfaced 6 `lockdown_loop_detected` events for Clawta over recent days, with the chain payload literally stating "primary continue:false stop signal likely not honored — operator should investigate harness/driver."
 - **Constitution**: this fix preserves §1 (kernel is the only gate authority) — the gate's decision stays load-bearing; the harness just stops disobeying it.
 - **External dependency risk**: if the bug is in an upstream driver (e.g., Claude Code, an openclaw plugin), the fix's velocity depends on the upstream's responsiveness. Plan-phase identifies the locus and surfaces this risk as a known-blocker if applicable.
+
+## Amendments
+
+| Version | Date | Title | Status | Doc |
+|---|---|---|---|---|
+| v1.0 | 2026-05-22 | Initial spec — FR-001..FR-009 | Implemented & merged in [#923](https://github.com/chitinhq/chitin/pull/923) | this file |
+| v1.1 | 2026-05-23 | Operator unlock recovery without process restart | Draft (design only) | [amendments/v1.1-operator-unlock-recovery.md](amendments/v1.1-operator-unlock-recovery.md) |
+
+Amendments use their own ID prefixes (`AFR-`, `ASC-`) to avoid colliding with this spec's `FR-`/`SC-` numbering. Each amendment is implemented in its own PR; spec.md (this file) records the as-ratified v1.0 state.
