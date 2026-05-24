@@ -114,7 +114,10 @@ func TestMapCapabilityClosedTaxonomy(t *testing.T) {
 		{"Author tests for the core type — add a table-driven test", driver.CapTestAuthor, true},
 		{"Implement the handler — wire the request path", driver.CapCodeImplement, true},
 		{"Do the thing", "", false},
-		{"Refactor the module and also implement a new feature and write tests", "", false},
+		// Spec 106 FR-002: multi-match no longer fails; precedence picks
+		// the highest-rank capability. test.author (rank 0) beats
+		// code.refactor (rank 3) beats code.implement (rank 9).
+		{"Refactor the module and also implement a new feature and write tests", driver.CapTestAuthor, true},
 	}
 	for _, c := range cases {
 		got, ok := adapter.MapCapability(c.desc)
