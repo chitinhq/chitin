@@ -7,6 +7,15 @@ It sits between agent CLIs and your workstation, normalizes every tool call into
 Apache-2.0. Local-first. Operator-owned data.
 
 ```
+Specs / backlog / schedules
+          │
+          ▼
+┌─────────────────────────────┐
+│ Chitin Orchestrator         │  Temporal workflows, work units,
+│ go/orchestrator/            │  scheduler, review/merge flows
+└─────────────┬───────────────┘
+              │ attributed driver invocations
+              ▼
 Claude Code   Codex CLI   Gemini CLI   Copilot CLI   Hermes   OpenClaw
      │            │            │             │           │         │
      └────────────┴────────────┴──────┬──────┴───────────┴─────────┘
@@ -25,13 +34,14 @@ Claude Code   Codex CLI   Gemini CLI   Copilot CLI   Hermes   OpenClaw
 
 ## What Chitin owns
 
-Chitin owns the enforcement and evidence layer:
+Chitin owns the orchestration, enforcement, and evidence layer:
 
-1. **Kernel gate** — `chitin-kernel gate evaluate` is the one runtime enforcement point. It receives normalized actions, evaluates policy, records decisions, increments agent severity counters, applies envelopes, and returns allow/deny/guide decisions.
-2. **Driver normalization** — each supported surface maps its vendor-specific tool-call payload into the canonical action model in `go/execution-kernel/internal/driver/`.
-3. **Tamper-evident chain** — events and governance decisions are appended as canonical JSON, linked by SHA-256, and materialized into SQLite read models for analysis and replay.
-4. **Policy and bounds** — `chitin.yaml` defines action-level rules, path guards, branch guards, lines/files ceilings, denial escalation, and lockdown behavior.
-5. **Spec-driven swarm infrastructure** — this repo currently also houses the transitional swarm tooling and the emerging Temporal-based Chitin Orchestrator that moves agent work from cron/script sprawl into durable workflows.
+1. **Orchestrator control plane** — `go/orchestrator/` is the Temporal-based control plane for spec/backlog/schedule driven work. It turns work into durable, attributed work units and owns scheduler, review, merge, ingest, and loop workflows as they migrate out of cron, boards, and shell sprawl.
+2. **Kernel gate** — `chitin-kernel gate evaluate` is the one runtime enforcement point for local side effects. It receives normalized actions, evaluates policy, records decisions, increments agent severity counters, applies envelopes, and returns allow/deny/guide decisions.
+3. **Driver normalization** — each supported surface maps its vendor-specific tool-call payload into the canonical action model in `go/execution-kernel/internal/driver/`.
+4. **Tamper-evident chain** — events and governance decisions are appended as canonical JSON, linked by SHA-256, and materialized into SQLite read models for analysis and replay.
+5. **Policy and bounds** — `chitin.yaml` defines action-level rules, path guards, branch guards, lines/files ceilings, denial escalation, and lockdown behavior.
+6. **Spec-driven swarm infrastructure** — this repo currently also houses the transitional swarm tooling being absorbed by the Chitin Orchestrator.
 
 ## What Chitin does not own
 
@@ -61,12 +71,18 @@ The long-term thesis is spec-driven development with telemetry: specs define int
 
 ### Runtime path
 
-1. A supported agent attempts a tool call.
-2. The agent's hook, plugin, or wrapper calls `bin/chitin-router-hook` or `chitin-kernel` directly.
-3. The driver normalizer converts the payload into a canonical action.
-4. `gov.Gate.Evaluate` checks `chitin.yaml`, bounds, branch/worktree posture, escalation state, and cost envelope.
-5. The kernel writes a decision row and returns the verdict.
-6. Downstream tools can read the chain, replay sessions, emit OTEL, or mine policy improvements.
+There are two connected paths:
+
+1. **Control path:** a spec, backlog item, schedule, review, or merge request becomes an orchestrator workflow in `go/orchestrator/`.
+2. The orchestrator assigns an auditable work unit and invokes the appropriate driver surface with that attribution.
+3. **Enforcement path:** the supported agent attempts a tool call.
+4. The agent's hook, plugin, or wrapper calls `bin/chitin-router-hook` or `chitin-kernel` directly.
+5. The driver normalizer converts the payload into a canonical action.
+6. `gov.Gate.Evaluate` checks `chitin.yaml`, bounds, branch/worktree posture, escalation state, and cost envelope.
+7. The kernel writes a decision row and returns the verdict.
+8. Downstream tools can read the chain, replay sessions, emit OTEL, or mine policy improvements.
+
+The orchestrator decides **what work runs and why**. The kernel decides **whether each local side effect is allowed**.
 
 ### Supported driver surfaces
 
@@ -162,6 +178,7 @@ CI and local agents use Node 22 and pnpm 10. If `better-sqlite3` did not build d
 .
 ├── go/
 │   ├── execution-kernel/        # chitin-kernel, router-hook, gov gate, drivers, chain
+│   ├── orchestrator/            # Temporal workflows, schedules, work units, loops
 │   ├── chainhash/               # shared hash/canonicalization helper
 │   └── run-sdk/                 # Go run-event SDK
 ├── apps/
