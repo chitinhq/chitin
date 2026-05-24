@@ -16,7 +16,7 @@
 //
 // Per research.md D3, this re-uses the same registry construction the
 // scheduler's SelectDriver activity will consult at runtime (buildRegistry
-// in main.go), so pre-validation and runtime agree on routability.
+// role "impl" in main.go), so pre-validation and runtime agree on routability.
 
 package main
 

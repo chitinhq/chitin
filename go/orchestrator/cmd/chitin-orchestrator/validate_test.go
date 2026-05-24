@@ -9,7 +9,7 @@ import (
 )
 
 func TestValidateForDispatch_EmptyDAGIsValid(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestValidateForDispatch_EmptyDAGIsValid(t *testing.T) {
 }
 
 func TestValidateForDispatch_AllValid(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestValidateForDispatch_AllValid(t *testing.T) {
 }
 
 func TestValidateForDispatch_NeedsClarification(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestValidateForDispatch_NeedsClarification(t *testing.T) {
 }
 
 func TestValidateForDispatch_UnroutableCapability(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestValidateForDispatch_UnroutableCapability(t *testing.T) {
 }
 
 func TestValidateForDispatch_MissingCapability(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestValidateForDispatch_MissingCapability(t *testing.T) {
 }
 
 func TestValidateForDispatch_DeterministicNodeNeedsCommand(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestValidateForDispatch_DeterministicNodeNeedsCommand(t *testing.T) {
 }
 
 func TestValidateForDispatch_DeterministicNodeWithCommandIsValid(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestValidateForDispatch_DeterministicNodeWithCommandIsValid(t *testing.T) {
 }
 
 func TestValidateForDispatch_MultipleErrorsReported(t *testing.T) {
-	reg, err := buildRegistry()
+	reg, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
