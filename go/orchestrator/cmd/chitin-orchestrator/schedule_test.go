@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/adapter/speckit"
+	"github.com/chitinhq/chitin/go/orchestrator/dag"
 )
 
 // fixtureRepo writes a minimal chitin-shaped repo with one spec under
@@ -157,6 +158,66 @@ func TestRunSchedule_TemporalUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "Temporal unreachable") {
 		t.Errorf("stderr should report Temporal unreachable; got: %q", errBuf.String())
+	}
+}
+
+func TestPrepareNodesForDispatch_PopulatesTargetRepoAndBaseRef(t *testing.T) {
+	// The spec-077 adapter compiles every Node with TargetRepo and
+	// BaseRef hardcoded to "" (adapter.go:326). The schedule subcommand
+	// MUST populate both before ExecuteWorkflow or CreateWorktree refuses
+	// every node. This test pins that behavior in isolation.
+	input := []dag.Node{
+		{ID: "a", Capability: "code.implement", TargetRepo: "", BaseRef: ""},
+		{ID: "b", Capability: "code.implement", TargetRepo: "", BaseRef: ""},
+		{ID: "c", Kind: dag.NodeKindDeterministic, Command: "go", TargetRepo: "", BaseRef: ""},
+	}
+	out := prepareNodesForDispatch(input, "/abs/path/to/repo", "main")
+	if len(out) != 3 {
+		t.Fatalf("len(out) = %d, want 3", len(out))
+	}
+	for i, n := range out {
+		if n.TargetRepo != "/abs/path/to/repo" {
+			t.Errorf("out[%d].TargetRepo = %q, want %q", i, n.TargetRepo, "/abs/path/to/repo")
+		}
+		if n.BaseRef != "main" {
+			t.Errorf("out[%d].BaseRef = %q, want %q", i, n.BaseRef, "main")
+		}
+	}
+	// The deterministic-kind node still gets the same treatment: it doesn't
+	// need a target repo for its mechanical command, but Node.TargetRepo is
+	// part of the worktree contract and the activity refuses an empty value
+	// regardless of Kind.
+	if out[2].Kind != dag.NodeKindDeterministic {
+		t.Errorf("Kind was mutated for deterministic node")
+	}
+	if out[2].Command != "go" {
+		t.Errorf("Command was mutated: got %q, want %q", out[2].Command, "go")
+	}
+}
+
+func TestPrepareNodesForDispatch_DoesNotMutateInput(t *testing.T) {
+	input := []dag.Node{
+		{ID: "a", TargetRepo: "ORIGINAL", BaseRef: "ORIGINAL"},
+	}
+	out := prepareNodesForDispatch(input, "/new/repo", "newref")
+	if input[0].TargetRepo != "ORIGINAL" {
+		t.Errorf("input was mutated: TargetRepo = %q (want ORIGINAL)", input[0].TargetRepo)
+	}
+	if input[0].BaseRef != "ORIGINAL" {
+		t.Errorf("input was mutated: BaseRef = %q (want ORIGINAL)", input[0].BaseRef)
+	}
+	if out[0].TargetRepo != "/new/repo" || out[0].BaseRef != "newref" {
+		t.Errorf("out[0] not populated: %+v", out[0])
+	}
+}
+
+func TestPrepareNodesForDispatch_EmptyInput(t *testing.T) {
+	out := prepareNodesForDispatch(nil, "/repo", "main")
+	if out == nil {
+		t.Errorf("want non-nil empty slice, got nil")
+	}
+	if len(out) != 0 {
+		t.Errorf("len(out) = %d, want 0", len(out))
 	}
 }
 

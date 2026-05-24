@@ -47,9 +47,11 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.SetOutput(stderr)
 	temporalHost := fs.String("temporal-host", "", "Temporal frontend host:port (default: $TEMPORAL_HOSTPORT or 127.0.0.1:7233)")
 	repoRoot := fs.String("repo-root", "", "Chitin repo root (default: $CHITIN_REPO_ROOT or `git rev-parse --show-toplevel`)")
+	targetRepo := fs.String("target-repo", "", "repo the dispatched work units operate on (default: --repo-root). The spec-077 adapter intentionally leaves Node.TargetRepo empty; the schedule subcommand fills it before ExecuteWorkflow.")
+	baseRef := fs.String("base-ref", "main", "git ref each work unit's worktree is created from (default: main)")
 
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--temporal-host host:port] [--repo-root path]")
+		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--temporal-host host:port] [--repo-root path] [--target-repo path] [--base-ref ref]")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -109,10 +111,22 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}
 	defer c.Close()
 
+	// Populate Node.TargetRepo and Node.BaseRef. The spec-077 adapter
+	// hardcodes these to "" (per adapter.go:326 comment "an input the
+	// scheduler supplies, not the spec") because the same spec compiles
+	// against any target repo; the orchestrator's CreateWorktree activity
+	// then refuses an empty target_repo. The schedule subcommand is the
+	// scheduler-side seam that fills both fields before ExecuteWorkflow.
+	dispatchTargetRepo := *targetRepo
+	if dispatchTargetRepo == "" {
+		dispatchTargetRepo = repo
+	}
+	nodes := prepareNodesForDispatch(cs.DAG.Nodes(), dispatchTargetRepo, *baseRef)
+
 	runID := uuid.NewString()
 	in := workflows.SchedulerInput{
 		RunID: runID,
-		Nodes: cs.DAG.Nodes(),
+		Nodes: nodes,
 		Edges: cs.DAG.Edges(),
 		Tick:  0,
 	}
@@ -181,6 +195,29 @@ func renderValidationErrors(stderr io.Writer, errs []ValidationError) {
 			fmt.Fprintf(stderr, "  - %s: %s\n", e.NodeID, e.Detail)
 		}
 	}
+}
+
+// prepareNodesForDispatch returns a copy of nodes with TargetRepo and
+// BaseRef populated on every node. The spec-077 adapter intentionally
+// leaves both fields empty (adapter.go:326 — "an input the scheduler
+// supplies, not the spec") so the same compiled DAG can dispatch against
+// any target repo; the schedule subcommand is the scheduler-side seam
+// that fills both fields before ExecuteWorkflow. Without this step the
+// orchestrator's CreateWorktree activity refuses every node with
+// "target repo must not be empty," and every real-spec dispatch fails.
+//
+// Pure function: does not mutate the input slice or its elements.
+// targetRepo is the absolute path to the operator's chitin repo; baseRef
+// is the git ref each work unit's worktree is checked out from
+// (default "main" via the --base-ref flag).
+func prepareNodesForDispatch(nodes []dag.Node, targetRepo, baseRef string) []dag.Node {
+	out := make([]dag.Node, len(nodes))
+	for i, n := range nodes {
+		n.TargetRepo = targetRepo
+		n.BaseRef = baseRef
+		out[i] = n
+	}
+	return out
 }
 
 // collectCapabilities returns the sorted, deduplicated capability tags
