@@ -51,7 +51,8 @@
       "options": {
         "proxyConfig": "apps/chitin-console/proxy.conf.json",
         "host": "127.0.0.1",
-        "port": 4200
+        "port": 4200,
+        "allowedHosts": ["chimera-ant.tailf42b9f.ts.net"]
       },
       "configurations": {
         "production": {
