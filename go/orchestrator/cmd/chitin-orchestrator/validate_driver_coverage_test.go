@@ -13,11 +13,12 @@ import (
 )
 
 // TestProductionRegistry_CoversEveryTaxonomyCapability — FR-008 regression.
-// Builds the production registry via buildRegistry() and asserts that
+// Builds the production registry via buildRegistry("impl") and asserts that
 // every Capability in driver.KnownCapabilities() has ≥ 1 declaring
 // driver. Fails on any future taxonomy addition that lacks an implementer.
 func TestProductionRegistry_CoversEveryTaxonomyCapability(t *testing.T) {
-	registry, err := buildRegistry()
+	clearDriverAllowEnv(t)
+	registry, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}
@@ -36,6 +37,7 @@ func TestProductionRegistry_CoversEveryTaxonomyCapability(t *testing.T) {
 // FR-004 happy path against the production registry — after FR-001/002
 // landed, every capability has a declarer so the subcommand exits 0.
 func TestRunValidateDriverCoverage_ExitsZero_WhenFullCoverage(t *testing.T) {
+	clearDriverAllowEnv(t)
 	var out, errBuf bytes.Buffer
 	code := runValidateDriverCoverage(context.Background(), nil, &out, &errBuf)
 	if code != exitSuccess {
@@ -49,6 +51,7 @@ func TestRunValidateDriverCoverage_ExitsZero_WhenFullCoverage(t *testing.T) {
 // TestRunValidateDriverCoverage_JSONOutput exercises FR-005 — machine
 // readable output with the declared CoverageRow shape.
 func TestRunValidateDriverCoverage_JSONOutput(t *testing.T) {
+	clearDriverAllowEnv(t)
 	var out, errBuf bytes.Buffer
 	code := runValidateDriverCoverage(context.Background(), []string{"--json"}, &out, &errBuf)
 	if code != exitSuccess {

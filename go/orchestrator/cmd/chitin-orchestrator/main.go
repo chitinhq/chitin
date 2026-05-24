@@ -112,9 +112,14 @@ func runWorkerHost(ctx context.Context) int {
 	// Build the spec-075 driver registry and register the concrete agent
 	// drivers. Registration is a startup-time act; the registry is
 	// read-only once the worker host is up.
-	registry, err := buildRegistry()
+	implRegistry, err := buildRegistry("impl")
 	if err != nil {
-		log.Printf("chitin-orchestrator: building driver registry: %v", err)
+		log.Printf("chitin-orchestrator: building impl driver registry: %v", err)
+		return exitRuntimeError
+	}
+	reviewRegistry, err := buildRegistry("review")
+	if err != nil {
+		log.Printf("chitin-orchestrator: building review driver registry: %v", err)
 		return exitRuntimeError
 	}
 
@@ -144,7 +149,7 @@ func runWorkerHost(ctx context.Context) int {
 	workflows.Register(w)
 	activities.Register(w)
 	activities.RegisterSchedulerActivities(w, activities.SchedulerActivityDeps{
-		Registry:  registry,
+		Registry:  implRegistry,
 		Worktrees: worktrees,
 		Telemetry: telemetrySink,
 		Notifier:  notifier,
@@ -155,7 +160,7 @@ func runWorkerHost(ctx context.Context) int {
 	// PRReviewWorkflow itself is registered by workflows.Register above.
 	// Gh is left nil so CapturePRSnapshot uses the default real `gh` CLI
 	// shell-out (production path).
-	if err := review.Register(w, review.RegisterDeps{Registry: registry}); err != nil {
+	if err := review.Register(w, review.RegisterDeps{Registry: reviewRegistry}); err != nil {
 		log.Printf("chitin-orchestrator: registering dialectic review activities: %v", err)
 		return exitRuntimeError
 	}
@@ -195,8 +200,8 @@ func runWorkerHost(ctx context.Context) int {
 		log.Printf("chitin-orchestrator: ensuring Temporal Schedules: %v", err)
 	}
 
-	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d drivers, worktrees at %s",
-		TaskQueue, hostPort, registry.Len(), worktreeRoot)
+	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s",
+		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Printf("chitin-orchestrator: worker stopped: %v", err)
 		return exitRuntimeError
@@ -204,23 +209,22 @@ func runWorkerHost(ctx context.Context) int {
 	return exitSuccess
 }
 
-// buildRegistry constructs the spec-075 driver registry that BOTH the
-// worker-host path AND the spec-097 subcommand handlers consume. Drift
-// prevention per spec 097 plan.md R2 — the SelectDriver activity at
-// runtime and the schedule subcommand's pre-validation must consult the
-// same registry shape, so they construct from this one function.
+// buildRegistry constructs the spec-075 driver registry for one driver
+// selection role. Drift prevention per spec 097 plan.md R2 still applies
+// within each role: the SelectDriver implementation path and the schedule
+// subcommand's pre-validation both use role "impl"; dialectic review
+// activities use role "review".
 //
-// Optional filter — `CHITIN_DRIVER_ALLOW` env var, comma-or-space
-// separated driver IDs. When set, only drivers whose ID appears in the
-// allow set are registered; others are skipped. Empty / unset = all
-// drivers register (existing behavior). Useful for cost-control demos
-// where the operator wants to pin dispatch to a specific cheaper
-// driver (e.g. `CHITIN_DRIVER_ALLOW=codex`) without changing the spec
-// or waiting for spec 099 US1's `--driver` flag. Per-spec routing is
-// out of scope for this hook — it gates the whole registry, not a
-// single dispatch.
-func buildRegistry() (*driver.Registry, error) {
-	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+// Optional filters are comma-or-space separated driver IDs. Role-specific
+// env wins first (`CHITIN_DRIVER_ALLOW_IMPL` or `CHITIN_DRIVER_ALLOW_REVIEW`);
+// if that role env is unset, `CHITIN_DRIVER_ALLOW` is the backward-compatible
+// fallback. Empty / unset resolved input = all drivers register.
+func buildRegistry(role string) (*driver.Registry, error) {
+	allowEnv, err := driverAllowEnvForRole(role)
+	if err != nil {
+		return nil, err
+	}
+	allowSet := parseDriverAllowEnv(allowEnv)
 	// CHITIN_CODEX_MODEL overrides the codex driver's default model
 	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
 	// Some operator accounts can't reach that model (e.g. ChatGPT-account
@@ -250,8 +254,24 @@ func buildRegistry() (*driver.Registry, error) {
 	return registry, nil
 }
 
-// parseDriverAllowEnv tokenizes CHITIN_DRIVER_ALLOW. Accepts comma or
-// whitespace separators so the operator can write either
+func driverAllowEnvForRole(role string) (string, error) {
+	var roleEnv string
+	switch role {
+	case "impl":
+		roleEnv = "CHITIN_DRIVER_ALLOW_IMPL"
+	case "review":
+		roleEnv = "CHITIN_DRIVER_ALLOW_REVIEW"
+	default:
+		return "", fmt.Errorf("unknown driver registry role %q (want impl or review)", role)
+	}
+	if v, ok := os.LookupEnv(roleEnv); ok {
+		return v, nil
+	}
+	return os.Getenv("CHITIN_DRIVER_ALLOW"), nil
+}
+
+// parseDriverAllowEnv tokenizes driver allowlist env values. Accepts comma
+// or whitespace separators so the operator can write either
 // `codex,copilot` or `codex copilot`. Empty input returns an empty
 // map (= no filter applied).
 func parseDriverAllowEnv(s string) map[string]bool {
