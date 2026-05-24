@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
@@ -137,6 +138,16 @@ func runWorkerHost(ctx context.Context) int {
 		Telemetry: telemetrySink,
 		Notifier:  notifier,
 	})
+
+	// Register the spec-094 dialectic review activities — SelectReviewers,
+	// CapturePRSnapshot, DispatchMachineReviewer, EmitReviewTelemetry. The
+	// PRReviewWorkflow itself is registered by workflows.Register above.
+	// Gh is left nil so CapturePRSnapshot uses the default real `gh` CLI
+	// shell-out (production path).
+	if err := review.Register(w, review.RegisterDeps{Registry: registry}); err != nil {
+		log.Printf("chitin-orchestrator: registering dialectic review activities: %v", err)
+		return exitRuntimeError
+	}
 
 	// Register the spec-078 self-improvement loop — the ImprovementLoopWorkflow
 	// and its IngestTelemetry / ProjectProposalQueue activities. Every loop.Deps
