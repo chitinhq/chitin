@@ -49,9 +49,11 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	repoRoot := fs.String("repo-root", "", "Chitin repo root (default: $CHITIN_REPO_ROOT or `git rev-parse --show-toplevel`)")
 	targetRepo := fs.String("target-repo", "", "repo the dispatched work units operate on (default: --repo-root). The spec-077 adapter intentionally leaves Node.TargetRepo empty; the schedule subcommand fills it before ExecuteWorkflow.")
 	baseRef := fs.String("base-ref", "main", "git ref each work unit's worktree is created from (default: main)")
+	driver := fs.String("driver", "", "explicit driver routing (spec 099). Empty = local SchedulerWorkflow path. \"copilot\" = create GitHub issue + assign @copilot (requires --repo).")
+	gitHubRepo := fs.String("repo", "", "GitHub repo slug owner/name (required for --driver copilot)")
 
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--temporal-host host:port] [--repo-root path] [--target-repo path] [--base-ref ref]")
+		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--temporal-host host:port] [--repo-root path] [--target-repo path] [--base-ref ref] [--driver copilot --repo owner/name]")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -64,6 +66,21 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return exitUserError
 	}
 	specRefArg := fs.Arg(0)
+
+	// Spec 099 — validate --driver value upfront. Empty = local path
+	// (spec 097); "copilot" = GitHub issue dispatch (spec 099). Any other
+	// value is rejected before spec resolution to fail fast.
+	switch *driver {
+	case "", "copilot":
+		// ok
+	default:
+		fmt.Fprintf(stderr, "error: unknown driver: %q (supported: copilot, or omit for local SchedulerWorkflow)\n", *driver)
+		return exitUserError
+	}
+	if *driver == "copilot" && *gitHubRepo == "" {
+		fmt.Fprintln(stderr, "error: --driver copilot requires --repo <owner/name> (target GitHub repo for the issue)")
+		return exitUserError
+	}
 
 	repo, err := resolveRepoRoot(*repoRoot)
 	if err != nil {
@@ -102,6 +119,18 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	if len(verrs) > 0 {
 		renderValidationErrors(stderr, verrs)
 		return exitUserError
+	}
+
+	// Spec 099 — Copilot branch. Spec resolution + DAG validation have
+	// already run (R7 in research.md: catch operator typos before
+	// consuming Copilot's slot). Skip Temporal dispatch and hand off to
+	// the GitHub issue dispatcher. Slice 1 is the routing skeleton only;
+	// slice 2 wires `gh issue create` + chain emit per contracts/cli-driver-flag.md.
+	if *driver == "copilot" {
+		return runCopilotDispatch(ctx, copilotDispatchInput{
+			SpecRef: resolution.SpecRef,
+			Repo:    *gitHubRepo,
+		}, stdout, stderr)
 	}
 
 	c, host, err := dialTemporal(ctx, *temporalHost)
