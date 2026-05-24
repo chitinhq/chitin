@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -165,19 +167,33 @@ func (a *CapturePRSnapshot) Execute(ctx context.Context, in PRReviewInput) (PRSn
 	}
 
 	// Step 3 — spec-kit artifact content at PR head, best-effort.
+	//
+	// The path is URL-encoded per-segment so paths containing reserved
+	// characters (?, #, %, &, space, {, } …) round-trip correctly through
+	// the gh api call. url.PathEscape on the whole path would over-encode
+	// the segment separators '/'; we split, escape each segment, then
+	// rejoin. Per-artifact failures are logged through the stdlib log
+	// package (the same stream the orchestrator service writes to) so
+	// operators have a debug trail without halting the dialectic.
+	// stdlib log is preferred over activity.GetLogger here because the
+	// latter panics outside a real activity context — making the
+	// activity unusable in unit tests that drive Execute directly with
+	// a plain context.Background().
 	var artifacts []SpecArtifact
 	for _, f := range view.Files {
 		if !specArtifactPathRe.MatchString(f.Path) {
 			continue
 		}
+		encodedPath := encodeURLPath(f.Path)
 		raw, err := a.gh.Run(ctx, "api",
 			"-H", "Accept: application/vnd.github.raw",
-			fmt.Sprintf("repos/%s/contents/%s?ref=%s", in.Repo, f.Path, view.HeadRefOid))
+			fmt.Sprintf("repos/%s/contents/%s?ref=%s", in.Repo, encodedPath, view.HeadRefOid))
 		if err != nil {
 			// Best-effort — a transient API failure on one artifact must
-			// not halt the dialectic. The activity logs through the
-			// runner's stderr already; we surface the gap by leaving
-			// the artifact out of the snapshot.
+			// not halt the dialectic, but it MUST be visible so the
+			// operator can debug "why is the reviewer's view incomplete".
+			log.Printf("CapturePRSnapshot: skipping spec artifact path=%q head_oid=%q err=%v",
+				f.Path, view.HeadRefOid, err)
 			continue
 		}
 		artifacts = append(artifacts, SpecArtifact{
@@ -198,6 +214,23 @@ func (a *CapturePRSnapshot) Execute(ctx context.Context, in PRReviewInput) (PRSn
 		SpecArtifacts: artifacts,
 		CapturedAt:    time.Now().UTC(),
 	}, nil
+}
+
+// encodeURLPath URL-encodes a file path per-segment for use in a GitHub
+// contents-API URL. Splitting on '/' before escaping preserves segment
+// boundaries (url.PathEscape on the whole path would encode '/' itself
+// to '%2F', which GitHub's API does not accept as a path separator).
+//
+// Examples:
+//   .specify/specs/100-x/spec.md           → .specify/specs/100-x/spec.md
+//   .specify/specs/100-x/contracts/{a}.md  → .specify/specs/100-x/contracts/%7Ba%7D.md
+//   path/with space/file.md                → path/with%20space/file.md
+func encodeURLPath(p string) string {
+	segments := strings.Split(p, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.Join(segments, "/")
 }
 
 // diffHeaderRe matches the per-file boundary line in a unified diff

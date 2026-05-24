@@ -271,6 +271,78 @@ func TestSplitUnifiedDiff(t *testing.T) {
 	})
 }
 
+// TestEncodeURLPath covers the per-segment URL encoding used to build
+// the gh contents-API URL. The key invariant is: '/' separators are
+// preserved (not encoded); reserved characters within a segment are
+// percent-encoded. Without this, a spec file with '{' '}' '?' or ' '
+// in its path would fail to fetch — silently, because the fetch
+// returns 404 and the best-effort skip path swallows it.
+func TestEncodeURLPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{".specify/specs/100-x/spec.md", ".specify/specs/100-x/spec.md"},
+		{"path/with space/file.md", "path/with%20space/file.md"},
+		{"a/b{c}.md", "a/b%7Bc%7D.md"},
+		{"a/b?c.md", "a/b%3Fc.md"},
+		{"a/b#c.md", "a/b%23c.md"},
+		{"single-segment.md", "single-segment.md"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := encodeURLPath(c.in); got != c.want {
+				t.Errorf("encodeURLPath(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestCapturePRSnapshot_PathWithSpecialChars exercises the end-to-end
+// path-encoding integration: a spec file whose path contains a reserved
+// character flows through the fake gh runner with a percent-encoded URL.
+// Failure mode this test guards against: the activity asks gh for
+// '.../contents/100-x/{thing}.md?ref=h' (literal braces) — most HTTP
+// intermediaries strip them, gh returns 400 or 404, and the best-effort
+// skip path swallows it silently. With per-segment escape the URL
+// becomes '.../contents/100-x/%7Bthing%7D.md?ref=h' and the fetch
+// succeeds.
+func TestCapturePRSnapshot_PathWithSpecialChars(t *testing.T) {
+	viewJSON := `{
+		"title": "t",
+		"headRefOid": "abc",
+		"baseRefName": "main",
+		"author": {"login": "u"},
+		"files": [{"path": ".specify/specs/100-x/contracts/{thing}.md", "additions": 1, "deletions": 0}]
+	}`
+	diff := "diff --git a/.specify/specs/100-x/contracts/{thing}.md b/.specify/specs/100-x/contracts/{thing}.md\n@@\n+x\n"
+	content := "raw spec contract content"
+	// Match on the percent-encoded form — if the activity sends the
+	// raw '{' '}' the substring match fails, the runner errors, and
+	// the artifact is silently skipped (PathWithSpecialChars fails).
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: diff},
+		{matchSubstr: "contracts/%7Bthing%7D.md", stdout: content},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(snap.SpecArtifacts) != 1 {
+		t.Fatalf("SpecArtifacts len = %d, want 1; the path was likely passed unencoded", len(snap.SpecArtifacts))
+	}
+	if snap.SpecArtifacts[0].Path != ".specify/specs/100-x/contracts/{thing}.md" {
+		t.Errorf("SpecArtifacts[0].Path = %q, want unescaped %q",
+			snap.SpecArtifacts[0].Path, ".specify/specs/100-x/contracts/{thing}.md")
+	}
+	if snap.SpecArtifacts[0].Content != content {
+		t.Errorf("SpecArtifacts[0].Content = %q, want %q", snap.SpecArtifacts[0].Content, content)
+	}
+}
+
 // TestCapturePRSnapshot_RequiresRepoAndPR ensures the activity rejects
 // the obvious caller bug of an empty Repo or zero PRNumber before
 // spending a gh call. Cheap defensive validation per spec 097 plan's
