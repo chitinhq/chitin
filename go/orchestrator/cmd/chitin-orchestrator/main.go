@@ -67,6 +67,8 @@ func runMain(args []string) int {
 			return cmdStatus(args[2:])
 		case "cancel":
 			return cmdCancel(args[2:])
+		case "pr-review":
+			return cmdPRReview(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -227,6 +229,7 @@ USAGE
   chitin-orchestrator schedule <spec-ref> [opts]   # compile a spec and start a SchedulerWorkflow run
   chitin-orchestrator status [-run-id <id>] [--text]    # list active runs OR inspect one
   chitin-orchestrator cancel -run-id <id> [-reason <text>]  # cancel a running scheduler
+  chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
