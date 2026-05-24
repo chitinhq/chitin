@@ -110,6 +110,34 @@ func (r *Registry) Drivers() []AgentDriver {
 	return out
 }
 
+// LookupByGitIdentity finds the driver, if any, whose CapabilityCard
+// declares the given GitIdentity (spec 094 R-AUTHORID, FR-005). It is the
+// bridge between a PR-author identifier (e.g., a GitHub login) and the
+// driver that authored the work — the no-self-review exclusion's lookup
+// substrate.
+//
+// Returns (driver, true) on a unique match; (nil, false) if no driver has
+// that git identity or if the identity is empty. A driver with an empty
+// GitIdentity field is never matched (the empty string is not a valid
+// identity even if multiple drivers leave it unset).
+//
+// Lookup is O(n) over the registry; the registry is small (single-digit
+// drivers at v1) so this is fine without an index. If multiple drivers
+// somehow share a git identity — a registration-time error that this
+// function does not validate — the first one in driver-id-ordered traversal
+// wins, so the behaviour stays deterministic.
+func (r *Registry) LookupByGitIdentity(gitIdentity string) (AgentDriver, bool) {
+	if gitIdentity == "" {
+		return nil, false
+	}
+	for _, d := range r.Drivers() { // id-ordered for deterministic tie-break
+		if d.Card().GitIdentity == gitIdentity {
+			return d, true
+		}
+	}
+	return nil, false
+}
+
 // DriversFor returns exactly the registered, ready drivers whose capability
 // card declares capability cap (FR-004). A driver is included only if both:
 //

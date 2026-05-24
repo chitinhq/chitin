@@ -56,6 +56,7 @@ func (d *Driver) Card() driver.CapabilityCard {
 		Model:        "openclaw-default",
 		Capabilities: []driver.Capability{
 			driver.CapCodeImplement,
+			driver.CapCodeReview,
 			driver.CapCodeRefactor,
 			driver.CapTestAuthor,
 		},
