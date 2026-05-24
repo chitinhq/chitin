@@ -200,6 +200,15 @@ type WorkUnit struct {
 	// complete; on overrun the driver returns a StatusTimeout Result. A
 	// zero Deadline means no driver-enforced deadline.
 	Deadline time.Time `json:"deadline"`
+	// Tool is the review-mode discriminator (spec 094 FR-002, spec 109).
+	// When the orchestrator dispatches a reviewer via DispatchMachineReviewer,
+	// it sets Tool to the value the driver declares in
+	// CapabilityCard.ReviewMode.ToolName (by convention "review"). A driver
+	// that sees a non-empty Tool matching its own review_mode.tool_name
+	// MUST route the invocation through its review-mode path and emit a
+	// StructuredVerdict JSON document. Empty Tool means the canonical
+	// implementation path.
+	Tool string `json:"tool,omitempty"`
 }
 
 // Status is the typed outcome of a driver invocation (FR-006). It always

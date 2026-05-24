@@ -3,12 +3,14 @@ package claudecode
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 )
 
@@ -84,9 +86,18 @@ func (d *Driver) Ready(ctx context.Context) (bool, string) {
 }
 
 // Invoke shells out to Claude Code in the work unit's dedicated worktree.
+// Review-mode invocations (wu.Tool == reviewToolName, spec 094 FR-002 /
+// spec 109) route through the StructuredVerdict path: the driver post-
+// processes the model's stdout into JSON, validates against the closed
+// schema, and returns a typed Result so the dispatch activity never sees
+// malformed prose escaping the driver boundary.
 func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result, error) {
 	ctx, cancel := invocationContext(ctx, wu.Deadline)
 	defer cancel()
+
+	if wu.Tool == reviewToolName {
+		return d.invokeReview(ctx, wu), nil
+	}
 
 	prompt := promptFor(wu)
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
@@ -105,6 +116,91 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return resultFromCommand(ctx, wu, d.ID(), strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err), nil
+}
+
+// invokeReview runs the review-mode dispatch path. It builds the
+// StructuredVerdict-shaped prompt, executes claude, then post-processes
+// stdout into a validated StructuredVerdict. On any extract / parse /
+// validate failure it returns StatusFailed with a "malformed_verdict:"
+// explanation so the dispatch activity can classify the outcome as
+// FailureMalformedShape without re-interpreting the wrapper error
+// (spec 094 FR-014; spec 109 FR-004, FR-005). The raw model output is
+// captured in OutputRef in every case so operators can post-mortem
+// without a separate audit fetch.
+func (d *Driver) invokeReview(ctx context.Context, wu driver.WorkUnit) driver.Result {
+	prompt := reviewPromptFor(wu)
+	cmd := exec.CommandContext(ctx, d.command, "--dangerously-skip-permissions", "-p", prompt)
+	if wu.WorktreePath != "" {
+		cmd.Dir = wu.WorktreePath
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	raw := strings.TrimSpace(stdout.String())
+	stderrStr := strings.TrimSpace(stderr.String())
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: d.ID(), OutputRef: raw}
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res.Status = driver.StatusTimeout
+		res.Explanation = fmt.Sprintf("driver %q review-mode timed out on work unit %q", d.ID(), wu.ID)
+		if stderrStr != "" {
+			res.Explanation += ": " + stderrStr
+		}
+		return res
+	}
+	if runErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("driver %q review-mode failed on work unit %q: %v", d.ID(), wu.ID, runErr)
+		if stderrStr != "" {
+			res.Explanation += ": " + stderrStr
+		}
+		return res
+	}
+
+	extracted, err := extractVerdictJSON(raw)
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateRaw(raw))
+		return res
+	}
+
+	var v verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(extracted), &v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateRaw(raw))
+		return res
+	}
+	if err := verdict.Validate(v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateRaw(raw))
+		return res
+	}
+
+	// Canonical re-serialization (FR-005): emit the verdict the activity
+	// will parse, not the model's free-form whitespace.
+	canonical, err := json.Marshal(v)
+	if err != nil {
+		// Marshal of a Validate-passed value can't realistically fail, but
+		// guard so the contract holds even under unusual encoder errors.
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateRaw(raw))
+		return res
+	}
+	res.Status = driver.StatusSucceeded
+	res.Explanation = string(canonical)
+	return res
+}
+
+// truncateRaw caps the raw model output snippet at 1 KiB (spec 109 US2 /
+// FR-004), so a runaway model can't blow up the activity result record.
+func truncateRaw(s string) string {
+	const limit = 1024
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit]
 }
 
 func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
