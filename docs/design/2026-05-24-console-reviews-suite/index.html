@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Driver Review Dispatch — 5 Variant Comparison</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+  .compare-shell { max-width: 1400px; margin: 0 auto; padding: 32px; }
+  .compare-head { margin-bottom: 28px; display: flex; justify-content: space-between; align-items: baseline; }
+  .compare-head h1 { font-size: 26px; margin: 0; }
+  .compare-head .meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+  .variant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; margin-bottom: 32px; }
+  @media (max-width: 1100px) { .variant-grid { grid-template-columns: 1fr; } }
+
+  .variant-card {
+    background: var(--plate); border: 1px solid var(--line-soft);
+    border-radius: 12px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .variant-card-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line-soft);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .variant-letter {
+    font-family: var(--font-mono); font-size: 13px; font-weight: 700;
+    color: var(--chitin); letter-spacing: 0.08em;
+  }
+  .variant-name { font-size: 14px; font-weight: 600; color: var(--bone); }
+  .variant-frame {
+    width: 100%; aspect-ratio: 16 / 10; border: none;
+    background: var(--bg);
+    transform: scale(0.62); transform-origin: top left;
+    width: 161%; height: 161%;
+    pointer-events: none;
+  }
+  .variant-frame-shell {
+    position: relative; overflow: hidden; height: 380px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .variant-card-foot {
+    padding: 14px 20px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--font-mono); font-size: 12px;
+  }
+  .variant-card-foot .desc { color: var(--muted); }
+  .open-btn {
+    padding: 6px 14px; border-radius: 6px;
+    background: var(--chitin); color: var(--bg);
+    text-decoration: none; font-weight: 700;
+    font-family: var(--font-mono); font-size: 11px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .open-btn:hover { background: var(--glow); }
+
+  .legend {
+    background: var(--plate); border: 1px solid var(--line-soft);
+    border-radius: 10px; padding: 20px 24px; margin-bottom: 24px;
+  }
+  .legend h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--chitin); text-transform: uppercase; letter-spacing: 0.06em; }
+  .legend p { margin: 4px 0; color: var(--muted); font-size: 13px; }
+  .legend code { font-family: var(--font-mono); color: var(--glow); background: var(--plate-2); padding: 1px 6px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <a href="#" class="brand">
+      <svg class="brand-logo" viewBox="0 0 32 32" width="22" height="22"><polygon points="8,4 24,4 30,16 24,28 8,28 2,16" fill="none" stroke="currentColor" stroke-width="1.6"/><polygon points="12,11 20,11 23,16 20,21 12,21 9,16" fill="currentColor" opacity="0.18"/><circle cx="16" cy="16" r="2.4" fill="currentColor"/></svg>
+      <span class="brand-name mono">chitin</span>
+    </a>
+    <span class="mono small text-muted">design-shotgun · driver review dispatch · 5 variants</span>
+    <div class="topbar-right"><div class="api-status"><span class="dot"></span></div></div>
+  </header>
+
+  <main class="compare-shell">
+    <div class="compare-head">
+      <div>
+        <h1>Driver Review Dispatch · 5 Variant Comparison</h1>
+        <p class="subtitle mono">spec 104 · feat/104-impl-driver-review-dispatch · click any tile to open full-bleed</p>
+      </div>
+      <span class="meta">2026-05-24</span>
+    </div>
+
+    <div class="legend">
+      <h3>Same content, five layouts</h3>
+      <p>Every variant uses the chitin palette (<code>#0A0E15</code> bg · <code>#D4A574</code> orange · Space Grotesk + Space Mono).</p>
+      <p>Every variant shows the <strong>same mock data</strong>: 7 in-flight PRs (#948 awaiting arbiter, #919 failed primary, etc.), same KPIs, same recent decisions — so differences are <em>presentation</em>, not <em>content</em>.</p>
+      <p>The thumbnail tiles below are scaled-down iframes; <strong>click the open button</strong> on any tile to see the variant full-bleed in a new tab.</p>
+    </div>
+
+    <div class="variant-grid">
+      <article class="variant-card">
+        <div class="variant-card-head">
+          <span class="variant-letter">VARIANT A</span>
+          <span class="variant-name">Pipeline DAG · swim lanes</span>
+        </div>
+        <div class="variant-frame-shell">
+          <iframe src="variant-A.html" class="variant-frame"></iframe>
+        </div>
+        <div class="variant-card-foot">
+          <span class="desc">left→right stages · stalled rows go amber</span>
+          <a href="variant-A.html" class="open-btn" target="_blank">open ↗</a>
+        </div>
+      </article>
+
+      <article class="variant-card">
+        <div class="variant-card-head">
+          <span class="variant-letter">VARIANT B</span>
+          <span class="variant-name">Dialectic Theater · centered PR</span>
+        </div>
+        <div class="variant-frame-shell">
+          <iframe src="variant-B.html" class="variant-frame"></iframe>
+        </div>
+        <div class="variant-card-foot">
+          <span class="desc">3 reviewer witnesses + arbiter slot</span>
+          <a href="variant-B.html" class="open-btn" target="_blank">open ↗</a>
+        </div>
+      </article>
+
+      <article class="variant-card">
+        <div class="variant-card-head">
+          <span class="variant-letter">VARIANT C</span>
+          <span class="variant-name">Operations Terminal · Bloomberg-density</span>
+        </div>
+        <div class="variant-frame-shell">
+          <iframe src="variant-C.html" class="variant-frame"></iframe>
+        </div>
+        <div class="variant-card-foot">
+          <span class="desc">live tape · 8 KPIs · 4 driver tiles</span>
+          <a href="variant-C.html" class="open-btn" target="_blank">open ↗</a>
+        </div>
+      </article>
+
+      <article class="variant-card">
+        <div class="variant-card-head">
+          <span class="variant-letter">VARIANT D</span>
+          <span class="variant-name">Health Funnel · diagnostic-first</span>
+        </div>
+        <div class="variant-frame-shell">
+          <iframe src="variant-D.html" class="variant-frame"></iframe>
+        </div>
+        <div class="variant-card-foot">
+          <span class="desc">5-stage funnel + "broken right now"</span>
+          <a href="variant-D.html" class="open-btn" target="_blank">open ↗</a>
+        </div>
+      </article>
+
+      <article class="variant-card">
+        <div class="variant-card-head">
+          <span class="variant-letter">VARIANT E</span>
+          <span class="variant-name">Activity Stream · feed-style</span>
+        </div>
+        <div class="variant-frame-shell">
+          <iframe src="variant-E.html" class="variant-frame"></iframe>
+        </div>
+        <div class="variant-card-foot">
+          <span class="desc">single column · progressive cards · mobile-first</span>
+          <a href="variant-E.html" class="open-btn" target="_blank">open ↗</a>
+        </div>
+      </article>
+
+      <article class="variant-card" style="background: transparent; border-style: dashed;">
+        <div class="variant-card-head">
+          <span class="variant-letter text-muted">CHOOSING</span>
+          <span class="variant-name text-muted">how to pick</span>
+        </div>
+        <div style="padding: 20px 24px; color: var(--muted); font-size: 13px; line-height: 1.6;">
+          <p style="margin-top:0"><strong style="color: var(--chitin)">A · Pipeline</strong> — pick if "where is it stuck?" is the question you keep asking.</p>
+          <p><strong style="color: var(--chitin)">B · Dialectic</strong> — pick if you read each PR's reasoning, not metrics.</p>
+          <p><strong style="color: var(--chitin)">C · Terminal</strong> — pick if you want the firehose, will synthesize yourself.</p>
+          <p><strong style="color: var(--chitin)">D · Funnel</strong> — pick if "is the system healthy?" is the question.</p>
+          <p style="margin-bottom:0"><strong style="color: var(--chitin)">E · Stream</strong> — pick if you check passively, value calm.</p>
+        </div>
+      </article>
+    </div>
+  </main>
+</div>
+</body>
+</html>
