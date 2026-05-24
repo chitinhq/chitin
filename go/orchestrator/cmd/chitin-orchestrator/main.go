@@ -200,10 +200,19 @@ func runWorkerHost(ctx context.Context) int {
 // single dispatch.
 func buildRegistry() (*driver.Registry, error) {
 	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+	// CHITIN_CODEX_MODEL overrides the codex driver's default model
+	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
+	// Some operator accounts can't reach that model (e.g. ChatGPT-account
+	// codex CLI rejects gpt-5.x-codex but accepts gpt-5.5). Empty / unset
+	// preserves the driver default.
+	codexOpts := []codex.Option{}
+	if m := os.Getenv("CHITIN_CODEX_MODEL"); m != "" {
+		codexOpts = append(codexOpts, codex.WithModel(m))
+	}
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
-		codex.New(),
+		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),
 		hermes.New(),

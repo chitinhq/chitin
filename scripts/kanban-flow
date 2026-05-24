@@ -403,13 +403,12 @@ add_comment() {
   local id="$1" comment_author="$2" comment_body="$3"
   local now
   now="$(date +%s)"
-  write_sql \
-    "INSERT INTO task_comments (task_id, author, body, created_at)
-     VALUES (:id, :author, :body, :now);" \
-    -cmd ".parameter set :id '$id'" \
-    -cmd ".parameter set :author '$comment_author'" \
-    -cmd ".parameter set :body '$comment_body'" \
-    -cmd ".parameter set :now $now"
+  # Use sql_quote for all values — .parameter set with single-quoted
+  # values breaks on embedded quotes/backticks in comment_body (the
+  # bug that made `kanban-flow done` crash with NOT NULL constraint
+  # on task_comments.body).
+  write_sql "INSERT INTO task_comments (task_id, author, body, created_at)
+     VALUES ($(sql_quote "$id"), $(sql_quote "$comment_author"), $(sql_quote "$comment_body"), $now)"
 }
 
 set_assignee() {
@@ -606,21 +605,15 @@ assert_status() {
 
 emit_transition() {
   # Args: id from to author [extra_json]
-  # Uses parameterized SQL via sqlite3's -cmd .parameter to avoid
-  # quoting issues with the JSON extra payload.
+  # Use sql_quote for all values to avoid the same .parameter set
+  # quoting bug that broke add_comment (single-quoted values break on
+  # embedded quotes/backticks/special chars).
   local id="$1" from="$2" to="$3" author="$4" payload_extra="${5:-{\}}"
   local now; now="$(date +%s)"
-  write_sql \
-    "INSERT INTO task_events (task_id, kind, payload, created_at)
-     VALUES (:id, 'status_transition',
-             json_object('from', :from, 'to', :to, 'by', :by, 'extra', json(:extra)),
-             :now);" \
-    -cmd ".parameter set :id '$id'" \
-    -cmd ".parameter set :from '$from'" \
-    -cmd ".parameter set :to '$to'" \
-    -cmd ".parameter set :by '$author'" \
-    -cmd ".parameter set :extra '$payload_extra'" \
-    -cmd ".parameter set :now $now"
+  write_sql "INSERT INTO task_events (task_id, kind, payload, created_at)
+     VALUES ($(sql_quote "$id"), 'status_transition',
+             json_object('from', $(sql_quote "$from"), 'to', $(sql_quote "$to"), 'by', $(sql_quote "$author"), 'extra', json($(sql_quote "$payload_extra"))),
+             $now)"
 }
 
 flip_status() {
@@ -747,13 +740,8 @@ case "$cmd" in
     # event for downstream tooling.
     update_active_run_event_chain_hash "$id"
     pr_now="$(date +%s)"
-    write_sql \
-      "INSERT INTO task_events (task_id, kind, payload, created_at)
-       VALUES (:id, 'pr_opened', json_object('pr_url', :url, 'by', :by), :now);" \
-      -cmd ".parameter set :id '$id'" \
-      -cmd ".parameter set :by '$author'" \
-      -cmd ".parameter set :url '$url'" \
-      -cmd ".parameter set :now $pr_now"
+    write_sql "INSERT INTO task_events (task_id, kind, payload, created_at)
+       VALUES ($(sql_quote "$id"), 'pr_opened', json_object('pr_url', $(sql_quote "$url"), 'by', $(sql_quote "$author")), $pr_now)"
     echo "$id: in_progress (PR opened: $url)"
     ;;
   block)
