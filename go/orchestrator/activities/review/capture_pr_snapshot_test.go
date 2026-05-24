@@ -1,0 +1,289 @@
+package review
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+// fakeGhRunner is the test injection for the CapturePRSnapshot activity.
+// Each test composes a response map keyed by the first arg of the gh
+// call (e.g., "pr view 953 ...") and the runner returns the matched
+// stdout or a synthetic error. The matcher uses a substring on the
+// full args slice joined by spaces so callers can be precise without
+// reconstructing exact argv ordering.
+type fakeGhRunner struct {
+	// responses maps a substring of the joined args to the stdout to
+	// return. The first matching key (in iteration order) wins; tests
+	// that need ordered matches register a single key per call.
+	responses []fakeGhResponse
+}
+
+type fakeGhResponse struct {
+	matchSubstr string
+	stdout      string
+	err         error
+}
+
+func (f *fakeGhRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	joined := strings.Join(args, " ")
+	for _, r := range f.responses {
+		if strings.Contains(joined, r.matchSubstr) {
+			if r.err != nil {
+				return nil, r.err
+			}
+			return []byte(r.stdout), nil
+		}
+	}
+	return nil, fmt.Errorf("fakeGhRunner: no response registered for %q", joined)
+}
+
+// TestCapturePRSnapshot_HappyPath covers the dominant case from spec 094
+// R-SNAP: a PR that touches one impl file and one spec-kit artifact. The
+// snapshot must include both in Files[] (with diff text split correctly)
+// and the spec-kit one ALSO in SpecArtifacts[] (with content fetched
+// from the gh contents API).
+func TestCapturePRSnapshot_HappyPath(t *testing.T) {
+	viewJSON := `{
+		"title": "feat: thing",
+		"body": "Closes #1",
+		"headRefOid": "abc123",
+		"baseRefName": "main",
+		"author": {"login": "claudia-bot"},
+		"files": [
+			{"path": "go/orchestrator/foo.go", "additions": 10, "deletions": 2},
+			{"path": ".specify/specs/100-thing/spec.md", "additions": 50, "deletions": 0}
+		]
+	}`
+	diff := "diff --git a/go/orchestrator/foo.go b/go/orchestrator/foo.go\n" +
+		"index 1..2 100644\n" +
+		"--- a/go/orchestrator/foo.go\n" +
+		"+++ b/go/orchestrator/foo.go\n" +
+		"@@ -1,2 +1,10 @@\n" +
+		"+new line\n" +
+		"diff --git a/.specify/specs/100-thing/spec.md b/.specify/specs/100-thing/spec.md\n" +
+		"new file mode 100644\n" +
+		"--- /dev/null\n" +
+		"+++ b/.specify/specs/100-thing/spec.md\n" +
+		"@@ -0,0 +1,50 @@\n" +
+		"+# Feature Specification: thing\n"
+	specContent := "# Feature Specification: thing\n\n... the post-PR file content ...\n"
+
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: diff},
+		{matchSubstr: "contents/.specify/specs/100-thing/spec.md", stdout: specContent},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap, err := a.Execute(context.Background(), PRReviewInput{
+		Repo: "chitinhq/chitin", PRNumber: 953, PRAuthor: "jpleva91",
+		PolicyClass: "impl", ArbiterType: ArbiterMachine,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if snap.HeadOID != "abc123" {
+		t.Errorf("HeadOID = %q, want abc123", snap.HeadOID)
+	}
+	if snap.Title != "feat: thing" || snap.Author != "claudia-bot" || snap.BaseRef != "main" {
+		t.Errorf("metadata mismatch: %+v", snap)
+	}
+	if len(snap.Files) != 2 {
+		t.Fatalf("Files len = %d, want 2", len(snap.Files))
+	}
+	if snap.Files[0].Path != "go/orchestrator/foo.go" || snap.Files[0].Additions != 10 || snap.Files[0].Deletions != 2 {
+		t.Errorf("Files[0] mismatch: %+v", snap.Files[0])
+	}
+	if !strings.Contains(snap.Files[0].Diff, "+new line") {
+		t.Errorf("Files[0].Diff missing impl-file hunk: %q", snap.Files[0].Diff)
+	}
+	if !strings.Contains(snap.Files[1].Diff, "+# Feature Specification: thing") {
+		t.Errorf("Files[1].Diff missing spec hunk: %q", snap.Files[1].Diff)
+	}
+	if len(snap.SpecArtifacts) != 1 {
+		t.Fatalf("SpecArtifacts len = %d, want 1", len(snap.SpecArtifacts))
+	}
+	if snap.SpecArtifacts[0].Path != ".specify/specs/100-thing/spec.md" {
+		t.Errorf("SpecArtifacts[0].Path = %q", snap.SpecArtifacts[0].Path)
+	}
+	if !strings.Contains(snap.SpecArtifacts[0].Content, "post-PR file content") {
+		t.Errorf("SpecArtifacts[0].Content not fetched: %q", snap.SpecArtifacts[0].Content)
+	}
+	if snap.CapturedAt.IsZero() {
+		t.Error("CapturedAt is zero — should be set to time.Now().UTC()")
+	}
+}
+
+// TestCapturePRSnapshot_NoSpecArtifacts confirms a PR that touches only
+// implementation files yields an empty SpecArtifacts slice — and no
+// gh-api call is attempted (registered fake would error if it were).
+func TestCapturePRSnapshot_NoSpecArtifacts(t *testing.T) {
+	viewJSON := `{
+		"title": "fix: bug",
+		"body": "",
+		"headRefOid": "def456",
+		"baseRefName": "main",
+		"author": {"login": "j-pleva"},
+		"files": [{"path": "go/foo.go", "additions": 3, "deletions": 1}]
+	}`
+	diff := "diff --git a/go/foo.go b/go/foo.go\n@@ -1 +1,3 @@\n+x\n+y\n+z\n"
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: diff},
+		// no contents/ response — if the activity attempts one, the
+		// runner returns "no response registered" which would fail.
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap, err := a.Execute(context.Background(), PRReviewInput{
+		Repo: "chitinhq/chitin", PRNumber: 1,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(snap.SpecArtifacts) != 0 {
+		t.Errorf("SpecArtifacts = %+v, want empty for non-spec PR", snap.SpecArtifacts)
+	}
+}
+
+// TestCapturePRSnapshot_PRViewFail confirms gh pr view failure surfaces
+// as an activity error — the workflow halts the gate per FR-026.
+func TestCapturePRSnapshot_PRViewFail(t *testing.T) {
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", err: errors.New("gh: pr not found")},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	_, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err == nil {
+		t.Fatal("Execute returned nil error; expected wrapped gh failure")
+	}
+	if !strings.Contains(err.Error(), "gh pr view") {
+		t.Errorf("error %q does not name failing step", err.Error())
+	}
+}
+
+// TestCapturePRSnapshot_SpecArtifactFetchFail confirms a per-artifact
+// fetch failure is silently skipped (best-effort) and the snapshot still
+// returns — but with the failed artifact absent from SpecArtifacts.
+// Files[] still includes the artifact's path so reviewer drivers can
+// at least see WHICH spec the PR touched.
+func TestCapturePRSnapshot_SpecArtifactFetchFail(t *testing.T) {
+	viewJSON := `{
+		"title": "t",
+		"headRefOid": "abc",
+		"baseRefName": "main",
+		"author": {"login": "u"},
+		"files": [{"path": ".specify/specs/100-x/spec.md", "additions": 1, "deletions": 0}]
+	}`
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: "diff --git a/.specify/specs/100-x/spec.md b/.specify/specs/100-x/spec.md\n@@\n+x\n"},
+		{matchSubstr: "contents/.specify/specs/100-x/spec.md", err: errors.New("gh: 404")},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err != nil {
+		t.Fatalf("Execute returned error %v; want nil (artifact fetch is best-effort)", err)
+	}
+	if len(snap.Files) != 1 {
+		t.Errorf("Files len = %d, want 1", len(snap.Files))
+	}
+	if len(snap.SpecArtifacts) != 0 {
+		t.Errorf("SpecArtifacts len = %d, want 0 (fetch failed)", len(snap.SpecArtifacts))
+	}
+}
+
+// TestSnapshot_HashRefStability cross-checks that two snapshots
+// captured from the same gh fixture produce the same SnapshotHashRef
+// (the FR-032 audit anchor). Ordering of Files / SpecArtifacts must be
+// canonicalized inside SnapshotHashRef so this test passes even if the
+// underlying activity returned them in a different order.
+func TestSnapshot_HashRefStability(t *testing.T) {
+	viewJSON := `{
+		"title": "t",
+		"headRefOid": "h",
+		"baseRefName": "main",
+		"author": {"login": "u"},
+		"files": [
+			{"path": "b.go", "additions": 1, "deletions": 0},
+			{"path": "a.go", "additions": 1, "deletions": 0}
+		]
+	}`
+	diff := "diff --git a/b.go b/b.go\n@@\n+x\n" +
+		"diff --git a/a.go b/a.go\n@@\n+y\n"
+	runner := &fakeGhRunner{responses: []fakeGhResponse{
+		{matchSubstr: "pr view", stdout: viewJSON},
+		{matchSubstr: "pr diff", stdout: diff},
+	}}
+	a := NewCapturePRSnapshot(runner)
+	snap1, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err != nil {
+		t.Fatalf("Execute #1: %v", err)
+	}
+	snap2, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 1})
+	if err != nil {
+		t.Fatalf("Execute #2: %v", err)
+	}
+	if SnapshotHashRef(snap1) != SnapshotHashRef(snap2) {
+		t.Errorf("hash refs differ across identical inputs: %q vs %q", SnapshotHashRef(snap1), SnapshotHashRef(snap2))
+	}
+}
+
+// TestSplitUnifiedDiff covers the diff-splitter's key behaviors: per-file
+// boundary detection, post-image path extraction, empty-input handling.
+func TestSplitUnifiedDiff(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		if got := splitUnifiedDiff(""); len(got) != 0 {
+			t.Errorf("empty input → %v, want empty map", got)
+		}
+	})
+	t.Run("two files", func(t *testing.T) {
+		in := "diff --git a/x/foo.go b/x/foo.go\n@@ x\n+a\n" +
+			"diff --git a/y/bar.go b/y/bar.go\n@@ y\n+b\n"
+		got := splitUnifiedDiff(in)
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		if !strings.Contains(got["x/foo.go"], "+a") {
+			t.Errorf("x/foo.go diff missing +a: %q", got["x/foo.go"])
+		}
+		if !strings.Contains(got["y/bar.go"], "+b") {
+			t.Errorf("y/bar.go diff missing +b: %q", got["y/bar.go"])
+		}
+		if strings.Contains(got["x/foo.go"], "+b") {
+			t.Errorf("x/foo.go diff contaminated with y/bar.go hunk: %q", got["x/foo.go"])
+		}
+	})
+	t.Run("rename preserves b path", func(t *testing.T) {
+		// gh pr diff for a rename: a/ side and b/ side differ. We key
+		// by the b/ (post-image) path because gh pr view --json files
+		// reports the new path.
+		in := "diff --git a/old.go b/new.go\nrename from old.go\nrename to new.go\n"
+		got := splitUnifiedDiff(in)
+		if _, ok := got["new.go"]; !ok {
+			t.Errorf("expected key new.go, got %v", got)
+		}
+		if _, ok := got["old.go"]; ok {
+			t.Errorf("unexpected key old.go in %v", got)
+		}
+	})
+}
+
+// TestCapturePRSnapshot_RequiresRepoAndPR ensures the activity rejects
+// the obvious caller bug of an empty Repo or zero PRNumber before
+// spending a gh call. Cheap defensive validation per spec 097 plan's
+// "fail user-error before network".
+func TestCapturePRSnapshot_RequiresRepoAndPR(t *testing.T) {
+	a := NewCapturePRSnapshot(&fakeGhRunner{}) // empty runner; would error on Run
+	if _, err := a.Execute(context.Background(), PRReviewInput{PRNumber: 1}); err == nil {
+		t.Error("empty Repo: expected error, got nil")
+	}
+	if _, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: 0}); err == nil {
+		t.Error("zero PRNumber: expected error, got nil")
+	}
+	if _, err := a.Execute(context.Background(), PRReviewInput{Repo: "x/y", PRNumber: -5}); err == nil {
+		t.Error("negative PRNumber: expected error, got nil")
+	}
+}
