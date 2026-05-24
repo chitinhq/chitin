@@ -23,6 +23,11 @@ func Register(w worker.Worker) {
 	// schedules.EnsureSchedules names as the Schedule's action workflow
 	// (spec 081 US2).
 	w.RegisterWorkflow(ScheduledJobWorkflow)
+	// PRReviewWorkflow is the dialectic review gate (spec 094). It is
+	// dispatched directly by chitin-orchestrator pr-review (the CLI
+	// landed in a follow-up PR) and as a child of PRMergeWorkflow (spec
+	// 093). Its activities are registered separately by review.Register.
+	w.RegisterWorkflow(PRReviewWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

@@ -20,11 +20,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
@@ -70,6 +72,8 @@ func runMain(args []string) int {
 			return cmdFactoryListen(args[2:])
 		case "simulate-webhook":
 			return cmdSimulateWebhook(args[2:])
+		case "pr-review":
+			return cmdPRReview(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -142,6 +146,16 @@ func runWorkerHost(ctx context.Context) int {
 		Notifier:  notifier,
 	})
 
+	// Register the spec-094 dialectic review activities — SelectReviewers,
+	// CapturePRSnapshot, DispatchMachineReviewer, EmitReviewTelemetry. The
+	// PRReviewWorkflow itself is registered by workflows.Register above.
+	// Gh is left nil so CapturePRSnapshot uses the default real `gh` CLI
+	// shell-out (production path).
+	if err := review.Register(w, review.RegisterDeps{Registry: registry}); err != nil {
+		log.Printf("chitin-orchestrator: registering dialectic review activities: %v", err)
+		return exitRuntimeError
+	}
+
 	// Register the spec-078 self-improvement loop — the ImprovementLoopWorkflow
 	// and its IngestTelemetry / ProjectProposalQueue activities. Every loop.Deps
 	// field is optional and degrades to a safe log-based default: a nil Readers
@@ -191,22 +205,59 @@ func runWorkerHost(ctx context.Context) int {
 // prevention per spec 097 plan.md R2 — the SelectDriver activity at
 // runtime and the schedule subcommand's pre-validation must consult the
 // same registry shape, so they construct from this one function.
+//
+// Optional filter — `CHITIN_DRIVER_ALLOW` env var, comma-or-space
+// separated driver IDs. When set, only drivers whose ID appears in the
+// allow set are registered; others are skipped. Empty / unset = all
+// drivers register (existing behavior). Useful for cost-control demos
+// where the operator wants to pin dispatch to a specific cheaper
+// driver (e.g. `CHITIN_DRIVER_ALLOW=codex`) without changing the spec
+// or waiting for spec 099 US1's `--driver` flag. Per-spec routing is
+// out of scope for this hook — it gates the whole registry, not a
+// single dispatch.
 func buildRegistry() (*driver.Registry, error) {
+	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+	// CHITIN_CODEX_MODEL overrides the codex driver's default model
+	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
+	// Some operator accounts can't reach that model (e.g. ChatGPT-account
+	// codex CLI rejects gpt-5.x-codex but accepts gpt-5.5). Empty / unset
+	// preserves the driver default.
+	codexOpts := []codex.Option{}
+	if m := os.Getenv("CHITIN_CODEX_MODEL"); m != "" {
+		codexOpts = append(codexOpts, codex.WithModel(m))
+	}
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
-		codex.New(),
+		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),
 		hermes.New(),
 		openclaw.New(),
 		local.New(),
 	} {
+		if len(allowSet) > 0 && !allowSet[d.ID()] {
+			continue
+		}
 		if err := registry.Register(d); err != nil {
 			return nil, fmt.Errorf("registering driver %q: %w", d.ID(), err)
 		}
 	}
 	return registry, nil
+}
+
+// parseDriverAllowEnv tokenizes CHITIN_DRIVER_ALLOW. Accepts comma or
+// whitespace separators so the operator can write either
+// `codex,copilot` or `codex copilot`. Empty input returns an empty
+// map (= no filter applied).
+func parseDriverAllowEnv(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if tok != "" {
+			out[tok] = true
+		}
+	}
+	return out
 }
 
 // printUsage writes a one-screen reference of the binary's invocation modes
@@ -222,6 +273,7 @@ USAGE
   chitin-orchestrator cancel -run-id <id> [-reason <text>]  # cancel a running scheduler
   chitin-orchestrator factory-listen [opts]                 # run the webhook trigger surface (spec 098)
   chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
+  chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)

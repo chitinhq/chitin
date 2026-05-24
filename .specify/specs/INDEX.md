@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-21 (added spec 068 INDEX entry; spec corpus train: Octi 040-049 + 054, Mini 050-053, SDD platform 060-065, grooming 066; INDEX backfill: 025, 037, 039, 728; collision flags at 036/038/067/071).
+> Last updated 2026-05-24 (added spec 095 Continue Checks pilot, spec 092 no-driver-bypass-invariant, plus session 2026-05-24 ratifications 087/088/089/090/099/101/102/103/104; preserved active spec corpus and collision flags at 036/038/067/071).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -230,6 +230,7 @@ triage rationale.
 | **079** | information-ingestion-pipeline | draft | External-knowledge front-end: broad-net gathering + signal/noise filter feeding 078's proposals |
 | **080** | orchestrator-ops-completion | draft | Gemini + Copilot agent drivers (roster 5→7); write-only Discord notification surface; chitin-console as a first-class systemd service |
 | **081** | cron-migration-board-retirement | draft | Phase 3–5: migrate the ~15 swarm crons/watchdogs to Temporal scheduled workflows; retire the kanban-era board read-model |
+| **092** | no-driver-bypass-invariant | draft | Executable invariant test: implementation-producing driver invocations must carry orchestrator work-unit attribution; direct driver bypasses fail closed |
 
 ## Merge orchestration + review — specs 093 + 094
 
@@ -246,6 +247,17 @@ triage rationale.
 |------|-------|--------|--------------|
 | **093** | merge-queue-orchestrator | draft | `MergeQueueWorkflow` parent + `PRMergeWorkflow` child; 6-class policy table (governance / live-fix / spec-only / research-docs / impl / bookkeeping); pointer-file auto-resolve invariant; lease-protected force-push; signal-blocked governance gate honoring spec 092's no-bypass invariant. v1.0 ships standalone; v1.1.0 amendment adds `review_required` + `arbiter_type` columns once 094 ratifies. |
 | **094** | pr-review-mechanism | draft | `reviewer` capability tag on the spec 075 driver registry; `SelectDriver` extended with capability-filter + no-self-review exclusion; `PRReviewWorkflow` child spawned by 093's PRMergeWorkflow; parallel two-primary dispatch; dialectic short-circuit on agreement; class-routed arbiter (operator via structured GitHub PR comment for governance/spec-only; third machine driver for impl/research-docs once a 3rd reviewer driver lands); 4-value `StructuredVerdict` (approve / approve-with-comments / request-changes / abstain) with FR-014 invariants; `re-review` + `override-review` signals (governance non-overridable); OTLP per-invocation audit trail with content hashes. |
+
+## Continue Checks pilot — spec 095
+
+> Lightweight PR-governance experiment: evaluate Continue Checks as a narrow
+> check surface for spec-first linkage, e2e-default discipline, and
+> no-driver-bypass review signal. This is explicitly not a Hermes replacement,
+> not an orchestrator, and not an inbound webhook surface.
+
+| Spec | Title | Status | What it owns |
+|------|-------|--------|--------------|
+| **095** | continue-checks-pilot | draft | `.continue/checks/` pilot rules, local dry-run/runbook, five-PR evidence window before any required-gate discussion. |
 
 ## Workspace-overlay & retro specs
 

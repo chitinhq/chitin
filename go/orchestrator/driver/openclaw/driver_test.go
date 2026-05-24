@@ -21,7 +21,7 @@ func TestCardDeclaresOpenClawContract(t *testing.T) {
 	if card.Tier != driver.TierFrontier {
 		t.Fatalf("tier = %s, want frontier", card.Tier)
 	}
-	for _, cap := range []driver.Capability{driver.CapCodeImplement, driver.CapCodeRefactor, driver.CapTestAuthor} {
+	for _, cap := range []driver.Capability{driver.CapCodeImplement, driver.CapCodeReview, driver.CapCodeRefactor, driver.CapTestAuthor} {
 		if !card.HasCapability(cap) {
 			t.Fatalf("card missing capability %q", cap)
 		}
