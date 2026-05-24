@@ -6,4 +6,4 @@ description: "Tasks — factory webhook operator runbook"
 
 ## Phase 1: Implementation
 
-- [ ] T001 [US1] Implement the factory-webhook operator runbook at docs/operator/factory-webhook.md
+- [ ] T001 [US1] Implement docs/operator/factory-webhook.md
