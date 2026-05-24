@@ -4,18 +4,29 @@
 // It dials the Temporal service, registers every workflow and activity, and
 // polls the "chitin" task queue. One former cron/script becomes one durable
 // workflow; this binary is the single process that runs them all.
+//
+// Spec 097 added three operator-facing subcommands on the same binary —
+// `schedule`, `status`, `cancel` — that take a spec ref, compile it through
+// the spec-077 adapter, and start / inspect / cancel the SchedulerWorkflow
+// (spec 076). When invoked with no subcommand (or any argv shape that does
+// not match a known subcommand) the binary runs the worker-host path the
+// chitin-orchestrator.service systemd unit has always relied on; the
+// dispatcher is purely additive.
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
@@ -34,7 +45,50 @@ import (
 // TaskQueue is the single task queue the orchestrator polls.
 const TaskQueue = "chitin"
 
+// Exit codes for subcommand handlers — spec 097 FR-011.
+const (
+	exitSuccess     = 0
+	exitUserError   = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
+	exitRuntimeError = 2 // Temporal unreachable, IO failure, kernel-binary missing
+)
+
 func main() {
+	os.Exit(runMain(os.Args))
+}
+
+// runMain is the testable entry point — caller-provided argv so tests can
+// invoke the subcommand handlers without spawning a process. Returns the
+// process exit code rather than calling os.Exit directly.
+func runMain(args []string) int {
+	if len(args) >= 2 {
+		switch args[1] {
+		case "schedule":
+			return cmdSchedule(args[2:])
+		case "status":
+			return cmdStatus(args[2:])
+		case "cancel":
+			return cmdCancel(args[2:])
+		case "pr-review":
+			return cmdPRReview(args[2:])
+		case "-h", "--help", "help":
+			printUsage(os.Stderr)
+			return exitSuccess
+		}
+	}
+	// No recognized subcommand → run the worker host the systemd unit
+	// has always invoked. Argv shape preserved byte-identically.
+	return runWorkerHost(context.Background())
+}
+
+// runWorkerHost is the existing worker-host entry point, factored out so the
+// subcommand dispatcher in runMain can route to it as the no-args default.
+// Behavior is byte-identical to the pre-spec-097 main: dial Temporal, build
+// the driver registry, register workflows + activities, run the worker.
+//
+// Returns exitRuntimeError on any fatal startup error (factored from the
+// previous log.Fatalf path — fatal still logs, but bubbles the exit code
+// through runMain rather than calling os.Exit directly).
+func runWorkerHost(ctx context.Context) int {
 	hostPort := os.Getenv("TEMPORAL_HOSTPORT")
 	if hostPort == "" {
 		hostPort = client.DefaultHostPort // 127.0.0.1:7233
@@ -42,26 +96,18 @@ func main() {
 
 	c, err := client.Dial(client.Options{HostPort: hostPort})
 	if err != nil {
-		log.Fatalf("chitin-orchestrator: cannot reach Temporal at %s: %v", hostPort, err)
+		log.Printf("chitin-orchestrator: cannot reach Temporal at %s: %v", hostPort, err)
+		return exitRuntimeError
 	}
 	defer c.Close()
 
 	// Build the spec-075 driver registry and register the concrete agent
 	// drivers. Registration is a startup-time act; the registry is
 	// read-only once the worker host is up.
-	registry := driver.NewRegistry()
-	for _, d := range []driver.AgentDriver{
-		claudecode.New(),
-		codex.New(),
-		copilot.New(),
-		gemini.New(),
-		hermes.New(),
-		openclaw.New(),
-		local.New(),
-	} {
-		if err := registry.Register(d); err != nil {
-			log.Fatalf("chitin-orchestrator: registering driver %q: %v", d.ID(), err)
-		}
+	registry, err := buildRegistry()
+	if err != nil {
+		log.Printf("chitin-orchestrator: building driver registry: %v", err)
+		return exitRuntimeError
 	}
 
 	// Build the spec-070 worktree Manager — every work unit gets a fresh
@@ -72,7 +118,8 @@ func main() {
 	}
 	worktrees, err := worktree.NewManager(worktreeRoot)
 	if err != nil {
-		log.Fatalf("chitin-orchestrator: cannot build worktree manager at %s: %v", worktreeRoot, err)
+		log.Printf("chitin-orchestrator: cannot build worktree manager at %s: %v", worktreeRoot, err)
+		return exitRuntimeError
 	}
 
 	// Build the spec-070 FR-008 telemetry sink — the OTLP/HTTP exporter for
@@ -94,6 +141,16 @@ func main() {
 		Telemetry: telemetrySink,
 		Notifier:  notifier,
 	})
+
+	// Register the spec-094 dialectic review activities — SelectReviewers,
+	// CapturePRSnapshot, DispatchMachineReviewer, EmitReviewTelemetry. The
+	// PRReviewWorkflow itself is registered by workflows.Register above.
+	// Gh is left nil so CapturePRSnapshot uses the default real `gh` CLI
+	// shell-out (production path).
+	if err := review.Register(w, review.RegisterDeps{Registry: registry}); err != nil {
+		log.Printf("chitin-orchestrator: registering dialectic review activities: %v", err)
+		return exitRuntimeError
+	}
 
 	// Register the spec-078 self-improvement loop — the ImprovementLoopWorkflow
 	// and its IngestTelemetry / ProjectProposalQueue activities. Every loop.Deps
@@ -126,13 +183,97 @@ func main() {
 	// if a Schedule cannot be registered; a missing Schedule is visible (the
 	// systemd-timer retirement is gated on the Schedule being proven), never
 	// silent.
-	if err := schedules.EnsureSchedules(context.Background(), c); err != nil {
+	if err := schedules.EnsureSchedules(ctx, c); err != nil {
 		log.Printf("chitin-orchestrator: ensuring Temporal Schedules: %v", err)
 	}
 
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d drivers, worktrees at %s",
 		TaskQueue, hostPort, registry.Len(), worktreeRoot)
 	if err := w.Run(worker.InterruptCh()); err != nil {
-		log.Fatalf("chitin-orchestrator: worker stopped: %v", err)
+		log.Printf("chitin-orchestrator: worker stopped: %v", err)
+		return exitRuntimeError
 	}
+	return exitSuccess
+}
+
+// buildRegistry constructs the spec-075 driver registry that BOTH the
+// worker-host path AND the spec-097 subcommand handlers consume. Drift
+// prevention per spec 097 plan.md R2 — the SelectDriver activity at
+// runtime and the schedule subcommand's pre-validation must consult the
+// same registry shape, so they construct from this one function.
+//
+// Optional filter — `CHITIN_DRIVER_ALLOW` env var, comma-or-space
+// separated driver IDs. When set, only drivers whose ID appears in the
+// allow set are registered; others are skipped. Empty / unset = all
+// drivers register (existing behavior). Useful for cost-control demos
+// where the operator wants to pin dispatch to a specific cheaper
+// driver (e.g. `CHITIN_DRIVER_ALLOW=codex`) without changing the spec
+// or waiting for spec 099 US1's `--driver` flag. Per-spec routing is
+// out of scope for this hook — it gates the whole registry, not a
+// single dispatch.
+func buildRegistry() (*driver.Registry, error) {
+	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+	// CHITIN_CODEX_MODEL overrides the codex driver's default model
+	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
+	// Some operator accounts can't reach that model (e.g. ChatGPT-account
+	// codex CLI rejects gpt-5.x-codex but accepts gpt-5.5). Empty / unset
+	// preserves the driver default.
+	codexOpts := []codex.Option{}
+	if m := os.Getenv("CHITIN_CODEX_MODEL"); m != "" {
+		codexOpts = append(codexOpts, codex.WithModel(m))
+	}
+	registry := driver.NewRegistry()
+	for _, d := range []driver.AgentDriver{
+		claudecode.New(),
+		codex.New(codexOpts...),
+		copilot.New(),
+		gemini.New(),
+		hermes.New(),
+		openclaw.New(),
+		local.New(),
+	} {
+		if len(allowSet) > 0 && !allowSet[d.ID()] {
+			continue
+		}
+		if err := registry.Register(d); err != nil {
+			return nil, fmt.Errorf("registering driver %q: %w", d.ID(), err)
+		}
+	}
+	return registry, nil
+}
+
+// parseDriverAllowEnv tokenizes CHITIN_DRIVER_ALLOW. Accepts comma or
+// whitespace separators so the operator can write either
+// `codex,copilot` or `codex copilot`. Empty input returns an empty
+// map (= no filter applied).
+func parseDriverAllowEnv(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if tok != "" {
+			out[tok] = true
+		}
+	}
+	return out
+}
+
+// printUsage writes a one-screen reference of the binary's invocation modes
+// to the given writer. It is invoked by `chitin-orchestrator help`,
+// `--help`, or `-h`.
+func printUsage(w *os.File) {
+	fmt.Fprintln(w, `chitin-orchestrator — Temporal worker host + operator CLI for the spec-DAG scheduler
+
+USAGE
+  chitin-orchestrator                              # run the worker host (default; what chitin-orchestrator.service invokes)
+  chitin-orchestrator schedule <spec-ref> [opts]   # compile a spec and start a SchedulerWorkflow run
+  chitin-orchestrator status [-run-id <id>] [--text]    # list active runs OR inspect one
+  chitin-orchestrator cancel -run-id <id> [-reason <text>]  # cancel a running scheduler
+  chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
+
+ENVIRONMENT
+  TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
+  CHITIN_REPO_ROOT                 Default repo root for the schedule subcommand
+  CHITIN_KERNEL_BIN                Path to chitin-kernel (for chain emit; defaults to PATH lookup)
+  CHITIN_WORKTREE_ROOT             Worktree root for the worker host (default /tmp/chitin-worktrees)
+
+See specs/097-operator-scheduler-entrypoint/ for the contract.`)
 }

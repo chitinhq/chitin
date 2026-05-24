@@ -94,6 +94,10 @@ func main() {
 		default:
 			exitErr("drive_unknown_driver", driver)
 		}
+	case "speckit-lint":
+		os.Exit(cmdSpeckitLint(args))
+	case "session":
+		cmdSession(args)
 	default:
 		exitErr("unknown_subcommand", sub)
 	}

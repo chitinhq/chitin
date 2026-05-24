@@ -56,6 +56,33 @@ def make_db(root: Path) -> Path:
           body TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE task_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          profile TEXT,
+          step_key TEXT,
+          status TEXT NOT NULL,
+          claim_lock TEXT,
+          claim_expires INTEGER,
+          worker_pid INTEGER,
+          max_runtime_seconds INTEGER,
+          last_heartbeat_at INTEGER,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER,
+          outcome TEXT,
+          summary TEXT,
+          metadata TEXT,
+          error TEXT,
+          model TEXT NOT NULL DEFAULT '',
+          soul_id TEXT NOT NULL DEFAULT '',
+          soul_hash TEXT NOT NULL DEFAULT '',
+          agent_fingerprint TEXT NOT NULL DEFAULT '',
+          driver_id TEXT,
+          repo_sha TEXT,
+          lease_id TEXT,
+          event_chain_hash TEXT,
+          idempotency_key TEXT
+        );
         """
     )
     conn.commit()
@@ -509,6 +536,87 @@ class KanbanFlowTaskRunTests(unittest.TestCase):
             "[silent_worker_death] worker disappeared",
         )
         self.assertEqual(comment, "hello from flow")
+
+    def test_done_with_special_chars_in_result_does_not_crash(self) -> None:
+        """Regression: `kanban-flow done` crashed with NOT NULL constraint on
+        task_comments.body when --result contained single quotes, backticks,
+        or other shell-special characters.  The bug was that .parameter set
+        used single-quoted values that broke on embedded quotes/backticks.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_beef0000", status="in_progress")
+
+            # Delete any stale task_runs so start can proceed
+            conn = sqlite3.connect(db_path)
+            conn.execute("DELETE FROM task_runs WHERE task_id='t_beef0000'")
+            conn.commit()
+            conn.close()
+
+            # The original crash: special characters in --result broke
+            # .parameter set :body '...' quoting, leaving :body unbound,
+            # which made the INSERT set body=NULL, violating NOT NULL.
+            self.run_flow(
+                tmp,
+                "done",
+                "t_beef0000",
+                "--result",
+                "Done: it's working with `backticks` and \"double quotes\"",
+                "--author",
+                "tester",
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            task = conn.execute(
+                "SELECT status, result FROM tasks WHERE id='t_beef0000'"
+            ).fetchone()
+            comments = conn.execute(
+                "SELECT body FROM task_comments WHERE task_id='t_beef0000' ORDER BY id"
+            ).fetchall()
+            conn.close()
+
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(
+            task["result"],
+            "Done: it's working with `backticks` and \"double quotes\"",
+        )
+        # The comment body should contain the result text, not NULL
+        self.assertTrue(len(comments) >= 1)
+        self.assertIn("it's working", comments[-1]["body"])
+
+    def test_done_with_simple_result_works(self) -> None:
+        """Baseline: `kanban-flow done` with plain --result text."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = make_db(tmp)
+            insert_task(db_path, "t_aaaa0001", status="in_progress")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute("DELETE FROM task_runs WHERE task_id='t_aaaa0001'")
+            conn.commit()
+            conn.close()
+
+            self.run_flow(
+                tmp,
+                "done",
+                "t_aaaa0001",
+                "--result",
+                "Simple test result",
+                "--author",
+                "tester",
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            task = conn.execute(
+                "SELECT status, result FROM tasks WHERE id='t_aaaa0001'"
+            ).fetchone()
+            conn.close()
+
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(task["result"], "Simple test result")
 
 
 if __name__ == "__main__":
