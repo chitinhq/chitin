@@ -1,6 +1,6 @@
 # Chitin spec-kit — INDEX
 
-> Last updated 2026-05-23 (added spec 095 Continue Checks pilot; preserved active spec corpus and collision flags at 036/038/067/071).
+> Last updated 2026-05-24 (added spec 095 Continue Checks pilot, spec 092 no-driver-bypass-invariant, plus session 2026-05-24 ratifications 087/088/089/090/099/101/102/103/104; preserved active spec corpus and collision flags at 036/038/067/071).
 > Per chitin spec 024 §1.3: every active repo carries `.specify/specs/INDEX.md`.
 >
 > Status legend: **shipped** = merged + deployed; **ratified** = spec
@@ -230,6 +230,7 @@ triage rationale.
 | **079** | information-ingestion-pipeline | draft | External-knowledge front-end: broad-net gathering + signal/noise filter feeding 078's proposals |
 | **080** | orchestrator-ops-completion | draft | Gemini + Copilot agent drivers (roster 5→7); write-only Discord notification surface; chitin-console as a first-class systemd service |
 | **081** | cron-migration-board-retirement | draft | Phase 3–5: migrate the ~15 swarm crons/watchdogs to Temporal scheduled workflows; retire the kanban-era board read-model |
+| **092** | no-driver-bypass-invariant | draft | Executable invariant test: implementation-producing driver invocations must carry orchestrator work-unit attribution; direct driver bypasses fail closed |
 
 ## Merge orchestration + review — specs 093 + 094
 
