@@ -17,9 +17,9 @@ import (
 // every Capability in driver.KnownCapabilities() has ≥ 1 declaring
 // driver. Fails on any future taxonomy addition that lacks an implementer.
 func TestProductionRegistry_CoversEveryTaxonomyCapability(t *testing.T) {
-	registry, err := buildRegistry()
+	registry, err := buildUnfilteredRegistry()
 	if err != nil {
-		t.Fatalf("buildRegistry: %v", err)
+		t.Fatalf("buildUnfilteredRegistry: %v", err)
 	}
 	var missing []driver.Capability
 	for _, c := range driver.KnownCapabilities() {
@@ -58,6 +58,13 @@ func TestRunValidateDriverCoverage_JSONOutput(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
 		t.Fatalf("json unmarshal: %v\nout=%s", err, out.String())
 	}
+	var rawRows []map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &rawRows); err != nil {
+		t.Fatalf("json raw unmarshal: %v\nout=%s", err, out.String())
+	}
+	if len(rawRows) == 0 || rawRows[0]["impl_drivers"] == nil || rawRows[0]["review_drivers"] == nil {
+		t.Fatalf("json output must include impl_drivers and review_drivers keys; out=%s", out.String())
+	}
 	if len(rows) != len(driver.KnownCapabilities()) {
 		t.Errorf("got %d rows; want %d (one per known capability)", len(rows), len(driver.KnownCapabilities()))
 	}
@@ -75,6 +82,28 @@ func TestRunValidateDriverCoverage_JSONOutput(t *testing.T) {
 				t.Errorf("test.author declarers = %v; want includes %q (spec 105 FR-001/002)", r.DeclaringIDs, want)
 			}
 		}
+	}
+}
+
+func TestRunValidateDriverCoverage_TableShowsTieredPools(t *testing.T) {
+	t.Setenv("CHITIN_DRIVER_ALLOW", "")
+	t.Setenv("CHITIN_DRIVER_ALLOW_IMPL", "codex")
+	t.Setenv("CHITIN_DRIVER_ALLOW_REVIEW", "codex,claudecode")
+
+	var out, errBuf bytes.Buffer
+	code := runValidateDriverCoverage(context.Background(), nil, &out, &errBuf)
+	if code != exitSuccess {
+		t.Fatalf("exit=%d, want 0; stderr=%q", code, errBuf.String())
+	}
+	rendered := out.String()
+	for _, want := range []string{"capability", "impl", "review"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("stdout missing %q column/header:\n%s", want, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "code.review") ||
+		!strings.Contains(rendered, "codex   claudecode, codex") {
+		t.Fatalf("stdout does not show distinct impl/review pools for code.review:\n%s", rendered)
 	}
 }
 

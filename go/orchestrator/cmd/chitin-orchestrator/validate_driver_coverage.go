@@ -33,6 +33,8 @@ type CoverageRow struct {
 	Capability   string   `json:"capability"`
 	DeclaringIDs []string `json:"declaring_drivers"`
 	ReadyIDs     []string `json:"ready_drivers"`
+	ImplIDs      []string `json:"impl_drivers"`
+	ReviewIDs    []string `json:"review_drivers"`
 }
 
 // cmdValidateDriverCoverage is the entrypoint dispatched from runMain.
@@ -51,13 +53,23 @@ func runValidateDriverCoverage(ctx context.Context, args []string, stdout, stder
 		return exitUserError
 	}
 
-	registry, err := buildRegistry()
+	registry, err := buildUnfilteredRegistry()
 	if err != nil {
 		fmt.Fprintf(stderr, "error: cannot build driver registry: %v\n", err)
 		return exitRuntimeError
 	}
+	implRegistry, err := buildRegistryForRole(driverRegistryRoleImpl)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: cannot build impl driver registry: %v\n", err)
+		return exitRuntimeError
+	}
+	reviewRegistry, err := buildRegistryForRole(driverRegistryRoleReview)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: cannot build review driver registry: %v\n", err)
+		return exitRuntimeError
+	}
 
-	rows := coverageRows(ctx, registry)
+	rows := coverageRowsForPools(ctx, registry, implRegistry, reviewRegistry)
 	missing := 0
 	for _, r := range rows {
 		if len(r.DeclaringIDs) == 0 {
@@ -84,18 +96,28 @@ func runValidateDriverCoverage(ctx context.Context, args []string, stdout, stder
 // coverageRows builds one CoverageRow per capability in
 // driver.KnownCapabilities(). Pure function; testable.
 func coverageRows(ctx context.Context, registry *driver.Registry) []CoverageRow {
+	return coverageRowsForPools(ctx, registry, registry, registry)
+}
+
+func coverageRowsForPools(ctx context.Context, registry, implRegistry, reviewRegistry *driver.Registry) []CoverageRow {
 	caps := driver.KnownCapabilities()
 	out := make([]CoverageRow, 0, len(caps))
 	for _, c := range caps {
 		declaring := registry.DriversDeclaring(c)
 		ready := registry.DriversFor(ctx, c)
+		impl := implRegistry.DriversDeclaring(c)
+		review := reviewRegistry.DriversDeclaring(c)
 		row := CoverageRow{
 			Capability:   string(c),
 			DeclaringIDs: idsOf(declaring),
 			ReadyIDs:     idsOf(ready),
+			ImplIDs:      idsOf(impl),
+			ReviewIDs:    idsOf(review),
 		}
 		sort.Strings(row.DeclaringIDs)
 		sort.Strings(row.ReadyIDs)
+		sort.Strings(row.ImplIDs)
+		sort.Strings(row.ReviewIDs)
 		out = append(out, row)
 	}
 	return out
@@ -116,23 +138,45 @@ func idsOf(drivers []driver.AgentDriver) []string {
 // are computed from the data so the table looks neat at any taxonomy
 // size.
 func renderCoverageTable(w io.Writer, rows []CoverageRow) {
-	capWidth := len("capability")
-	for _, r := range rows {
-		if len(r.Capability) > capWidth {
-			capWidth = len(r.Capability)
-		}
-	}
-	fmt.Fprintf(w, "%-*s  declaring                                  ready\n", capWidth, "capability")
-	fmt.Fprintf(w, "%s\n", repeatRune('-', capWidth+2+42+5))
+	capWidth := columnWidth("capability", rows, func(r CoverageRow) string { return r.Capability })
+	declaringWidth := columnWidth("declaring", rows, func(r CoverageRow) string { return joinIDs(r.DeclaringIDs) })
+	implWidth := columnWidth("impl", rows, func(r CoverageRow) string { return joinIDs(r.ImplIDs) })
+	reviewWidth := columnWidth("review", rows, func(r CoverageRow) string { return joinIDs(r.ReviewIDs) })
+	readyWidth := columnWidth("ready", rows, func(r CoverageRow) string { return joinIDs(r.ReadyIDs) })
+	fmt.Fprintf(w, "%-*s  %-*s  %-*s  %-*s  %-*s\n",
+		capWidth, "capability",
+		declaringWidth, "declaring",
+		implWidth, "impl",
+		reviewWidth, "review",
+		readyWidth, "ready")
+	fmt.Fprintf(w, "%s\n", repeatRune('-', capWidth+declaringWidth+implWidth+reviewWidth+readyWidth+10))
 	for _, r := range rows {
 		declaring := joinIDs(r.DeclaringIDs)
+		impl := joinIDs(r.ImplIDs)
+		review := joinIDs(r.ReviewIDs)
 		ready := joinIDs(r.ReadyIDs)
 		flag := "  "
 		if len(r.DeclaringIDs) == 0 {
 			flag = " !"
 		}
-		fmt.Fprintf(w, "%-*s%s%-42s %s\n", capWidth, r.Capability, flag, declaring, ready)
+		fmt.Fprintf(w, "%-*s%s%-*s  %-*s  %-*s  %-*s\n",
+			capWidth, r.Capability,
+			flag,
+			declaringWidth, declaring,
+			implWidth, impl,
+			reviewWidth, review,
+			readyWidth, ready)
 	}
+}
+
+func columnWidth(header string, rows []CoverageRow, value func(CoverageRow) string) int {
+	width := len(header)
+	for _, r := range rows {
+		if n := len(value(r)); n > width {
+			width = n
+		}
+	}
+	return width
 }
 
 func joinIDs(ids []string) string {

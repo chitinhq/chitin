@@ -47,9 +47,16 @@ const TaskQueue = "chitin"
 
 // Exit codes for subcommand handlers — spec 097 FR-011.
 const (
-	exitSuccess     = 0
-	exitUserError   = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
+	exitSuccess      = 0
+	exitUserError    = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
 	exitRuntimeError = 2 // Temporal unreachable, IO failure, kernel-binary missing
+)
+
+type driverRegistryRole string
+
+const (
+	driverRegistryRoleImpl   driverRegistryRole = "impl"
+	driverRegistryRoleReview driverRegistryRole = "review"
 )
 
 func main() {
@@ -218,7 +225,32 @@ func runWorkerHost(ctx context.Context) int {
 // out of scope for this hook — it gates the whole registry, not a
 // single dispatch.
 func buildRegistry() (*driver.Registry, error) {
-	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+	return buildRegistryWithAllow(parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW")))
+}
+
+func buildRegistryForRole(role driverRegistryRole) (*driver.Registry, error) {
+	switch role {
+	case driverRegistryRoleImpl:
+		return buildRegistryWithAllow(driverAllowSetForRole("CHITIN_DRIVER_ALLOW_IMPL"))
+	case driverRegistryRoleReview:
+		return buildRegistryWithAllow(driverAllowSetForRole("CHITIN_DRIVER_ALLOW_REVIEW"))
+	default:
+		return nil, fmt.Errorf("unknown driver registry role %q", role)
+	}
+}
+
+func buildUnfilteredRegistry() (*driver.Registry, error) {
+	return buildRegistryWithAllow(nil)
+}
+
+func driverAllowSetForRole(roleEnv string) map[string]bool {
+	if raw := os.Getenv(roleEnv); strings.TrimSpace(raw) != "" {
+		return parseDriverAllowEnv(raw)
+	}
+	return parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+}
+
+func buildRegistryWithAllow(allowSet map[string]bool) (*driver.Registry, error) {
 	// CHITIN_CODEX_MODEL overrides the codex driver's default model
 	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
 	// Some operator accounts can't reach that model (e.g. ChatGPT-account
