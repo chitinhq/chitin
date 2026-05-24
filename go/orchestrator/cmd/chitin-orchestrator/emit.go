@@ -41,6 +41,18 @@ type SchedulerCanceledPayload struct {
 	Reason string `json:"reason"`
 }
 
+// CopilotDispatchedPayload is the spec 099 "copilot_dispatched" event
+// payload (specs/099-github-native-dispatch/contracts/chain-events.md
+// Event 1). Emitted by `chitin-orchestrator schedule --driver copilot`
+// after the GitHub issue is successfully created.
+type CopilotDispatchedPayload struct {
+	Repo         string `json:"repo"`
+	SpecRef      string `json:"spec_ref"`
+	IssueURL     string `json:"issue_url"`
+	IssueNumber  int    `json:"issue_number"`
+	DispatchedAt string `json:"dispatched_at"`
+}
+
 // emitSchedulerStarted writes a scheduler_started chain event via the
 // kernel's emit subcommand. The workflowRunID is used as the chain RunID
 // so the resulting events-*.jsonl filename matches the Temporal RunID
@@ -56,6 +68,15 @@ func emitSchedulerStarted(ctx context.Context, payload SchedulerStartedPayload, 
 // emitSchedulerStarted.
 func emitSchedulerCanceled(ctx context.Context, payload SchedulerCanceledPayload, stderr io.Writer) {
 	emitChainEvent(ctx, "scheduler_canceled", payload.RunID, payload, stderr)
+}
+
+// emitCopilotDispatched writes a copilot_dispatched chain event for the
+// spec 099 dispatch path. The workflowRunID is empty — Copilot dispatches
+// don't have a Temporal SchedulerWorkflow (that's the whole point of
+// the off-machine path); operators correlate by (repo, issue_number).
+// Same fail-soft contract as emitSchedulerStarted.
+func emitCopilotDispatched(ctx context.Context, payload CopilotDispatchedPayload, stderr io.Writer) {
+	emitChainEvent(ctx, "copilot_dispatched", "", payload, stderr)
 }
 
 // emitChainEvent constructs a chain-event JSON record, writes it to a
