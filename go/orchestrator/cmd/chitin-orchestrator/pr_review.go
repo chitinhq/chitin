@@ -145,6 +145,18 @@ func runPRReview(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		fmt.Fprintf(stderr, "error: --arbiter %q must be one of {machine, operator}\n", *arbiter)
 		return exitUserError
 	}
+	// Guard against an operator-UX trap: the workflow's arbiter dispatch
+	// for ArbiterOperator is stubbed at workflows/pr_review.go:267-271
+	// with a Phase 4 TODO — it halts with "operator arbiter dispatch
+	// not wired in Phase 2 foundational (US2 follow-up)". The CLI used
+	// to accept --arbiter operator and dispatch anyway, leaving the
+	// operator with a halted workflow and a confusing reason. Reject
+	// here until the R-OPSURF GitHub-PR-comment surface ships.
+	if arb == review.ArbiterOperator {
+		fmt.Fprintln(stderr, "error: --arbiter operator is not yet wired (R-OPSURF Phase 4 follow-up).")
+		fmt.Fprintln(stderr, "       Use --arbiter machine until the operator-arbiter PR-comment surface ships.")
+		return exitUserError
+	}
 
 	// Auto-detect repo + author from gh when not provided. The CLI's
 	// primary UX is `pr-review <PR#>` with no other flags; auto-detection
