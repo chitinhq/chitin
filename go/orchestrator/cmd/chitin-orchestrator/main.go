@@ -47,8 +47,8 @@ const TaskQueue = "chitin"
 
 // Exit codes for subcommand handlers — spec 097 FR-011.
 const (
-	exitSuccess     = 0
-	exitUserError   = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
+	exitSuccess      = 0
+	exitUserError    = 1 // bad ref, ambiguous ref, missing artifact, terminal-state cancel
 	exitRuntimeError = 2 // Temporal unreachable, IO failure, kernel-binary missing
 )
 
@@ -208,17 +208,17 @@ func runWorkerHost(ctx context.Context) int {
 // runtime and the schedule subcommand's pre-validation must consult the
 // same registry shape, so they construct from this one function.
 //
-// Optional filter — `CHITIN_DRIVER_ALLOW` env var, comma-or-space
-// separated driver IDs. When set, only drivers whose ID appears in the
-// allow set are registered; others are skipped. Empty / unset = all
-// drivers register (existing behavior). Useful for cost-control demos
-// where the operator wants to pin dispatch to a specific cheaper
-// driver (e.g. `CHITIN_DRIVER_ALLOW=codex`) without changing the spec
-// or waiting for spec 099 US1's `--driver` flag. Per-spec routing is
-// out of scope for this hook — it gates the whole registry, not a
-// single dispatch.
-func buildRegistry() (*driver.Registry, error) {
-	allowSet := parseDriverAllowEnv(os.Getenv("CHITIN_DRIVER_ALLOW"))
+// Optional filters — `CHITIN_DRIVER_ALLOW_IMPL`,
+// `CHITIN_DRIVER_ALLOW_REVIEW`, and legacy `CHITIN_DRIVER_ALLOW` env
+// vars, comma-or-space separated driver IDs. When set, only drivers
+// whose ID appears in the allow set are registered; others are
+// skipped. Empty / unset = all drivers register (existing behavior).
+func buildRegistry(roles ...string) (*driver.Registry, error) {
+	role := "impl"
+	if len(roles) > 0 {
+		role = roles[0]
+	}
+	allowSet := parseDriverAllowEnv(driverAllowEnvForRole(role))
 	// CHITIN_CODEX_MODEL overrides the codex driver's default model
 	// (which is hard-coded to "gpt-5.x-codex" in driver/codex/driver.go).
 	// Some operator accounts can't reach that model (e.g. ChatGPT-account
@@ -246,6 +246,20 @@ func buildRegistry() (*driver.Registry, error) {
 		}
 	}
 	return registry, nil
+}
+
+func driverAllowEnvForRole(role string) string {
+	switch role {
+	case "review":
+		if s := os.Getenv("CHITIN_DRIVER_ALLOW_REVIEW"); s != "" {
+			return s
+		}
+	default:
+		if s := os.Getenv("CHITIN_DRIVER_ALLOW_IMPL"); s != "" {
+			return s
+		}
+	}
+	return os.Getenv("CHITIN_DRIVER_ALLOW")
 }
 
 // parseDriverAllowEnv tokenizes CHITIN_DRIVER_ALLOW. Accepts comma or
