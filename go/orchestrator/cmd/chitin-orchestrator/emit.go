@@ -53,6 +53,23 @@ type CopilotDispatchedPayload struct {
 	DispatchedAt string `json:"dispatched_at"`
 }
 
+// CopilotPRActivityPayload is the spec 099 "copilot_pr_activity" event
+// payload (specs/099-github-native-dispatch/contracts/chain-events.md
+// Event 5). FR-013 telemetry stream: every pull_request.* /
+// pull_request_review.* / issue_comment.created webhook for a PR
+// carrying `chitin-dispatch` emits one of these regardless of
+// eligibility — the deliberate partial-recovery of telemetry we lose
+// by dispatching off-machine.
+type CopilotPRActivityPayload struct {
+	Repo        string          `json:"repo"`
+	PRNumber    int             `json:"pr_number"`
+	EventType   string          `json:"event_type"`
+	EventAction string          `json:"event_action"`
+	DeliveryID  string          `json:"delivery_id"`
+	Payload     json.RawMessage `json:"payload"`
+	ReceivedAt  string          `json:"received_at"`
+}
+
 // emitSchedulerStarted writes a scheduler_started chain event via the
 // kernel's emit subcommand. The workflowRunID is used as the chain RunID
 // so the resulting events-*.jsonl filename matches the Temporal RunID
@@ -77,6 +94,14 @@ func emitSchedulerCanceled(ctx context.Context, payload SchedulerCanceledPayload
 // Same fail-soft contract as emitSchedulerStarted.
 func emitCopilotDispatched(ctx context.Context, payload CopilotDispatchedPayload, stderr io.Writer) {
 	emitChainEvent(ctx, "copilot_dispatched", "", payload, stderr)
+}
+
+// emitCopilotPRActivity writes a copilot_pr_activity chain event
+// (FR-013 PR-level telemetry stream). workflowRunID is empty — the
+// activity stream is per-webhook-delivery, not tied to a workflow.
+// Same fail-soft contract as emitSchedulerStarted.
+func emitCopilotPRActivity(ctx context.Context, payload CopilotPRActivityPayload, stderr io.Writer) {
+	emitChainEvent(ctx, "copilot_pr_activity", "", payload, stderr)
 }
 
 // emitChainEvent constructs a chain-event JSON record, writes it to a

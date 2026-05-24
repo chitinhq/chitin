@@ -109,6 +109,7 @@ func runFactoryListen(ctx context.Context, args []string, stdout, stderr io.Writ
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook/push", handler.handlePush)
+	mux.HandleFunc("/webhook/pr", handler.handlePR)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
@@ -160,6 +161,123 @@ type factoryHandler struct {
 	stderr       io.Writer
 
 	logMu sync.Mutex
+}
+
+// handlePR is the spec 099 slice 3 route. POST /webhook/pr.
+//
+// Accepts `pull_request`, `pull_request_review`, and `issue_comment`
+// events (dispatched on the X-GitHub-Event header). HMAC-verified via
+// the same scheme as /webhook/push.
+//
+// Slice 3 scope:
+//   - HMAC verification
+//   - Eligibility check (FR-007) via checkPREligibility
+//   - Always-on copilot_pr_activity chain emit (FR-013) — the
+//     PR-level telemetry stream — for any PR carrying chitin-dispatch
+//   - Response shape per contracts/factory-listen-pr-events.md
+//
+// Deferred to slice 4:
+//   - Idempotent chain dedup against prior copilot_pr_detected (FR-008)
+//   - PRReviewWorkflow router invocation (FR-009)
+//   - copilot_pr_detected + copilot_review_posted/_failed emit
+func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20)) // 8 MiB cap
+	if err != nil {
+		http.Error(w, `{"error":"cannot read body"}`, http.StatusBadRequest)
+		return
+	}
+
+	sigHeader := r.Header.Get("X-Hub-Signature-256")
+	if !verifyHMAC(h.secret, body, sigHeader) {
+		h.logRequest(map[string]any{
+			"route":              "/webhook/pr",
+			"signature_verified": false,
+			"reason":             "invalid signature",
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid signature"}`))
+		return
+	}
+
+	eventType := r.Header.Get("X-GitHub-Event")
+	deliveryID := r.Header.Get("X-GitHub-Delivery")
+
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		http.Error(w, `{"error":"cannot parse payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Resolve the PR number — pull_request_review and pull_request
+	// carry it at top level; issue_comment puts it inside .issue.
+	prNumber := p.Number
+	if prNumber == 0 {
+		prNumber = p.Issue.Number
+	}
+
+	resp := prResponse{
+		Received:  true,
+		EventType: eventType,
+		Action:    p.Action,
+		PRNumber:  prNumber,
+	}
+
+	elig := checkPREligibility(eventType, &p)
+	resp.Eligible = elig.Eligible
+	if !elig.Eligible && len(elig.Reasons) > 0 {
+		resp.SkippedReason = elig.Reasons[0]
+	}
+
+	// FR-013: always-on telemetry. Emit copilot_pr_activity for any
+	// event on a PR carrying the chitin-dispatch label, regardless of
+	// eligibility outcome. (Activity events ARE deduped by delivery ID
+	// via the chain's natural append-only history — operators query
+	// by delivery_id if they need de-dup.)
+	if carriesChitinDispatchLabel(&p) {
+		emitCopilotPRActivity(r.Context(), CopilotPRActivityPayload{
+			Repo:        p.Repository.FullName,
+			PRNumber:    prNumber,
+			EventType:   eventType,
+			EventAction: p.Action,
+			DeliveryID:  deliveryID,
+			Payload:     json.RawMessage(body),
+			ReceivedAt:  time.Now().UTC().Format(time.RFC3339),
+		}, h.stderr)
+	}
+
+	h.logRequest(map[string]any{
+		"route":              "/webhook/pr",
+		"signature_verified": true,
+		"event_type":         eventType,
+		"event_action":       p.Action,
+		"pr_number":          prNumber,
+		"eligible":           elig.Eligible,
+		"skipped_reason":     resp.SkippedReason,
+	})
+
+	respBody, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(respBody)
+}
+
+// carriesChitinDispatchLabel checks both PR and Issue label slots —
+// pull_request events carry labels on .pull_request.labels;
+// issue_comment events carry them on .issue.labels.
+func carriesChitinDispatchLabel(p *prPayload) bool {
+	if hasLabel(p.PullRequest.Labels, chitinDispatchLabel) {
+		return true
+	}
+	if hasLabel(p.Issue.Labels, chitinDispatchLabel) {
+		return true
+	}
+	return false
 }
 
 // handlePush is the load-bearing route. POST /webhook/push.
