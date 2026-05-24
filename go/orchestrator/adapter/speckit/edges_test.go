@@ -1,7 +1,6 @@
 package speckit
 
 import (
-	"sort"
 	"testing"
 )
 
@@ -122,16 +121,22 @@ func hasEdge(edges []derivedEdge, from, to string) bool {
 	return false
 }
 
-// TestFileOverlapEdgesDeterministic asserts the injected edges land in a
-// stable order across runs — a precondition for compilation determinism the
-// kit's plan.md Constraints require.
+// TestFileOverlapEdgesDeterministic asserts the injected edges come out in
+// the same order on every run — a precondition for compilation determinism
+// the kit's plan.md Constraints require. The expected order is dependent-
+// task file order: T2's overlap edges before T3's; within one dependent
+// task, oldest dependency first.
 func TestFileOverlapEdgesDeterministic(t *testing.T) {
 	tasks := []Task{
 		{ID: "T001", Num: 1, Parallel: true, Description: "Edit `a.go`", LineNo: 1},
 		{ID: "T002", Num: 2, Parallel: true, Description: "Edit `a.go`", LineNo: 2},
 		{ID: "T003", Num: 3, Parallel: true, Description: "Edit `a.go`", LineNo: 3},
 	}
+	want := []string{"T002→T001", "T003→T001", "T003→T002"}
 	first := edgePairs(deriveFileOverlapEdges(tasks))
+	if !sliceEqual(first, want) {
+		t.Fatalf("first run order = %v, want %v", first, want)
+	}
 	for i := 0; i < 5; i++ {
 		got := edgePairs(deriveFileOverlapEdges(tasks))
 		if !sliceEqual(first, got) {
@@ -140,12 +145,13 @@ func TestFileOverlapEdgesDeterministic(t *testing.T) {
 	}
 }
 
+// edgePairs renders the edges in their original slice order — no sort. The
+// test relies on the order produced by the helper, not on set equality.
 func edgePairs(edges []derivedEdge) []string {
 	out := make([]string, 0, len(edges))
 	for _, e := range edges {
 		out = append(out, e.from+"→"+e.to)
 	}
-	sort.Strings(out)
 	return out
 }
 

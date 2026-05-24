@@ -83,12 +83,19 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 		exists[t.ID] = struct{}{}
 	}
 
+	// Spec 112 FR-002: pre-compute every parallel task's file scope once so
+	// each iteration of the main loop can emit its overlap edges in-place,
+	// preserving the dependent-task file order this function's contract
+	// promises. A task absent from scopes is sequential or named no backticked
+	// path.
+	scopes := fileScopes(tasks)
+
 	// barrierByPhase tracks, per phase ordinal, the id of the most recent
 	// sequential (non-[P]) task — the task a following task implicitly
 	// depends on. Phase 0 (pre-phase tasks) gets its own barrier.
 	barrierByPhase := make(map[int]string)
 
-	for _, t := range tasks {
+	for i, t := range tasks {
 		explicit := explicitDeps(t.Description)
 		if len(explicit) > 0 {
 			for _, dep := range explicit {
@@ -107,47 +114,34 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 			if !t.Parallel {
 				barrierByPhase[t.PhaseSeq] = t.ID
 			}
-			continue
+		} else {
+			// Ordering rule: depend on the current phase barrier, if any.
+			if barrier, ok := barrierByPhase[t.PhaseSeq]; ok && barrier != t.ID {
+				edges = append(edges, derivedEdge{from: t.ID, to: barrier, lineNo: t.LineNo})
+			}
+			// A sequential task becomes the new barrier; a [P] task does
+			// not, so the next [P] task remains its sibling rather than
+			// chaining off it.
+			if !t.Parallel {
+				barrierByPhase[t.PhaseSeq] = t.ID
+			}
 		}
 
-		// Ordering rule: depend on the current phase barrier, if any.
-		if barrier, ok := barrierByPhase[t.PhaseSeq]; ok && barrier != t.ID {
-			edges = append(edges, derivedEdge{from: t.ID, to: barrier, lineNo: t.LineNo})
-		}
-		// A sequential task becomes the new barrier; a [P] task does not, so
-		// the next [P] task remains its sibling rather than chaining off it.
-		if !t.Parallel {
-			barrierByPhase[t.PhaseSeq] = t.ID
-		}
+		// Spec 112 FR-002: file-overlap edges from t to every prior `[P]`
+		// task whose file scope overlaps t's. Emitted here, in the main
+		// loop, so they land in dependent-task file order alongside the
+		// ordering/explicit edges.
+		edges = append(edges, fileOverlapEdgesAt(tasks, i, scopes)...)
 	}
 
-	// Spec 112 FR-002: inject dependency edges between parallel siblings whose
-	// file scopes overlap, so a spec dispatch never opens two PRs that would
-	// race to merge the same file. Disjoint scopes keep their parallelism.
-	edges = append(edges, deriveFileOverlapEdges(tasks)...)
 	return edges, dangling
 }
 
-// deriveFileOverlapEdges returns the depends_on edges that serialize parallel
-// siblings touching the same file (spec 112 FR-002). For each ordered pair of
-// `[P]` tasks (Ta, Tb) with Ta earlier in file order, if their file scopes
-// overlap an edge Tb→Ta is added — Tb cannot start until Ta merges, so the
-// driver authoring Tb sees Ta's writes when it diffs against main.
-//
-// A task's file scope is the set of repo paths cited in backticks in its
-// description (adapter.ExtractFilePaths). A task whose description names no
-// path contributes no scope and gets no overlap-derived edge — file overlap is
-// only injected when both tasks declare a scope. (Description without paths is
-// treated as "scope unknown" rather than "scope empty"; serializing every such
-// task would be over-aggressive. Spec author should name the file in backticks
-// to opt in.)
-//
-// Edges injected here may be redundant with the ordering rule (two parallel
-// siblings in the same phase already share a barrier upstream) or with
-// transitivity (T3→T1 plus T3→T2 plus T2→T1 — the DAG's AddEdge dedups same-
-// pair edges and the scheduler tolerates redundant edges, so we don't try to
-// minimize the set here).
-func deriveFileOverlapEdges(tasks []Task) []derivedEdge {
+// fileScopes returns the set of repo file paths each parallel task names in
+// its description, keyed by task ID. Tasks not present in the result are
+// sequential (no file-overlap rule applies) or `[P]` but named no backticked
+// path (scope unknown — see deriveFileOverlapEdges for rationale).
+func fileScopes(tasks []Task) map[string]map[string]struct{} {
 	scopes := make(map[string]map[string]struct{}, len(tasks))
 	for _, t := range tasks {
 		if !t.Parallel {
@@ -163,22 +157,60 @@ func deriveFileOverlapEdges(tasks []Task) []derivedEdge {
 		}
 		scopes[t.ID] = s
 	}
+	return scopes
+}
 
+// fileOverlapEdgesAt returns the depends_on edges from tasks[i] to every
+// PRIOR `[P]` task whose file scope overlaps tasks[i]'s. Edges come out in
+// dependency-task file order (the earliest overlapping prior task first), so
+// the caller can append them and preserve a dependent-task-file-ordered
+// edges slice. Spec 112 FR-002.
+//
+// tasks[i] not having a file scope (sequential, or `[P]` with no backticked
+// path) produces no edges — there is nothing to overlap with.
+func fileOverlapEdgesAt(tasks []Task, i int, scopes map[string]map[string]struct{}) []derivedEdge {
+	tb := tasks[i]
+	sb, ok := scopes[tb.ID]
+	if !ok {
+		return nil
+	}
 	var out []derivedEdge
-	for i, ta := range tasks {
+	for _, ta := range tasks[:i] {
 		sa, ok := scopes[ta.ID]
 		if !ok {
 			continue
 		}
-		for _, tb := range tasks[i+1:] {
-			sb, ok := scopes[tb.ID]
-			if !ok {
-				continue
-			}
-			if filesOverlap(sa, sb) {
-				out = append(out, derivedEdge{from: tb.ID, to: ta.ID, lineNo: tb.LineNo})
-			}
+		if filesOverlap(sa, sb) {
+			out = append(out, derivedEdge{from: tb.ID, to: ta.ID, lineNo: tb.LineNo})
 		}
+	}
+	return out
+}
+
+// deriveFileOverlapEdges returns ALL file-overlap edges across tasks in
+// dependent-task file order (spec 112 FR-002). It is a convenience that
+// applies fileOverlapEdgesAt across every task; DeriveEdges does the same
+// work in-line in its main loop. Kept as a separately-testable helper so the
+// rule can be exercised without the surrounding ordering/explicit machinery.
+//
+// A task's file scope is the set of repo paths cited in backticks in its
+// description (adapter.ExtractFilePaths). A task whose description names no
+// path contributes no scope and gets no overlap-derived edge — file overlap
+// is only injected when BOTH tasks declare a scope. (Description without
+// paths is treated as "scope unknown" rather than "scope empty"; serializing
+// every such task would be over-aggressive. Spec author should name the file
+// in backticks to opt in.)
+//
+// Three [P] siblings all touching the same file produce the full pairwise
+// chain — T2→T1, T3→T1, T3→T2 — which fully serializes them. The redundant
+// T3→T1 edge is harmless: the DAG's AddEdge dedups same-pair edges and the
+// scheduler tolerates redundant transitive edges, so we do not minimize the
+// set here.
+func deriveFileOverlapEdges(tasks []Task) []derivedEdge {
+	scopes := fileScopes(tasks)
+	var out []derivedEdge
+	for i := range tasks {
+		out = append(out, fileOverlapEdgesAt(tasks, i, scopes)...)
 	}
 	return out
 }
