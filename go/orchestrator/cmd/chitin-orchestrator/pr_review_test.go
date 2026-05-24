@@ -45,6 +45,12 @@ func TestRunPRReview_BadArgs(t *testing.T) {
 		{"too many args", []string{"1", "2"}, "exactly one positional argument"},
 		{"bad policy-class", []string{"--policy-class", "wrong", "1"}, "policy-class"},
 		{"bad arbiter", []string{"--arbiter", "wrong", "1"}, "arbiter"},
+		// --arbiter operator is a declared-valid enum value but the
+		// workflow's Phase 2 foundational arbiter-dispatch halts on
+		// it with a confusing reason. The CLI rejects it explicitly
+		// until R-OPSURF lands so the operator gets a clear message
+		// instead of a halted workflow.
+		{"arbiter operator not yet wired", []string{"--arbiter", "operator", "1"}, "R-OPSURF"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
