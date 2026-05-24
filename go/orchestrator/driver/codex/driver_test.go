@@ -21,7 +21,9 @@ func TestCardDeclaresCodexContract(t *testing.T) {
 	if card.Tier != driver.TierFrontier {
 		t.Fatalf("tier = %s, want frontier", card.Tier)
 	}
-	for _, cap := range []driver.Capability{driver.CapCodeImplement, driver.CapCodeReview, driver.CapCodeRefactor} {
+	// Spec 105 FR-001: codex declares CapTestAuthor (test-authoring is
+	// in scope for a frontier code model).
+	for _, cap := range []driver.Capability{driver.CapCodeImplement, driver.CapCodeReview, driver.CapCodeRefactor, driver.CapTestAuthor} {
 		if !card.HasCapability(cap) {
 			t.Fatalf("card missing capability %q", cap)
 		}

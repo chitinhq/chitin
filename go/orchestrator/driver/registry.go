@@ -163,6 +163,29 @@ func (r *Registry) DriversFor(ctx context.Context, cap Capability) []AgentDriver
 	return matches
 }
 
+// DriversDeclaring returns every registered driver whose CapabilityCard
+// declares cap, regardless of operational Ready state. Used by the
+// scheduler-side validator (ValidateForDispatch) to compute taxonomic
+// coverage — a driver missing from PATH at scheduling time may be
+// available by the time its activity slot runs, so coverage is a
+// declaration check, not an operational one.
+//
+// Distinction from DriversFor:
+//   DriversFor:        cap declared + Ready (operational dispatch shortlist)
+//   DriversDeclaring:  cap declared only (taxonomic coverage check)
+//
+// Result order matches r.Drivers() — id-sorted ascending — for deterministic
+// downstream behavior.
+func (r *Registry) DriversDeclaring(cap Capability) []AgentDriver {
+	var matches []AgentDriver
+	for _, d := range r.Drivers() {
+		if d.Card().HasCapability(cap) {
+			matches = append(matches, d)
+		}
+	}
+	return matches
+}
+
 // BlockedUnroutableError is returned by Select when no registered, ready
 // driver satisfies the required capability (FR-012). It names the missing
 // capability so the scheduler can mark the work unit blocked-unroutable —
