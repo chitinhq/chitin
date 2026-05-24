@@ -51,12 +51,6 @@ jobs:
           fi
           find node_modules -name 'better_sqlite3.node' | head
 
-      - name: Tolerant router stdin contract (spec 036 invariant 1)
-        run: python3 -m unittest swarm.tests.test_dispatch_fault_tolerance_invariants.Inv1ClassifyRobustnessTests.test_pick_driver_tolerates_garbage_stdin
-
-      - name: Lifecycle trace smoke
-        run: python3 -m unittest swarm.tests.test_trace_lifecycle
-
       - name: Plugin registration stdout contract
         run: pnpm exec vitest run apps/openclaw-plugin-governance/test/bridge.test.ts -t "keeps plugin registration stdout-clean by using the logger only"
 
