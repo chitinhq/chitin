@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
@@ -74,5 +75,86 @@ func TestInvoke_ReviewMode_CleanJSONEmitsValidatedVerdict(t *testing.T) {
 	}
 	if len(got.Blockers) != 0 {
 		t.Errorf("blockers = %v, want empty for approve-with-comments", got.Blockers)
+	}
+}
+
+// TestInvoke_ReviewMode_VerdictValidationFailureSurfacesError covers spec 109
+// FR-006 (and the US2 verdict-shape-failure path): when the claudecode
+// review-mode invocation returns syntactically valid JSON whose body
+// violates one of the spec 094 FR-014 per-enum invariants — here, the
+// classic "verdict=approve with non-empty blockers" contradiction — the
+// driver must NOT propagate the malformed body to the verdict activity.
+// Instead it routes the outcome to StatusFailed and surfaces the validator's
+// invariant name + detail in Result.Explanation so the workflow's failure
+// classification (FailureMalformedVerdict, distinct from FailureMalformedJSON)
+// has the post-mortem detail attached without a separate audit fetch.
+//
+// The body below trips the "approve_blockers_must_be_empty" invariant from
+// activities/review/verdict/invariants.go — it is parseable as
+// StructuredVerdict but Validate rejects it because approve mandates an
+// empty blockers list (FR-014.1).
+//
+// Pairs with TestInvoke_ReviewMode_CleanJSONEmitsValidatedVerdict (T004,
+// the success path) and the T006 prose-only test (FailureMalformedJSON,
+// distinct error class): together they pin the three FR-005/FR-006 outcomes
+// the dispatch_machine_reviewer activity classifies on (succeeded / malformed
+// JSON / invariant-violated verdict body).
+func TestInvoke_ReviewMode_VerdictValidationFailureSurfacesError(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	// verdict=approve + non-empty blockers violates FR-014.1 ("approve ⇒
+	// blockers empty"). Validate returns a *ValidationError whose Invariant
+	// is "approve_blockers_must_be_empty" and Detail names the count.
+	invalidJSON := `{"verdict":"approve","concerns":[],"recommendations":[],"blockers":["secret committed in config.yaml"]}`
+	script := "#!/usr/bin/env bash\n" +
+		"cat <<'JSON'\n" + invalidJSON + "\nJSON\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "wu-review-invalid-001",
+		SpecID:       "094",
+		TaskID:       "review",
+		WorktreePath: dir,
+		Context:      `{"pr":{"repo":"chitinhq/chitin","number":1007}}`,
+	}
+	res, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Status != driver.StatusFailed {
+		t.Fatalf("status = %s, want StatusFailed; explanation=%q", res.Status, res.Explanation)
+	}
+	// T003 specifies the explanation prefix "malformed_verdict: ..." so the
+	// activity dispatcher can match on a stable token without parsing the
+	// validator's invariant name format.
+	if !strings.Contains(res.Explanation, "malformed_verdict") {
+		t.Errorf("explanation missing %q prefix: %q", "malformed_verdict", res.Explanation)
+	}
+	// The validator's invariant name is the load-bearing post-mortem signal —
+	// it tells an operator exactly which FR-014 rule the reviewer violated.
+	// Either the invariant token or its human-readable detail is acceptable;
+	// requiring both would over-constrain the explanation format.
+	hasInvariant := strings.Contains(res.Explanation, "approve_blockers_must_be_empty")
+	hasDetail := strings.Contains(res.Explanation, "approve verdict must have empty blockers")
+	if !hasInvariant && !hasDetail {
+		t.Errorf("explanation missing validator error (invariant %q or detail %q): %q",
+			"approve_blockers_must_be_empty",
+			"approve verdict must have empty blockers",
+			res.Explanation)
+	}
+	// Sanity check the contradiction is the actual violation: Validate over
+	// the same body should reject for the same reason. If this changes (e.g.
+	// the verdict package relaxes the invariant) the test author should pick
+	// a different violation rather than weaken the assertion above.
+	var parsed verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(invalidJSON), &parsed); err != nil {
+		t.Fatalf("test fixture is not parseable JSON: %v", err)
+	}
+	if err := verdict.Validate(parsed); err == nil {
+		t.Fatalf("test fixture unexpectedly passed verdict.Validate; pick a different invariant violation")
 	}
 }

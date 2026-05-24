@@ -8,4 +8,4 @@ description: "Task list — 109 claudecode review-mode StructuredVerdict JSON co
 - [X] T004 [US1] Add a unit test in `go/orchestrator/driver/claudecode/review_mode_test.go` for the clean JSON-only response case — assert the driver emits `StatusSucceeded` with a validated verdict body
 - [ ] T005 [P] [US2] Add a unit test in `review_mode_test.go` for the markdown-fenced JSON case — assert the post-processor strips the fences and emits `StatusSucceeded`
 - [ ] T006 [P] [US2] Add a unit test in `review_mode_test.go` for the prose-only case — assert the driver emits `StatusFailed` with `malformed_verdict` in the explanation and the raw output truncated to 1 KiB
-- [ ] T007 [P] [US2] Add a unit test in `review_mode_test.go` for the verdict-validation-failure case (e.g. `verdict=approve` with non-empty `blockers`) — assert `StatusFailed` and the validation error surfaces in the explanation
+- [X] T007 [P] [US2] Add a unit test in `review_mode_test.go` for the verdict-validation-failure case (e.g. `verdict=approve` with non-empty `blockers`) — assert `StatusFailed` and the validation error surfaces in the explanation
