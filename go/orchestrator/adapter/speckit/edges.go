@@ -120,7 +120,80 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 			barrierByPhase[t.PhaseSeq] = t.ID
 		}
 	}
+
+	// Spec 112 FR-002: inject dependency edges between parallel siblings whose
+	// file scopes overlap, so a spec dispatch never opens two PRs that would
+	// race to merge the same file. Disjoint scopes keep their parallelism.
+	edges = append(edges, deriveFileOverlapEdges(tasks)...)
 	return edges, dangling
+}
+
+// deriveFileOverlapEdges returns the depends_on edges that serialize parallel
+// siblings touching the same file (spec 112 FR-002). For each ordered pair of
+// `[P]` tasks (Ta, Tb) with Ta earlier in file order, if their file scopes
+// overlap an edge Tb→Ta is added — Tb cannot start until Ta merges, so the
+// driver authoring Tb sees Ta's writes when it diffs against main.
+//
+// A task's file scope is the set of repo paths cited in backticks in its
+// description (adapter.ExtractFilePaths). A task whose description names no
+// path contributes no scope and gets no overlap-derived edge — file overlap is
+// only injected when both tasks declare a scope. (Description without paths is
+// treated as "scope unknown" rather than "scope empty"; serializing every such
+// task would be over-aggressive. Spec author should name the file in backticks
+// to opt in.)
+//
+// Edges injected here may be redundant with the ordering rule (two parallel
+// siblings in the same phase already share a barrier upstream) or with
+// transitivity (T3→T1 plus T3→T2 plus T2→T1 — the DAG's AddEdge dedups same-
+// pair edges and the scheduler tolerates redundant edges, so we don't try to
+// minimize the set here).
+func deriveFileOverlapEdges(tasks []Task) []derivedEdge {
+	scopes := make(map[string]map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		if !t.Parallel {
+			continue
+		}
+		paths := adapter.ExtractFilePaths(t.Description)
+		if len(paths) == 0 {
+			continue
+		}
+		s := make(map[string]struct{}, len(paths))
+		for _, p := range paths {
+			s[p] = struct{}{}
+		}
+		scopes[t.ID] = s
+	}
+
+	var out []derivedEdge
+	for i, ta := range tasks {
+		sa, ok := scopes[ta.ID]
+		if !ok {
+			continue
+		}
+		for _, tb := range tasks[i+1:] {
+			sb, ok := scopes[tb.ID]
+			if !ok {
+				continue
+			}
+			if filesOverlap(sa, sb) {
+				out = append(out, derivedEdge{from: tb.ID, to: ta.ID, lineNo: tb.LineNo})
+			}
+		}
+	}
+	return out
+}
+
+// filesOverlap reports whether two file-path sets share at least one path.
+func filesOverlap(a, b map[string]struct{}) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	for p := range a {
+		if _, hit := b[p]; hit {
+			return true
+		}
+	}
+	return false
 }
 
 // explicitDeps returns the de-duplicated task ids a description explicitly
