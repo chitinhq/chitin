@@ -1,8 +1,8 @@
 # Spec 061: Unified spec model + framework adapters (L1)
 
-**Status**: DRAFT 2026-05-19 — awaiting red sign-off. Implements layer
-L1 of charter spec 060. Inherits charter Q1 (model owner) and Q5
-(adapter priority) as open questions below.
+**Status**: RATIFIED 2026-05-23 — Slices 1 + 2 shipped (PR #809, #836).
+Implements layer L1 of charter spec 060. Open questions Q1, Q2, Q4
+resolved by implementation; Q3 (OpenSpec format) remains open.
 
 **Author lens (Knuth)**: name the normalized shape exactly. Every field
 that two adapters would populate differently is a future bug. The model
@@ -110,19 +110,26 @@ Superpowers is a non-goal — see Non-goals.)
 
 ## Open questions
 
-- **Q1 — model owner** (charter Q1). Does `UnifiedSpec` live as a Go
+- **Q1 — model owner** (charter Q1). ~~Does `UnifiedSpec` live as a Go
   type in the kernel, a Python service, or a language-neutral schema
-  (JSON Schema) both consume? Proposed: language-neutral JSON Schema as
-  the contract, with a Go and a Python binding — the kernel (L2) and
-  the telemetry/orchestration layers (L3/L4) are different languages.
-- **Q2 — adapter location.** One `specs/adapters/` package, or each
-  adapter near its framework? Proposed: one package, one registry.
+  (JSON Schema) both consume?~~ **Resolved**: language-neutral JSON Schema
+  as the contract, with Go and Python bindings. Implemented in
+  `libs/contracts/schemas/unified-spec.schema.json`,
+  `go/execution-kernel/internal/spec/spec.go`, and
+  `python/analysis/unified_spec.py`.
+- **Q2 — adapter location.** ~~One `specs/adapters/` package, or each
+  adapter near its framework?~~ **Resolved**: one package, one registry.
+  Implemented in `go/execution-kernel/internal/spec/adapter/` and
+  `python/analysis/spec_adapter/`.
 - **Q3 — OpenSpec format.** OpenSpec's on-disk format must be confirmed
-  before R4 is implementable. Operator/design-review input.
-- **Q4 — adapter priority** (charter Q5). spec-kit ships first (R3).
-  Which is second — OpenSpec or Superpowers? Proposed: Superpowers
-  second (`docs/superpowers/` already in-repo, lower integration risk),
-  OpenSpec third.
+  before R4 is implementable. Operator/design-review input. **Still open**.
+- **Q4 — adapter priority** (charter Q5). ~~spec-kit ships first (R3).
+  Which is second — OpenSpec or Superpowers?~~ **Resolved**: Superpowers
+  second (shipped Slice 2, PR #836), OpenSpec third.
+
+> **Note**: Slices 1 and 2 are complete and merged. Slice 3 (OpenSpec
+> adapter, T024–T028) is blocked on Q3. This ticket covers the completed
+> work; Slice 3 will be a separate follow-up once Q3 resolves.
 
 ## Non-goals
 
@@ -147,7 +154,8 @@ Superpowers is a non-goal — see Non-goals.)
 
 ## Slice plan
 
-- **Slice 1** — `UnifiedSpec` schema + adapter interface + spec-kit/house
-  adapter. R1, R2, R3, R6. AC1–AC6 for the house format.
-- **Slice 2** — Superpowers adapter (R5) — pending Q4.
-- **Slice 3** — OpenSpec adapter (R4) — pending Q3 + Q4.
+- **Slice 1** ✅ — `UnifiedSpec` schema + adapter interface + spec-kit/house
+  adapter. R1, R2, R3, R6. AC1–AC6 for the house format. Merged PR #809.
+- **Slice 2** ✅ — Superpowers adapter (R5). Merged PR #836.
+- **Slice 3** — OpenSpec adapter (R4) — blocked on Q3 (OpenSpec format
+  confirmation). Will be a separate follow-up ticket once Q3 resolves.

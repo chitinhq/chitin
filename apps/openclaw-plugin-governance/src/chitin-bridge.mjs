@@ -28,6 +28,12 @@ const POLICY_FILE = resolvePolicyFile();
  * @property {string} [reason]
  * @property {string} [ruleId]
  * @property {Record<string, unknown>} [params]
+ * @property {false} [continue] — Present iff the kernel emits `continue:false`
+ *   (lockdown / hard-stop denies). Absent for soft denies. The kernel NEVER
+ *   emits `continue:true`; soft-block is represented by omission.
+ *   See specs/091-fix-clawta-lockdown-loop/contracts/kernel-decision-shape.md.
+ * @property {string} [stopReason] — Co-occurs with `continue:false`. Operator-
+ *   facing stop-reason text from the kernel.
  *
  * @typedef {object} BridgeOptions
  * @property {string} kernelPath
@@ -114,6 +120,12 @@ function parseDecision(stdout) {
       reason: typeof j.reason === 'string' ? j.reason : undefined,
       ruleId: typeof j.rule_id === 'string' ? j.rule_id : undefined,
       params: typeof j.params === 'object' && j.params !== null ? j.params : undefined,
+      // Spec 091 (FR-007): defensive extraction of continue/stopReason for the
+      // legacy gate-evaluate path too. The kernel currently emits continue:false
+      // primarily via the router format; mirror it here so both paths surface
+      // the hard-stop signal uniformly.
+      continue: j.continue === false ? false : undefined,
+      stopReason: typeof j.stopReason === 'string' ? j.stopReason : undefined,
     };
   } catch {
     return null;
@@ -303,10 +315,18 @@ function parseRouterDecision(exitCode, stdout, opts) {
   try {
     const j = JSON.parse(firstLine);
     if (j.decision === 'block') {
+      // Spec 091 (FR-007): extract j.continue and j.rule_id from the kernel
+      // JSON. Previously this was discarded — the hardcoded ruleId='router_block'
+      // dropped the actual rule identity (e.g., 'lockdown'), and j.continue was
+      // never read. That meant continue:false (hard stop) was invisible to the
+      // openclaw plugin handler, which caused the lockdown loop.
+      // Contract: specs/091-fix-clawta-lockdown-loop/contracts/kernel-decision-shape.md
       return {
         allow: false,
         reason: typeof j.reason === 'string' ? j.reason : 'denied by chitin router',
-        ruleId: 'router_block',
+        ruleId: typeof j.rule_id === 'string' ? j.rule_id : 'router_block',
+        continue: j.continue === false ? false : undefined,
+        stopReason: typeof j.stopReason === 'string' ? j.stopReason : undefined,
       };
     }
     return failClosed(
