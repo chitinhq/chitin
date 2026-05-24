@@ -22,21 +22,9 @@ entries:
     category: ci
     purpose: enforce the Go-only governance authority boundary against repo drift
 
-  - path: scripts/check-hermes-clawta-contract.py
-    category: ci
-    purpose: statically verify the Hermes and Clawta collaboration contract stays wired
-
   - path: scripts/check-no-chitin-hardcodes.sh
     category: ci
     purpose: block repo and workspace literals from creeping back into swarm/bin and script entrypoints after board-config migration
-
-  - path: scripts/check-spec-frontmatter.py
-    category: ci
-    purpose: validate required YAML frontmatter on docs superpowers specs
-
-  - path: scripts/check-spec-index-sync.sh
-    category: ci
-    purpose: assert the specs index matches regen-spec-index.py output
 
   - path: scripts/check-scripts-manifest.sh
     category: ci
