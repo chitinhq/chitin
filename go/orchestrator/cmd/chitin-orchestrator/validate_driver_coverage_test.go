@@ -17,7 +17,7 @@ import (
 // every Capability in driver.KnownCapabilities() has ≥ 1 declaring
 // driver. Fails on any future taxonomy addition that lacks an implementer.
 func TestProductionRegistry_CoversEveryTaxonomyCapability(t *testing.T) {
-	registry, err := buildRegistry()
+	registry, err := buildRegistry("impl")
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}

@@ -51,7 +51,7 @@ func runValidateDriverCoverage(ctx context.Context, args []string, stdout, stder
 		return exitUserError
 	}
 
-	registry, err := buildRegistry()
+	registry, err := buildRegistry("impl")
 	if err != nil {
 		fmt.Fprintf(stderr, "error: cannot build driver registry: %v\n", err)
 		return exitRuntimeError
