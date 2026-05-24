@@ -238,6 +238,86 @@ func TestSelect_BlockedUnroutable(t *testing.T) {
 	})
 }
 
+// TestLookupByGitIdentity covers the spec 094 R-AUTHORID lookup substrate:
+// driver-id resolution from a PR author identifier. The cases mirror spec
+// 094 Acceptance Scenarios 4.1 (driver author excluded), 4.3 (operator/
+// human author returns no match), plus the defensive cases for empty input
+// and an unmapped identity.
+func TestLookupByGitIdentity(t *testing.T) {
+	hermes := newFake("hermes", TierFrontier, CostMedium, CapCodeReview)
+	hermes.card.GitIdentity = "hermes-bot"
+	openclaw := newFake("openclaw", TierMid, CostLow, CapCodeReview, CapCodeImplement)
+	openclaw.card.GitIdentity = "clawta-bot"
+	codex := newFake("codex", TierFrontier, CostHigh, CapCodeImplement)
+	// codex deliberately has no GitIdentity — must not match the empty key.
+
+	r := NewRegistry()
+	for _, d := range []AgentDriver{hermes, openclaw, codex} {
+		if err := r.Register(d); err != nil {
+			t.Fatalf("Register(%s): %v", d.ID(), err)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		input     string
+		wantOK    bool
+		wantID    string
+	}{
+		{"hermes_bot_resolves_to_hermes", "hermes-bot", true, "hermes"},
+		{"clawta_bot_resolves_to_openclaw", "clawta-bot", true, "openclaw"},
+		{"operator_login_unmapped", "jpleva91", false, ""},
+		{"empty_string_never_matches", "", false, ""},
+		{"unknown_bot_unmapped", "ghost-bot", false, ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := r.LookupByGitIdentity(tc.input)
+			if ok != tc.wantOK {
+				t.Fatalf("LookupByGitIdentity(%q): ok=%v, want %v", tc.input, ok, tc.wantOK)
+			}
+			if tc.wantOK && got.ID() != tc.wantID {
+				t.Errorf("LookupByGitIdentity(%q): ID=%q, want %q", tc.input, got.ID(), tc.wantID)
+			}
+			if !tc.wantOK && got != nil {
+				t.Errorf("LookupByGitIdentity(%q): want nil driver on miss, got %s", tc.input, got.ID())
+			}
+		})
+	}
+}
+
+// TestReviewModeOptional confirms a driver can declare CapCodeReview with
+// or without a ReviewMode block, and the card carries the value through
+// registration. This is the FR-002 sidecar-shape sanity check.
+func TestReviewModeOptional(t *testing.T) {
+	withMode := newFake("with-mode", TierFrontier, CostMedium, CapCodeReview)
+	withMode.card.GitIdentity = "with-mode-bot"
+	withMode.card.ReviewMode = &ReviewMode{
+		ToolName:       "review",
+		PromptTemplate: "Review the diff carefully.",
+		MaxBytesIn:     200000,
+	}
+	withoutMode := newFake("without-mode", TierMid, CostLow, CapCodeReview)
+	withoutMode.card.GitIdentity = "without-mode-bot"
+
+	r := NewRegistry()
+	for _, d := range []AgentDriver{withMode, withoutMode} {
+		if err := r.Register(d); err != nil {
+			t.Fatalf("Register(%s): %v", d.ID(), err)
+		}
+	}
+
+	if got, _ := r.Driver("with-mode"); got.Card().ReviewMode == nil {
+		t.Error("with-mode driver: ReviewMode should round-trip through Register")
+	} else if got.Card().ReviewMode.ToolName != "review" {
+		t.Errorf("with-mode driver: ReviewMode.ToolName=%q, want %q", got.Card().ReviewMode.ToolName, "review")
+	}
+	if got, _ := r.Driver("without-mode"); got.Card().ReviewMode != nil {
+		t.Errorf("without-mode driver: ReviewMode should remain nil, got %+v", got.Card().ReviewMode)
+	}
+}
+
 // ids extracts driver ids from a slice, preserving order.
 func ids(ds []AgentDriver) []string {
 	out := make([]string, len(ds))

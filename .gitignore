@@ -84,3 +84,12 @@ __pycache__/
 # Icarus terminal-bench runtime output — the non-stop loop writes here
 # continuously (spec 068)
 jobs/
+
+# Local agent identity file (per-machine, never committed)
+.chitin-identity
+
+# gstack tool state (browse-startup logs + tmp/)
+.gstack/
+
+# Playwright MCP scratch directory (console logs, page snapshots — local-only)
+.playwright-mcp/

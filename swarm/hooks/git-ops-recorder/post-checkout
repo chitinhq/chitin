@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# swarm/hooks/git-ops-recorder/post-checkout
+#
+# Source for the git post-checkout hook installed by
+# swarm/bin/install-git-ops-recorder.sh. Captures every checkout
+# (both branch switches AND file-level checkouts) with process-tree
+# attribution.
+#
+# Args from git:
+#   $1 = previous HEAD ref (or oid)
+#   $2 = new HEAD ref (or oid)
+#   $3 = flag (1 = branch checkout, 0 = file checkout)
+#
+# This is a different signal than reference-transaction — `git checkout
+# -- some/file` doesn't move any ref but DOES restore files, and is a
+# common way mystery reverts happen. We capture both.
+
+set -uo pipefail
+
+PREV_HEAD="${1:-}"
+NEW_HEAD="${2:-}"
+FLAG="${3:-}"
+
+LOG_DIR="${CHITIN_GIT_OPS_LOG_DIR:-$HOME/.chitin}"
+LOG="$LOG_DIR/git-ops.jsonl"
+mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
+
+ts() {
+    date -u +%Y-%m-%dT%H:%M:%S.%6NZ 2>/dev/null
+}
+
+json_escape() {
+    local s="${1-}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+# Walk the process tree (same as reference-transaction).
+proc_tree=""
+pid=$$
+levels=0
+while [[ $levels -lt 6 && -n "$pid" && "$pid" != "0" && "$pid" != "1" ]]; do
+    cmdline_file="/proc/$pid/cmdline"
+    [[ ! -r "$cmdline_file" ]] && break
+    cmd=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null | head -c 500)
+    cmd_esc=$(json_escape "$cmd")
+    entry=$(printf '{"pid":%d,"cmd":"%s"}' "$pid" "$cmd_esc")
+    if [[ -z "$proc_tree" ]]; then
+        proc_tree="$entry"
+    else
+        proc_tree="$proc_tree,$entry"
+    fi
+
+    stat_file="/proc/$pid/stat"
+    [[ ! -r "$stat_file" ]] && break
+    stat=$(cat "$stat_file" 2>/dev/null) || break
+    [[ -z "$stat" ]] && break
+    rest="${stat##*)}"
+    read -r _ ppid _ <<< "$rest"
+    [[ -z "${ppid:-}" ]] && break
+    pid="$ppid"
+    levels=$((levels + 1))
+done
+proc_tree="[$proc_tree]"
+
+branch_after=""
+if [[ "$FLAG" == "1" ]]; then
+    branch_after=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+fi
+
+repo=$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")
+repo_esc=$(json_escape "$repo")
+cwd_esc=$(json_escape "$PWD")
+prev_esc=$(json_escape "$PREV_HEAD")
+new_esc=$(json_escape "$NEW_HEAD")
+branch_esc=$(json_escape "$branch_after")
+
+kind="file"
+[[ "$FLAG" == "1" ]] && kind="branch"
+
+record=$(printf '{"ts":"%s","event":"post-checkout","kind":"%s","prev_head":"%s","new_head":"%s","branch_after":"%s","repo":"%s","cwd":"%s","process_tree":%s}' \
+    "$(ts)" "$kind" "$prev_esc" "$new_esc" "$branch_esc" "$repo_esc" "$cwd_esc" "$proc_tree")
+
+printf '%s\n' "$record" >> "$LOG" 2>/dev/null || true
+
+exit 0

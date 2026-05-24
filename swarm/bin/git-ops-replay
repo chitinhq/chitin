@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""git-ops-replay — query and replay the git ref-mutation log.
+
+Reads ~/.chitin/git-ops.jsonl (or $CHITIN_GIT_OPS_LOG) and prints
+matching events with process attribution.
+
+Usage:
+    git-ops-replay                           # everything in the log
+    git-ops-replay --since 1h                # last hour
+    git-ops-replay --since 2026-05-23T15:00  # since a specific RFC3339 instant
+    git-ops-replay --ref refs/heads/main     # only events touching this ref
+    git-ops-replay --pid-cmd-contains kitty  # only events whose process tree mentions kitty
+    git-ops-replay --kind branch             # only branch checkouts (post-checkout flag=1)
+    git-ops-replay --kind file               # only file checkouts (post-checkout flag=0)
+    git-ops-replay --phase committed         # only committed phase (reference-transaction)
+    git-ops-replay --event post-checkout     # only post-checkout records
+    git-ops-replay --tail 10                 # show only the last N matches
+    git-ops-replay --json                    # raw JSON (one record per line)
+
+Designed for "who reverted this file?" forensics. The process-tree
+filter (--pid-cmd-contains) is the load-bearing query — it identifies
+the offender process.
+"""
+from __future__ import annotations
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+def parse_since(spec: str) -> datetime:
+    """Parse --since as either RFC3339 or a duration like '1h', '30m', '90s', '2d'."""
+    m = re.fullmatch(r"(\d+)([smhd])", spec)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        secs = n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        return datetime.now(timezone.utc) - timedelta(seconds=secs)
+    s = spec.rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        sys.exit(f"git-ops-replay: cannot parse --since {spec!r} (try '1h' or '2026-05-23T15:00')")
+
+
+def fmt_event(rec: dict) -> str:
+    ts = rec.get("ts", "?")
+    ev = rec.get("event", "?")
+    head = f"[{ts}] {ev}"
+    if ev == "reference-transaction":
+        phase = rec.get("phase", "?")
+        refs = [u.get("ref", "?") for u in rec.get("updates", [])]
+        head += f"  phase={phase}  refs={refs}"
+        upd_lines = []
+        for u in rec.get("updates", []):
+            old = u.get("old", "?")[:10]
+            new = u.get("new", "?")[:10]
+            ref = u.get("ref", "?")
+            upd_lines.append(f"    {old}..{new}  {ref}")
+        if upd_lines:
+            head += "\n" + "\n".join(upd_lines)
+    elif ev == "post-checkout":
+        kind = rec.get("kind", "?")
+        prev = rec.get("prev_head", "?")[:10]
+        new = rec.get("new_head", "?")[:10]
+        branch = rec.get("branch_after", "")
+        head += f"  kind={kind}  prev={prev}  new={new}"
+        if branch:
+            head += f"  branch_after={branch}"
+    tree = rec.get("process_tree", [])
+    for p in tree[:5]:
+        pid = p.get("pid", "?")
+        cmd = p.get("cmd", "?")
+        if len(cmd) > 140:
+            cmd = cmd[:137] + "..."
+        head += f"\n    pid={pid:>7}  {cmd}"
+    return head
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="git-ops-replay", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--log", default=os.environ.get("CHITIN_GIT_OPS_LOG",
+                                                        str(Path.home() / ".chitin/git-ops.jsonl")),
+                        help="Path to JSONL log (default: ~/.chitin/git-ops.jsonl)")
+    parser.add_argument("--since", help="Only events at or after this time (RFC3339 or duration like '1h')")
+    parser.add_argument("--ref", help="Only events touching this ref (substring match)")
+    parser.add_argument("--phase", choices=["prepared", "committed", "aborted"],
+                        help="Only events with this phase (reference-transaction)")
+    parser.add_argument("--kind", choices=["branch", "file"], help="Only post-checkout events of this kind")
+    parser.add_argument("--event", choices=["reference-transaction", "post-checkout"],
+                        help="Only this event type")
+    parser.add_argument("--pid-cmd-contains", metavar="STR",
+                        help="Only events whose process tree has a cmd containing STR")
+    parser.add_argument("--tail", type=int, metavar="N", help="Show only the last N matching records")
+    parser.add_argument("--json", action="store_true", help="Emit raw JSON (one record per line) instead of formatted")
+    args = parser.parse_args()
+
+    log_path = Path(args.log)
+    if not log_path.exists():
+        sys.exit(f"git-ops-replay: log not found at {log_path}")
+
+    since_dt = parse_since(args.since) if args.since else None
+
+    matches: list[dict] = []
+    with log_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if since_dt:
+                try:
+                    rec_dt = datetime.fromisoformat(rec.get("ts", "").rstrip("Z")).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if rec_dt < since_dt:
+                    continue
+
+            if args.event and rec.get("event") != args.event:
+                continue
+            if args.phase and rec.get("phase") != args.phase:
+                continue
+            if args.kind and rec.get("kind") != args.kind:
+                continue
+            if args.ref:
+                refs = [u.get("ref", "") for u in rec.get("updates", [])]
+                if not any(args.ref in r for r in refs):
+                    continue
+            if args.pid_cmd_contains:
+                tree = rec.get("process_tree", [])
+                if not any(args.pid_cmd_contains in p.get("cmd", "") for p in tree):
+                    continue
+
+            matches.append(rec)
+
+    if args.tail:
+        matches = matches[-args.tail:]
+
+    if args.json:
+        for rec in matches:
+            print(json.dumps(rec))
+    else:
+        if not matches:
+            print(f"(no matching events in {log_path})", file=sys.stderr)
+            return 0
+        for rec in matches:
+            print(fmt_event(rec))
+            print()
+        print(f"-- {len(matches)} record(s) --", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
