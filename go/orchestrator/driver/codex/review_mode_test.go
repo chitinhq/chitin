@@ -20,6 +20,12 @@ import (
 // "Not inside a trusted directory and --skip-git-repo-check was not
 // specified."
 func TestReviewArgvFor_IncludesSkipGitRepoCheck(t *testing.T) {
+	// SpecID="094" / TaskID="review" are NOT the spec under test (spec 110)
+	// — they're the WorkUnit discriminator that activities/review/dispatch_
+	// machine_reviewer.go sets for any review invocation. The reviewArgvFor
+	// builder (the spec-110 surface) doesn't read SpecID directly; the
+	// fixture mirrors what a live review dispatch would carry so any future
+	// reader sees a realistic WorkUnit shape.
 	wu := driver.WorkUnit{
 		ID:           "wu-review-argv-001",
 		SpecID:       "094",
@@ -51,8 +57,11 @@ func TestInvoke_NonReviewMode_OmitsSkipGitRepoCheck(t *testing.T) {
 	binPath := filepath.Join(dir, "codex")
 	argvPath := filepath.Join(dir, "argv.bin")
 	// Null-delimit argv so a multi-line prompt doesn't blur arg boundaries.
+	// argvPath is single-quoted in the script body so a TMPDIR containing
+	// spaces or shell metacharacters (CI sandboxes sometimes mount under
+	// such paths) does not break the redirection.
 	script := "#!/usr/bin/env bash\n" +
-		"printf '%s\\0' \"$@\" > " + argvPath + "\n" +
+		"printf '%s\\0' \"$@\" > '" + argvPath + "'\n" +
 		"exit 0\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
