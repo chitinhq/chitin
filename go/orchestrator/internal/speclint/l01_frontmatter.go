@@ -4,18 +4,26 @@
 // that returns zero or more Violations; the linter command (T002) wires
 // the rules together and emits structured JSON.
 //
-// This file contains rule L01 (frontmatter complete). Sibling files
-// (l02_cross_refs.go … l07_us_test.go) carry the other six rules.
+// This file contains rule L01 (frontmatter complete). The remaining
+// L02–L07 rules will land alongside it in sibling files as future work.
 package speclint
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+)
+
+// extractFrontmatter failure modes — surfaced so CheckL01Frontmatter
+// can give authors a targeted fix hint instead of a generic message.
+var (
+	errFrontmatterMissing      = errors.New("spec frontmatter not found: expected a YAML block delimited by `---` lines at the top of the file")
+	errFrontmatterUnterminated = errors.New("spec frontmatter block opened with `---` but never closed: add a matching `---` line after the last frontmatter key")
 )
 
 // Severity classifies a lint Violation. `error` violations gate the
@@ -65,11 +73,15 @@ var l01RequiredKeys = []string{
 // an unterminated one, or YAML that won't parse — each produce a
 // single violation and short-circuit the remaining checks.
 func CheckL01Frontmatter(specPath string, content []byte) []Violation {
-	fmBody, fmContentLine, openLine, ok := extractFrontmatter(content)
-	if !ok {
+	fmBody, fmContentLine, openLine, err := extractFrontmatter(content)
+	if err != nil {
+		line := 1
+		if openLine > 0 {
+			line = openLine
+		}
 		return []Violation{{
-			Rule: "L01", File: specPath, Line: 1, Severity: SeverityError,
-			Message: "spec frontmatter not found: expected a YAML block delimited by `---` lines at the top of the file",
+			Rule: "L01", File: specPath, Line: line, Severity: SeverityError,
+			Message: err.Error(),
 		}}
 	}
 
@@ -146,6 +158,11 @@ func checkL01Value(key string, v any) string {
 		// time.Parse can read as YYYY-MM-DD.
 		switch x := v.(type) {
 		case time.Time:
+			// Reject full timestamps like `2026-05-25T12:34:56Z` — L01
+			// wants a plain date, which yaml.v3 returns as midnight UTC.
+			if x.Hour() != 0 || x.Minute() != 0 || x.Second() != 0 || x.Nanosecond() != 0 {
+				return fmt.Sprintf("expected YYYY-MM-DD (date only), got timestamp %q", x.Format(time.RFC3339))
+			}
 			return ""
 		case string:
 			if _, err := time.Parse("2006-01-02", strings.TrimSpace(x)); err != nil {
@@ -181,9 +198,12 @@ func checkL01Value(key string, v any) string {
 // the file. It tolerates blank lines before the opening delimiter but
 // nothing else. Returns the YAML body bytes, the 1-based file line of
 // the first content line inside the block (for offsetting AST line
-// numbers), the line of the opening `---` (for block-level violations),
-// and ok=false when no well-formed block is present.
-func extractFrontmatter(content []byte) (body []byte, contentLine, openLine int, ok bool) {
+// numbers), and the line of the opening `---` (for block-level
+// violations). Returns errFrontmatterMissing when there is no opening
+// delimiter, or errFrontmatterUnterminated when the opener was found
+// but the closer is absent — distinguishing those gives authors a
+// targeted fix hint instead of a generic "not found" message.
+func extractFrontmatter(content []byte) (body []byte, contentLine, openLine int, err error) {
 	lines := bytes.Split(content, []byte("\n"))
 	openIdx := -1
 	for i, ln := range lines {
@@ -194,10 +214,10 @@ func extractFrontmatter(content []byte) (body []byte, contentLine, openLine int,
 			openIdx = i
 			break
 		}
-		return nil, 0, 0, false
+		return nil, 0, 0, errFrontmatterMissing
 	}
 	if openIdx == -1 {
-		return nil, 0, 0, false
+		return nil, 0, 0, errFrontmatterMissing
 	}
 	closeIdx := -1
 	for i := openIdx + 1; i < len(lines); i++ {
@@ -207,10 +227,13 @@ func extractFrontmatter(content []byte) (body []byte, contentLine, openLine int,
 		}
 	}
 	if closeIdx == -1 {
-		return nil, 0, 0, false
+		// openLine is still meaningful in this branch — point the
+		// violation at the opening delimiter so the author knows which
+		// `---` is missing its mate.
+		return nil, 0, openIdx + 1, errFrontmatterUnterminated
 	}
 	body = bytes.Join(lines[openIdx+1:closeIdx], []byte("\n"))
-	return body, openIdx + 2, openIdx + 1, true
+	return body, openIdx + 2, openIdx + 1, nil
 }
 
 // mapKeyLines parses the frontmatter once more as a yaml.Node tree and
@@ -242,10 +265,11 @@ func mapKeyLines(fmBody []byte, fmContentLine int) map[string]int {
 }
 
 // toPositiveInt accepts YAML's integer-bearing shapes — int, int64,
-// uint64, float64 with no fractional part, or a string that strconv
-// accepts — and returns the int. It does NOT enforce positivity; the
-// caller checks the sign so the error message can name "non-positive"
-// distinctly from "non-integer".
+// uint64, or a string that strconv accepts — and returns the int.
+// Floats are rejected even when fractional-zero (e.g. `115.0`): the
+// caller wants strict integer or string-int spec IDs. It does NOT
+// enforce positivity; the caller checks the sign so the error message
+// can name "non-positive" distinctly from "non-integer".
 func toPositiveInt(v any) (int, bool) {
 	switch x := v.(type) {
 	case int:
@@ -254,11 +278,6 @@ func toPositiveInt(v any) (int, bool) {
 		return int(x), true
 	case uint64:
 		return int(x), true
-	case float64:
-		if x == float64(int(x)) {
-			return int(x), true
-		}
-		return 0, false
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(x))
 		if err != nil {

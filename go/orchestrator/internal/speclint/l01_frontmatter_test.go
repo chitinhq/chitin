@@ -186,10 +186,17 @@ func TestL01_CreatedBadDate(t *testing.T) {
 }
 
 func TestL01_DependsOnNotASequence(t *testing.T) {
-	src := replaceFrontmatterValue(cleanSpec, "depends_on", "not-a-list")
+	// Replace the whole block (key + list items) so the YAML stays valid
+	// and the rule exercises the per-key shape check, not the YAML parser.
+	src := strings.Replace(cleanSpec, "depends_on:\n  - 097\n  - 113", "depends_on: not-a-list", 1)
 	got := CheckL01Frontmatter("spec.md", []byte(src))
 	if !hasViolationFor(got, "depends_on") {
 		t.Fatalf("expected depends_on shape violation, got %+v", got)
+	}
+	for _, v := range got {
+		if strings.Contains(v.Message, "not valid YAML") {
+			t.Fatalf("test fell through to YAML parse error path, got %+v", got)
+		}
 	}
 }
 
