@@ -243,6 +243,156 @@ func TestHandlePR_SkipsActivityEmit_ForUnlabeledPR(t *testing.T) {
 	}
 }
 
+// TestHandlePR_PullRequestReview_AllowlistedReviewer_DispatchesIteration
+// covers spec 113 US1 happy path: a pull_request_review.submitted event
+// on a chitin/wu/* branch from a copilot allowlist reviewer flips
+// PRIterationEligible=true and populates the deterministic WorkflowID.
+// The stub dispatcher currently surfaces a workflow_not_implemented
+// failure (T004 lands the workflow); the test pins the WorkflowID +
+// review-id wiring regardless.
+func TestHandlePR_PullRequestReview_AllowlistedReviewer_DispatchesIteration(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	bin, _ := fakeKernelBin(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl"}
+
+	body := []byte(`{
+		"action": "submitted",
+		"number": 800,
+		"pull_request": {
+			"html_url": "https://github.com/o/r/pull/800",
+			"head": {"ref": "chitin/wu/spec-113-T001-aaa"},
+			"base": {"ref": "main"},
+			"labels": [{"name": "chitin-dispatch"}, {"name": "sched/run/run-it-1"}]
+		},
+		"review": {
+			"id": 99001,
+			"state": "changes_requested",
+			"user": {"login": "copilot-pull-request-reviewer"}
+		},
+		"repository": {"full_name": "o/r"}
+	}`)
+
+	req := signedPRRequest(t, secret, "pull_request_review", "delivery-iter-1", body)
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp prResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// FR-007 contract preserved: pull_request_review remains
+	// event_type_ignored under the spec 099 eligibility surface.
+	if resp.Eligible {
+		t.Errorf("Eligible=true; want false (FR-007 contract: review events are event_type_ignored)")
+	}
+	if !resp.PRIterationEligible {
+		t.Errorf("PRIterationEligible=false; want true for allowlisted reviewer on chitin/wu/* branch")
+	}
+	if resp.PRIterationReviewID != 99001 {
+		t.Errorf("PRIterationReviewID=%d want 99001", resp.PRIterationReviewID)
+	}
+	if want := "iteration-pr-800-review-99001"; resp.PRIterationWorkflowID != want {
+		t.Errorf("PRIterationWorkflowID=%q want %q", resp.PRIterationWorkflowID, want)
+	}
+}
+
+// TestHandlePR_PullRequestReview_HumanReviewer_NotEligible covers spec
+// 113 FR-009: a non-allowlisted reviewer marks PRIterationEligible=false
+// with the canonical reason "human_reviewer_present" so the operator
+// queue (spec 114) and US3 escalation path get a stable signal. No
+// dispatch fires.
+func TestHandlePR_PullRequestReview_HumanReviewer_NotEligible(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	bin, _ := fakeKernelBin(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl"}
+
+	body := []byte(`{
+		"action": "submitted",
+		"number": 801,
+		"pull_request": {
+			"html_url": "https://github.com/o/r/pull/801",
+			"head": {"ref": "chitin/wu/spec-113-T001-aaa"},
+			"base": {"ref": "main"},
+			"labels": [{"name": "chitin-dispatch"}]
+		},
+		"review": {
+			"id": 99002,
+			"state": "changes_requested",
+			"user": {"login": "some-human-operator"}
+		},
+		"repository": {"full_name": "o/r"}
+	}`)
+
+	req := signedPRRequest(t, secret, "pull_request_review", "delivery-iter-2", body)
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp prResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.PRIterationEligible {
+		t.Errorf("PRIterationEligible=true; want false (human reviewer)")
+	}
+	if resp.PRIterationSkippedReason != "human_reviewer_present" {
+		t.Errorf("PRIterationSkippedReason=%q want human_reviewer_present", resp.PRIterationSkippedReason)
+	}
+	if resp.PRIterationDispatched || resp.PRIterationWorkflowID != "" {
+		t.Errorf("non-allowlisted reviewer must not dispatch; got Dispatched=%v WorkflowID=%q",
+			resp.PRIterationDispatched, resp.PRIterationWorkflowID)
+	}
+}
+
+// TestHandlePR_PullRequestReview_NonChitinBranch_NotEligible covers spec
+// 113 FR-001: only chitin/wu/* branches participate in the iteration
+// loop, even when the reviewer is allowlisted.
+func TestHandlePR_PullRequestReview_NonChitinBranch_NotEligible(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	bin, _ := fakeKernelBin(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl"}
+
+	body := []byte(`{
+		"action": "submitted",
+		"number": 802,
+		"pull_request": {
+			"head": {"ref": "feat/operator-branch"},
+			"base": {"ref": "main"},
+			"labels": []
+		},
+		"review": {
+			"id": 99003,
+			"state": "commented",
+			"user": {"login": "copilot-pull-request-reviewer"}
+		},
+		"repository": {"full_name": "o/r"}
+	}`)
+
+	req := signedPRRequest(t, secret, "pull_request_review", "delivery-iter-3", body)
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp prResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.PRIterationEligible {
+		t.Errorf("PRIterationEligible=true; want false (non-chitin/wu branch)")
+	}
+	if resp.PRIterationSkippedReason != "non_chitin_branch" {
+		t.Errorf("PRIterationSkippedReason=%q want non_chitin_branch", resp.PRIterationSkippedReason)
+	}
+}
+
 func TestHandlePR_IssueComment_RoutesViaIssueLabels(t *testing.T) {
 	// issue_comment events put labels on .issue, not .pull_request.
 	// Eligibility logic should pick them up there.

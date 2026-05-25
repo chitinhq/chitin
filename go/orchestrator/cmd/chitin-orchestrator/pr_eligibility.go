@@ -16,6 +16,7 @@
 package main
 
 import (
+	"os"
 	"regexp"
 	"strings"
 )
@@ -56,6 +57,16 @@ type prPayload struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"issue"`
+	// Review is the minimal subset of a pull_request_review payload that
+	// the spec 113 PR-iteration loop needs. State is "approved",
+	// "commented", or "changes_requested". User is the reviewer.
+	Review struct {
+		ID    int64  `json:"id"`
+		State string `json:"state"`
+		User  struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	} `json:"review"`
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
@@ -154,6 +165,82 @@ func checkPullRequestEvent(p *prPayload) prEligibility {
 	return r
 }
 
+// defaultCopilotReviewerAllowlist is the spec 113 FR-002 default. Override
+// via $CHITIN_COPILOT_REVIEWER_ALLOWLIST (comma-separated). Match is
+// case-insensitive against review.user.login.
+var defaultCopilotReviewerAllowlist = []string{"copilot-pull-request-reviewer"}
+
+// chitinWorkUnitBranchPrefix marks a factory-authored work-unit branch
+// per spec 110. Spec 113 FR-001 limits the iteration loop to these
+// branches — review activity on operator-authored branches flows through
+// other paths.
+const chitinWorkUnitBranchPrefix = "chitin/wu/"
+
+// checkPullRequestReviewEvent implements spec 113 FR-002. Returns
+// Eligible iff:
+//
+//  1. review.state ∈ {commented, changes_requested}
+//  2. review.user.login is in the configured copilot allowlist
+//  3. PR head ref matches chitin/wu/*
+//
+// Pure function; no IO. The allowlist is read from
+// $CHITIN_COPILOT_REVIEWER_ALLOWLIST (comma-separated) at each call so
+// operators can rotate it without restarting factory-listen; falls back
+// to defaultCopilotReviewerAllowlist when unset.
+func checkPullRequestReviewEvent(p *prPayload) prEligibility {
+	r := prEligibility{}
+	state := strings.ToLower(p.Review.State)
+	if state != "commented" && state != "changes_requested" {
+		r.Reasons = append(r.Reasons, "review_state_ignored")
+		return r
+	}
+	if !isCopilotReviewer(p.Review.User.Login) {
+		// FR-009 — non-allowlisted human reviewer; T011 escalates separately,
+		// here we just mark non-eligible with the canonical reason.
+		r.Reasons = append(r.Reasons, "human_reviewer_present")
+		return r
+	}
+	if !strings.HasPrefix(p.PullRequest.Head.Ref, chitinWorkUnitBranchPrefix) {
+		r.Reasons = append(r.Reasons, "non_chitin_branch")
+		return r
+	}
+	r.Eligible = true
+	return r
+}
+
+// isCopilotReviewer returns true iff login matches an allowlist entry
+// (case-insensitive). Empty login is never a match.
+func isCopilotReviewer(login string) bool {
+	if login == "" {
+		return false
+	}
+	for _, entry := range copilotReviewerAllowlist() {
+		if strings.EqualFold(entry, login) {
+			return true
+		}
+	}
+	return false
+}
+
+func copilotReviewerAllowlist() []string {
+	env := strings.TrimSpace(os.Getenv("CHITIN_COPILOT_REVIEWER_ALLOWLIST"))
+	if env == "" {
+		return defaultCopilotReviewerAllowlist
+	}
+	parts := strings.Split(env, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return defaultCopilotReviewerAllowlist
+	}
+	return out
+}
+
 func checkIssueCommentEvent(p *prPayload) prEligibility {
 	r := prEligibility{}
 	// issue_comment fires "created" / "edited" / "deleted". The
@@ -228,8 +315,17 @@ type prResponse struct {
 	// a pull_request_review event that passes checkPullRequestReviewEvent.
 	// One workflow per review, keyed by (pr_number, review_id) for
 	// duplicate-delivery dedup.
-	PRIterationDispatched   bool   `json:"pr_iteration_dispatched,omitempty"`
-	PRIterationWorkflowID   string `json:"pr_iteration_workflow_id,omitempty"`
-	PRIterationReviewID     int64  `json:"pr_iteration_review_id,omitempty"`
-	PRIterationDedupSkipped bool   `json:"pr_iteration_dedup_skipped,omitempty"`
+	//
+	// Kept structurally separate from the spec 099 `eligible` /
+	// `skipped_reason` pair: the contract at
+	// contracts/factory-listen-pr-events.md defines `eligible` as the
+	// FR-007 PREligibility result (which intentionally marks every
+	// pull_request_review event as `event_type_ignored`). PR iteration
+	// has its own eligibility decision surfaced here.
+	PRIterationEligible      bool   `json:"pr_iteration_eligible,omitempty"`
+	PRIterationSkippedReason string `json:"pr_iteration_skipped_reason,omitempty"`
+	PRIterationDispatched    bool   `json:"pr_iteration_dispatched,omitempty"`
+	PRIterationWorkflowID    string `json:"pr_iteration_workflow_id,omitempty"`
+	PRIterationReviewID      int64  `json:"pr_iteration_review_id,omitempty"`
+	PRIterationDedupSkipped  bool   `json:"pr_iteration_dedup_skipped,omitempty"`
 }

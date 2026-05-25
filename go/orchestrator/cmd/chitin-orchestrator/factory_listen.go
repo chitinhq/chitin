@@ -272,19 +272,19 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 	// the *response* (the review GitHub posts back) to iterate the
 	// authoring driver against the comments.
 	//
-	// Eligibility override: checkPREligibility above marks every
-	// pull_request_review event ineligible with reason "event_type_ignored"
-	// (that's the spec 099 view, since pull_request_review doesn't open
-	// a new review path there). Spec 113 reverses that for allowlisted
-	// reviewers — re-evaluate via checkPullRequestReviewEvent and reset
-	// the eligibility fields when this branch applies.
+	// The PR-iteration eligibility is structurally separate from the
+	// spec 099 `resp.Eligible` field: per
+	// contracts/factory-listen-pr-events.md, `eligible` reports the
+	// FR-007 PREligibility result (which marks pull_request_review as
+	// event_type_ignored). Spec 113 publishes its own decision on
+	// PRIterationEligible / PRIterationSkippedReason so existing
+	// /webhook/pr consumers and telemetry keep their original
+	// semantics.
 	if eventType == "pull_request_review" {
 		rev := checkPullRequestReviewEvent(&p)
-		resp.Eligible = rev.Eligible
-		if rev.Eligible {
-			resp.SkippedReason = ""
-		} else if len(rev.Reasons) > 0 {
-			resp.SkippedReason = rev.Reasons[0]
+		resp.PRIterationEligible = rev.Eligible
+		if !rev.Eligible && len(rev.Reasons) > 0 {
+			resp.PRIterationSkippedReason = rev.Reasons[0]
 		}
 		if rev.Eligible {
 			localRepo := h.targetRepo
@@ -297,7 +297,7 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 				PRBranch:       p.PullRequest.Head.Ref,
 				BaseBranch:     p.PullRequest.Base.Ref,
 				ReviewID:       p.Review.ID,
-				ReviewerLogin:  p.Review.Author.Login,
+				ReviewerLogin:  p.Review.User.Login,
 				ReviewState:    p.Review.State,
 				SchedulerRunID: labelSchedRunID(p.PullRequest.Labels),
 				TargetRepo:     localRepo,
@@ -308,7 +308,7 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 			resp.PRIterationReviewID = p.Review.ID
 			resp.PRIterationDedupSkipped = itOut.DedupSkipped
 			if itOut.FailureKind != "" {
-				resp.SkippedReason = "pr_iteration:" + itOut.FailureKind
+				resp.PRIterationSkippedReason = "pr_iteration:" + itOut.FailureKind
 			}
 		}
 	}
@@ -360,15 +360,17 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(map[string]any{
 		"route":                     "/webhook/pr",
 		"signature_verified":        true,
-		"event_type":                eventType,
-		"event_action":              p.Action,
-		"pr_number":                 prNumber,
-		"eligible":                  resp.Eligible,
-		"skipped_reason":            resp.SkippedReason,
-		"sibling_rebase_siblings":   resp.SiblingRebaseSiblings,
-		"sibling_rebase_dispatched": resp.SiblingRebaseDispatched,
-		"pr_iteration_dispatched":   resp.PRIterationDispatched,
-		"pr_iteration_review_id":    resp.PRIterationReviewID,
+		"event_type":                  eventType,
+		"event_action":                p.Action,
+		"pr_number":                   prNumber,
+		"eligible":                    elig.Eligible,
+		"skipped_reason":              resp.SkippedReason,
+		"sibling_rebase_siblings":     resp.SiblingRebaseSiblings,
+		"sibling_rebase_dispatched":   resp.SiblingRebaseDispatched,
+		"pr_iteration_eligible":       resp.PRIterationEligible,
+		"pr_iteration_dispatched":     resp.PRIterationDispatched,
+		"pr_iteration_review_id":      resp.PRIterationReviewID,
+		"pr_iteration_skipped_reason": resp.PRIterationSkippedReason,
 	})
 
 	respBody, _ := json.Marshal(resp)
