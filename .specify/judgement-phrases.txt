@@ -1,0 +1,9 @@
+consider
+might want
+is this really
+could be
+should this be split
+should this be merged
+P1|P2|P3 priority
+in scope
+out of scope
