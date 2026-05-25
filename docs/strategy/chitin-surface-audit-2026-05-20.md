@@ -54,7 +54,6 @@ Keep what is on that loop or measures it. Cull what isn't.
 | **Copilot** | Automated PR code review. | **KEEP** |
 | **The kanban board** (`hermes kanban`, `services/swarm-kanban-mcp`, 6 boards) | The coordination substrate — just proven as the *reliable* channel (spec-068 handoff). | **KEEP** |
 | **Discord** | Human↔agent comms + reports. Independent of the agent-bus. | **KEEP** |
-| **Icarus** (`swarm/icarus_harness`, `icarus-bench-*`, `icarus-bench.service`) | Deterministic terminal-bench harness — the eval/feedback arm. | **KEEP** |
 | **Observability** (`python/argus`, `python/analysis`/Sentinel, the chitin chain, `libs/telemetry`) | The telemetry thesis made real — decisions stream, anomaly detection, digests. | **KEEP — core** |
 | **`souls/`** | Agent cognitive archetypes (config). | Keep, low cost |
 
