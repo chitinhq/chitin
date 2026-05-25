@@ -12,6 +12,11 @@ import (
 // stays scannable in a typical 200-column terminal.
 const titleMaxRunes = 60
 
+// emptyQueueMessage is the spec 114 "edge cases" output when the
+// caller has nothing to escalate — friendlier than a header-only
+// table.
+const emptyQueueMessage = "✅ no PRs need attention\n"
+
 // FormatTable renders entries as a fixed-column text table using
 // text/tabwriter (FR-005). Columns: PR, TITLE, REASON, AGE,
 // LAST_AUTO, SPEC_REF.
@@ -24,6 +29,9 @@ const titleMaxRunes = 60
 // zero `now` (the default) tells the renderer to fall back to
 // time.Now() so production callers can elide the argument.
 func FormatTable(entries []Entry, now time.Time) string {
+	if len(entries) == 0 {
+		return emptyQueueMessage
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -72,10 +80,11 @@ func defaultDash(s string) string {
 }
 
 // formatAge renders the elapsed duration between t and now as a
-// compact two-character magnitude (e.g. "37s", "12m", "4h", "3d"). A
-// zero t renders as "-" since "now - zero" is meaningless. A future t
-// (clock skew or test injection) clamps to "0s" rather than producing
-// a negative duration.
+// compact magnitude with a single unit suffix (e.g. "37s", "12m",
+// "4h", "3d"). Width is variable — small magnitudes are two chars,
+// three-digit magnitudes are four. A zero t renders as "-" since
+// "now - zero" is meaningless. A future t (clock skew or test
+// injection) clamps to "0s" rather than producing a negative duration.
 func formatAge(now, t time.Time) string {
 	if t.IsZero() {
 		return "-"

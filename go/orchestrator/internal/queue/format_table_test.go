@@ -115,11 +115,13 @@ func TestFormatTable_TitleTruncatedAtSixty(t *testing.T) {
 	}
 }
 
-func TestFormatTable_EmptyEntriesEmitsHeaderOnly(t *testing.T) {
+func TestFormatTable_EmptyEntriesEmitsFriendlyMessage(t *testing.T) {
+	// Spec 114 "edge cases": when there are no escalations the queue
+	// prints "✅ no PRs need attention" instead of an empty table.
 	got := FormatTable(nil, fixedNow)
-	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("want header-only output, got %d lines:\n%s", len(lines), got)
+	want := "✅ no PRs need attention\n"
+	if got != want {
+		t.Fatalf("empty-input output:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -146,22 +148,25 @@ func TestFormatAge(t *testing.T) {
 }
 
 func TestFormatTable_EmptyFieldsRenderAsDash(t *testing.T) {
+	// Title is intentionally hyphen-free so a stray "-" in the row
+	// can only come from a placeholder cell — keeps the dash count
+	// from masking a missing placeholder.
 	got := FormatTable([]Entry{{
 		PRNumber:  7,
-		Title:     "no auto-action yet",
+		Title:     "fresh PR with no automation yet",
 		Reason:    "",
 		SpecRef:   "",
 		UpdatedAt: fixedNow.Add(-time.Hour),
 		// LastAutoActionAt zero-value
 	}}, fixedNow)
 
-	// Header line + one row, two "-" cells (REASON, LAST_AUTO,
-	// SPEC_REF). tabwriter pads so we look for "-" tokens rather
-	// than a precise position.
+	// Header line + one row; expect exactly three "-" placeholders
+	// (REASON, LAST_AUTO, SPEC_REF). tabwriter pads with spaces so
+	// counting "-" tokens is safe.
 	row := strings.Split(strings.TrimRight(got, "\n"), "\n")[1]
 	dashCount := strings.Count(row, "-")
-	if dashCount < 3 {
-		t.Errorf("want ≥3 dash placeholders (empty reason, last-auto, spec-ref), got %d:\n%s", dashCount, row)
+	if dashCount != 3 {
+		t.Errorf("want 3 dash placeholders (REASON, LAST_AUTO, SPEC_REF), got %d:\n%s", dashCount, row)
 	}
 }
 
