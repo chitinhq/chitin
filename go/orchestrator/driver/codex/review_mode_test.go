@@ -23,9 +23,12 @@ func TestInvoke_NonReviewMode_OmitsSkipGitRepoCheck(t *testing.T) {
 	argvPath := filepath.Join(dir, "argv.log")
 	// Fake codex binary: dump argv (one per line) to a file, exit 0 so the
 	// driver treats the invocation as successful and we can assert on the
-	// captured argv without an error-path interfering.
+	// captured argv without an error-path interfering. argvPath is single-
+	// quoted so a TMPDIR containing spaces or shell metacharacters doesn't
+	// break the redirection; printf '%s\n' is used instead of `echo` so
+	// args starting with `-` are not interpreted as flags.
 	script := "#!/usr/bin/env bash\n" +
-		"for a in \"$@\"; do echo \"$a\" >> " + argvPath + "; done\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> '" + argvPath + "'; done\n" +
 		"exit 0\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
