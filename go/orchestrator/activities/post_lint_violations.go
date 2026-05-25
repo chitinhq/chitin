@@ -1,11 +1,10 @@
 package activities
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -230,6 +229,13 @@ var postLintReviewFn = postLintReview
 // `gh api --paginate` and returns the set of (rule|file|line) keys
 // embedded in chitin-authored markers. Uses --paginate so a PR with >30
 // comments doesn't silently miss markers past page one.
+//
+// Author verification: when CHITIN_LINT_BOT_LOGIN is set, only comments
+// whose user.login matches that value contribute markers — preventing a
+// non-chitin commenter from forging a marker to suppress future posts
+// for some (rule,file,line). When the env var is unset the marker alone
+// authorizes dedup; operators who care about that attack surface should
+// pin the bot login.
 func fetchExistingLintMarkers(ctx context.Context, repo string, prNumber int) (map[string]struct{}, error) {
 	path := fmt.Sprintf("repos/%s/pulls/%d/comments?per_page=100", repo, prNumber)
 	raw, err := ghApiPaginated(ctx, path)
@@ -238,12 +244,19 @@ func fetchExistingLintMarkers(ctx context.Context, repo string, prNumber int) (m
 	}
 	var comments []struct {
 		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(raw, &comments); err != nil {
 		return nil, fmt.Errorf("decode pr comments: %w", err)
 	}
+	expectLogin := strings.TrimSpace(os.Getenv("CHITIN_LINT_BOT_LOGIN"))
 	out := make(map[string]struct{}, len(comments))
 	for _, c := range comments {
+		if expectLogin != "" && c.User.Login != expectLogin {
+			continue
+		}
 		rule, file, line, ok := parseLintMarker(c.Body)
 		if !ok {
 			continue
@@ -297,26 +310,4 @@ func postLintReview(ctx context.Context, repo string, prNumber int, vs []LintVio
 		return 0, fmt.Errorf("decode review response: %w", err)
 	}
 	return resp.ID, nil
-}
-
-// ghApiPostJSON runs `gh api --method POST --input - <path>` with body
-// piped on stdin and returns the response stdout. Mirrors the existing
-// `ghApi` / `ghApiPaginated` helpers in pr_iteration.go; duplicated here
-// rather than promoted to a shared helper to keep the spec-115 activity
-// self-contained (the same pragmatic call as the activity-package-
-// private `gitInWorktree` helper makes in pr_iteration.go).
-func ghApiPostJSON(ctx context.Context, path string, body []byte) ([]byte, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, fmt.Errorf("gh CLI not available: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "gh", "api", "--method", "POST", "--input", "-", path)
-	cmd.Stdin = bytes.NewReader(body)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api POST %s: %w: %s",
-			path, err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
 }
