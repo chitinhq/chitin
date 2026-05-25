@@ -140,6 +140,46 @@ spec_id: 999
 	}
 }
 
+func TestL04Events_EventTypeFieldShape_JSON(t *testing.T) {
+	// Spec authors include JSON payload examples outside backticks; the
+	// `event_type` field value is still an event reference and must be
+	// scanned (spec 115 FR-003 L04 / T006: "ANYWHERE in spec.md or
+	// tasks.md").
+	tasks := `- T001 Example envelope:
+    {"event_type": "pr_iteration_skipped", "pr_number": 1057}
+`
+	got := L04Events("spec.md", specWithCanonical, "tasks.md", tasks)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 violation from JSON-shaped event_type, got %d: %#v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "pr_iteration_skipped") {
+		t.Errorf("violation should name the freelance event: %q", got[0].Message)
+	}
+}
+
+func TestL04Events_EventTypeFieldShape_YAML(t *testing.T) {
+	// YAML / fixture shape: `event_type: pr_iteration_skipped` with no
+	// backticks and no quotes. Must still be caught.
+	tasks := "- T001 Example fixture:\n    event_type: pr_iteration_skipped\n    pr_number: 1057\n"
+	got := L04Events("spec.md", specWithCanonical, "tasks.md", tasks)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 violation from YAML-shaped event_type, got %d: %#v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "pr_iteration_skipped") {
+		t.Errorf("violation should name the freelance event: %q", got[0].Message)
+	}
+}
+
+func TestL04Events_EventTypeFieldShape_DedupAcrossShapes(t *testing.T) {
+	// Same token on the same line via two shapes (backtick + field) must
+	// produce one violation, not two.
+	tasks := "- T001 Both `pr_iteration_skipped` and event_type: pr_iteration_skipped here.\n"
+	got := L04Events("spec.md", specWithCanonical, "tasks.md", tasks)
+	if len(got) != 1 {
+		t.Fatalf("expected dedup across shapes on one line, got %d: %#v", len(got), got)
+	}
+}
+
 func TestL04Events_DedupsSameTokenSameLine(t *testing.T) {
 	tasks := "- T001 See `pr_iteration_skipped` and again `pr_iteration_skipped`.\n"
 	got := L04Events("spec.md", specWithCanonical, "tasks.md", tasks)

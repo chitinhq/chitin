@@ -13,35 +13,29 @@ import (
 	"strings"
 )
 
-// Violation is the canonical shape every L0N rule returns and the
-// spec-lint subcommand serialises to JSON (spec 115 FR-003:
-// "{rule, file, line, severity, message}"). Declared in this file so
-// l04_events.go builds in isolation; sibling rule files declare the same
-// shape and the merge into main consolidates them.
-type Violation struct {
-	Rule     string `json:"rule"`
-	File     string `json:"file"`
-	Line     int    `json:"line"`
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
-}
-
-// Severity values are a closed set: error gates iteration, warning is
-// informational (spec 115 edge case: "Only `error` violations gate the
-// iteration").
-const (
-	SeverityError   = "error"
-	SeverityWarning = "warning"
-)
-
 const ruleL04 = "L04"
 
 // L04Events enforces event-taxonomy closure (spec 115 FR-003 L04).
 //
-// Invariant: for every backticked snake_case identifier t appearing in
-// spec.md or tasks.md (outside the canonical telemetry FR), if t shares
-// the 2-segment family prefix of some canonical event e, then t ∈ E
-// where E is the closed set declared by the canonical FR.
+// Invariant: for every snake_case identifier t appearing in spec.md or
+// tasks.md (outside the canonical telemetry FR), if t shares the
+// 2-segment family prefix of some canonical event e, then t ∈ E where
+// E is the closed set declared by the canonical FR.
+//
+// Rule contract — what counts as a candidate token t:
+//
+//   - Token shape: t matches [a-z_]+ AND contains at least one
+//     underscore. The underscore requirement is intentional and tighter
+//     than the spec text's bare "[a-z_]+" — it drops bare words like
+//     `error`, `info`, `reason`, `comments` that match the pattern
+//     trivially but are not event identifiers. Specs MUST declare event
+//     names with at least one underscore (e.g. `decision_made`, not
+//     `decision`); single-segment event types are out of contract for
+//     this rule.
+//   - Token source: t is read from either an inline backtick span
+//     (`pr_iteration_skipped`) or the value of an `event_type` field in
+//     JSON/YAML-shaped examples (`"event_type": "pr_iteration_skipped"`,
+//     `event_type: pr_iteration_skipped`).
 //
 // Algorithm:
 //
@@ -54,9 +48,10 @@ const ruleL04 = "L04"
 //  3. Compute the family set F = {family(e) | e ∈ E}, where family(e)
 //     is the first two underscore-separated segments of e (or the full
 //     name when e has fewer than two underscores).
-//  4. Scan spec.md (outside the canonical block) and tasks.md for backticked
-//     snake_case tokens. A token t is reported as an L04 violation iff
-//     family(t) ∈ F and t ∉ E.
+//  4. Scan spec.md (outside the canonical block) and tasks.md for
+//     candidate tokens — both backticked snake_case tokens AND
+//     `event_type` field values in JSON/YAML-shaped examples. A token t
+//     is reported as an L04 violation iff family(t) ∈ F and t ∉ E.
 //
 // The family-prefix guard is the noise filter that separates real event
 // drift (e.g. `pr_iteration_skipped` against canonical `pr_iteration_*`,
@@ -124,6 +119,17 @@ var (
 
 	// backtickSpanRE matches the contents of one inline backtick span.
 	backtickSpanRE = regexp.MustCompile("`([^`]+)`")
+
+	// eventTypeFieldRE matches an `event_type` field assignment in the
+	// common JSON/YAML shapes specs include as example payloads, e.g.
+	//   "event_type": "pr_iteration_skipped"
+	//   event_type: pr_iteration_skipped
+	//   event_type: "pr_iteration_skipped"
+	// The captured group is the value (without surrounding quotes). Spec
+	// 115 FR-003 (L04) and T006 say the rule catches event_type references
+	// "ANYWHERE else in spec.md or tasks.md", so backtick spans alone are
+	// not sufficient — quoted payload examples must be scanned too.
+	eventTypeFieldRE = regexp.MustCompile(`"?event_type"?\s*:\s*"?([a-z_]+)"?`)
 )
 
 // findCanonicalEventsFR returns the body text of the first FR-NNN bullet
@@ -216,13 +222,20 @@ func familyOf(e string) string {
 	return e
 }
 
-// scanEventRefs walks content line-by-line, looking for backticked
-// snake_case tokens. A token t is reported iff family(t) ∈ families and
-// t ∉ canonical. Lines within excludeSpan are skipped (used to ignore the
-// canonical FR's own body when scanning spec.md).
+// scanEventRefs walks content line-by-line, looking for event_type
+// references in two shapes:
 //
-// Each (token, line) pair is reported once even if the same backtick span
-// appears multiple times on the same line.
+//  1. Backticked snake_case tokens, e.g. `pr_iteration_skipped`.
+//  2. JSON/YAML field assignments of the form `event_type: foo_bar` or
+//     `"event_type": "foo_bar"`, which spec authors use in payload
+//     examples (sample chain envelopes, fixture snippets).
+//
+// A token t is reported iff family(t) ∈ families and t ∉ canonical.
+// Lines within excludeSpan are skipped (used to ignore the canonical
+// FR's own body when scanning spec.md).
+//
+// Each (token, line) pair is reported once even if the same token
+// appears multiple times on the same line — across either shape.
 func scanEventRefs(
 	file, content string,
 	canonical, families map[string]struct{},
@@ -236,20 +249,19 @@ func scanEventRefs(
 		if excludeSpan.contains(lineNo) {
 			continue
 		}
-		for _, m := range backtickSpanRE.FindAllStringSubmatch(line, -1) {
-			tok := firstToken(m[1])
+		report := func(tok string) {
 			if !isEventLike(tok) {
-				continue
+				return
 			}
 			if _, ok := canonical[tok]; ok {
-				continue
+				return
 			}
 			if _, ok := families[familyOf(tok)]; !ok {
-				continue
+				return
 			}
 			key := fmt.Sprintf("%s@%d", tok, lineNo)
 			if _, dup := seen[key]; dup {
-				continue
+				return
 			}
 			seen[key] = struct{}{}
 			out = append(out, Violation{
@@ -262,6 +274,12 @@ func scanEventRefs(
 					tok, canonicalList,
 				),
 			})
+		}
+		for _, m := range backtickSpanRE.FindAllStringSubmatch(line, -1) {
+			report(firstToken(m[1]))
+		}
+		for _, m := range eventTypeFieldRE.FindAllStringSubmatch(line, -1) {
+			report(m[1])
 		}
 	}
 	return out
