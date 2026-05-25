@@ -78,6 +78,8 @@ func runMain(args []string) int {
 			return cmdValidateDriverCoverage(args[2:])
 		case "tasks-lint":
 			return cmdTasksLint(args[2:])
+		case "spec-lint":
+			return cmdSpecLint(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -299,6 +301,7 @@ USAGE
   chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
   chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
   chitin-orchestrator tasks-lint <spec-ref> [opts] # validate tasks.md capability classification
+  chitin-orchestrator spec-lint <spec-dir>         # lint spec.md+tasks.md (spec 115 FR-003)
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
