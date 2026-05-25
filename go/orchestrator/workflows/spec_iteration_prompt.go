@@ -37,28 +37,31 @@ type SpecReviewLineComment struct {
 
 // SpecIterationPromptInput is the closed input to BuildSpecIterationPrompt.
 // All fields are plain values so the helper is pure and trivial to test.
+// JSON tags use snake_case to match other workflow input structs in this
+// package (e.g. PRIterationInput) so the shape stays stable if the struct
+// ever crosses a Temporal boundary or is logged/serialized.
 type SpecIterationPromptInput struct {
 	// PRNumber is the spec pull request being iterated.
-	PRNumber int
+	PRNumber int `json:"pr_number"`
 	// Round is the 1-based iteration round number for this review.
-	Round int
+	Round int `json:"round"`
 	// SpecDir is the spec-relative directory (e.g.
 	// ".specify/specs/115-spec-review-gate") so the driver can locate the
 	// files it is editing.
-	SpecDir string
+	SpecDir string `json:"spec_dir"`
 	// SpecMD is the FULL current contents of spec.md (not a diff — spec
 	// authors need full context to reason about consistency, per FR-006).
-	SpecMD string
+	SpecMD string `json:"spec_md"`
 	// TasksMD is the FULL current contents of tasks.md.
-	TasksMD string
+	TasksMD string `json:"tasks_md"`
 	// LintViolations is the structured linter output (FR-004), surfaced
 	// to the driver as a distinct section from Copilot comments.
-	LintViolations []SpecLintViolation
+	LintViolations []SpecLintViolation `json:"lint_violations"`
 	// ReviewBody is the top-level body of the Copilot review (may be
 	// empty — some reviews are inline comments only).
-	ReviewBody string
+	ReviewBody string `json:"review_body"`
 	// LineComments are the inline Copilot review comments.
-	LineComments []SpecReviewLineComment
+	LineComments []SpecReviewLineComment `json:"line_comments"`
 }
 
 // BuildSpecIterationPrompt assembles the re-prompt passed to the spec-tuned
@@ -78,8 +81,12 @@ type SpecIterationPromptInput struct {
 //  3. Declares the required output envelope: for each lint violation,
 //     the driver either edits the spec to remove the violation OR adds
 //     the offending surface to the appropriate allowlist (e.g.
-//     `.specify/known-cli-surfaces.txt` for L05) with a one-line
-//     justification commenting WHY this spec legitimately introduces it.
+//     `.specify/known-cli-surfaces.txt` for L05) and records a one-line
+//     justification in spec.md / tasks.md near the introduced surface
+//     explaining WHY this spec legitimately introduces it. The allowlist
+//     files themselves are strictly data-only (raw line-based patterns
+//     with no comment syntax — see .specify/judgement-phrases.txt), so
+//     justifications must NOT be written into the allowlist file.
 //
 // The orchestrator authors the commit message itself (see the iteration
 // activity), so this prompt does NOT ask the driver to write commit text —
@@ -170,8 +177,11 @@ func BuildSpecIterationPrompt(in SpecIterationPromptInput) string {
 		b.WriteString("    (a) Edit spec.md or tasks.md to remove the violation.\n")
 		b.WriteString("    (b) Patch the linter allowlist (e.g. .specify/known-cli-surfaces.txt\n")
 		b.WriteString("        for L05, .specify/judgement-phrases.txt for judgement matches)\n")
-		b.WriteString("        AND add a one-line comment in the spec body or allowlist file\n")
-		b.WriteString("        justifying WHY this spec legitimately introduces the surface.\n")
+		b.WriteString("        AND record a one-line justification in spec.md or tasks.md near\n")
+		b.WriteString("        the introduced surface, explaining WHY this spec legitimately\n")
+		b.WriteString("        introduces it. Allowlist files are strictly data-only (raw\n")
+		b.WriteString("        line-based patterns, no comment syntax) — do NOT write the\n")
+		b.WriteString("        justification into the allowlist file itself.\n")
 		b.WriteString("  Leaving a lint violation unaddressed will cause the iteration round\n")
 		b.WriteString("  to escalate with reason=lint_violation_unresolvable (spec 115 FR-010).\n\n")
 	}
