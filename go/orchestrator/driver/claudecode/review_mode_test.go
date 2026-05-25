@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
@@ -74,5 +75,75 @@ func TestInvoke_ReviewMode_CleanJSONEmitsValidatedVerdict(t *testing.T) {
 	}
 	if len(got.Blockers) != 0 {
 		t.Errorf("blockers = %v, want empty for approve-with-comments", got.Blockers)
+	}
+}
+
+// TestInvoke_ReviewMode_ProseOnlyEmitsMalformedVerdict covers spec 109 FR-003
+// fallback (c) end-to-end: when the claudecode review-mode invocation returns
+// only prose — no JSON-shaped substring — the driver must NOT propagate that
+// prose to the verdict activity as a "successful" review. Instead it emits
+// StatusFailed with "malformed_verdict" in Result.Explanation, and truncates
+// the raw stdout it surfaces to at most 1 KiB so a runaway model response can
+// never blow up the activity's audit log (FR-004).
+//
+// This is the exact 2026-05-24 dogfood failure mode: claudecode replied
+// "The PR looks fine to me, ship it" with no JSON at all, and the activity
+// silently classified it as a malformed verdict — but only because spec 094's
+// ParseStructured rejected the prose. With T003's review-mode dispatch in
+// place, that classification happens in the driver, with the raw output
+// preserved (bounded) for operator triage.
+func TestInvoke_ReviewMode_ProseOnlyEmitsMalformedVerdict(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	// Generate >1 KiB of prose with NO `{` or `}` characters so the brace
+	// scanner returns errNoJSONFound. The leading marker lets us assert the
+	// preserved-but-truncated prefix lands in the explanation, while the
+	// trailing marker lets us assert the tail was dropped by the 1 KiB cap.
+	const headMarker = "PROSE-HEAD-MARKER:"
+	const tailMarker = ":PROSE-TAIL-MARKER"
+	filler := strings.Repeat("the pr looks fine to me ship it. ", 64) // ~2 KiB
+	proseOutput := headMarker + " " + filler + tailMarker
+	if len(proseOutput) <= 1024 {
+		t.Fatalf("test bug: prose fixture is %d bytes, need >1024 to exercise truncation", len(proseOutput))
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"cat <<'PROSE'\n" + proseOutput + "\nPROSE\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "wu-review-prose-001",
+		SpecID:       "094",
+		TaskID:       "review",
+		WorktreePath: dir,
+		Context:      `{"pr":{"repo":"chitinhq/chitin","number":1007}}`,
+	}
+	res, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Status != driver.StatusFailed {
+		t.Fatalf("status = %s, want StatusFailed; explanation=%q", res.Status, res.Explanation)
+	}
+	if !strings.Contains(res.Explanation, "malformed_verdict") {
+		t.Errorf("explanation missing %q sentinel: %q", "malformed_verdict", res.Explanation)
+	}
+	if !strings.Contains(res.Explanation, headMarker) {
+		t.Errorf("explanation should preserve the leading raw-output bytes for triage; head marker %q not found in %q", headMarker, res.Explanation)
+	}
+	if strings.Contains(res.Explanation, tailMarker) {
+		t.Errorf("explanation contains tail marker %q — raw output was not truncated to 1 KiB", tailMarker)
+	}
+	// FR-004 cap: the surfaced raw output must not exceed 1 KiB. The
+	// explanation may also include a fixed prefix/suffix from the driver
+	// (e.g. "malformed_verdict: ..."), so we allow modest overhead but
+	// reject anything that suggests the full prose round-tripped.
+	const maxRawBytes = 1024
+	const overheadAllowance = 256
+	if len(res.Explanation) > maxRawBytes+overheadAllowance {
+		t.Errorf("explanation is %d bytes, want <= %d (1 KiB raw + driver framing)", len(res.Explanation), maxRawBytes+overheadAllowance)
 	}
 }
