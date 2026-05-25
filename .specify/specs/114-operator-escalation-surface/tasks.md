@@ -14,6 +14,6 @@ description: "Task list — 114 operator escalation surface"
 - [ ] T010 [US2] Implement the "since yesterday" delta extension on the digest — add the count of new escalations today, the count of resolved-since-yesterday (PRs that had an escalation event but are now merged or closed), and the breakdown by reason
 - [ ] T011 [US1] Add a hermetic test in `cmd/chitin-orchestrator/queue_test.go` — fixture chain events + fake gh; assert filter returns the expected escalated set across all reason kinds
 - [ ] T012 [US1] Add a unit test for each format renderer — table output is column-aligned, md output is valid markdown table, json output round-trips through `json.Unmarshal`
-- [ ] T013 [US2] Add an integration test for the digest job — Temporal testsuite env, stub queue producing a known result, assert the Discord post fires with the right markdown body
+- [x] T013 [US2] Add an integration test for the digest job — Temporal testsuite env, stub queue producing a known result, assert the Discord post fires with the right markdown body
 - [ ] T014 [US1] Operator runbook `docs/runbooks/spec-114-queue.md` — example invocations, what each reason kind means, how to triage a typical morning's queue
 - [ ] T015 [US1] Implement the SC-001 measurement once spec 113 is deployed: define the median-queue-size-over-7-days metric vs. raw `gh pr list` count and create the dashboard or CLI report that surfaces the ratio; aim for ≥60% reduction
