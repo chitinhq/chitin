@@ -25,6 +25,10 @@ const (
 	NotifyNodeBlocked NotificationKind = "node-blocked"
 	// NotifyRunTerminal — a scheduler run reached a terminal state.
 	NotifyRunTerminal NotificationKind = "run-terminal"
+	// NotifyOperatorDigest — a scheduled rollup post whose Summary is already
+	// fully-formatted Discord markdown. line() returns it verbatim so the
+	// markdown table renders intact (spec 114 US2 FR-009).
+	NotifyOperatorDigest NotificationKind = "operator-digest"
 )
 
 // NotificationEvent is one write-only event the orchestrator surfaces to the
@@ -45,6 +49,13 @@ type NotificationEvent struct {
 
 // line renders the event as a single human-readable notification line.
 func (e NotificationEvent) line() string {
+	if e.Kind == NotifyOperatorDigest {
+		// Digest mode: Summary is already a complete Discord markdown body
+		// (the spec 114 queue render). Post it verbatim so the table renders
+		// — a "[chitin] operator-digest — ..." prefix would corrupt the
+		// markdown.
+		return e.Summary
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[chitin] %s", e.Kind)
 	if e.RunID != "" {

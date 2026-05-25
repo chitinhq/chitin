@@ -90,3 +90,32 @@ func TestDiscordNotify_ExecuteAlwaysSucceeds(t *testing.T) {
 		t.Fatalf("Execute returned %v, want nil", err)
 	}
 }
+
+// TestDiscordNotifier_OperatorDigestPostsVerbatim proves a digest event's
+// Summary is posted verbatim — no "[chitin] operator-digest — ..." prefix
+// that would corrupt the markdown table the spec 114 US2 renderer produces.
+func TestDiscordNotifier_OperatorDigestPostsVerbatim(t *testing.T) {
+	body := "## chitin queue\n| PR | reason |\n|----|--------|\n| #1 | conflict |"
+	var gotContent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var payload map[string]string
+		_ = json.Unmarshal(raw, &payload)
+		gotContent = payload["content"]
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := NewDiscordNotifier(srv.URL).Notify(context.Background(), NotificationEvent{
+		Kind: NotifyOperatorDigest, Summary: body,
+	})
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if gotContent != body {
+		t.Errorf("posted content = %q, want verbatim body %q", gotContent, body)
+	}
+	if strings.Contains(gotContent, "[chitin]") {
+		t.Errorf("posted content = %q, must not carry the line() prefix", gotContent)
+	}
+}

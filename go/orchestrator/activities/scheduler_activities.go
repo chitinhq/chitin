@@ -25,6 +25,11 @@ type SchedulerActivityDeps struct {
 	// Notifier is the write-only human-notification sink for DiscordNotify
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	Notifier Notifier
+	// QueueRenderer is the spec 114 US2 in-process queue renderer the
+	// RenderOperatorQueueDigest activity calls. A nil renderer falls back to
+	// a stub explaining the queue subcommand is not yet wired, so the
+	// schedule + Discord plumbing stay verifiable in isolation.
+	QueueRenderer QueueRenderer
 }
 
 // RegisterSchedulerActivities wires the Spec-DAG Scheduler's activities into
@@ -85,6 +90,12 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)
 	w.RegisterActivityWithOptions(notify.Execute, registerAs(notify.ActivityName()))
+
+	// RenderOperatorQueueDigest is the spec 114 US2 in-process queue
+	// renderer. A nil renderer falls back to a stub so the schedule and
+	// DiscordNotify path remain verifiable before T001–T008 land.
+	digest := NewOperatorQueueDigest(deps.QueueRenderer)
+	w.RegisterActivityWithOptions(digest.Execute, registerAs(digest.ActivityName()))
 
 	tel := NewTickTelemetry(deps.Telemetry)
 	w.RegisterActivityWithOptions(tel.Execute, registerAs(tel.ActivityName()))

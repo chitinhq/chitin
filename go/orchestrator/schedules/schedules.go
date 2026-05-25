@@ -68,6 +68,12 @@ type JobSpec struct {
 	// Description is a one-line human-readable account of the job, surfaced as
 	// the Schedule's note.
 	Description string `json:"description"`
+	// Workflow optionally overrides the Temporal workflow type the Schedule's
+	// action invokes. An empty value falls back to ScheduledJobWorkflowName —
+	// the generic subprocess-runner that wraps spec.Command. A non-empty value
+	// names a purpose-built workflow that does its work in-process and ignores
+	// Command (spec 114 US2's operator-queue-digest is the first such job).
+	Workflow string `json:"workflow,omitempty"`
 }
 
 // ScheduleID is the stable Temporal Schedule ID for this job. It is a pure
@@ -104,6 +110,10 @@ func Registry() []JobSpec {
 		operatorHeartbeatSpec(),
 		// spec 085 US2 — the daily operator telemetry digest.
 		operatorDigestSpec(),
+		// spec 114 US2 — the daily operator PR-queue digest. The first
+		// JobSpec that names a purpose-built Workflow rather than running a
+		// subprocess via ScheduledJobWorkflow.
+		operatorQueueDigestSpec(),
 	}
 }
 
@@ -135,6 +145,10 @@ func EnsureSchedules(ctx context.Context, c client.Client) error {
 // ensureOne creates the Temporal Schedule for a single JobSpec, treating an
 // already-exists outcome as success.
 func ensureOne(ctx context.Context, c client.Client, spec JobSpec) error {
+	workflowName := spec.Workflow
+	if workflowName == "" {
+		workflowName = ScheduledJobWorkflowName
+	}
 	_, err := c.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID: spec.ScheduleID(),
 		Spec: client.ScheduleSpec{
@@ -145,7 +159,9 @@ func ensureOne(ctx context.Context, c client.Client, spec JobSpec) error {
 			ID: spec.ScheduleID(),
 			// Reference the workflow by its registered type name — not the
 			// function symbol — so this package never imports workflows.
-			Workflow:  ScheduledJobWorkflowName,
+			// spec.Workflow lets a purpose-built workflow stand in for the
+			// generic subprocess runner (spec 114 US2's in-process digest).
+			Workflow:  workflowName,
 			Args:      []any{spec},
 			TaskQueue: TaskQueue,
 		},

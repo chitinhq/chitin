@@ -10,7 +10,7 @@ description: "Task list — 114 operator escalation surface"
 - [ ] T006 [US1] Implement `internal/queue/format_md.go` — GitHub-flavoured markdown table; PR # as clickable link; emoji prefix per reason kind for scannability
 - [ ] T007 [US1] Implement `internal/queue/format_json.go` — one JSON object per PR with all FR-005 fields + the raw triggering escalation event for downstream tooling
 - [ ] T008 [US3] Implement `--reason KIND` filter — validate against the closed reason taxonomy (FR-008); error helpfully on unknown kinds
-- [ ] T009 [US2] Add a new scheduled job in `go/orchestrator/schedules/operator_digest.go` (mirror existing scheduled-job pattern from spec 081) — runs at 09:00 daily, executes `queue --since 24h --format md` in-process (NOT via subprocess), posts result via `DiscordNotify`
+- [x] T009 [US2] Add a new scheduled job in `go/orchestrator/schedules/operator_digest.go` (mirror existing scheduled-job pattern from spec 081) — runs at 09:00 daily, executes `queue --since 24h --format md` in-process (NOT via subprocess), posts result via `DiscordNotify`
 - [ ] T010 [US2] Implement the "since yesterday" delta extension on the digest — add the count of new escalations today, the count of resolved-since-yesterday (PRs that had an escalation event but are now merged or closed), and the breakdown by reason
 - [ ] T011 [US1] Add a hermetic test in `cmd/chitin-orchestrator/queue_test.go` — fixture chain events + fake gh; assert filter returns the expected escalated set across all reason kinds
 - [ ] T012 [US1] Add a unit test for each format renderer — table output is column-aligned, md output is valid markdown table, json output round-trips through `json.Unmarshal`

@@ -40,6 +40,13 @@ func Register(w worker.Worker) {
 	// IteratePRReview activity (registered by RegisterSchedulerActivities)
 	// and returns its result.
 	w.RegisterWorkflow(PRIterationWorkflow)
+	// OperatorQueueDigestWorkflow is the spec 114 US2 daily PR-queue digest.
+	// schedules.operatorQueueDigestSpec triggers it via Temporal Schedule at
+	// 09:00 America/Detroit. Registered under its function name —
+	// "OperatorQueueDigestWorkflow" — which is exactly the type name
+	// schedules.OperatorQueueDigestWorkflowName names as the Schedule's
+	// action workflow.
+	w.RegisterWorkflow(OperatorQueueDigestWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the
