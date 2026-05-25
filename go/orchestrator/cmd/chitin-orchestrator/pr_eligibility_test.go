@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -159,6 +160,144 @@ func TestParseClosesReference_Variants(t *testing.T) {
 					tc.body, n, ok, tc.wantNum, tc.wantOk)
 			}
 		})
+	}
+}
+
+// --- spec 113 T001: checkPullRequestReviewEvent ---
+
+func mkReviewPayload(state, login, headRef string) *prPayload {
+	p := &prPayload{Action: "submitted"}
+	p.Review.State = state
+	p.Review.Author.Login = login
+	p.Review.ID = 4242
+	p.PullRequest.Head.Ref = headRef
+	return p
+}
+
+func TestCheckPullRequestReviewEvent_CopilotCommentedOnWUBranch_Eligible(t *testing.T) {
+	p := mkReviewPayload("commented", "copilot-pull-request-reviewer", "chitin/wu/spec-113-T001-abc")
+	got := checkPullRequestReviewEvent(p)
+	if !got.Eligible {
+		t.Errorf("Eligible = false, want true; reasons=%v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_ChangesRequestedOnWUBranch_Eligible(t *testing.T) {
+	p := mkReviewPayload("changes_requested", "copilot-pull-request-reviewer", "chitin/wu/spec-113-T001-abc")
+	got := checkPullRequestReviewEvent(p)
+	if !got.Eligible {
+		t.Errorf("Eligible = false, want true; reasons=%v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_StateCaseInsensitive(t *testing.T) {
+	for _, state := range []string{"COMMENTED", "Commented", "CHANGES_REQUESTED", "Changes_Requested"} {
+		t.Run(state, func(t *testing.T) {
+			p := mkReviewPayload(state, "copilot-pull-request-reviewer", "chitin/wu/x")
+			got := checkPullRequestReviewEvent(p)
+			if !got.Eligible {
+				t.Errorf("state %q: Eligible = false, want true; reasons=%v", state, got.Reasons)
+			}
+		})
+	}
+}
+
+func TestCheckPullRequestReviewEvent_ApprovedState_NotEligible(t *testing.T) {
+	p := mkReviewPayload("approved", "copilot-pull-request-reviewer", "chitin/wu/x")
+	got := checkPullRequestReviewEvent(p)
+	if got.Eligible {
+		t.Errorf("Eligible = true, want false for approved state")
+	}
+	if !containsReason(got.Reasons, "review_state_ignored") {
+		t.Errorf("reasons should include review_state_ignored; got %v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_HumanReviewer_NotEligible(t *testing.T) {
+	p := mkReviewPayload("commented", "jpleva91", "chitin/wu/x")
+	got := checkPullRequestReviewEvent(p)
+	if got.Eligible {
+		t.Errorf("Eligible = true, want false for human reviewer")
+	}
+	if !containsReason(got.Reasons, "reviewer_not_in_allowlist") {
+		t.Errorf("reasons should include reviewer_not_in_allowlist; got %v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_NonChitinBranch_NotEligible(t *testing.T) {
+	p := mkReviewPayload("commented", "copilot-pull-request-reviewer", "feat/operator-branch")
+	got := checkPullRequestReviewEvent(p)
+	if got.Eligible {
+		t.Errorf("Eligible = true, want false for non-chitin branch")
+	}
+	if !containsReason(got.Reasons, "head_ref_not_chitin_wu") {
+		t.Errorf("reasons should include head_ref_not_chitin_wu; got %v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_AllowlistOverride(t *testing.T) {
+	// Custom allowlist via env replaces the default; the canonical
+	// Copilot login is no longer eligible, but the new entry is.
+	t.Setenv("CHITIN_COPILOT_REVIEWER_ALLOWLIST", "my-copilot-bot, other-bot")
+
+	custom := mkReviewPayload("commented", "my-copilot-bot", "chitin/wu/x")
+	if got := checkPullRequestReviewEvent(custom); !got.Eligible {
+		t.Errorf("custom allowlist entry: Eligible = false, want true; reasons=%v", got.Reasons)
+	}
+
+	defaultLogin := mkReviewPayload("commented", "copilot-pull-request-reviewer", "chitin/wu/x")
+	if got := checkPullRequestReviewEvent(defaultLogin); got.Eligible {
+		t.Errorf("default login should not be eligible after allowlist override")
+	}
+}
+
+func TestCheckPullRequestReviewEvent_AllowlistCaseInsensitive(t *testing.T) {
+	p := mkReviewPayload("commented", "Copilot-Pull-Request-Reviewer", "chitin/wu/x")
+	got := checkPullRequestReviewEvent(p)
+	if !got.Eligible {
+		t.Errorf("uppercase reviewer login should match allowlist case-insensitively; reasons=%v", got.Reasons)
+	}
+}
+
+func TestCheckPullRequestReviewEvent_MultipleFailures_AllReasonsReported(t *testing.T) {
+	p := mkReviewPayload("approved", "jpleva91", "main")
+	got := checkPullRequestReviewEvent(p)
+	if got.Eligible {
+		t.Errorf("Eligible = true, want false")
+	}
+	for _, want := range []string{"review_state_ignored", "reviewer_not_in_allowlist", "head_ref_not_chitin_wu"} {
+		if !containsReason(got.Reasons, want) {
+			t.Errorf("reasons should include %q; got %v", want, got.Reasons)
+		}
+	}
+}
+
+func TestPRPayload_ReviewFieldsParse(t *testing.T) {
+	// Sanity check that the new Review subtree decodes from a
+	// GitHub-shaped pull_request_review payload.
+	body := []byte(`{
+		"action": "submitted",
+		"review": {
+			"id": 987654321,
+			"state": "commented",
+			"user": {"login": "copilot-pull-request-reviewer"}
+		},
+		"pull_request": {
+			"head": {"ref": "chitin/wu/spec-113-T001-abc"}
+		}
+	}`)
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if p.Review.ID != 987654321 {
+		t.Errorf("Review.ID = %d, want 987654321", p.Review.ID)
+	}
+	if p.Review.State != "commented" {
+		t.Errorf("Review.State = %q, want commented", p.Review.State)
+	}
+	if p.Review.Author.Login != "copilot-pull-request-reviewer" {
+		t.Errorf("Review.Author.Login = %q, want copilot-pull-request-reviewer", p.Review.Author.Login)
 	}
 }
 

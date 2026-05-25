@@ -16,6 +16,7 @@
 package main
 
 import (
+	"os"
 	"regexp"
 	"strings"
 )
@@ -56,6 +57,19 @@ type prPayload struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"issue"`
+	// Review carries pull_request_review.submitted payload fields used by
+	// spec 113's PR-iteration eligibility check (FR-001/FR-002). State
+	// values arrive lowercased from GitHub ("commented",
+	// "changes_requested", "approved"); the reviewer's login is under
+	// `user`, surfaced here as Author.Login per the spec 113 field
+	// vocabulary.
+	Review struct {
+		ID     int64  `json:"id"`
+		State  string `json:"state"`
+		Author struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	} `json:"review"`
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
@@ -90,6 +104,30 @@ var eligibleActions = map[string]struct{}{
 	"ready_for_review": {},
 	"reopened":         {},
 	"synchronize":      {},
+}
+
+// chitinWorkUnitBranchPrefix marks PR head refs the factory authored
+// (spec 098/112: `chitin/wu/<slug>-<suffix>`). Spec 113 FR-001 scopes
+// the iteration loop to these branches.
+const chitinWorkUnitBranchPrefix = "chitin/wu/"
+
+// copilotReviewerAllowlistEnv lets operators extend or replace the
+// default Copilot reviewer login (FR-002). Comma- or whitespace-
+// separated GitHub login names; empty/unset falls back to the spec
+// 113 default of `copilot-pull-request-reviewer`.
+const copilotReviewerAllowlistEnv = "CHITIN_COPILOT_REVIEWER_ALLOWLIST"
+
+// defaultCopilotReviewerLogin is the canonical GitHub login used by
+// the native Copilot PR-review feature.
+const defaultCopilotReviewerLogin = "copilot-pull-request-reviewer"
+
+// eligibleReviewStates enumerates the review states that trigger the
+// PR-iteration loop per FR-002. APPROVED reviews intentionally do not
+// dispatch — they are terminal-positive signals. DISMISSED is not
+// observable as a `submitted` action.
+var eligibleReviewStates = map[string]struct{}{
+	"commented":         {},
+	"changes_requested": {},
 }
 
 // closesReferencePattern matches GitHub's auto-close issue references
@@ -152,6 +190,57 @@ func checkPullRequestEvent(p *prPayload) prEligibility {
 	// "no_closes_reference" but that's informational, not blocking.
 	r.Eligible = hasLabel(p.PullRequest.Labels, chitinDispatchLabel)
 	return r
+}
+
+// checkPullRequestReviewEvent computes spec 113 FR-002 eligibility for
+// a `pull_request_review.submitted` event. Eligible iff ALL of:
+//
+//  1. review state is COMMENTED or CHANGES_REQUESTED (case-insensitive)
+//  2. reviewer login is in the configured Copilot allowlist
+//     (CHITIN_COPILOT_REVIEWER_ALLOWLIST, defaulting to
+//     `copilot-pull-request-reviewer`)
+//  3. PR head ref matches `chitin/wu/*` (factory-authored)
+//
+// Pure function; reads only env + the parsed payload.
+func checkPullRequestReviewEvent(p *prPayload) prEligibility {
+	r := prEligibility{}
+	state := strings.ToLower(strings.TrimSpace(p.Review.State))
+	if _, ok := eligibleReviewStates[state]; !ok {
+		r.Reasons = append(r.Reasons, "review_state_ignored")
+	}
+	allowlist := copilotReviewerAllowlist()
+	if _, ok := allowlist[strings.ToLower(p.Review.Author.Login)]; !ok {
+		r.Reasons = append(r.Reasons, "reviewer_not_in_allowlist")
+	}
+	if !strings.HasPrefix(p.PullRequest.Head.Ref, chitinWorkUnitBranchPrefix) {
+		r.Reasons = append(r.Reasons, "head_ref_not_chitin_wu")
+	}
+	r.Eligible = len(r.Reasons) == 0
+	return r
+}
+
+// copilotReviewerAllowlist returns the configured set of GitHub logins
+// treated as Copilot reviewers. Lowercased for case-insensitive lookup
+// (GitHub logins are case-insensitive at the API but webhook payloads
+// preserve original case).
+func copilotReviewerAllowlist() map[string]struct{} {
+	out := map[string]struct{}{}
+	raw := os.Getenv(copilotReviewerAllowlistEnv)
+	if raw == "" {
+		out[defaultCopilotReviewerLogin] = struct{}{}
+		return out
+	}
+	for _, tok := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	}) {
+		if tok != "" {
+			out[strings.ToLower(tok)] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		out[defaultCopilotReviewerLogin] = struct{}{}
+	}
+	return out
 }
 
 func checkIssueCommentEvent(p *prPayload) prEligibility {
