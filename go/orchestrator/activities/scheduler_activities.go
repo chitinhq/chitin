@@ -41,6 +41,8 @@ type SchedulerActivityDeps struct {
 //     node, no driver and no token cost (FR-017).
 //   - "DeliverWorkProduct"    — commit, push, and open a PR for a completed
 //     agent work unit's worktree (spec 070 PR-out gate).
+//   - "PostLintViolations"    — post spec-lint error findings as inline PR
+//     review comments with marker-based dedup (spec 115 US2 / FR-004).
 //   - "DiscordNotify"         — post a work event to the human notification
 //     channel (spec 080 US2).
 //   - "EmitTickTelemetry"     — per-tick telemetry emission (FR-015).
@@ -80,6 +82,12 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	// (to re-invoke the authoring driver by id).
 	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
 	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
+
+	// PostLintViolations is the spec 115 US2 / FR-004 activity. Stateless
+	// — it shells out to `gh api` for both the read (existing comments)
+	// and the write (new review POST), so no startup-bound dependency.
+	postLint := NewPostLintViolations()
+	w.RegisterActivityWithOptions(postLint.Execute, registerAs(postLint.ActivityName()))
 
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
