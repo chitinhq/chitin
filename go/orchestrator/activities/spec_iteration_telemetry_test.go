@@ -35,13 +35,22 @@ func fakeSpecKernelBin(t *testing.T, exitCode int) (binPath, sentinelPath string
 		"  esac\n" +
 		"done\n" +
 		"if [[ -n \"$event_file\" ]]; then\n" +
-		"  cp \"$event_file\" " + sentinelPath + "\n" +
+		"  cp \"$event_file\" " + shellQuoteSpecPath(sentinelPath) + "\n" +
 		"fi\n" +
 		"exit " + exit + "\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("setup fake kernel: %v", err)
 	}
 	return binPath, sentinelPath
+}
+
+// shellQuoteSpecPath single-quotes a path for safe interpolation into a
+// bash script — guards against tempdir paths containing spaces or shell
+// metacharacters. Suffixed -SpecPath to dodge the existing
+// shellQuoteForLabelTest in this package and the unsuffixed shellQuote
+// elsewhere in the tree.
+func shellQuoteSpecPath(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // itoaPositive renders a non-negative int as decimal without pulling in
@@ -319,6 +328,27 @@ func TestEmitSpecIteration_MissingPRNumber_ReturnsError(t *testing.T) {
 		new(bytes.Buffer))
 	if err == nil || !strings.Contains(err.Error(), "pr_number is required") {
 		t.Fatalf("expected pr_number guard error, got: %v", err)
+	}
+}
+
+// TestEmitSpecIteration_Escalated_MissingLastReviewID_ReturnsError
+// asserts FR-009's last_review_id requirement on
+// spec_iteration_escalated: zero is rejected with the
+// non-retryable invalid-input error so a caller never emits a
+// spec-nonconformant escalation payload with last_review_id: 0.
+func TestEmitSpecIteration_Escalated_MissingLastReviewID_ReturnsError(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
+	err := emitSpecIterationChainEvent(context.Background(),
+		EmitSpecIterationTelemetryInput{
+			EventType:       SpecIterationEscalatedEvent,
+			PRNumber:        555,
+			RoundsAttempted: 2,
+			// LastReviewID intentionally zero
+			Reason: "design_judgement_required",
+		},
+		new(bytes.Buffer))
+	if err == nil || !strings.Contains(err.Error(), "last_review_id must be > 0") {
+		t.Fatalf("expected last_review_id guard error, got: %v", err)
 	}
 }
 

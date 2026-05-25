@@ -138,12 +138,15 @@ type EmitSpecIterationTelemetryInput struct {
 //
 // Input validation faults DO return a Temporal non-retryable
 // application error (type "InvalidSpecIterationTelemetryInput") so a
-// misconfigured caller surfaces rather than silently losing audit. The
-// validator covers: unknown event_type, missing pr_number, and the
-// per-event required-field invariants from FR-009 (round > 0 where
-// applicable, non-empty failure_kind/detail/reason/reviewer, counts
-// >= 0). Workflows calling this activity inherit the non-retryable
-// contract from the SDK regardless of their RetryPolicy.
+// misconfigured caller surfaces rather than silently losing audit.
+// Validation runs in two stages: emitSpecIterationChainEvent checks
+// pr_number then runs the per-event field invariants from FR-009
+// (round > 0 where applicable, non-empty
+// failure_kind/detail/reason/reviewer, counts >= 0, last_review_id > 0
+// on escalated); buildSpecIterationPayload rejects an unknown
+// event_type by listing the canonical names. Workflows calling this
+// activity inherit the non-retryable contract from the SDK regardless
+// of their RetryPolicy.
 type EmitSpecIterationTelemetry struct{}
 
 // NewEmitSpecIterationTelemetry returns a zero-value activity handle.
@@ -381,6 +384,9 @@ func validateSpecIterationInput(in EmitSpecIterationTelemetryInput) error {
 	case SpecIterationEscalatedEvent:
 		if in.RoundsAttempted <= 0 {
 			return fail(fmt.Sprintf("rounds_attempted must be > 0 for %s (got %d)", in.EventType, in.RoundsAttempted))
+		}
+		if in.LastReviewID <= 0 {
+			return fail(fmt.Sprintf("last_review_id must be > 0 for %s (got %d)", in.EventType, in.LastReviewID))
 		}
 		if in.Reason == "" {
 			return fail(fmt.Sprintf("reason is required for %s", in.EventType))
