@@ -1,6 +1,9 @@
 # `chitin-orchestrator queue` runbook
 
-Status: spec 114 v1 — shipped behind feature work units T001–T013.
+Status: runbook for spec 114 (Draft); implementation tracked as work
+units T001–T013. The `chitin-orchestrator queue` subcommand described
+below is the target shape — verify the binary supports it before
+following the examples literally.
 
 The queue is the operator's morning surface. Default `gh pr list` shows every
 open PR; this command shows only the PRs the factory could not finish on its
@@ -171,11 +174,11 @@ branch probably needs a fresh dispatch (close + re-open the work unit).
 A normal post-dogfood morning (per SC-001) should leave ≤ 3 rows. The
 sequence:
 
-1. **Read the Discord digest** (FR-009 — auto-posted at 09:00). The
-   "since yesterday" delta tells you whether overnight was quiet or
-   busy.
-2. **Run `chitin-orchestrator queue`** to get the live view (the digest
-   is 09:00; reality is now).
+1. **Read the Discord digest** (FR-009 — auto-posted once daily; see
+   the scheduled-job source for the exact time). The "since yesterday"
+   delta tells you whether overnight was quiet or busy.
+2. **Run `chitin-orchestrator queue`** to get the live view (the
+   digest is a daily snapshot; reality is now).
 3. **Triage in this order:**
    - `dialectic_request_changes` first — these are the highest-stakes
      blockers
@@ -209,10 +212,15 @@ Things that look like queue bugs but aren't:
 
 ## Daily digest (US2)
 
-The scheduled job `operator-digest` (spec 081 infra, cron `0 8 * * *`
-America/Detroit per `schedules/operator_digest.go`) runs `queue --since
-24h --format md` and posts to the operator Discord webhook. SC-003
-budget is 30s end-to-end.
+The spec 114 US2 digest is a planned scheduled job (T009/T010) that
+runs `queue --since 24h --format md` in-process and posts to the
+operator Discord webhook. SC-003 budget is 30s end-to-end. It will
+follow the existing scheduled-job pattern in
+`go/orchestrator/schedules/` (spec 081 infra); the current
+`operator-digest` JobSpec in `go/orchestrator/schedules/operator_digest.go`
+covers the spec 085 telemetry digest (`deliver-operator-report.sh
+digest` at `0 8 * * *` America/Detroit) and the spec 114 queue digest
+will be wired alongside it.
 
 If the digest stops arriving:
 
