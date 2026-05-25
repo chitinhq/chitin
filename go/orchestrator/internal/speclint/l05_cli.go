@@ -7,8 +7,10 @@
 // l03_task_fr.go, l04_events.go, l05_cli.go, l06_reason.go, l07_us_test.go)
 // and returns []Finding. The shared Finding / Severity types and the
 // allowlist parser live here in l05_cli.go because L05 is the first rule
-// to need them; they are unexported package-level conventions that any
-// sibling rule file may freely use.
+// to need them; they are part of the package's exported API so that
+// callers (e.g. cmd/spec-lint) can construct allowlists and consume
+// findings, and so that sibling rule files in the same package may
+// freely use them.
 package speclint
 
 import (
@@ -68,9 +70,10 @@ func ParseCLIAllowlist(content string) []AllowlistEntry {
 // Regexes used by L05. All anchored on backticks to avoid catching
 // the binary names as prose nouns ("the chitin-orchestrator service").
 var (
-	// `gh api <path>` — path is the first non-whitespace, non-backtick
-	// token after `gh api`.
-	reGhAPIPath = regexp.MustCompile("`gh api\\s+([^\\s`]+)")
+	// `gh api ...` — capture every argument inside the backticked
+	// span. The path is then extracted by walking the tokens and
+	// skipping known flag forms (see extractGhAPIPath).
+	reGhAPIBlock = regexp.MustCompile("`gh api\\s+([^`]*)`")
 
 	// `chitin-orchestrator <sub>` / `chitin-kernel <sub>` — subcommand
 	// is a lowercase, dash-separated word. Flags (`--help`) are excluded
@@ -85,6 +88,23 @@ var (
 	// appears before the next FR-NNN marker.
 	reSectionHead = regexp.MustCompile(`(?m)^#{1,6}\s`)
 )
+
+// ghAPIValueFlags is the set of `gh api` flags that consume the next
+// argument as their value. Anything not in this set is treated as a
+// boolean flag (single token) when its name starts with `-`.
+var ghAPIValueFlags = map[string]bool{
+	"-X": true, "--method": true,
+	"-F": true, "--field": true,
+	"-f": true, "--raw-field": true,
+	"-H": true, "--header": true,
+	"-q": true, "--jq": true,
+	"-i": true, "--include": true,
+	"-p": true, "--preview": true,
+	"--hostname": true,
+	"--input":    true,
+	"--template": true,
+	"--cache":    true,
+}
 
 // L05CLISurface runs rule L05 (CLI surface check) against a spec.md +
 // tasks.md pair.
@@ -120,15 +140,23 @@ func L05CLISurface(specFile, specMD, tasksFile, tasksMD string, allowlist []Allo
 }
 
 // checkGhAPIPaths flags any `gh api <path>` reference whose path does
-// not start with `repos/`.
+// not start with `repos/`. Flag forms like `gh api -X POST repos/...`
+// are handled by walking the captured args and skipping flag tokens
+// before extracting the endpoint path.
 func checkGhAPIPaths(file, text string) []Finding {
 	if text == "" {
 		return nil
 	}
 	var findings []Finding
-	for _, m := range reGhAPIPath.FindAllStringSubmatchIndex(text, -1) {
-		// m[0] = full-match start, m[2]:m[3] = capture group (path)
-		path := text[m[2]:m[3]]
+	for _, m := range reGhAPIBlock.FindAllStringSubmatchIndex(text, -1) {
+		// m[0] = full-match start (opening backtick), m[2]:m[3] = args after `gh api `.
+		args := text[m[2]:m[3]]
+		path := extractGhAPIPath(args)
+		if path == "" {
+			// No positional path token (e.g., the span was nothing but
+			// flags). Not a violation L05 can speak to.
+			continue
+		}
 		if strings.HasPrefix(path, "repos/") {
 			continue
 		}
@@ -141,6 +169,31 @@ func checkGhAPIPaths(file, text string) []Finding {
 		})
 	}
 	return findings
+}
+
+// extractGhAPIPath returns the first non-flag token in a `gh api`
+// argument string. Tokens that begin with `-` are treated as flags;
+// flags listed in ghAPIValueFlags also consume the following token as
+// their value. Long-form `--flag=value` packs the value into one token
+// and is skipped as a single flag. Returns "" if no positional path
+// token is present.
+func extractGhAPIPath(args string) string {
+	tokens := strings.Fields(args)
+	for i := 0; i < len(tokens); i++ {
+		t := tokens[i]
+		if strings.HasPrefix(t, "-") {
+			if strings.Contains(t, "=") {
+				// --flag=value form: value is part of the same token.
+				continue
+			}
+			if ghAPIValueFlags[t] && i+1 < len(tokens) {
+				i++ // consume the flag's value token
+			}
+			continue
+		}
+		return t
+	}
+	return ""
 }
 
 // checkChitinSubcommands flags references to chitin-orchestrator and
