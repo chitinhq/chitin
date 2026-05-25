@@ -111,7 +111,7 @@ var specIterEscalatedReasons = map[string]struct{}{
 // line order within each file). The kernel does not guarantee that file
 // order matches global wall-clock order, so callers that need a
 // time-ordered view MUST sort by EscalationEvent.Ts with a stable
-// tie-breaker (e.g. RunID + Seq).
+// tie-breaker on RunID (the only secondary key carried on the struct).
 //
 // Boundary contracts (spec 114 edge case: "never crashes on malformed
 // events"):
@@ -173,8 +173,11 @@ func scanFile(path string, since time.Time, out map[int][]EscalationEvent) error
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
-	// Match the kernel-side cap for a single event line.
-	sc.Buffer(make([]byte, 64*1024), 1<<20)
+	// Match the kernel-side JSONL readers (heartbeat.go, health.go,
+	// kernel_deploy.go all use 1<<24). A smaller cap would silently
+	// truncate the scan on the first oversized payload line, hiding
+	// every escalation event after it in the same file.
+	sc.Buffer(make([]byte, 64*1024), 1<<24)
 
 	for sc.Scan() {
 		line := sc.Bytes()

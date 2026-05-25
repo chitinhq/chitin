@@ -2,10 +2,12 @@
 //
 // filter.go composes the live PR list (live.go) and the escalation-event
 // index (scan.go) into the "needs operator" set per spec 114 FR-003. The
-// rule taxonomy is the closed set declared in FR-008 — there are exactly
-// eight reason kinds, each with a single rule that returns
+// rule taxonomy is the closed set declared in FR-008 (eight code-PR
+// kinds) extended by spec 115 FR-010 (two spec-PR kinds) for a current
+// total of ten — each with a single rule that returns
 // `(matched bool, reason string)` so that downstream formatters
-// (FR-005, FR-006, FR-007) can show WHY a PR is in the queue.
+// (FR-005, FR-006, FR-007) can show WHY a PR is in the queue. The
+// authoritative list of kinds is queue.ValidReasons (reason.go).
 //
 // Membership invariant (FR-003): a PR is in the queue iff AT LEAST ONE
 // rule matches. When more than one rule matches, the FIRST match in the
@@ -150,7 +152,13 @@ func Filter(prs []LivePR, events map[int][]EscalationEvent, now time.Time) []Que
 // expected to be one of the canonical reason kinds; an unknown value
 // returns an empty slice — flag-level validation lives in T008, not
 // here.
+//
+// Surrounding whitespace is trimmed to match ValidateReason's tolerance
+// of stray shell-quoting spaces ("--reason 'iteration_cap_hit '"):
+// without trimming, such an input would validate but then quietly
+// produce an empty result here.
 func FilterByReason(entries []QueueEntry, reason string) []QueueEntry {
+	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return entries
 	}
