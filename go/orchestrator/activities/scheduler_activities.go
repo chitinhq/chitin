@@ -81,6 +81,24 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
 	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
 
+	// FetchSpecReviewComments + EmitSpecIterationEscalation are the spec
+	// 115 T014 SpecIterationWorkflow activities — gh-api fetch for the
+	// review's inline comments (so the workflow can classify them) and the
+	// kernel-emit shim for `spec_iteration_escalated` (the design-judgement
+	// escalation event). Both are package-level functions (no startup-bound
+	// deps), registered under their stable Temporal names so the workflow's
+	// string-by-name dispatch resolves at execution time.
+	//
+	// NOTE: The IterateSpecReview activity the workflow also references is
+	// a follow-up task (see iterateSpecReviewInput placeholder in
+	// workflows/spec_iteration.go). Until that activity lands, a real
+	// SpecIterationWorkflow run with mechanical comments will still fail
+	// at the IterateSpecReview step — but workflows that take the
+	// no-mechanical path (judgement-only or empty reviews) now run
+	// cleanly end-to-end.
+	w.RegisterActivityWithOptions(FetchSpecReviewComments, registerAs("FetchSpecReviewComments"))
+	w.RegisterActivityWithOptions(EmitSpecIterationEscalation, registerAs("EmitSpecIterationEscalation"))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)

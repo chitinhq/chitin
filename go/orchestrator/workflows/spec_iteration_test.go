@@ -11,16 +11,18 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
 )
 
-// TestSpecIterationWorkflow_T014_Partition is the spec 115 T014 invariant
-// test: every Copilot comment on a spec-PR review lands in exactly one
-// partition (Mechanical | DesignJudgement); the driver fires iff the
-// mechanical partition is non-empty; one `spec_iteration_escalated`
-// event emits iff the judgement partition is non-empty. Both can fire
-// in the same round.
+// The spec 115 T014 invariant tests below assert that every Copilot
+// comment on a spec-PR review lands in exactly one partition
+// (Mechanical | DesignJudgement); the driver fires iff the mechanical
+// partition is non-empty; one `spec_iteration_escalated` event emits
+// iff the judgement partition is non-empty. Both can fire in the same
+// round.
 //
-// One test, four sub-tests, four boundary cases — empty review, all
-// mechanical, all judgement, mixed. The mixed case is the load-bearing
-// invariant: T014 says "both partitions can fire in the same round".
+// Five top-level test functions cover four classification boundary
+// cases (empty review, all mechanical, all judgement, mixed) plus a
+// validation-guard case (InvalidInput). The mixed case is the
+// load-bearing invariant: T014 says "both partitions can fire in the
+// same round".
 
 // fetchSpec is shorthand for the fetch-activity input the workflow expects.
 // Every sub-test serves a fixed fetched result; the workflow's classification

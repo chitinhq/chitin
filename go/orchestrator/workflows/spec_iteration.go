@@ -233,8 +233,20 @@ func SpecIterationWorkflow(ctx workflow.Context, in SpecIterationInput) (SpecIte
 			res.Explanation = fmt.Sprintf("emit-escalation activity faulted: %v", err)
 			return res, err
 		}
-		res.Escalated = true
-		res.EscalationReason = EscalationReasonDesignJudgement
+		// Honor the activity's Emitted flag — a kernel-emit that no-op'd
+		// (CHITIN_DISABLE_CHAIN_EMIT=1) or fail-softed (kernel exec
+		// error swallowed inside the activity) returns Emitted=false with
+		// err=nil. Reporting Escalated=true in that case would mislead
+		// operators relying on the chain event. Reason is only set when
+		// the emit actually landed.
+		if emit.Emitted {
+			res.Escalated = true
+			res.EscalationReason = EscalationReasonDesignJudgement
+		} else {
+			logger.Warn("spec-iteration: escalation requested but emit was a no-op",
+				"pr", in.PRNumber, "review", in.ReviewID, "explanation", emit.Explanation)
+			res.Explanation = fmt.Sprintf("escalation skipped: %s", emit.Explanation)
+		}
 	}
 
 	// Step 4: if no mechanical comments, the workflow's work is done.
@@ -248,6 +260,10 @@ func SpecIterationWorkflow(ctx workflow.Context, in SpecIterationInput) (SpecIte
 			res.Explanation = fmt.Sprintf(
 				"escalated review #%d (pr=%d): all %d comment(s) classified as design judgement",
 				in.ReviewID, in.PRNumber, res.JudgementCount)
+		case res.JudgementCount > 0:
+			// Judgement-only review where the emit was a no-op — keep
+			// the "escalation skipped: ..." explanation set above so
+			// operators can see why the chain event didn't land.
 		default:
 			res.Explanation = fmt.Sprintf(
 				"skipped review #%d (pr=%d): no inline comments to iterate",
