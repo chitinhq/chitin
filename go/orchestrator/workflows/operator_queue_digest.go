@@ -63,7 +63,7 @@ func OperatorQueueDigestWorkflow(ctx workflow.Context, spec schedules.JobSpec) (
 	})
 
 	var rendered activities.OperatorQueueDigestResult
-	if err := workflow.ExecuteActivity(ctx, "RenderOperatorQueueDigest",
+	if err := workflow.ExecuteActivity(ctx, activities.RenderOperatorQueueDigestActivityName,
 		activities.OperatorQueueDigestInput{Since: operatorQueueDigestSince}).Get(ctx, &rendered); err != nil {
 		return OperatorQueueDigestResult{
 			JobName: spec.Name,
@@ -82,7 +82,7 @@ func OperatorQueueDigestWorkflow(ctx workflow.Context, spec schedules.JobSpec) (
 	// Best-effort per spec 080 FR-007 — a Discord fault must never fail the
 	// digest. DiscordNotify itself already returns nil on every degraded
 	// path; the ignored Get error is the activity-transport fault.
-	_ = workflow.ExecuteActivity(ctx, "DiscordNotify", ev).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(ctx, activities.DiscordNotifyActivityName, ev).Get(ctx, nil)
 
 	return OperatorQueueDigestResult{
 		JobName:  spec.Name,

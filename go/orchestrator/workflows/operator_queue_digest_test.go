@@ -27,12 +27,17 @@ import (
 // OperatorQueueDigestWorkflow invocation — the rendered/posted bodies, the
 // arguments the workflow handed each activity, the typed result it returned,
 // and the workflow error (nil on the happy path).
+//
+// notifyCount is an int (not a bool) so the test can assert the "exactly once"
+// contract: DiscordNotify MUST fire once per digest cycle, never twice. If a
+// retry policy regression silently produced duplicate Discord posts, a bool
+// would not detect it; the count does.
 type digestRunOutcome struct {
-	result        OperatorQueueDigestResult
-	workflowErr   error
-	renderInput   activities.OperatorQueueDigestInput
-	notifyEvent   activities.NotificationEvent
-	notifyInvoked bool
+	result      OperatorQueueDigestResult
+	workflowErr error
+	renderInput activities.OperatorQueueDigestInput
+	notifyEvent activities.NotificationEvent
+	notifyCount int
 }
 
 // runDigestWorkflow executes OperatorQueueDigestWorkflow once under the
@@ -76,7 +81,7 @@ func runDigestWorkflow(
 		func(_ context.Context, ev activities.NotificationEvent) error {
 			mu.Lock()
 			out.notifyEvent = ev
-			out.notifyInvoked = true
+			out.notifyCount++
 			mu.Unlock()
 			return notifyErr
 		},
@@ -142,10 +147,12 @@ func TestOperatorQueueDigestWorkflow_PostsMarkdownToDiscord(t *testing.T) {
 		t.Errorf("renderer input Since = %v, want 24h (spec 114 FR-009)", out.renderInput.Since)
 	}
 
-	// DiscordNotify fired with the exact markdown body, under the digest
-	// kind so notify.line() posts it verbatim.
-	if !out.notifyInvoked {
-		t.Fatal("DiscordNotify activity was not invoked — operator never gets the digest")
+	// DiscordNotify fired exactly once with the exact markdown body, under
+	// the digest kind so notify.line() posts it verbatim. The "exactly once"
+	// assertion guards against a retry-policy regression that would double-
+	// post the digest to the operator's Discord.
+	if out.notifyCount != 1 {
+		t.Fatalf("DiscordNotify invocations = %d, want 1 (exactly once per digest cycle)", out.notifyCount)
 	}
 	if out.notifyEvent.Kind != activities.NotifyOperatorDigest {
 		t.Errorf("DiscordNotify event Kind = %q, want NotifyOperatorDigest (else line() would prefix the markdown and break the table)",
@@ -186,8 +193,12 @@ func TestOperatorQueueDigestWorkflow_DiscordFaultIsBestEffort(t *testing.T) {
 		t.Fatalf("a Discord fault must NOT fail the digest workflow (spec 080 FR-007): %v",
 			out.workflowErr)
 	}
-	if !out.notifyInvoked {
-		t.Fatal("DiscordNotify must still be attempted on every digest cycle")
+	// Still exactly once — even on a Discord-fault path, the production
+	// DiscordNotify always returns nil (FR-007), so the workflow does not
+	// retry. The stub returns the fault directly; we still expect a single
+	// attempt because the workflow ignores the activity's transport error.
+	if out.notifyCount != 1 {
+		t.Fatalf("DiscordNotify invocations on Discord-fault path = %d, want 1 (no retry, no duplicate)", out.notifyCount)
 	}
 	if out.result.Markdown != body {
 		t.Errorf("result Markdown should still echo the rendered body on Discord fault")
@@ -211,7 +222,7 @@ func TestOperatorQueueDigestWorkflow_RenderFaultFailsWorkflow(t *testing.T) {
 	if out.workflowErr == nil {
 		t.Fatal("a persistent renderer fault must surface as a workflow error, not be swallowed")
 	}
-	if out.notifyInvoked {
-		t.Error("DiscordNotify must NOT fire when the renderer failed — there is no body to post")
+	if out.notifyCount != 0 {
+		t.Errorf("DiscordNotify invocations on render-fault path = %d, want 0 (no body to post)", out.notifyCount)
 	}
 }

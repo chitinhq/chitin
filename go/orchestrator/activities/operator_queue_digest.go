@@ -3,8 +3,16 @@ package activities
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// RenderOperatorQueueDigestActivityName is the stable Temporal activity name
+// the OperatorQueueDigest activity registers under. Exported so the workflow
+// and any future caller dispatch by reference instead of duplicating the
+// string literal — same convention as the review subpackage's
+// SelectReviewersActivityName et al.
+const RenderOperatorQueueDigestActivityName = "RenderOperatorQueueDigest"
 
 // OperatorQueueDigestInput is the typed input to the RenderOperatorQueueDigest
 // activity — a closed shape so the workflow's call site is decoupled from any
@@ -70,16 +78,25 @@ func NewOperatorQueueDigest(renderer QueueRenderer) *OperatorQueueDigest {
 // ActivityName is the stable Temporal activity name the workflow dispatches
 // to. Kept in sync with RegisterSchedulerActivities and the workflow's
 // ExecuteActivity call.
-func (a *OperatorQueueDigest) ActivityName() string { return "RenderOperatorQueueDigest" }
+func (a *OperatorQueueDigest) ActivityName() string { return RenderOperatorQueueDigestActivityName }
 
 // Execute renders one queue digest. A renderer fault is a real activity
 // error so Temporal retries per the workflow's RetryPolicy — a transient
 // gh / chain-file IO failure SHOULD retry, while the workflow's modest
 // MaximumAttempts caps the blast radius.
+//
+// The QueueRenderer contract says Render MUST NOT return an empty string
+// on success — a "no PRs need attention" cycle surfaces as the literal "✅ …"
+// line, never as silence. Execute enforces the contract by treating
+// empty/whitespace-only markdown as an error so a buggy renderer can't
+// produce a blank Discord post.
 func (a *OperatorQueueDigest) Execute(ctx context.Context, in OperatorQueueDigestInput) (OperatorQueueDigestResult, error) {
 	md, err := a.renderer.Render(ctx, in.Since)
 	if err != nil {
 		return OperatorQueueDigestResult{Window: in.Since}, fmt.Errorf("rendering operator queue digest: %w", err)
+	}
+	if strings.TrimSpace(md) == "" {
+		return OperatorQueueDigestResult{Window: in.Since}, fmt.Errorf("rendering operator queue digest: renderer returned empty markdown (QueueRenderer contract violation)")
 	}
 	return OperatorQueueDigestResult{Markdown: md, Window: in.Since}, nil
 }

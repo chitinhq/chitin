@@ -47,7 +47,7 @@ func operatorQueueDigestSpec() JobSpec {
 		Name:        "operator-queue-digest",
 		Cron:        "0 9 * * *",
 		TimeZone:    "America/Detroit",
-		Description: "operator PR-queue digest — daily \"what needs Jared\" markdown to Discord (spec 114 US2)",
+		Description: "operator PR-queue digest — daily \"what needs operator attention\" markdown to Discord (spec 114 US2)",
 		Workflow:    OperatorQueueDigestWorkflowName,
 	}
 }

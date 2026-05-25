@@ -165,6 +165,12 @@ func (d *DiscordNotifier) Notify(ctx context.Context, ev NotificationEvent) erro
 	return nil
 }
 
+// DiscordNotifyActivityName is the stable Temporal activity name DiscordNotify
+// registers under. Exported so workflows dispatch by reference instead of
+// duplicating the string literal — same convention as the review subpackage's
+// SelectReviewersActivityName et al.
+const DiscordNotifyActivityName = "DiscordNotify"
+
 // DiscordNotify is the notification activity (spec 080 US2, FR-005). Posting to
 // Discord is network I/O — a SIDE EFFECT — so it MUST run in an activity, never
 // in workflow code.
@@ -183,7 +189,7 @@ func NewDiscordNotify(notifier Notifier) *DiscordNotify {
 
 // ActivityName is the stable Temporal activity name DiscordNotify registers
 // under and the workflows dispatch to.
-func (a *DiscordNotify) ActivityName() string { return "DiscordNotify" }
+func (a *DiscordNotify) ActivityName() string { return DiscordNotifyActivityName }
 
 // Execute posts one notification event. It ALWAYS returns nil — a notification
 // fault must never fail the calling workflow (spec 080 FR-007).

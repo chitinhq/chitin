@@ -94,7 +94,25 @@ func TestOperatorQueueDigest_PropagatesRendererError(t *testing.T) {
 // rename here without a matching workflow change would silently break the
 // schedule's dispatch path.
 func TestOperatorQueueDigest_ActivityName(t *testing.T) {
-	if got := (&OperatorQueueDigest{}).ActivityName(); got != "RenderOperatorQueueDigest" {
-		t.Errorf("ActivityName = %q, want %q", got, "RenderOperatorQueueDigest")
+	if got := (&OperatorQueueDigest{}).ActivityName(); got != RenderOperatorQueueDigestActivityName {
+		t.Errorf("ActivityName = %q, want %q", got, RenderOperatorQueueDigestActivityName)
+	}
+}
+
+// TestOperatorQueueDigest_RejectsEmptyMarkdown proves the activity enforces
+// the QueueRenderer contract: Render MUST NOT return an empty string on
+// success. A buggy renderer that returned "" (or whitespace only) would
+// otherwise reach DiscordNotify and post a blank message; the activity
+// converts that into a wrapped error so Temporal retries and the bug is
+// visible in workflow history.
+func TestOperatorQueueDigest_RejectsEmptyMarkdown(t *testing.T) {
+	for _, body := range []string{"", "   \n\t  "} {
+		fake := &fakeQueueRenderer{body: body}
+		act := NewOperatorQueueDigest(fake)
+
+		_, err := act.Execute(context.Background(), OperatorQueueDigestInput{Since: time.Hour})
+		if err == nil {
+			t.Errorf("Execute(body=%q) returned nil error, want a contract-violation error", body)
+		}
 	}
 }
