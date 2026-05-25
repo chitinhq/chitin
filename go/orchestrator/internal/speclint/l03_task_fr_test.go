@@ -130,6 +130,25 @@ func TestL03_RepeatedDeclarationAndReference_RecordFirstLine(t *testing.T) {
 	}
 }
 
+func TestL03_CrossSpecTaskFRReferencesIgnored(t *testing.T) {
+	// tasks.md routinely cites other specs' FRs for context, e.g.
+	// "extends spec 113 FR-010 behavior". Those are NOT local task
+	// references and must not produce "unknown FR" violations against
+	// the current spec.
+	spec := strings.Join([]string{
+		"- **FR-001** Local requirement.",
+	}, "\n")
+	tasks := strings.Join([]string{
+		"- [ ] T001 Implement FR-001",
+		"- [ ] T002 [US1] Honors the taxonomy from spec 113 FR-010 and spec 114 FR-008",
+	}, "\n")
+
+	got := L03TaskFRCoverage(spec, tasks)
+	if len(got) != 0 {
+		t.Fatalf("cross-spec FR references must be ignored, got %d violations: %+v", len(got), got)
+	}
+}
+
 func TestL03_PlainFRInSpecBodyIgnored(t *testing.T) {
 	// Spec prose like "(spec 113 FR-001)" must NOT be treated as a declaration.
 	// Only the **FR-NNN** bold form declares.
