@@ -140,3 +140,70 @@ func TestInvoke_ReviewMode_OmittedListFieldsBecomeEmptyArrays(t *testing.T) {
 		t.Errorf("verdict = %q, want %q", got.Verdict, verdict.Approve)
 	}
 }
+
+// TestInvoke_ReviewMode_ProseOnlyEmitsMalformedVerdict covers spec 109 T006:
+// when the claudecode review-mode invocation returns plain prose with no
+// JSON-shaped substring, extractVerdictJSON's fallback branch (FR-003 (c))
+// fires, and the driver MUST surface the failure as
+// Result{Status: StatusFailed, Explanation: "malformed_verdict: ..."} with
+// the raw model output truncated to 1 KiB so a runaway response cannot
+// flood the verdict activity's event payload or the Temporal history.
+//
+// The probe is shaped so that truncation behavior is directly observable:
+// a head marker sits at the start of the prose and survives any sensible
+// truncation; a tail marker is placed past byte 1024 and MUST be dropped
+// if truncation is correct. A test that asserts only "head marker present"
+// would silently pass an implementation that forgot to truncate at all,
+// so we assert both halves of the contract.
+func TestInvoke_ReviewMode_ProseOnlyEmitsMalformedVerdict(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+
+	const (
+		headMarker = "REVIEW_PROSE_HEAD"
+		tailMarker = "REVIEW_PROSE_TAIL_BEYOND_1KIB"
+	)
+	// No `{` / `}` so the brace scanner finds nothing and the driver
+	// reaches the FR-003 (c) fallback.
+	prose := headMarker + " " + strings.Repeat("a", 1500) + " " + tailMarker + " " + strings.Repeat("z", 200)
+	if len(prose) <= 1024 {
+		t.Fatalf("test setup: prose len %d <= 1 KiB, can't verify truncation", len(prose))
+	}
+	if off := strings.Index(prose, tailMarker); off < 1024 {
+		t.Fatalf("test setup: tail marker at byte %d, must be >=1024 to prove truncation", off)
+	}
+
+	script := "#!/usr/bin/env bash\n" +
+		"cat <<'PROSE'\n" + prose + "\nPROSE\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "wu-review-prose-001",
+		SpecID:       "094",
+		TaskID:       "review",
+		WorktreePath: dir,
+		Context:      `{"pr":{"repo":"chitinhq/chitin","number":1007}}`,
+	}
+	res, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Status != driver.StatusFailed {
+		t.Fatalf("status = %s, want StatusFailed; explanation=%q", res.Status, res.Explanation)
+	}
+	if !strings.Contains(res.Explanation, "malformed_verdict") {
+		t.Errorf("explanation missing 'malformed_verdict' marker; got %q", res.Explanation)
+	}
+	if !strings.Contains(res.Explanation, headMarker) {
+		t.Errorf("explanation missing head marker %q; truncation may have dropped the prose entirely; got %q",
+			headMarker, res.Explanation)
+	}
+	if strings.Contains(res.Explanation, tailMarker) {
+		t.Errorf("explanation contains tail marker %q which sits beyond 1 KiB; truncation did not fire; got %q",
+			tailMarker, res.Explanation)
+	}
+}
