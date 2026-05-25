@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
@@ -45,9 +46,12 @@ type Label struct {
 // Review is the JSON-mapped subset of `gh pr list --json reviews` we read.
 // State + AuthorLogin are enough to drive the FR-003 `human_reviewer_present`
 // rule without re-fetching review detail.
+//
+// SubmittedAt is a pointer because PENDING reviews carry `submittedAt: null`
+// in the gh payload; a value-typed time.Time would fail the whole list decode.
 type Review struct {
-	State       string    `json:"state"`
-	SubmittedAt time.Time `json:"submittedAt"`
+	State       string     `json:"state"`
+	SubmittedAt *time.Time `json:"submittedAt"`
 	Author      struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -108,12 +112,22 @@ type PRLister func(ctx context.Context, repo string) ([]LivePR, error)
 // fetch faulted and the caller decides whether to surface or swallow it.
 type CommitFetcher func(ctx context.Context, repo string, prNumber int) (*time.Time, error)
 
+// fetchLiveConcurrency bounds how many per-PR `gh pr view` calls run in
+// parallel. With `--limit 100` on the list call and a 15s per-fetch timeout,
+// fully sequential fetches could wall-clock at ~25 minutes — too long for
+// the daily digest path. A pool of 8 caps worst-case at ~3 minutes while
+// keeping gh's rate-limit footprint modest.
+const fetchLiveConcurrency = 8
+
 // FetchLive returns every open PR in `repo`, decorated per spec 114 T003.
 // Default seams shell out to `gh`; tests inject `lister` and `fetcher`.
 //
 // A commit-fetch fault for any single PR is swallowed (the decoration is
 // left nil); the listing fault itself is fatal — a queue with no PRs is a
 // real result, but a queue we could not enumerate is not.
+//
+// Per-PR commit fetches run concurrently with a bounded worker pool so the
+// total wall-clock stays predictable even with 100 PRs.
 func FetchLive(ctx context.Context, repo string, lister PRLister, fetcher CommitFetcher) ([]LivePR, error) {
 	if lister == nil {
 		lister = listOpenPRsViaGH
@@ -125,13 +139,22 @@ func FetchLive(ctx context.Context, repo string, lister PRLister, fetcher Commit
 	if fetcher == nil {
 		fetcher = fetchLastAutomatedCommitViaGH
 	}
+	sem := make(chan struct{}, fetchLiveConcurrency)
+	var wg sync.WaitGroup
 	for i := range prs {
 		decorateLabels(&prs[i])
 		decorateSpecRef(&prs[i])
-		if ts, err := fetcher(ctx, repo, prs[i].Number); err == nil && ts != nil {
-			prs[i].LastAutomatedCommitAt = ts
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if ts, err := fetcher(ctx, repo, prs[i].Number); err == nil && ts != nil {
+				prs[i].LastAutomatedCommitAt = ts
+			}
+		}(i)
 	}
+	wg.Wait()
 	return prs, nil
 }
 
