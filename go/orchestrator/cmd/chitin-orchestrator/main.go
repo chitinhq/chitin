@@ -78,6 +78,8 @@ func runMain(args []string) int {
 			return cmdValidateDriverCoverage(args[2:])
 		case "tasks-lint":
 			return cmdTasksLint(args[2:])
+		case "queue-metrics":
+			return cmdQueueMetrics(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -299,6 +301,7 @@ USAGE
   chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
   chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
   chitin-orchestrator tasks-lint <spec-ref> [opts] # validate tasks.md capability classification
+  chitin-orchestrator queue-metrics [opts]         # spec 114 SC-001 measurement — median queue size vs gh pr list
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
