@@ -1,6 +1,7 @@
 package speckit
 
 import (
+	"path"
 	"regexp"
 
 	"github.com/chitinhq/chitin/go/orchestrator/adapter"
@@ -137,10 +138,20 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 	return edges, dangling
 }
 
-// fileScopes returns the set of repo file paths each parallel task names in
-// its description, keyed by task ID. Tasks not present in the result are
-// sequential (no file-overlap rule applies) or `[P]` but named no backticked
-// path (scope unknown — see deriveFileOverlapEdges for rationale).
+// fileScopes returns each parallel task's file scope as the SET OF BASENAMES
+// of the repo paths cited in its description, keyed by task ID. Tasks not in
+// the result are sequential (no file-overlap rule applies) or `[P]` but named
+// no backticked path (scope unknown — see deriveFileOverlapEdges for
+// rationale).
+//
+// Normalizing to basename trades a small false-positive risk (two tasks
+// touching different files that happen to share a basename — e.g. `index.ts`
+// in two packages — get falsely serialized) for catching the common case
+// where one task cites the full repo-relative path and a sibling cites the
+// bare filename of the same file. Within a single spec dispatch a real
+// basename collision is rare; when it happens the cost is over-serialization
+// (slower but still correct), versus the cost of the false-negative which is
+// the parallel-merge collisions spec 112 exists to eliminate.
 func fileScopes(tasks []Task) map[string]map[string]struct{} {
 	scopes := make(map[string]map[string]struct{}, len(tasks))
 	for _, t := range tasks {
@@ -153,7 +164,7 @@ func fileScopes(tasks []Task) map[string]map[string]struct{} {
 		}
 		s := make(map[string]struct{}, len(paths))
 		for _, p := range paths {
-			s[p] = struct{}{}
+			s[path.Base(p)] = struct{}{}
 		}
 		scopes[t.ID] = s
 	}
