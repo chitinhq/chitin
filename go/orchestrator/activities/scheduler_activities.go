@@ -74,6 +74,13 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	rebase := NewRebaseSiblingPR(deps.Worktrees)
 	w.RegisterActivityWithOptions(rebase.Execute, registerAs(rebase.ActivityName()))
 
+	// IteratePRReview is the spec 113 US1 PR comment-respond activity. It
+	// needs the worktree Manager (for the PR-branch checkout via the
+	// Manager.Checkout pattern from spec 112 US2) AND the driver registry
+	// (to re-invoke the authoring driver by id).
+	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
+	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)
