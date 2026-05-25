@@ -168,6 +168,7 @@ func dispatchSiblingRebase(
 			BaseBranch:     baseBranch,
 			SchedulerRunID: in.SchedulerRunID,
 			SourcePRNumber: in.SourcePRNumber,
+			Repo:           in.Repo,
 		}
 		if _, err := c.ExecuteWorkflow(ctx, startOpts, workflows.SiblingRebaseWorkflow, wfIn); err != nil {
 			// AlreadyStarted is the dedup-success path: the workflow exists

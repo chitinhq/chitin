@@ -44,6 +44,11 @@ type RebaseSiblingPRInput struct {
 	// the worktree directory and the chain event correlation id; usually
 	// derived from PRNumber.
 	WorkUnitID string `json:"work_unit_id"`
+	// Repo is the GitHub owner/name pair (e.g. "chitinhq/chitin") used to
+	// build operator-facing links (Discord escalation notices). Optional —
+	// when empty, escalation notices fall back to a URL-less reference and
+	// the helper logs a warning.
+	Repo string `json:"repo,omitempty"`
 }
 
 // RebaseSiblingPRResult is the typed outcome of one RebaseSiblingPR
@@ -292,7 +297,24 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // Fail-soft: a missing kernel binary, a failed write, or a non-zero exit
 // only logs a warning to stderr. The rebase outcome carried in res is the
 // load-bearing signal; the chain entry is supplementary audit.
+//
+// ALSO fires a Discord escalation notice on the failure path
+// (sibling_rebase_failed) — the operator's only signal that the
+// auto-rebase couldn't resolve a cascade and manual intervention is
+// needed. The success path (sibling_rebase_dispatched) does NOT ping
+// Discord since the autopilot completed cleanly.
 func emitSiblingRebaseEvent(ctx context.Context, eventType string, in RebaseSiblingPRInput, res RebaseSiblingPRResult) {
+	if eventType == "sibling_rebase_failed" {
+		notifyDiscordEscalation(ctx, EscalationNotice{
+			EventType: eventType,
+			Severity:  SeverityAlert,
+			PRNumber:  in.PRNumber,
+			PRURL:     siblingRebasePRURL(in),
+			Reason:    "sibling_rebase_failed",
+			Detail:    res.Explanation,
+		})
+	}
+
 	// Allow tests and sandboxed environments to opt out of the shell-out.
 	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" {
 		return
@@ -378,6 +400,17 @@ func stringOrDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// siblingRebasePRURL builds the github.com PR link for the input's
+// Repo + PRNumber. Returns "" when Repo is empty so the Discord
+// helper drops the notice with a clear warning rather than posting
+// a broken link.
+func siblingRebasePRURL(in RebaseSiblingPRInput) string {
+	if in.Repo == "" || in.PRNumber == 0 {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", in.Repo, in.PRNumber)
 }
 
 // warnEmit logs a chain-emit warning. Goes to stderr so the worker host's
