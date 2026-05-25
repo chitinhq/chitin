@@ -2,14 +2,19 @@
 // directories per spec 115 FR-003.
 //
 // A spec-dir is a directory containing spec.md + tasks.md. Each rule
-// (L01..L07) is a pure function that maps a loaded SpecDir to zero or
-// more Violations. Rules self-register via init() in their own file
-// (see internal/speclint/l0N_*.go), so spec_lint.go does not need to
-// know which rules exist — Run() iterates whatever has been registered.
+// (L01..L07, landing in subsequent tasks T003-T009) is a pure function
+// that maps a loaded SpecDir to zero or more Violations. Rules
+// self-register via Register() (typically from an init() in their own
+// file), so spec_lint.go does not need to know which rules exist —
+// Run() iterates whatever has been registered. This file (T002) ships
+// only the loader, registry, and deterministic Run() ordering; the
+// rule implementations themselves land separately.
 package speclint
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,19 +71,35 @@ func Load(specDir string) (*SpecDir, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("%q is not a directory", abs)
 	}
+	specMD, err := readOrEmpty(filepath.Join(abs, "spec.md"))
+	if err != nil {
+		return nil, err
+	}
+	tasksMD, err := readOrEmpty(filepath.Join(abs, "tasks.md"))
+	if err != nil {
+		return nil, err
+	}
 	return &SpecDir{
 		Path:    abs,
-		SpecMD:  readOrEmpty(filepath.Join(abs, "spec.md")),
-		TasksMD: readOrEmpty(filepath.Join(abs, "tasks.md")),
+		SpecMD:  specMD,
+		TasksMD: tasksMD,
 	}, nil
 }
 
-func readOrEmpty(p string) []byte {
+// readOrEmpty reads p, returning nil bytes (no error) when p does not exist
+// — L01 then surfaces the missing file as a violation. Any other error
+// (permission denied, IO failure, etc.) is propagated so the subcommand can
+// exit with a user/runtime error instead of silently producing misleading
+// lint results that look like a clean run.
+func readOrEmpty(p string) ([]byte, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %q: %w", p, err)
 	}
-	return b
+	return b, nil
 }
 
 // RuleFunc is the contract every rule satisfies — pure, side-effect-free,

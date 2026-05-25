@@ -1,20 +1,24 @@
 // spec_lint.go — spec 115 `spec-lint` operator subcommand (FR-003).
 //
-// Reads spec.md + tasks.md from <spec-dir>, runs the deterministic L01..L07
-// rules registered with the internal/speclint package, and emits a JSON
-// array of {rule, file, line, severity, message} on stdout. The subcommand
-// has named exit codes:
+// Reads spec.md + tasks.md from <spec-dir>, runs whatever rules are
+// registered with the internal/speclint package, and emits a JSON array
+// of {rule, file, line, severity, message} on stdout. The L01..L07 rule
+// implementations land in subsequent tasks (T003-T009); this task (T002)
+// ships only the loader, registry, CLI wiring, and exit-code mapping —
+// so until those rules register themselves a readable spec dir always
+// exits clean. The subcommand has named exit codes:
 //
 //	0 — clean (no violations)
 //	2 — warnings only (no errors)
 //	3 — errors present
+//	4 — unexpected runtime failure (e.g. JSON marshal error)
 //
 // Bad invocation (missing arg, non-existent dir) returns 1 (exitUserError)
 // — the standard user-error code shared with the rest of the orchestrator
-// CLI. Marshal failures return exitRuntimeError (also 2 in the rest of the
-// CLI; deliberately distinct from "warnings" here — marshal failure prints
-// to stderr, while "warnings" prints a JSON array to stdout, so the two
-// cases are unambiguous despite the shared numeric value).
+// CLI. Marshal failures use specLintExitRuntime (4) rather than the shared
+// exitRuntimeError (2), because 2 is already the documented "warnings
+// only" code for this subcommand; collapsing both onto 2 would force
+// automation to distinguish them by stderr scraping.
 package main
 
 import (
@@ -30,11 +34,15 @@ import (
 
 // spec-lint-specific exit codes. Per spec 115 T002 task spec:
 // 0 = clean, 2 = warnings, 3 = errors. exitUserError (1) is shared with the
-// rest of the CLI for bad invocation.
+// rest of the CLI for bad invocation. specLintExitRuntime (4) is the
+// subcommand-local runtime-failure code — distinct from the global
+// exitRuntimeError (2), which would collide with "warnings only" and force
+// automation to scrape stderr to tell the two apart.
 const (
 	specLintExitClean    = 0
 	specLintExitWarnings = 2
 	specLintExitErrors   = 3
+	specLintExitRuntime  = 4
 )
 
 func cmdSpecLint(args []string) int {
@@ -73,7 +81,7 @@ func runSpecLint(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	body, err := json.MarshalIndent(violations, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "error: marshaling violations: %v\n", err)
-		return exitRuntimeError
+		return specLintExitRuntime
 	}
 	fmt.Fprintln(stdout, string(body))
 
