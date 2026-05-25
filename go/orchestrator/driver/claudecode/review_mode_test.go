@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
@@ -57,6 +58,73 @@ func TestInvoke_ReviewMode_CleanJSONEmitsValidatedVerdict(t *testing.T) {
 	}
 	if res.Status != driver.StatusSucceeded {
 		t.Fatalf("status = %s, want StatusSucceeded; explanation=%q", res.Status, res.Explanation)
+	}
+
+	var got verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(res.Explanation), &got); err != nil {
+		t.Fatalf("Result.Explanation is not parseable as StructuredVerdict JSON: %v\nexplanation=%q", err, res.Explanation)
+	}
+	if err := verdict.Validate(got); err != nil {
+		t.Fatalf("Result.Explanation failed verdict.Validate: %v\nexplanation=%q", err, res.Explanation)
+	}
+	if got.Verdict != verdict.ApproveWithComments {
+		t.Errorf("verdict = %q, want %q", got.Verdict, verdict.ApproveWithComments)
+	}
+	if len(got.Concerns) != 1 || got.Concerns[0] == "" {
+		t.Errorf("concerns = %v, want one non-empty entry", got.Concerns)
+	}
+	if len(got.Blockers) != 0 {
+		t.Errorf("blockers = %v, want empty for approve-with-comments", got.Blockers)
+	}
+}
+
+// TestInvoke_ReviewMode_MarkdownFencedJSONEmitsValidatedVerdict covers spec
+// 109 FR-003(a) and the US2 markdown-fenced response case: when claudecode
+// wraps a valid StructuredVerdict in a ```json ... ``` fence (the default
+// Claude-Code chat output shape), the driver's post-processor MUST strip
+// the fence, validate the verdict, and propagate StatusSucceeded with the
+// canonically re-serialized body in Result.Explanation.
+//
+// This guards the actual 2026-05-24 dogfood failure mode on PR #1007:
+// claudecode produced ```json\n{...}\n``` and the verdict activity treated
+// the surrounding fence as malformed output. With T002+T003 in place the
+// fenced response is indistinguishable from the clean case to downstream
+// consumers.
+func TestInvoke_ReviewMode_MarkdownFencedJSONEmitsValidatedVerdict(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	innerJSON := `{"verdict":"approve-with-comments","concerns":["unbounded retry could overwhelm the queue"],"recommendations":["add a circuit breaker"],"blockers":[]}`
+	// The fake CLI prints the verdict wrapped in a ```json fenced block —
+	// the exact shape claudecode emits by default.
+	script := "#!/usr/bin/env bash\n" +
+		"cat <<'OUT'\n" +
+		"```json\n" + innerJSON + "\n```\n" +
+		"OUT\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "wu-review-fenced-001",
+		SpecID:       "094",
+		TaskID:       "review",
+		WorktreePath: dir,
+		Context:      `{"pr":{"repo":"chitinhq/chitin","number":1007}}`,
+	}
+	res, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Status != driver.StatusSucceeded {
+		t.Fatalf("status = %s, want StatusSucceeded; explanation=%q", res.Status, res.Explanation)
+	}
+
+	// The fence MUST be gone — downstream consumers (verdict.ParseStructured)
+	// reject any non-JSON prefix/suffix.
+	if strings.Contains(res.Explanation, "```") {
+		t.Fatalf("Result.Explanation still contains markdown fence: %q", res.Explanation)
 	}
 
 	var got verdict.StructuredVerdict
