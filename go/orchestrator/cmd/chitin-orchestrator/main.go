@@ -78,6 +78,8 @@ func runMain(args []string) int {
 			return cmdValidateDriverCoverage(args[2:])
 		case "tasks-lint":
 			return cmdTasksLint(args[2:])
+		case "queue":
+			return cmdQueue(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -299,10 +301,12 @@ USAGE
   chitin-orchestrator simulate-webhook --spec-ref <ref>     # POST a synthetic push at the local listener
   chitin-orchestrator pr-review <PR#> [opts]       # dispatch a dialectic review for a GitHub PR (spec 094)
   chitin-orchestrator tasks-lint <spec-ref> [opts] # validate tasks.md capability classification
+  chitin-orchestrator queue [opts]                 # show open PRs that need operator attention (spec 114)
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)
   CHITIN_REPO_ROOT                 Default repo root for the schedule subcommand
+  CHITIN_REPO                      Default OWNER/NAME for the queue subcommand
   CHITIN_KERNEL_BIN                Path to chitin-kernel (for chain emit; defaults to PATH lookup)
   CHITIN_WORKTREE_ROOT             Worktree root for the worker host (default /tmp/chitin-worktrees)
 
