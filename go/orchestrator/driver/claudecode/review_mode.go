@@ -221,6 +221,12 @@ func reviewResult(ctx context.Context, wu driver.WorkUnit, driverID, stdout, std
 		res.Explanation = malformedVerdictExplanation(err, stdout)
 		return res
 	}
+	// Normalize nil slices to empty before re-marshaling. json.Marshal emits
+	// `null` for a nil []string, which breaks downstream consumers that
+	// expect `"concerns": []` per the StructuredVerdict schema. The model
+	// often omits empty fields (e.g. an approve verdict with no concerns),
+	// so without this step a clean approve would carry three `null` fields.
+	normalizeVerdictSlices(&v)
 	canonical, err := json.Marshal(v)
 	if err != nil {
 		res.Status = driver.StatusFailed
@@ -230,6 +236,22 @@ func reviewResult(ctx context.Context, wu driver.WorkUnit, driverID, stdout, std
 	res.Status = driver.StatusSucceeded
 	res.Explanation = string(canonical)
 	return res
+}
+
+// normalizeVerdictSlices replaces nil slices in v with empty slices so the
+// canonical JSON has stable `[]` for omitted list fields instead of `null`.
+// Mutates v in place — callers pass a pointer because StructuredVerdict's
+// list fields are the only place this normalization matters.
+func normalizeVerdictSlices(v *verdict.StructuredVerdict) {
+	if v.Concerns == nil {
+		v.Concerns = []string{}
+	}
+	if v.Recommendations == nil {
+		v.Recommendations = []string{}
+	}
+	if v.Blockers == nil {
+		v.Blockers = []string{}
+	}
 }
 
 func malformedVerdictExplanation(cause error, raw string) string {
