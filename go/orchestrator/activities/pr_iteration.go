@@ -377,6 +377,27 @@ func ghApiPaginated(ctx context.Context, path string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// ghApiPostJSON runs `gh api --method POST --input - <path>` with body
+// piped on stdin and returns the response stdout. Used by activities
+// that POST non-scalar payloads (nested arrays/objects) where gh's `-F`
+// flag falls short — e.g. spec-115 PostLintViolations posting a review
+// with multiple inline comments.
+func ghApiPostJSON(ctx context.Context, path string, body []byte) ([]byte, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, fmt.Errorf("gh CLI not available: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "gh", "api", "--method", "POST", "--input", "-", path)
+	cmd.Stdin = bytes.NewReader(body)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api POST %s: %w: %s",
+			path, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
 // shortHex returns the first 8 hex chars of a SHA for human log lines.
 func shortHex(sha string) string {
 	if len(sha) <= 8 {
