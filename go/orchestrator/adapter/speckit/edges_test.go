@@ -59,6 +59,45 @@ func TestFileOverlapEdgesTransitive(t *testing.T) {
 	}
 }
 
+// TestFileOverlapEdgesBareVsFullPath asserts overlap is detected when one
+// task cites the full repo-relative path and a sibling cites just the
+// basename — the dogfood pattern seen on spec 109 (T001 cited the full
+// `go/orchestrator/driver/claudecode/review_mode.go`; T002 cited bare
+// `review_mode.go` — same file, different strings). Without basename
+// normalization the rule misses the overlap and lets the two PRs race.
+func TestFileOverlapEdgesBareVsFullPath(t *testing.T) {
+	tasks := []Task{
+		{ID: "T001", Num: 1, Parallel: true,
+			Description: "Implement in `go/orchestrator/driver/claudecode/review_mode.go`", LineNo: 1},
+		{ID: "T002", Num: 2, Parallel: true,
+			Description: "Extend in `review_mode.go`", LineNo: 2},
+	}
+	edges, _ := DeriveEdges(tasks)
+	if !hasEdge(edges, "T002", "T001") {
+		t.Errorf("expected T002→T001 edge from bare-vs-full-path overlap, got %+v", edges)
+	}
+}
+
+// TestFileOverlapEdgesDifferentDirsSameBasename asserts the basename-
+// normalization tradeoff: two parallel tasks naming files with the same
+// basename in different directories (e.g. `pkg/a/index.ts` and
+// `pkg/b/index.ts`) are treated as overlapping and serialized. Over-
+// serialization is the conservative side of the tradeoff — slower but still
+// correct, versus false-negative collisions which are spec 112's whole
+// motivation.
+func TestFileOverlapEdgesDifferentDirsSameBasename(t *testing.T) {
+	tasks := []Task{
+		{ID: "T001", Num: 1, Parallel: true,
+			Description: "Implement `pkg/a/index.ts`", LineNo: 1},
+		{ID: "T002", Num: 2, Parallel: true,
+			Description: "Implement `pkg/b/index.ts`", LineNo: 2},
+	}
+	edges, _ := DeriveEdges(tasks)
+	if !hasEdge(edges, "T002", "T001") {
+		t.Errorf("expected basename-collision serialization on shared `index.ts`, got %+v", edges)
+	}
+}
+
 // TestFileOverlapEdgesMultiFile asserts overlap is detected when sets
 // intersect on any path, not just on a single shared path: T1 cites
 // `foo.go`+`bar.go`, T2 cites `bar.go`+`baz.go` — they share `bar.go`.
