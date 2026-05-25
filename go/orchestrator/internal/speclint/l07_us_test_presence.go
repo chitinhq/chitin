@@ -1,15 +1,15 @@
 package speclint
 
 import (
-	"bufio"
 	"fmt"
 	"regexp"
 	"strings"
 )
 
-// Severity is the per-violation level reported by every L0N rule. Mirrored
-// across rule files in this work-unit; the gap-fill integration step
-// consolidates these to a single canonical declaration in lint.go.
+// Severity is the per-violation level reported by every L0N rule. Declared
+// locally in this rule file; sibling L0N work-unit branches declare the same
+// type and the gap-fill integration step on main picks one canonical
+// location.
 type Severity string
 
 const (
@@ -18,8 +18,7 @@ const (
 )
 
 // Violation is the structured output shape per FR-003. Same caveat as
-// Severity: each rule file in this work-unit declares this locally; the
-// integration step picks one canonical declaration.
+// Severity: declared locally here, deduplicated at integration.
 type Violation struct {
 	Rule     string   `json:"rule"`
 	File     string   `json:"file"`
@@ -64,12 +63,12 @@ func CheckL07(specPath, content string) []Violation {
 	var headers []usHeader
 	var boundaries []int // 1-indexed line numbers of any `###`/`##`/`#` header
 
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Text()
+	// strings.Split (vs bufio.Scanner) has no max-line-size cap — a spec.md
+	// with one pathologically long line still scans correctly. Used for both
+	// the header/boundary pass and the bounded marker scan below.
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lineNo := i + 1
 		if sectionBoundaryRE.MatchString(line) {
 			boundaries = append(boundaries, lineNo)
 		}
@@ -79,11 +78,7 @@ func CheckL07(specPath, content string) []Violation {
 			headers = append(headers, usHeader{number: n, line: lineNo})
 		}
 	}
-	totalLines := lineNo
-
-	// Pre-split content into lines for the bounded marker scan. Doing this
-	// once is cheaper than re-scanning per US section.
-	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
 
 	var out []Violation
 	for _, h := range headers {
