@@ -3,12 +3,14 @@ package claudecode
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 )
 
@@ -88,7 +90,13 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	ctx, cancel := invocationContext(ctx, wu.Deadline)
 	defer cancel()
 
-	prompt := promptFor(wu)
+	reviewMode := isReviewModeWorkUnit(wu)
+	var prompt string
+	if reviewMode {
+		prompt = reviewPromptFor(wu)
+	} else {
+		prompt = promptFor(wu)
+	}
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
 	// invocations: the chitin worker spawns claude headlessly inside a
 	// fresh worktree, and without this flag claude's sandbox refuses
@@ -104,7 +112,21 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return resultFromCommand(ctx, wu, d.ID(), strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err), nil
+	stdoutStr := strings.TrimSpace(stdout.String())
+	stderrStr := strings.TrimSpace(stderr.String())
+	if reviewMode {
+		return reviewResultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
+	}
+	return resultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
+}
+
+// isReviewModeWorkUnit reports whether wu should be routed through the
+// spec 094 review-mode codepath. The discriminator mirrors what the
+// DispatchMachineReviewer activity already sets on the WorkUnit
+// (SpecID="094", TaskID="review") — using the existing convention keeps
+// the dispatch-side contract unchanged.
+func isReviewModeWorkUnit(wu driver.WorkUnit) bool {
+	return wu.SpecID == "094" && wu.TaskID == "review"
 }
 
 func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
@@ -155,6 +177,80 @@ func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout
 		res.Explanation += "; stderr: " + stderr
 	}
 	return res
+}
+
+// reviewExplanationRawLimit caps the raw-output snippet embedded in a
+// malformed_verdict explanation (spec 109 FR-004, US2 independent test).
+// 1 KiB is enough to fingerprint what the model actually emitted without
+// flooding the workflow history.
+const reviewExplanationRawLimit = 1024
+
+// reviewResultFromCommand turns the claude CLI's (stdout, stderr, err)
+// triple from a review-mode invocation into a typed Result per
+// spec 109 FR-003/FR-004/FR-005. Failure paths return
+// StatusFailed with an explanation of the form
+// "malformed_verdict: <detail>; raw: <first 1KiB of stdout>" so the
+// dispatch activity can post-mortem without re-fetching the model's
+// output. The success path canonically re-serializes the validated
+// StructuredVerdict into the explanation field, which is what spec
+// 094's DispatchMachineReviewer activity parses via
+// verdict.ParseStructured.
+func reviewResultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res.Status = driver.StatusTimeout
+		res.Explanation = fmt.Sprintf("driver %q timed out running review-mode work unit %q", driverID, wu.ID)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+	if runErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("driver %q failed running review-mode work unit %q: %v", driverID, wu.ID, runErr)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+	if stdout == "" {
+		res.Status = driver.StatusFailed
+		res.Explanation = "malformed_verdict: empty output from claudecode review-mode invocation; raw: "
+		return res
+	}
+	extracted, extractErr := extractVerdictJSON(stdout)
+	if extractErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", extractErr, truncateForExplanation(stdout))
+		return res
+	}
+	var v verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(extracted), &v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	if err := verdict.Validate(v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	canonical, err := json.Marshal(v)
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: canonical re-serialize: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	res.Status = driver.StatusSucceeded
+	res.Explanation = string(canonical)
+	return res
+}
+
+func truncateForExplanation(s string) string {
+	if len(s) <= reviewExplanationRawLimit {
+		return s
+	}
+	return s[:reviewExplanationRawLimit]
 }
 
 var _ driver.AgentDriver = (*Driver)(nil)
