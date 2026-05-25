@@ -7,7 +7,7 @@ description: "Task list — 114 operator escalation surface"
 - [ ] T003 [P] [US1] Implement `internal/queue/live.go` — `gh pr list --json number,title,headRefName,labels,mergeable,updatedAt,reviews --search "is:open" --limit 100`. Decorate each PR with its label-derived spec_ref + most-recent-automated-commit age
 - [ ] T004 [US1] Implement `internal/queue/filter.go` — compose live PRs + escalation events into the "needs operator" set per FR-003. Each rule returns a `(matched bool, reason string)` so the table column can show WHY
 - [ ] T005 [US1] Implement `internal/queue/format_table.go` — text/tabwriter output with PR#, title (≤60 chars), reason, age, last-auto-action, spec_ref
-- [ ] T006 [US1] Implement `internal/queue/format_md.go` — GitHub-flavoured markdown table; PR # as clickable link; emoji prefix per reason kind for scannability
+- [x] T006 [US1] Implement `internal/queue/format_md.go` — GitHub-flavoured markdown table; PR # as clickable link; emoji prefix per reason kind for scannability
 - [ ] T007 [US1] Implement `internal/queue/format_json.go` — one JSON object per PR with all FR-005 fields + the raw triggering escalation event for downstream tooling
 - [ ] T008 [US3] Implement `--reason KIND` filter — validate against the closed reason taxonomy (FR-008); error helpfully on unknown kinds
 - [ ] T009 [US2] Add a new scheduled job in `go/orchestrator/schedules/operator_digest.go` (mirror existing scheduled-job pattern from spec 081) — runs at 09:00 daily, executes `queue --since 24h --format md` in-process (NOT via subprocess), posts result via `DiscordNotify`
