@@ -3,12 +3,14 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 )
 
@@ -92,19 +94,48 @@ func (d *Driver) Ready(ctx context.Context) (bool, string) {
 }
 
 // Invoke shells out to Codex in the work unit's dedicated worktree.
+//
+// Spec 094 review-mode work units take a separate codepath: argv is built
+// via reviewArgvFor (which adds --skip-git-repo-check; FR-001) and the
+// stdout is post-processed into a validated StructuredVerdict
+// (FR-003/FR-004/FR-005). Non-review-mode invocations are unchanged
+// (FR-002) — the trusted-directory check stays in force for local-driver
+// implementation work where worktree trust matters.
 func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result, error) {
 	ctx, cancel := invocationContext(ctx, wu.Deadline)
 	defer cancel()
 
-	prompt := promptFor(wu)
-	cmd := exec.CommandContext(ctx, d.command, "exec", "--model", d.model, prompt)
+	reviewMode := isReviewModeWorkUnit(wu)
+	var cmd *exec.Cmd
+	if reviewMode {
+		argv := reviewArgvFor(wu, d.model)
+		cmd = exec.CommandContext(ctx, d.command, argv...)
+	} else {
+		prompt := promptFor(wu)
+		cmd = exec.CommandContext(ctx, d.command, "exec", "--model", d.model, prompt)
+	}
 	cmd.Dir = wu.WorktreePath
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return resultFromCommand(ctx, wu, d.ID(), strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err), nil
+	stdoutStr := strings.TrimSpace(stdout.String())
+	stderrStr := strings.TrimSpace(stderr.String())
+	if reviewMode {
+		return reviewResultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
+	}
+	return resultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
+}
+
+// isReviewModeWorkUnit reports whether wu should be routed through the
+// spec 094 review-mode codepath. The discriminator mirrors what the
+// DispatchMachineReviewer activity already sets on the WorkUnit
+// (SpecID="094", TaskID="review") and what claudecode's driver uses to
+// route review-mode invocations — keeping the dispatch-side contract
+// uniform across reviewer drivers.
+func isReviewModeWorkUnit(wu driver.WorkUnit) bool {
+	return wu.SpecID == "094" && wu.TaskID == "review"
 }
 
 func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
@@ -155,6 +186,93 @@ func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout
 		res.Explanation += "; stderr: " + stderr
 	}
 	return res
+}
+
+// reviewExplanationRawLimit caps the raw-output snippet embedded in a
+// malformed_verdict explanation (spec 110 FR-005). 1 KiB is enough to
+// fingerprint what the model emitted without flooding workflow history.
+const reviewExplanationRawLimit = 1024
+
+// reviewResultFromCommand turns the codex CLI's (stdout, stderr, err) triple
+// from a review-mode invocation into a typed Result per spec 110
+// FR-004/FR-005/FR-006 (parity with spec 109). On failure paths it returns
+// StatusFailed with an explanation of the form
+// "malformed_verdict: <detail>; raw: <first 1KiB of stdout>" so the dispatch
+// activity can post-mortem without re-fetching the model's output. On
+// success it canonically re-serializes the validated StructuredVerdict into
+// Explanation, which is the field spec 094's DispatchMachineReviewer parses
+// via verdict.ParseStructured.
+func reviewResultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res.Status = driver.StatusTimeout
+		res.Explanation = fmt.Sprintf("driver %q timed out running review-mode work unit %q", driverID, wu.ID)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+	if runErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("driver %q failed running review-mode work unit %q: %v", driverID, wu.ID, runErr)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+	if stdout == "" {
+		res.Status = driver.StatusFailed
+		res.Explanation = "malformed_verdict: empty output from codex review-mode invocation; raw: "
+		return res
+	}
+	extracted, extractErr := extractVerdictJSON(stdout)
+	if extractErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", extractErr, truncateForExplanation(stdout))
+		return res
+	}
+	var v verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(extracted), &v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	if err := verdict.Validate(v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	// Normalize nil list fields to empty slices so the canonical JSON has
+	// stable `[]` for omitted fields instead of `null`. Same fix landed in
+	// claudecode/review_mode.go (PR #1041): the model often omits empty
+	// fields (e.g. Approve with no concerns), and a bare `"concerns":null`
+	// breaks downstream consumers that expect arrays per the
+	// StructuredVerdict schema.
+	if v.Concerns == nil {
+		v.Concerns = []string{}
+	}
+	if v.Recommendations == nil {
+		v.Recommendations = []string{}
+	}
+	if v.Blockers == nil {
+		v.Blockers = []string{}
+	}
+	canonical, err := json.Marshal(v)
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("malformed_verdict: canonical re-serialize: %v; raw: %s", err, truncateForExplanation(stdout))
+		return res
+	}
+	res.Status = driver.StatusSucceeded
+	res.Explanation = string(canonical)
+	return res
+}
+
+func truncateForExplanation(s string) string {
+	if len(s) <= reviewExplanationRawLimit {
+		return s
+	}
+	return s[:reviewExplanationRawLimit]
 }
 
 var _ driver.AgentDriver = (*Driver)(nil)
