@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
@@ -200,25 +201,8 @@ func runSpecIteration(
 // `reviewActivityOpts` (pr_review_test.go); naming this one for spec
 // iteration keeps the testsuite registrations grep-able per workflow file
 // without colliding with the existing helpers.
-func specIterationActivityOpts(name string) activityRegistration {
-	return activityRegistration{Name: name}
-}
-
-// activityRegistration mirrors temporal's activity.RegisterOptions through
-// the testsuite env without re-importing the activity package here (the
-// existing test files use activity.RegisterOptions directly via their
-// helpers; this file shares the underlying call shape via a tiny wrapper to
-// avoid an extra import on the surface).
-type activityRegistration = activityRegisterShape
-
-// activityRegisterShape is an alias for activity.RegisterOptions; declared
-// indirectly so the test file does not import the activity package solely
-// for the option struct. The testsuite's RegisterActivityWithOptions
-// accepts the same struct shape regardless of import path.
-type activityRegisterShape = struct {
-	Name                          string
-	DisableAlreadyRegisteredCheck bool
-	SkipInvalidStructFunctions    bool
+func specIterationActivityOpts(name string) activity.RegisterOptions {
+	return activity.RegisterOptions{Name: name}
 }
 
 // canonicalSpecInput is the standard input fixture used by every test that
