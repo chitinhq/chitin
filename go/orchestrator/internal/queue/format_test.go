@@ -129,12 +129,14 @@ func TestT012_FormatMarkdown_OutputIsValidMarkdownTable(t *testing.T) {
 		}
 	}
 
-	// Separator row is pure pipes + dashes + spaces — GFM's rule for
-	// distinguishing a table from a generic pipe-delimited block.
+	// Separator row is pure pipes + dashes + spaces, optionally with
+	// ':' alignment markers (GFM allows `:---`, `---:`, `:---:`). That
+	// rune set is what distinguishes a table from a generic
+	// pipe-delimited block.
 	sep := lines[1]
 	for _, r := range sep {
 		switch r {
-		case '|', '-', ' ':
+		case '|', '-', ' ', ':':
 		default:
 			t.Errorf("separator row contains non-table rune %q: %s", r, sep)
 		}
