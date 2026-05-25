@@ -64,8 +64,8 @@ func isSpecPR(ctx context.Context, repo string, prNumber int, lister prFilesList
 
 // allPathsUnderSpecifySpecs is the pure-logic core of isSpecPR: returns true
 // iff `filenames` is non-empty AND every entry matches specPRPathPattern.
-// Pure function — exported (lowercase but package-scoped) for direct unit
-// testing without faking the gh-api round trip.
+// Pure helper kept package-scoped (unexported) so unit tests can exercise it
+// directly without faking the gh-api round trip.
 func allPathsUnderSpecifySpecs(filenames []string) bool {
 	if len(filenames) == 0 {
 		return false

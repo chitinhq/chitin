@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"testing"
 )
 
@@ -118,10 +117,10 @@ func TestIsSpecPR_NilListerSelectsDefault(t *testing.T) {
 	// isSpecPR with `nil` and Just Work. We verify by checking that nil does
 	// not panic on the dispatch decision — the gh exec will then fail in a
 	// hermetic environment, which is fine: we only assert the function does
-	// not nil-deref. Skip when gh IS available to keep the test pure.
-	if _, err := exec.LookPath("gh"); err == nil {
-		t.Skip("gh on PATH; skipping nil-lister probe to keep test hermetic")
-	}
+	// not nil-deref. Force PATH empty so `gh` cannot resolve regardless of
+	// the host (CI images often ship gh pre-installed); t.Setenv auto-restores
+	// after the test.
+	t.Setenv("PATH", "")
 	_, err := isSpecPR(context.Background(), "chitinhq/chitin", 1, nil)
 	if err == nil {
 		t.Errorf("isSpecPR with nil lister + no gh on PATH should error; got nil")
