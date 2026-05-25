@@ -141,6 +141,71 @@ func TestInvoke_ReviewMode_OmittedListFieldsBecomeEmptyArrays(t *testing.T) {
 	}
 }
 
+// TestInvoke_ReviewMode_MarkdownFencedJSONEmitsValidatedVerdict covers spec
+// 109 T005 / FR-003 (a): claudecode commonly wraps its structured output in
+// a ```json … ``` markdown fence even when the prompt forbids it. The
+// review-mode post-processor MUST strip that fence, recover the JSON body,
+// validate it, and emit StatusSucceeded with the canonically re-serialized
+// verdict in Result.Explanation — identical to the clean-JSON path.
+//
+// Without this, every fenced response (a frequent claudecode shape) would
+// trip the brace scanner's prose-only fallback and surface as
+// malformed_verdict, even though the model produced a valid verdict.
+func TestInvoke_ReviewMode_MarkdownFencedJSONEmitsValidatedVerdict(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	// Same approve-with-comments body as the clean-JSON test, but wrapped
+	// in a ```json fence the way claudecode tends to emit it.
+	cleanJSON := `{"verdict":"approve-with-comments","concerns":["nit: name shadowing on line 42"],"recommendations":["extract a helper for the duplicated branch"],"blockers":[]}`
+	fenced := "```json\n" + cleanJSON + "\n```"
+	script := "#!/usr/bin/env bash\n" +
+		"cat <<'FENCED'\n" + fenced + "\nFENCED\n" +
+		"exit 0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	d := New(WithCommand(binPath))
+	wu := driver.WorkUnit{
+		ID:           "wu-review-fenced-001",
+		SpecID:       "094",
+		TaskID:       "review",
+		WorktreePath: dir,
+		Context:      `{"pr":{"repo":"chitinhq/chitin","number":1007}}`,
+	}
+	res, err := d.Invoke(context.Background(), wu)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Status != driver.StatusSucceeded {
+		t.Fatalf("status = %s, want StatusSucceeded; explanation=%q", res.Status, res.Explanation)
+	}
+
+	// The canonical re-serialized body must NOT carry the fence markers.
+	// A regression that forgot to strip the fence would leave backticks
+	// in res.Explanation (and json.Unmarshal would fail below).
+	if strings.Contains(res.Explanation, "```") {
+		t.Errorf("Result.Explanation still contains markdown fence markers: %q", res.Explanation)
+	}
+
+	var got verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(res.Explanation), &got); err != nil {
+		t.Fatalf("Result.Explanation is not parseable as StructuredVerdict JSON: %v\nexplanation=%q", err, res.Explanation)
+	}
+	if err := verdict.Validate(got); err != nil {
+		t.Fatalf("Result.Explanation failed verdict.Validate: %v\nexplanation=%q", err, res.Explanation)
+	}
+	if got.Verdict != verdict.ApproveWithComments {
+		t.Errorf("verdict = %q, want %q", got.Verdict, verdict.ApproveWithComments)
+	}
+	if len(got.Concerns) != 1 || got.Concerns[0] == "" {
+		t.Errorf("concerns = %v, want one non-empty entry", got.Concerns)
+	}
+	if len(got.Blockers) != 0 {
+		t.Errorf("blockers = %v, want empty for approve-with-comments", got.Blockers)
+	}
+}
+
 // TestInvoke_ReviewMode_ProseOnlyEmitsMalformedVerdict covers spec 109 T006:
 // when the claudecode review-mode invocation returns plain prose with no
 // JSON-shaped substring, extractVerdictJSON's fallback branch (FR-003 (c))
