@@ -59,6 +59,17 @@ type prPayload struct {
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+	// Review carries the pull_request_review payload's review object —
+	// state, body, id, author login. Populated for pull_request_review
+	// events; zero for pull_request / issue_comment events. (Spec 113 US1.)
+	Review struct {
+		ID    int64  `json:"id"`
+		State string `json:"state"`
+		Body  string `json:"body"`
+		User  struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	} `json:"review"`
 }
 
 // prEligibility is the closed result shape of checking a PR event for
@@ -224,4 +235,8 @@ type prResponse struct {
 	SiblingRebaseDispatched int   `json:"sibling_rebase_dispatched,omitempty"`
 	SiblingRebaseSiblings   int   `json:"sibling_rebase_siblings,omitempty"`
 	SiblingRebasePRs        []int `json:"sibling_rebase_prs,omitempty"`
+	// Spec 113 US1 — PR iteration dispatch summary, populated on a Copilot
+	// review against a chitin/wu/* branch.
+	PRIterationDispatched bool   `json:"pr_iteration_dispatched,omitempty"`
+	PRIterationWorkflowID string `json:"pr_iteration_workflow_id,omitempty"`
 }

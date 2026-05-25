@@ -34,6 +34,12 @@ func Register(w worker.Worker) {
 	// RebaseSiblingPR activity (registered by RegisterSchedulerActivities)
 	// and returns its result.
 	w.RegisterWorkflow(SiblingRebaseWorkflow)
+	// PRIterationWorkflow is the spec 113 US1 PR comment-respond loop. The
+	// factory-listen pull_request_review handler fires one per Copilot
+	// review on a chitin-authored PR; the workflow invokes the
+	// IteratePRReview activity (registered by RegisterSchedulerActivities)
+	// and returns its result.
+	w.RegisterWorkflow(PRIterationWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

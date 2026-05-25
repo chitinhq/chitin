@@ -307,6 +307,37 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Spec 113 US1: PR comment-respond loop. The trigger is a
+	// pull_request_review event with action=submitted, on a PR whose head
+	// branch matches chitin/wu/* (factory-authored), submitted by a
+	// reviewer in the Copilot allowlist. Non-allowlisted reviewers (humans)
+	// route to the escalation path — v1 just no-ops; spec 113 US3 builds
+	// the explicit escalation event.
+	if eventType == "pull_request_review" && p.Action == "submitted" {
+		if chitinWUBranchPattern.MatchString(p.PullRequest.Head.Ref) &&
+			isCopilotReviewer(p.Review.User.Login) &&
+			(p.Review.State == "commented" || p.Review.State == "changes_requested") {
+			localRepo := h.targetRepo
+			if localRepo == "" {
+				localRepo = h.repoRootFlag
+			}
+			iterOut := dispatchPRIteration(r.Context(), prIterationDispatchInput{
+				Repo:         p.Repository.FullName,
+				PRNumber:     prNumber,
+				PRBranch:     p.PullRequest.Head.Ref,
+				ReviewID:     p.Review.ID,
+				DriverID:     driverIDFromBranch(p.PullRequest.Head.Ref),
+				TargetRepo:   localRepo,
+				TemporalHost: h.temporalHost,
+			}, h.temporalDialer, h.stderr)
+			resp.PRIterationDispatched = iterOut.Dispatched
+			resp.PRIterationWorkflowID = iterOut.WorkflowID
+			if iterOut.FailureKind != "" && resp.SkippedReason == "" {
+				resp.SkippedReason = "pr_iteration:" + iterOut.FailureKind
+			}
+		}
+	}
+
 	h.logRequest(map[string]any{
 		"route":                     "/webhook/pr",
 		"signature_verified":        true,
