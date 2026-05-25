@@ -30,12 +30,20 @@ type prPayload struct {
 	PullRequest struct {
 		URL       string `json:"html_url"`
 		Draft     bool   `json:"draft"`
+		Merged    bool   `json:"merged"`
 		Body      string `json:"body"`
 		Commits   int    `json:"commits"`
 		Additions int    `json:"additions"`
 		Deletions int    `json:"deletions"`
 		Changed   int    `json:"changed_files"`
-		Labels    []struct {
+		Head      struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"pull_request"`
@@ -202,13 +210,18 @@ func parseClosesReference(body string) (int, bool) {
 // prResponse is the JSON the /webhook/pr route returns per
 // contracts/factory-listen-pr-events.md.
 type prResponse struct {
-	Received       bool   `json:"received"`
-	EventType      string `json:"event_type"`
-	Action         string `json:"action"`
-	PRNumber       int    `json:"pr_number"`
-	Eligible       bool   `json:"eligible"`
-	ReviewStarted  bool   `json:"review_started"`
-	ReviewRunID    string `json:"review_run_id,omitempty"`
-	DedupSkipped   bool   `json:"dedup_skipped"`
-	SkippedReason  string `json:"skipped_reason,omitempty"`
+	Received      bool   `json:"received"`
+	EventType     string `json:"event_type"`
+	Action        string `json:"action"`
+	PRNumber      int    `json:"pr_number"`
+	Eligible      bool   `json:"eligible"`
+	ReviewStarted bool   `json:"review_started"`
+	ReviewRunID   string `json:"review_run_id,omitempty"`
+	DedupSkipped  bool   `json:"dedup_skipped"`
+	SkippedReason string `json:"skipped_reason,omitempty"`
+	// Spec 112 US2 — sibling-rebase dispatch summary, populated on a
+	// chitin-authored merge that has open siblings.
+	SiblingRebaseDispatched int   `json:"sibling_rebase_dispatched,omitempty"`
+	SiblingRebaseSiblings   int   `json:"sibling_rebase_siblings,omitempty"`
+	SiblingRebasePRs        []int `json:"sibling_rebase_prs,omitempty"`
 }

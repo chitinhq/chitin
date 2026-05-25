@@ -234,6 +234,96 @@ func (m *Manager) Create(targetRepo, baseRef, workUnitID string) (string, error)
 	return worktreePath, nil
 }
 
+// Checkout mints a dedicated worktree that checks out an EXISTING remote
+// branch — the sibling-rebase path (spec 112 US2) where the activity must
+// operate on a PR's branch rather than open a fresh chitin/wu/* one.
+//
+// It fetches origin first so the branch and its base are at their newest
+// remote tip, then does `git worktree add -B <branch> <path> origin/<branch>`,
+// which creates or resets the local branch to the freshly fetched ref. The
+// worktree is registered like a Create-minted one — Teardown reclaims it via
+// the same path, and GC sweeps it if the caller crashes — so the same
+// lifecycle guarantees apply.
+//
+// BaseSHA is left empty in the registry record because the branch already
+// carries work; Teardown's empty-branch cleanup (which deletes a branch whose
+// tip equals its base) MUST NOT run here — we never want to delete the PR's
+// branch out from under an open pull request.
+//
+// Returns the absolute worktree path. The caller is responsible for calling
+// Teardown(path); on any failure the partially-created worktree is cleaned up
+// before the error is returned.
+func (m *Manager) Checkout(targetRepo, branch, workUnitID string) (string, error) {
+	if targetRepo == "" {
+		return "", errors.New("worktree: target repo must not be empty")
+	}
+	if branch == "" {
+		return "", errors.New("worktree: branch must not be empty")
+	}
+	if workUnitID == "" {
+		return "", errors.New("worktree: work unit ID must not be empty")
+	}
+	repoAbs, err := filepath.Abs(targetRepo)
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolving target repo %q: %w", targetRepo, err)
+	}
+	repoAbs, lockKey, err := resolveRepo(repoAbs)
+	if err != nil {
+		return "", fmt.Errorf("worktree: target repo %q is not a git repository: %w", targetRepo, err)
+	}
+
+	// Fetch the branch (and the remote's HEAD, which carries the base) so the
+	// upcoming worktree has the newest commits. A fetch failure is fatal — a
+	// rebase against a stale origin would produce the wrong answer.
+	repoMu := m.repoLock(lockKey)
+	repoMu.Lock()
+	_, fetchErr := runGit(repoAbs, "fetch", "origin", "--prune")
+	repoMu.Unlock()
+	if fetchErr != nil {
+		return "", fmt.Errorf("worktree: fetching origin for %q: %w", targetRepo, fetchErr)
+	}
+
+	suffix, err := randomSuffix()
+	if err != nil {
+		return "", fmt.Errorf("worktree: generating unique suffix: %w", err)
+	}
+	slug := sanitize(workUnitID)
+	dirName := fmt.Sprintf("co-%s-%s", slug, suffix)
+	worktreePath := filepath.Join(m.root, dirName)
+
+	// `git worktree add -B <branch> <path> origin/<branch>` creates or resets
+	// the local branch to the freshly fetched remote tip and checks it out in
+	// a brand-new directory. `-B` is force-create — necessary so a pre-existing
+	// stale local branch of the same name does not block the checkout.
+	repoMu.Lock()
+	_, addErr := runGit(repoAbs, "worktree", "add", "-B", branch, worktreePath, "origin/"+branch)
+	repoMu.Unlock()
+	if addErr != nil {
+		repoMu.Lock()
+		_, _ = runGit(repoAbs, "worktree", "remove", "--force", worktreePath)
+		repoMu.Unlock()
+		_ = os.RemoveAll(worktreePath)
+		return "", fmt.Errorf("worktree: checking out branch %q for work unit %q: %w",
+			branch, workUnitID, addErr)
+	}
+
+	rec := record{
+		Path:       worktreePath,
+		Branch:     branch,
+		BaseSHA:    "", // see doc: empty so Teardown never deletes the PR's branch.
+		WorkUnitID: workUnitID,
+		CreatedAt:  m.now().UTC(),
+	}
+	if err := m.addActive(rec); err != nil {
+		repoMu.Lock()
+		_, _ = runGit(repoAbs, "worktree", "remove", "--force", worktreePath)
+		repoMu.Unlock()
+		_ = os.RemoveAll(worktreePath)
+		return "", fmt.Errorf("worktree: registering checkout worktree for work unit %q: %w", workUnitID, err)
+	}
+	return worktreePath, nil
+}
+
 // Teardown removes the worktree at path and prunes git's worktree registry.
 // It is idempotent: tearing down a path that is already gone (or was never a
 // worktree) is a no-op that returns nil, never an error — a second Teardown,

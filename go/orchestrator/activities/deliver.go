@@ -27,6 +27,12 @@ type DeliverWorkProductInput struct {
 	WorktreePath string `json:"worktree_path"`
 	// BaseRef is the branch the pull request targets.
 	BaseRef string `json:"base_ref"`
+	// SchedulerRunID is the scheduler run this work unit belongs to. Delivery
+	// stamps it onto the opened PR as a `sched/run/<id>` label so the
+	// spec 112 US2 auto-rebase path can list every sibling PR by label when a
+	// chitin-authored PR merges to main. Empty leaves the PR unlabeled —
+	// auto-rebase then skips it (correct fallback for non-scheduler deliveries).
+	SchedulerRunID string `json:"scheduler_run_id"`
 }
 
 // DeliverWorkProductResult is the typed output of the DeliverWorkProduct
@@ -151,8 +157,60 @@ func (a *DeliverWorkProduct) Execute(ctx context.Context, in DeliverWorkProductI
 		return res, nil
 	}
 	res.PRURL = prURL
+
+	// Stamp the scheduler run id onto the PR as a sched/run/<id> label so the
+	// spec 112 US2 auto-rebase path can list every sibling PR by label when a
+	// chitin-authored PR merges to main. A label failure is non-fatal — the
+	// PR is already open; the operator can manually rebase if auto-rebase
+	// cannot find the sibling. An empty SchedulerRunID skips the label
+	// entirely (delivery from a non-scheduler context).
+	label := siblingLabelFor(in.SchedulerRunID)
+	if label != "" {
+		if _, lblErr := applyPRLabel(ctx, wt, prURL, label); lblErr != nil {
+			res.Explanation = fmt.Sprintf(
+				"delivered: committed, pushed branch %s, opened PR %s; sched-run label apply failed: %v",
+				branch, prURL, lblErr)
+			return res, nil
+		}
+	}
 	res.Explanation = fmt.Sprintf("delivered: committed, pushed branch %s, opened PR %s", branch, prURL)
 	return res, nil
+}
+
+// siblingLabelFor returns the sched/run/<id> label string for one scheduler
+// run, or "" when runID is empty. Exported logic (lowercase function name but
+// kept in this file because deliver and sibling-rebase share the same label
+// convention — the dispatcher in factory-listen reads the same prefix.
+func siblingLabelFor(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	return SchedRunLabelPrefix + runID
+}
+
+// SchedRunLabelPrefix is the chitin scheduler-run PR label prefix (spec 112
+// US2). Every chitin-authored PR opened by the scheduler is labeled
+// SchedRunLabelPrefix+runID so the auto-rebase path can list every sibling
+// PR by label when one merges to main.
+const SchedRunLabelPrefix = "sched/run/"
+
+// applyPRLabel adds one label to an open pull request via `gh pr edit
+// --add-label`. The gh CLI auto-creates the label in the target repo if it
+// does not yet exist (with a default color), so the operator does not need
+// to pre-create per-run labels. Returns gh's trimmed stdout on success.
+func applyPRLabel(ctx context.Context, worktreePath, prURL, label string) (string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh CLI not available: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--add-label", label)
+	cmd.Dir = worktreePath
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // openPR runs `gh pr create` from the worktree and returns the new PR's URL.

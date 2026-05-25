@@ -273,14 +273,43 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		}, h.stderr)
 	}
 
+	// Spec 112 US2: auto-rebase siblings on a chitin-authored merge. The
+	// trigger is a pull_request.closed event whose PR is merged AND carries
+	// a sched/run/<id> label — every other open PR with the same label is
+	// a sibling whose branch may now be stale against the new base.
+	if eventType == "pull_request" && p.Action == "closed" && p.PullRequest.Merged {
+		if runID := labelSchedRunID(p.PullRequest.Labels); runID != "" {
+			localRepo := h.targetRepo
+			if localRepo == "" {
+				localRepo = h.repoRootFlag
+			}
+			rebOut := dispatchSiblingRebase(r.Context(), siblingRebaseDispatchInput{
+				Repo:           p.Repository.FullName,
+				SourcePRNumber: prNumber,
+				SchedulerRunID: runID,
+				BaseBranch:     p.PullRequest.Base.Ref,
+				TargetRepo:     localRepo,
+				TemporalHost:   h.temporalHost,
+			}, nil, nil, h.stderr)
+			resp.SiblingRebaseDispatched = rebOut.Dispatched
+			resp.SiblingRebaseSiblings = rebOut.Siblings
+			resp.SiblingRebasePRs = rebOut.PRNumbers
+			if rebOut.FailureKind != "" && resp.SkippedReason == "" {
+				resp.SkippedReason = "sibling_rebase:" + rebOut.FailureKind
+			}
+		}
+	}
+
 	h.logRequest(map[string]any{
-		"route":              "/webhook/pr",
-		"signature_verified": true,
-		"event_type":         eventType,
-		"event_action":       p.Action,
-		"pr_number":          prNumber,
-		"eligible":           elig.Eligible,
-		"skipped_reason":     resp.SkippedReason,
+		"route":                     "/webhook/pr",
+		"signature_verified":        true,
+		"event_type":                eventType,
+		"event_action":              p.Action,
+		"pr_number":                 prNumber,
+		"eligible":                  elig.Eligible,
+		"skipped_reason":            resp.SkippedReason,
+		"sibling_rebase_siblings":   resp.SiblingRebaseSiblings,
+		"sibling_rebase_dispatched": resp.SiblingRebaseDispatched,
 	})
 
 	respBody, _ := json.Marshal(resp)

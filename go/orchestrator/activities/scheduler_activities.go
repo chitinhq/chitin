@@ -68,6 +68,12 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	deliver := NewDeliverWorkProduct()
 	w.RegisterActivityWithOptions(deliver.Execute, registerAs(deliver.ActivityName()))
 
+	// RebaseSiblingPR is the spec 112 US2 auto-rebase activity. It needs
+	// the same worktree Manager as Create/Teardown so a sibling-rebase
+	// checkout participates in the same teardown + GC lifecycle.
+	rebase := NewRebaseSiblingPR(deps.Worktrees)
+	w.RegisterActivityWithOptions(rebase.Execute, registerAs(rebase.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)
