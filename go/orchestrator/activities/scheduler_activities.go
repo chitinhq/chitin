@@ -81,6 +81,13 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
 	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
 
+	// IterateSpecReview is the spec 115 US1 spec-PR comment-respond
+	// activity. Same deps as IteratePRReview — worktree Manager for the
+	// PR-branch checkout, driver registry so the workflow's SelectDriver
+	// step can be resolved by id at invoke time.
+	iterateSpec := NewIterateSpecReview(deps.Worktrees, deps.Registry)
+	w.RegisterActivityWithOptions(iterateSpec.Execute, registerAs(iterateSpec.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)

@@ -130,6 +130,38 @@ func (a *IterateSpecReview) ActivityName() string { return "IterateSpecReview" }
 // fold) is locked in here so the workflow can settle on the typed
 // surface tests will mock.
 func (a *IterateSpecReview) Execute(_ context.Context, in IterateSpecReviewInput) (IterateSpecReviewResult, error) {
+	// Mirror IteratePRReview's wiring guards so a misconfigured worker
+	// host (registry/manager not bound) surfaces in the result rather
+	// than silently appearing as a "not yet implemented" no-op.
+	if a.manager == nil || a.registry == nil {
+		return IterateSpecReviewResult{
+			Explanation: "no Manager or Registry bound — spec iteration not attempted",
+		}, nil
+	}
+	// Input guards: same closed set the workflow validates, restated at
+	// the activity boundary so misconfigured callers (tests, future
+	// dispatchers) get a populated Explanation instead of a partial-state
+	// run when T012/T014/T016 land the body.
+	if in.PRNumber <= 0 || in.PRBranch == "" || in.TargetRepo == "" || in.Repo == "" {
+		return IterateSpecReviewResult{
+			Explanation: "missing PRNumber, PRBranch, TargetRepo, or Repo — spec iteration not attempted",
+		}, nil
+	}
+	if in.ReviewID <= 0 {
+		return IterateSpecReviewResult{
+			Explanation: "missing ReviewID — spec iteration not attempted",
+		}, nil
+	}
+	if in.SpecDir == "" {
+		return IterateSpecReviewResult{
+			Explanation: "missing SpecDir — spec iteration not attempted (need spec.md + tasks.md for FR-006 prompt)",
+		}, nil
+	}
+	if in.DriverID == "" {
+		return IterateSpecReviewResult{
+			Explanation: "missing DriverID — spec iteration not attempted (workflow's SelectDriver must populate)",
+		}, nil
+	}
 	return IterateSpecReviewResult{
 		Explanation: fmt.Sprintf(
 			"IterateSpecReview not yet implemented (T012/T014/T016 land the body); "+
