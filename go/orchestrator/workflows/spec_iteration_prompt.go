@@ -165,13 +165,11 @@ func writeCopilotReview(b *strings.Builder, body string, comments []SpecReviewLi
 
 // ensureTrailingNewline guarantees the embedded markdown section ends with
 // exactly one newline before the closing fence, so a spec file that ends
-// without a final newline doesn't merge with the fence line.
+// without a final newline doesn't merge with the fence line, and one that
+// ends with several blank lines doesn't widen the fence gap.
 func ensureTrailingNewline(s string) string {
 	if s == "" {
 		return "\n"
 	}
-	if strings.HasSuffix(s, "\n") {
-		return s
-	}
-	return s + "\n"
+	return strings.TrimRight(s, "\n") + "\n"
 }
