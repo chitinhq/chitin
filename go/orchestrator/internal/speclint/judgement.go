@@ -61,11 +61,21 @@ func ParseJudgementPhrases(content string) (*JudgementPhrases, error) {
 		}
 		re, err := regexp.Compile("(?i)" + line)
 		if err != nil {
-			return nil, fmt.Errorf("judgement-phrases.txt line %d: invalid regex %q: %w", i+1, line, err)
+			return nil, fmt.Errorf(".specify/judgement-phrases.txt line %d: invalid regex %q: %w", i+1, line, err)
 		}
 		out = append(out, re)
 	}
 	return &JudgementPhrases{patterns: out}, nil
+}
+
+// Count returns the number of compiled phrases. Provided so tests can
+// assert parser behavior (blank/comment line handling) without touching
+// the unexported slice — keeping JudgementPhrases opaque per its doc.
+func (p *JudgementPhrases) Count() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.patterns)
 }
 
 // ClassifyDesignJudgement returns DesignJudgement when comment matches
@@ -79,11 +89,15 @@ func ParseJudgementPhrases(content string) (*JudgementPhrases, error) {
 // Boundary contracts:
 //   - phrases == nil               -> Mechanical
 //   - len(phrases.patterns) == 0   -> Mechanical
-//   - comment == ""                -> Mechanical (the seeded phrases
-//     all require ≥1 non-empty char; an empty body can't match)
+//   - comment == ""                -> Mechanical (guarded explicitly;
+//     an operator-added regex like `.*` or `^$` could otherwise match
+//     an empty body and silently escalate)
 //   - multiple patterns match      -> DesignJudgement (single-bit
 //     result; short-circuit on first hit)
 func ClassifyDesignJudgement(comment string, phrases *JudgementPhrases) Classification {
+	if comment == "" {
+		return Mechanical
+	}
 	if phrases == nil || len(phrases.patterns) == 0 {
 		return Mechanical
 	}

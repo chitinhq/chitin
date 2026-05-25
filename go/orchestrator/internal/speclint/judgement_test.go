@@ -112,7 +112,7 @@ consider
 in scope
 `
 	phrases := mustParse(t, content)
-	if got, want := len(phrases.patterns), 2; got != want {
+	if got, want := phrases.Count(), 2; got != want {
 		t.Fatalf("pattern count: got %d, want %d", got, want)
 	}
 }
