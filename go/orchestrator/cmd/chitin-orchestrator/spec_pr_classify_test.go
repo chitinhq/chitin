@@ -18,7 +18,7 @@ type fakeSpecFilesLister struct {
 	err   error
 }
 
-func (f fakeSpecFilesLister) listPRFiles(_ context.Context, _ int) ([]string, error) {
+func (f fakeSpecFilesLister) listPRFiles(_ context.Context, _ string, _ int) ([]string, error) {
 	return f.files, f.err
 }
 
@@ -28,7 +28,7 @@ func TestIsSpecPRWith_AllFilesUnderSpecDir_True(t *testing.T) {
 		".specify/specs/115-spec-review-gate/tasks.md",
 		".specify/specs/115-spec-review-gate/contracts/iteration.md",
 	}}
-	if !isSpecPRWith(context.Background(), 1057, lister) {
+	if !isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = false, want true: all files under .specify/specs/<N>-*/")
 	}
 }
@@ -40,7 +40,7 @@ func TestIsSpecPRWith_MixedSpecAndCode_False(t *testing.T) {
 		".specify/specs/115-spec-review-gate/spec.md",
 		"go/orchestrator/cmd/chitin-orchestrator/factory_listen.go",
 	}}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false: mixed spec+code PR is not spec-class")
 	}
 }
@@ -50,20 +50,21 @@ func TestIsSpecPRWith_AllFilesOutsideSpecDir_False(t *testing.T) {
 		"README.md",
 		"go/orchestrator/main.go",
 	}}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false: no spec files")
 	}
 }
 
 func TestIsSpecPRWith_SpecifyButNotSpecsDir_False(t *testing.T) {
-	// Files under .specify/ that are NOT in a spec dir (allowlists,
-	// templates, judgement phrases) should NOT classify the PR as a
-	// spec-class PR — only spec.md/tasks.md changes qualify per FR-001.
+	// Files under .specify/ that are NOT inside a `.specify/specs/<NNN>-*/`
+	// directory (allowlists, templates, judgement phrases at the
+	// `.specify/` root) should NOT classify the PR as spec-class —
+	// FR-001 scopes the discriminator to spec content directories only.
 	lister := fakeSpecFilesLister{files: []string{
 		".specify/known-cli-surfaces.txt",
 		".specify/judgement-phrases.txt",
 	}}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false: .specify/ allowlist files are not spec content")
 	}
 }
@@ -74,7 +75,7 @@ func TestIsSpecPRWith_SpecDirWithoutNumericPrefix_False(t *testing.T) {
 	lister := fakeSpecFilesLister{files: []string{
 		".specify/specs/foo/spec.md",
 	}}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false: non-numeric spec dir")
 	}
 }
@@ -84,7 +85,7 @@ func TestIsSpecPRWith_EmptyChangeset_False(t *testing.T) {
 	// it isn't contained anywhere. Treat as not-spec-class so we
 	// fail-safe to the code-PR path.
 	lister := fakeSpecFilesLister{files: nil}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false: empty changeset is not spec-class")
 	}
 }
@@ -94,7 +95,7 @@ func TestIsSpecPRWith_GhError_False(t *testing.T) {
 	// not-spec-class — the code-PR loop is the existing behavior and a
 	// safer fallback than silently dropping a real code review.
 	lister := fakeSpecFilesLister{err: errors.New("gh api: 404")}
-	if isSpecPRWith(context.Background(), 1057, lister) {
+	if isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = true, want false on gh error")
 	}
 }
@@ -107,7 +108,7 @@ func TestIsSpecPRWith_MultipleSpecDirsInOnePR_True(t *testing.T) {
 		".specify/specs/115-spec-review-gate/spec.md",
 		".specify/specs/116-multi-driver/spec.md",
 	}}
-	if !isSpecPRWith(context.Background(), 1057, lister) {
+	if !isSpecPRWith(context.Background(), "chitinhq/chitin", 1057, lister) {
 		t.Fatalf("isSpecPRWith = false, want true: multi-spec PR is still spec-class")
 	}
 }
@@ -128,7 +129,7 @@ func TestDefaultSpecFilesLister_ParsesGhAPIOutput(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	files, err := defaultSpecFilesLister{}.listPRFiles(context.Background(), 1057)
+	files, err := defaultSpecFilesLister{}.listPRFiles(context.Background(), "chitinhq/chitin", 1057)
 	if err != nil {
 		t.Fatalf("listPRFiles: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestDefaultSpecFilesLister_GhExitError(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	_, err := defaultSpecFilesLister{}.listPRFiles(context.Background(), 1057)
+	_, err := defaultSpecFilesLister{}.listPRFiles(context.Background(), "chitinhq/chitin", 1057)
 	if err == nil {
 		t.Fatalf("listPRFiles returned nil error, want non-nil on gh exit 1")
 	}
