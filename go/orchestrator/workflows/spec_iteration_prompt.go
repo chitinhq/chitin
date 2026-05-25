@@ -26,8 +26,9 @@ type SpecLintViolation struct {
 }
 
 // SpecReviewLineComment is one inline Copilot review comment on a spec PR.
-// Mirrors the activities-package reviewLineComment shape but lives in the
-// workflows package so this prompt builder stays pure and self-contained.
+// Intentionally a reduced subset of the activities-package reviewLineComment
+// (omits ID — the prompt builder has no use for it). Lives in the workflows
+// package so this prompt builder stays pure and self-contained.
 type SpecReviewLineComment struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
@@ -175,12 +176,18 @@ func BuildSpecIterationPrompt(in SpecIterationPromptInput) string {
 		b.WriteString("  to escalate with reason=lint_violation_unresolvable (spec 115 FR-010).\n\n")
 	}
 	if hasReview {
-		b.WriteString("  For each REVIEW LINE COMMENT above, EITHER apply the smallest reasonable\n")
-		b.WriteString("  fix OR leave the file unchanged (which is recorded as an intentional\n")
-		b.WriteString("  decline). Do not refactor unrelated sections. Do not change spec scope.\n\n")
+		b.WriteString("  For each REVIEW BODY item and LINE COMMENT above, EITHER apply the\n")
+		b.WriteString("  smallest reasonable fix OR leave the file unchanged (which is recorded\n")
+		b.WriteString("  as an intentional decline). Do not refactor unrelated sections. Do not\n")
+		b.WriteString("  change spec scope.\n\n")
 	}
 
-	b.WriteString("After making changes, exit. Do not run tests, do not write commit messages. ")
-	b.WriteString("The orchestrator will commit + push your changes as a single fixup commit.\n")
+	if hasLint || hasReview {
+		b.WriteString("After making changes, exit. Do not run tests, do not write commit messages. ")
+		b.WriteString("The orchestrator will commit + push your changes as a single fixup commit.\n")
+	} else {
+		b.WriteString("Do not run tests, do not write commit messages. The orchestrator will record ")
+		b.WriteString("the no-op iteration.\n")
+	}
 	return b.String()
 }

@@ -157,6 +157,38 @@ func TestBuildSpecIterationPrompt_OmitsEmptyLintSection(t *testing.T) {
 	}
 }
 
+// TestBuildSpecIterationPrompt_NoFeedback asserts the rendered prompt
+// for the no-lint / no-review case is internally consistent: it tells
+// the driver to exit without changes, omits both feedback sections and
+// the output envelope, and does NOT carry the "After making changes,
+// exit…" closing sentence that would contradict the exit-without-changes
+// instruction.
+func TestBuildSpecIterationPrompt_NoFeedback(t *testing.T) {
+	in := SpecIterationPromptInput{
+		PRNumber: 9,
+		Round:    1,
+		SpecMD:   "# Spec\n",
+		TasksMD:  "tasks\n",
+	}
+	got := BuildSpecIterationPrompt(in)
+
+	if !strings.Contains(got, "Exit without changes") {
+		t.Errorf("prompt should tell driver to exit without changes; got:\n%s", got)
+	}
+	if strings.Contains(got, "After making changes, exit") {
+		t.Errorf("prompt should not carry the post-edit exit sentence when there is nothing to address; got:\n%s", got)
+	}
+	if strings.Contains(got, "LINTER VIOLATIONS") {
+		t.Errorf("prompt should omit linter section on no-feedback round; got:\n%s", got)
+	}
+	if strings.Contains(got, "REVIEW BODY:") || strings.Contains(got, "LINE COMMENTS:") {
+		t.Errorf("prompt should omit review sections on no-feedback round; got:\n%s", got)
+	}
+	if strings.Contains(got, "OUTPUT ENVELOPE") {
+		t.Errorf("prompt should omit output envelope on no-feedback round; got:\n%s", got)
+	}
+}
+
 // TestBuildSpecIterationPrompt_IsPure asserts the helper is deterministic
 // — calling it twice with identical input yields byte-identical output.
 // Pure functions in workflows package must be replay-safe.
