@@ -2,7 +2,7 @@
 description: "Task list — 115 spec PR review gate"
 ---
 
-- [x] T001 [P] [US1] Implement the spec-PR discriminator at `go/orchestrator/cmd/chitin-orchestrator/spec_pr_classify.go` — extend the factory-listen webhook eligibility (spec 113 FR-001 surface) with a new helper `isSpecPR(prNumber int) bool` that calls `gh api repos/<owner>/<repo>/pulls/<N>/files` and returns true iff every `.filename` is matched by `^\.specify/specs/\d+-.*/`
+- [x] T001 [P] [US1] Implement the spec-PR discriminator at `go/orchestrator/cmd/chitin-orchestrator/spec_pr_classify.go` — extend the factory-listen webhook eligibility (spec 113 FR-001 surface) with a new helper `isSpecPR(repo string, prNumber int) bool` (repo slug required for `gh api repos/<owner>/<repo>/...` since the webhook handler does not chdir to a repo root) that calls `gh api repos/<owner>/<repo>/pulls/<N>/files` and returns true iff every `.filename` is matched by `^\.specify/specs/\d+-.*/`
 - [ ] T002 [P] [US2] Implement `chitin-orchestrator spec-lint <spec-dir>` subcommand at `go/orchestrator/cmd/chitin-orchestrator/spec_lint.go` — reads `spec.md` + `tasks.md`, runs the 7 rules L01-L07 (FR-003), emits structured JSON `[{rule, file, line, severity, message}]` on stdout; named exit codes (0=clean, 2=warnings, 3=errors)
 - [ ] T003 [P] [US2] Implement rule L01 (frontmatter complete) in `go/orchestrator/internal/speclint/l01_frontmatter.go` — YAML-parse the frontmatter, assert spec_id/title/status/owner/created/depends_on/related are all present + well-formed
 - [ ] T004 [P] [US2] Implement rule L02 (cross-spec refs resolve) in `go/orchestrator/internal/speclint/l02_cross_refs.go` — for each id in `depends_on:` / `related:`, glob `.specify/specs/<id>-*` and assert exactly one match

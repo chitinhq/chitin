@@ -59,13 +59,13 @@ func (defaultSpecFilesLister) listPRFiles(ctx context.Context, repo string, prNu
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api repos/%s/pulls/%d/files: %w: %s", repo, prNumber, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("gh api --paginate repos/%s/pulls/%d/files: %w: %s", repo, prNumber, err, strings.TrimSpace(stderr.String()))
 	}
 	var entries []struct {
 		Filename string `json:"filename"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
-		return nil, fmt.Errorf("gh api repos/%s/pulls/%d/files: parse JSON: %w", repo, prNumber, err)
+		return nil, fmt.Errorf("gh api --paginate repos/%s/pulls/%d/files: parse JSON: %w", repo, prNumber, err)
 	}
 	files := make([]string, 0, len(entries))
 	for _, e := range entries {
