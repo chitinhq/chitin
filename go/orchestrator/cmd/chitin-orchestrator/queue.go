@@ -49,9 +49,11 @@ func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 	// T002-T008 plug in here: scan chain events, fetch live PRs, apply
 	// FR-003 filter, optionally narrow by opts.Reason, render in opts.Format.
+	// Until then, exit non-zero so automation/operators don't read the
+	// placeholder as a successful empty queue.
 	fmt.Fprintf(stderr, "queue: not yet implemented — opts: repo=%q since=%s format=%s reason=%q\n",
 		opts.Repo, opts.Since, opts.Format, opts.Reason)
-	return exitSuccess
+	return exitRuntimeError
 }
 
 // parseQueueArgs parses the queue subcommand argv. It is the entire T001
@@ -74,6 +76,17 @@ func parseQueueArgs(args []string, stderr io.Writer) (queueOpts, int) {
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintln(stderr, "error: queue takes no positional arguments")
+		fs.Usage()
+		return queueOpts{}, exitUserError
+	}
+
+	// FR-001 constrains --format to the three renderers T005-T007 will
+	// implement. Reject other values here so an operator sees the bad
+	// flag at the surface rather than a confusing render-time failure.
+	switch *format {
+	case "table", "json", "md":
+	default:
+		fmt.Fprintf(stderr, "error: --format must be one of table|json|md (got %q)\n", *format)
 		fs.Usage()
 		return queueOpts{}, exitUserError
 	}
