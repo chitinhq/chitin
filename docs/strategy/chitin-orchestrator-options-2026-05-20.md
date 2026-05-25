@@ -83,7 +83,6 @@ Each becomes a Temporal workflow; the cron/script vanishes:
 | `kanban-pull-loop` crons (Ares + Clawta) | A durable pull-loop workflow per agent |
 | Clawta dispatch pipeline + `swarm/bin/clawta-*` (13 scripts) | A dispatch workflow with typed activities |
 | `autonomous-board-engine`, pollers, watchdogs | Scheduled workflows |
-| `icarus-bench.service` loop | A bench workflow (durable, replayable runs) |
 | Truncation retries, stuck-ticket recovery | Native Temporal retries + timeouts |
 | Telemetry "did the cron run?" guesswork | The Temporal UI — definitive |
 

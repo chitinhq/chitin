@@ -152,17 +152,6 @@ spec 049 §R6.
 |------|-------|------|--------|---------------|
 | 067 | dispatch | clawta-implementer-lanes | draft | `t_5bb1151a` |
 
-## Icarus bench loop revival — spec 068
-
-> Spec 068 reverses the retirement of the Icarus terminal-bench loop (PR
-> #794) to get bench runs flowing immediately while the v2 Harbor agent
-> (specs 036/038) is spec'd but not yet implemented. Review ticket
-> `t_1615b319` (done). T001 shipped; T002–T007 pending.
-
-| Spec | Title | Status | Bound ticket | Notes |
-|------|-------|--------|--------------|-------|
-| 068 | icarus-bench-loop-revival | ratified | `t_1615b319` | Non-stop bench loop; PR #826 |
-
 ## Dispatch invariants — spec 025
 
 | Spec | Title | Status | Bound ticket | Notes |
@@ -272,10 +261,6 @@ These spec-dir prefixes are claimed by more than one directory on disk.
 Each needs an operator ruling (renumber or suffix) before the registry
 can show a single canonical row:
 
-- **036** — `036-dispatch-fault-tolerance-invariants`,
-  `036-ic-001-icarus-local-llm-driver`, `036-icarus-harbor-agent-adapter`
-- **038** — `038-icarus-harbor-agent-adapter`,
-  `038-octi-persistent-claude-session`
 - **067** — `067-clawta-implementer-lanes`, `067-tasks-to-tickets`
   (the section above lists `clawta-implementer-lanes`; the other is unlisted)
 - **071** — `071-chitin-coach`, `071-kanban-block-invariant-fix`
