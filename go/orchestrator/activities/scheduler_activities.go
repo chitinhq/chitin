@@ -81,6 +81,13 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
 	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
 
+	// EmitSpecIterationTelemetry is the spec 115 T016 chain-event emitter.
+	// Carries no startup-bound dependency — kernel binary resolution +
+	// disable-emit env are read per-call so the activity is safe to
+	// register before the kernel binary is on PATH (e.g. in dev shells).
+	specTel := NewEmitSpecIterationTelemetry()
+	w.RegisterActivityWithOptions(specTel.Execute, registerAs(specTel.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)
