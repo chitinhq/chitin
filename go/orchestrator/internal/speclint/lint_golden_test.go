@@ -39,9 +39,7 @@ import (
 // wantViolatesRule == "" marks a clean / pass-case fixture (no rule should
 // fire). Otherwise we require at least one violation tagged with that rule
 // and severity — the existence check is one-sided rather than exact-match
-// because a single fixture may incidentally trip an adjacent rule (e.g. the
-// l02_fail fixture has depends_on: [999] which COULD also be flagged by a
-// stricter L03 implementation as referencing a non-existent FR-NNN); the
+// because a single fixture may incidentally trip an adjacent rule; the
 // hermetic guarantee we need is "the rule under test fires", not "no other
 // rule ever fires".
 type goldenCase struct {
@@ -123,19 +121,15 @@ func assertGoldenViolations(t *testing.T, vs []Violation, tc goldenCase) {
 // parses stdout uniformly across clean and non-clean runs.
 func assertJSONShape(t *testing.T, vs []Violation) {
 	t.Helper()
-	if len(vs) == 0 {
-		body, err := json.Marshal([]Violation{})
-		if err != nil {
-			t.Fatalf("marshal empty: %v", err)
-		}
-		if string(body) != "[]" {
-			t.Errorf("empty violations slice should marshal to %q, got %q", "[]", string(body))
-		}
-		return
-	}
 	body, err := json.Marshal(vs)
 	if err != nil {
 		t.Fatalf("marshal violations: %v", err)
+	}
+	if len(vs) == 0 {
+		if string(body) != "[]" {
+			t.Errorf("empty violations slice should marshal to %q, got %q (nil slice marshals to \"null\" — Run() must return a non-nil empty slice for clean runs)", "[]", string(body))
+		}
+		return
 	}
 	var generic []map[string]any
 	if err := json.Unmarshal(body, &generic); err != nil {
