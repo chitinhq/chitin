@@ -9,7 +9,15 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 )
+
+// emitSpecIterationInvalidInputErrorType is the stable Temporal application
+// error type string for input-validation faults — kept as a constant so
+// workflows that pattern-match on the error type don't drift if the
+// human-readable message gets reworded.
+const emitSpecIterationInvalidInputErrorType = "InvalidSpecIterationTelemetryInput"
 
 // Spec 115 FR-009 chain-event taxonomy. Closed set — the activity rejects
 // any other event_type so the linter (L04 in the same spec) can rely on
@@ -94,8 +102,10 @@ type EmitSpecIterationTelemetryInput struct {
 	// FailureKind is the closed-taxonomy failure label (e.g.
 	// "driver_fault", "push_failed"). failed only.
 	FailureKind string `json:"failure_kind,omitempty"`
-	// Detail is the human-readable explanation of the failure (or
-	// escalation). failed + escalated.
+	// Detail is the human-readable explanation of the failure. failed
+	// only — FR-009 escalated payloads carry the closed-taxonomy Reason
+	// instead, so Detail is dropped from the escalated event by the
+	// payload builder.
 	Detail string `json:"detail,omitempty"`
 	// RoundsAttempted is how many rounds the workflow ran before the
 	// escalation triggered. escalated only.
@@ -124,10 +134,16 @@ type EmitSpecIterationTelemetryInput struct {
 // Fail-soft for runtime faults: a missing kernel binary, marshal error,
 // temp-file error, or non-zero kernel exit only logs a warning to
 // stderr and returns a nil error. The workflow's load-bearing signal is
-// the workflow result; the chain entry is supplementary audit. Input
-// validation faults DO return a non-retryable activity error so a
-// misconfigured caller (unknown event_type, missing PR number) surfaces
-// rather than silently losing audit.
+// the workflow result; the chain entry is supplementary audit.
+//
+// Input validation faults DO return a Temporal non-retryable
+// application error (type "InvalidSpecIterationTelemetryInput") so a
+// misconfigured caller surfaces rather than silently losing audit. The
+// validator covers: unknown event_type, missing pr_number, and the
+// per-event required-field invariants from FR-009 (round > 0 where
+// applicable, non-empty failure_kind/detail/reason/reviewer, counts
+// >= 0). Workflows calling this activity inherit the non-retryable
+// contract from the SDK regardless of their RetryPolicy.
 type EmitSpecIterationTelemetry struct{}
 
 // NewEmitSpecIterationTelemetry returns a zero-value activity handle.
@@ -156,7 +172,12 @@ func (a *EmitSpecIterationTelemetry) Execute(ctx context.Context, in EmitSpecIte
 // contents without racing the real os.Stderr.
 func emitSpecIterationChainEvent(ctx context.Context, in EmitSpecIterationTelemetryInput, warnSink io.Writer) error {
 	if in.PRNumber <= 0 {
-		return fmt.Errorf("spec-iteration telemetry: pr_number is required (got %d)", in.PRNumber)
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("spec-iteration telemetry: pr_number is required (got %d)", in.PRNumber),
+			emitSpecIterationInvalidInputErrorType, nil)
+	}
+	if err := validateSpecIterationInput(in); err != nil {
+		return err
 	}
 
 	payload, err := buildSpecIterationPayload(in)
@@ -295,8 +316,87 @@ func buildSpecIterationPayload(in EmitSpecIterationTelemetryInput) (map[string]a
 			"reason":    in.Reason,
 		}, nil
 	default:
-		return nil, fmt.Errorf("spec-iteration telemetry: unknown event_type %q (expected one of: %s)",
-			in.EventType, strings.Join(SpecIterationEventTypes(), ", "))
+		return nil, temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("spec-iteration telemetry: unknown event_type %q (expected one of: %s)",
+				in.EventType, strings.Join(SpecIterationEventTypes(), ", ")),
+			emitSpecIterationInvalidInputErrorType, nil)
+	}
+}
+
+// validateSpecIterationInput enforces the per-event required-field
+// invariants from FR-009. The type doc already calls a misconfigured
+// caller a programming error; this guard converts the silent-truncation
+// behavior (a payload missing required fields would still emit) into a
+// loud non-retryable failure so the misuse surfaces in the workflow
+// result. Counts are checked for non-negativity defensively — Go ints
+// can carry negative values, and a negative count in the chain would
+// poison downstream aggregations.
+func validateSpecIterationInput(in EmitSpecIterationTelemetryInput) error {
+	fail := func(msg string) error {
+		return temporal.NewNonRetryableApplicationError(
+			"spec-iteration telemetry: "+msg,
+			emitSpecIterationInvalidInputErrorType, nil)
+	}
+	switch in.EventType {
+	case SpecLintCompletedEvent:
+		// pr_number already checked in the caller; rule_violations is
+		// canonicalized from nil to [] by the payload builder, so there
+		// is nothing else to require here.
+		return nil
+	case SpecIterationRoundStartedEvent:
+		if in.Round <= 0 {
+			return fail(fmt.Sprintf("round must be > 0 for %s (got %d)", in.EventType, in.Round))
+		}
+		if in.Reviewer == "" {
+			return fail(fmt.Sprintf("reviewer is required for %s", in.EventType))
+		}
+		if in.CommentCount < 0 || in.LintViolationsCount < 0 {
+			return fail(fmt.Sprintf("comment_count and lint_violations_count must be >= 0 for %s (got %d, %d)",
+				in.EventType, in.CommentCount, in.LintViolationsCount))
+		}
+		return nil
+	case SpecIterationCompletedEvent:
+		if in.Round <= 0 {
+			return fail(fmt.Sprintf("round must be > 0 for %s (got %d)", in.EventType, in.Round))
+		}
+		if in.RepliesPosted < 0 {
+			return fail(fmt.Sprintf("replies_posted must be >= 0 for %s (got %d)", in.EventType, in.RepliesPosted))
+		}
+		if in.ActionCounts.Fix < 0 || in.ActionCounts.Reply < 0 ||
+			in.ActionCounts.Skip < 0 || in.ActionCounts.LintFix < 0 {
+			return fail(fmt.Sprintf("action_counts must be >= 0 for %s (got %+v)", in.EventType, in.ActionCounts))
+		}
+		return nil
+	case SpecIterationFailedEvent:
+		if in.Round <= 0 {
+			return fail(fmt.Sprintf("round must be > 0 for %s (got %d)", in.EventType, in.Round))
+		}
+		if in.FailureKind == "" {
+			return fail(fmt.Sprintf("failure_kind is required for %s", in.EventType))
+		}
+		if in.Detail == "" {
+			return fail(fmt.Sprintf("detail is required for %s", in.EventType))
+		}
+		return nil
+	case SpecIterationEscalatedEvent:
+		if in.RoundsAttempted <= 0 {
+			return fail(fmt.Sprintf("rounds_attempted must be > 0 for %s (got %d)", in.EventType, in.RoundsAttempted))
+		}
+		if in.Reason == "" {
+			return fail(fmt.Sprintf("reason is required for %s", in.EventType))
+		}
+		return nil
+	case SpecIterationSkippedEvent:
+		if in.Reason == "" {
+			return fail(fmt.Sprintf("reason is required for %s", in.EventType))
+		}
+		return nil
+	default:
+		// Unknown event_type is rejected by buildSpecIterationPayload;
+		// the caller invokes that step right after this one, so let
+		// that single source-of-truth check handle the listing of
+		// canonical names.
+		return nil
 	}
 }
 

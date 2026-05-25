@@ -336,6 +336,7 @@ func TestEmitSpecIteration_DisableChainEmit_ShortCircuits(t *testing.T) {
 		EmitSpecIterationTelemetryInput{
 			EventType: SpecIterationCompletedEvent,
 			PRNumber:  1,
+			Round:     1,
 		}, &warn)
 	if err != nil {
 		t.Fatalf("expected nil error on disable, got %v", err)
@@ -385,9 +386,11 @@ func TestEmitSpecIteration_KernelExitsNonZero_FailsSoft(t *testing.T) {
 	var warn bytes.Buffer
 	err := emitSpecIterationChainEvent(context.Background(),
 		EmitSpecIterationTelemetryInput{
-			EventType: SpecIterationFailedEvent,
-			PRNumber:  1,
-			Round:     1,
+			EventType:   SpecIterationFailedEvent,
+			PRNumber:    1,
+			Round:       1,
+			FailureKind: "driver_fault",
+			Detail:      "fake kernel returned non-zero",
 		}, &warn)
 	if err != nil {
 		t.Fatalf("non-zero exit must be fail-soft, got err: %v", err)
