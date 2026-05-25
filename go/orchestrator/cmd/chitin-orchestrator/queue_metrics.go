@@ -125,22 +125,22 @@ func defaultQueueMetricsDeps() queueMetricsDeps {
 }
 
 func runQueueMetrics(ctx context.Context, args []string, stdout, stderr io.Writer, deps queueMetricsDeps) int {
-	fs := flag.NewFlagSet("queue-metrics", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	days := fs.Int("days", 7, "number of trailing days to include in the median")
-	repo := fs.String("repo", "", "GitHub repo as OWNER/NAME (default $CHITIN_REPO)")
-	format := fs.String("format", "text", "output format: text or json")
-	target := fs.Float64("target-reduction", 0.60, "SC-001 reduction target (0.60 = 60%)")
-	fs.Usage = func() {
+	flags := flag.NewFlagSet("queue-metrics", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	days := flags.Int("days", 7, "number of trailing days to include in the median")
+	repo := flags.String("repo", "", "GitHub repo as OWNER/NAME (default $CHITIN_REPO)")
+	format := flags.String("format", "text", "output format: text or json")
+	target := flags.Float64("target-reduction", 0.60, "SC-001 reduction target (0.60 = 60%)")
+	flags.Usage = func() {
 		fmt.Fprintln(stderr, "usage: chitin-orchestrator queue-metrics [--days 7] [--repo OWNER/NAME] [--format text|json] [--target-reduction 0.60]")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := flags.Parse(args); err != nil {
 		return exitUserError
 	}
-	if fs.NArg() > 0 {
+	if flags.NArg() > 0 {
 		fmt.Fprintln(stderr, "error: queue-metrics takes no positional arguments")
-		fs.Usage()
+		flags.Usage()
 		return exitUserError
 	}
 	if *days < 1 {
@@ -234,16 +234,28 @@ func computeQueueMetrics(ctx context.Context, deps queueMetricsDeps, repo string
 	}
 
 	median := medianInt(sizes)
-	var ratio float64
-	if openCount > 0 {
+	var (
+		ratio     float64
+		reduction float64
+	)
+	switch {
+	case openCount > 0:
 		ratio = float64(median) / float64(openCount)
-	}
-	reduction := 1.0 - ratio
-	// Clamp: if median > openCount (transient state, e.g. PRs that
-	// closed before today's snapshot), reduction can go negative.
-	// Surface as 0 so the "target met" gate stays honest.
-	if reduction < 0 {
-		reduction = 0
+		reduction = 1.0 - ratio
+		// Clamp: if median > openCount (transient state, e.g. PRs that
+		// closed before today's snapshot), reduction can go negative.
+		// Surface as 0 so the "target met" gate stays honest.
+		if reduction < 0 {
+			reduction = 0
+		}
+	case median == 0:
+		// No open PRs AND no historical queue — truly clean state.
+		reduction = 1.0
+	default:
+		// openCount == 0 but median > 0: chain shows historical
+		// escalations with no live baseline to compare against.
+		// Refuse to claim a reduction; ratio stays 0 (undefined),
+		// reduction stays 0 so TargetMet is forced to false.
 	}
 
 	eventTypes := make([]string, 0, len(escalationEventTypes))
@@ -407,9 +419,10 @@ func bytesContains(haystack []byte, needle string) bool {
 }
 
 // medianInt computes the median of a slice of ints. Even-length
-// slices return the lower of the two middle values (floor) — the
+// slices return the upper of the two middle values (cp[len/2]) — the
 // reduction is the OPERATOR-FACING number, so the conservative read
-// matches operator intuition.
+// (larger median → smaller reported reduction) matches operator
+// intuition.
 func medianInt(xs []int) int {
 	if len(xs) == 0 {
 		return 0
@@ -458,7 +471,7 @@ func renderQueueMetricsText(w io.Writer, r queueMetricsResult) {
 	fmt.Fprintf(w, "Window:                  %d days ending %s\n", r.WindowDays, r.AsOf)
 	fmt.Fprintf(w, "Scanned event types:     %s\n", strings.Join(r.EventTypes, ", "))
 	fmt.Fprintf(w, "Raw open PRs (today):    %d\n", r.RawOpenPRs)
-	fmt.Fprintln(w, "Per-day queue size (distinct PRs escalated in trailing 24h):")
+	fmt.Fprintln(w, "Per-day queue size (distinct PRs escalated in each bucket; today's bucket runs from midnight UTC to as_of):")
 	for _, d := range r.PerDay {
 		fmt.Fprintf(w, "  %s   %d\n", d.Date, d.QueueSize)
 	}
