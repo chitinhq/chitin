@@ -12,7 +12,7 @@ import (
 // final integration sanity check.
 func TestCheckL06_RealOnDiskSpec115(t *testing.T) {
 	// Locate the repo root by walking up from this file until we see
-	// the .specify/specs/115-* directory.
+	// the specs/115-spec-review-gate directory.
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -49,12 +49,15 @@ func TestCheckL06_RealOnDiskSpec115(t *testing.T) {
 	var depContents []string
 	for _, id := range depIDs {
 		matches, err := filepath.Glob(filepath.Join(repoRoot, "specs", id+"-*"))
-		if err != nil || len(matches) != 1 {
-			continue
+		if err != nil {
+			t.Fatalf("glob spec %s: %v", id, err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("expected exactly 1 spec directory for depends_on id %s, got %d: %v", id, len(matches), matches)
 		}
 		b, err := os.ReadFile(filepath.Join(matches[0], "spec.md"))
 		if err != nil {
-			continue
+			t.Fatalf("read dep spec %s/spec.md: %v", matches[0], err)
 		}
 		depContents = append(depContents, string(b))
 	}

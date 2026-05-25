@@ -13,10 +13,8 @@ import (
 
 // Violation is the structured finding emitted by every speclint rule
 // (spec 115 FR-003 JSON envelope: {rule, file, line, severity, message}).
-//
-// Declared in each rule file independently so parallel sibling work
-// units don't depend on each other; spec 112 US2's parallel-merge
-// orchestrator collapses the duplicate type declarations at merge time.
+// Shared across all rules in this package — declared once here because
+// Go forbids duplicate type declarations in the same package.
 type Violation struct {
 	Rule     string `json:"rule"`
 	File     string `json:"file"`
@@ -53,11 +51,15 @@ var l06CanonicalBulletPattern = regexp.MustCompile("(?m)^[ \\t]+[-*][ \\t]+`([a-
 // Allows a single wrapped newline + indent between `reason:` and the
 // value, so prose that wraps mid-event-shape literal is still
 // recognised (e.g. spec 115 lines 97-98 wrap `{ reason:` / `"foo" }`).
-var l06ReasonRefPattern = regexp.MustCompile("reason:[ \\t]*(?:\\n[ \\t]*)?(?:\"([a-z][a-z0-9_]*)\"|`([a-z][a-z0-9_]*)`)")
+// Tolerates CRLF line endings (`\r?\n`) for files checked out on
+// platforms with non-LF defaults. The leading `\b` keeps `treason:` /
+// other suffix-of-`reason` words from matching.
+var l06ReasonRefPattern = regexp.MustCompile("\\breason:[ \\t]*(?:\\r?\\n[ \\t]*)?(?:\"([a-z][a-z0-9_]*)\"|`([a-z][a-z0-9_]*)`)")
 
 // l06FrontmatterPattern matches the YAML frontmatter block at the
-// start of a Markdown file.
-var l06FrontmatterPattern = regexp.MustCompile(`(?s)\A---\s*\n(.*?)\n---\s*\n`)
+// start of a Markdown file. Tolerates CRLF (`\r?\n`) so frontmatter
+// parsing doesn't silently break on non-LF checkouts.
+var l06FrontmatterPattern = regexp.MustCompile(`(?s)\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n`)
 
 // CheckL06 enforces reason-taxonomy alignment for a single spec
 // directory's contents.
