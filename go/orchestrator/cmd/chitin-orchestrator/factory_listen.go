@@ -263,6 +263,56 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Spec 113 US1: PR comment-respond loop. pull_request_review events
+	// have their own eligibility path — checkPullRequestReviewEvent
+	// validates the reviewer is in the copilot allowlist AND the head
+	// ref is a chitin/wu/* branch — and dispatch PRIterationWorkflow.
+	// Distinct from the spec 099 review dispatch above: that one fires
+	// on PR open/sync to *request* a Copilot review; this one fires on
+	// the *response* (the review GitHub posts back) to iterate the
+	// authoring driver against the comments.
+	//
+	// Eligibility override: checkPREligibility above marks every
+	// pull_request_review event ineligible with reason "event_type_ignored"
+	// (that's the spec 099 view, since pull_request_review doesn't open
+	// a new review path there). Spec 113 reverses that for allowlisted
+	// reviewers — re-evaluate via checkPullRequestReviewEvent and reset
+	// the eligibility fields when this branch applies.
+	if eventType == "pull_request_review" {
+		rev := checkPullRequestReviewEvent(&p)
+		resp.Eligible = rev.Eligible
+		if rev.Eligible {
+			resp.SkippedReason = ""
+		} else if len(rev.Reasons) > 0 {
+			resp.SkippedReason = rev.Reasons[0]
+		}
+		if rev.Eligible {
+			localRepo := h.targetRepo
+			if localRepo == "" {
+				localRepo = h.repoRootFlag
+			}
+			itOut := dispatchPRIteration(r.Context(), prIterationDispatchInput{
+				Repo:           p.Repository.FullName,
+				PRNumber:       prNumber,
+				PRBranch:       p.PullRequest.Head.Ref,
+				BaseBranch:     p.PullRequest.Base.Ref,
+				ReviewID:       p.Review.ID,
+				ReviewerLogin:  p.Review.Author.Login,
+				ReviewState:    p.Review.State,
+				SchedulerRunID: labelSchedRunID(p.PullRequest.Labels),
+				TargetRepo:     localRepo,
+				TemporalHost:   h.temporalHost,
+			}, h.temporalDialer, h.stderr)
+			resp.PRIterationDispatched = itOut.Dispatched
+			resp.PRIterationWorkflowID = itOut.WorkflowID
+			resp.PRIterationReviewID = p.Review.ID
+			resp.PRIterationDedupSkipped = itOut.DedupSkipped
+			if itOut.FailureKind != "" {
+				resp.SkippedReason = "pr_iteration:" + itOut.FailureKind
+			}
+		}
+	}
+
 	// FR-013: always-on telemetry. Emit copilot_pr_activity for any
 	// event on a PR carrying the chitin-dispatch label, regardless of
 	// eligibility outcome. (Activity events ARE deduped by delivery ID
@@ -313,10 +363,12 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		"event_type":                eventType,
 		"event_action":              p.Action,
 		"pr_number":                 prNumber,
-		"eligible":                  elig.Eligible,
+		"eligible":                  resp.Eligible,
 		"skipped_reason":            resp.SkippedReason,
 		"sibling_rebase_siblings":   resp.SiblingRebaseSiblings,
 		"sibling_rebase_dispatched": resp.SiblingRebaseDispatched,
+		"pr_iteration_dispatched":   resp.PRIterationDispatched,
+		"pr_iteration_review_id":    resp.PRIterationReviewID,
 	})
 
 	respBody, _ := json.Marshal(resp)

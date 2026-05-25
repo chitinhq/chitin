@@ -224,4 +224,12 @@ type prResponse struct {
 	SiblingRebaseDispatched int   `json:"sibling_rebase_dispatched,omitempty"`
 	SiblingRebaseSiblings   int   `json:"sibling_rebase_siblings,omitempty"`
 	SiblingRebasePRs        []int `json:"sibling_rebase_prs,omitempty"`
+	// Spec 113 US1 — PRIterationWorkflow dispatch summary, populated on
+	// a pull_request_review event that passes checkPullRequestReviewEvent.
+	// One workflow per review, keyed by (pr_number, review_id) for
+	// duplicate-delivery dedup.
+	PRIterationDispatched   bool   `json:"pr_iteration_dispatched,omitempty"`
+	PRIterationWorkflowID   string `json:"pr_iteration_workflow_id,omitempty"`
+	PRIterationReviewID     int64  `json:"pr_iteration_review_id,omitempty"`
+	PRIterationDedupSkipped bool   `json:"pr_iteration_dedup_skipped,omitempty"`
 }
