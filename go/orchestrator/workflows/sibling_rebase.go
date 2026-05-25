@@ -32,6 +32,11 @@ type SiblingRebaseInput struct {
 	// SourcePRNumber is the sibling PR whose merge to BaseBranch triggered
 	// this rebase.
 	SourcePRNumber int `json:"source_pr_number"`
+	// Repo is the GitHub owner/name pair (e.g. "chitinhq/chitin") —
+	// carried so the activity can build operator-facing PR links for
+	// escalation notifications. Optional; empty means "no link in
+	// notifications" (the helper drops the notice with a warning).
+	Repo string `json:"repo,omitempty"`
 }
 
 // SiblingRebaseResult mirrors activities.RebaseSiblingPRResult so the
@@ -93,6 +98,7 @@ func SiblingRebaseWorkflow(ctx workflow.Context, in SiblingRebaseInput) (Sibling
 		SchedulerRunID: in.SchedulerRunID,
 		SourcePRNumber: in.SourcePRNumber,
 		WorkUnitID:     workUnitID,
+		Repo:           in.Repo,
 	}
 
 	var actRes activities.RebaseSiblingPRResult
