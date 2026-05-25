@@ -74,16 +74,35 @@ those.
   [--reason KIND]`. Default: repo from `$CHITIN_REPO`, since=`168h` (7d),
   format=table.
 - **FR-002** Source of truth: union of (a) live `gh pr list` for open
-  PRs in the repo + (b) chain events scan via `chitin-kernel events
-  --type pr_iteration_escalated|sibling_rebase_failed|...`.
-- **FR-003** A PR is "needs operator" iff ANY of:
-  - `pr_iteration_escalated` event in last `--since` window for this PR
-  - `sibling_rebase_failed` event (any time, since these are not retried)
-  - Dialectic verdict `RequestChanges` with non-empty Blockers
-  - PR open > 24h with no automated commit (no `chitin-orchestrator`
-    author commits) since the last review
-  - PR has a human (non-bot) reviewer comment present
-  - PR `mergeable == CONFLICTING` for > 1h (i.e. not transient post-merge state)
+  PRs in the repo + (b) chain events read directly from
+  `~/.chitin/events-<run_id>.jsonl` files (the canonical append-only
+  chain store written by `chitin-kernel emit`). The scanner walks every
+  `events-*.jsonl` under `$CHITIN_DIR` (default `~/.chitin`), filters
+  rows by `event_type` ∈ the escalation taxonomy from FR-008, and
+  indexes by `payload.pr_number`. `chitin-kernel emit` remains the
+  only WRITER; the queue is a pure reader so requires no new kernel
+  subcommand surface.
+- **FR-003** A PR is "needs operator" iff ANY of the following holds.
+  Each rule maps 1-to-1 to a canonical `reason` kind in FR-008 (the
+  rule name and the reason name are the same string):
+  - `iteration_cap_hit` — `pr_iteration_escalated` event with
+    `reason: "iteration_cap_hit"` in last `--since` window
+  - `iteration_completed_with_skips` — `pr_iteration_escalated` event
+    with that reason (driver ducked one or more comments — see spec
+    113 edge cases)
+  - `human_reviewer_present` — `pr_iteration_escalated` event with
+    that reason, OR (without spec 113 deployed) a non-bot reviewer
+    comment present on the PR
+  - `sibling_rebase_failed` — chain has any `sibling_rebase_failed`
+    event for the PR (spec 112 US2 fail-soft outcome; not retried)
+  - `lease_lost` — `pr_iteration_escalated` event with that reason
+    (spec 113's force-push-lost-lease promotion)
+  - `dialectic_request_changes` — spec 094 dialectic verdict
+    `RequestChanges` with non-empty Blockers
+  - `stale_no_automation` — PR open > 24h with no
+    `chitin-orchestrator`-authored commit since the last review
+  - `conflicting_persistent` — PR `mergeable == CONFLICTING` for > 1h
+    (filters out the transient post-merge state)
 - **FR-004** A PR is HIDDEN (not in queue) iff NONE of the above hold
   AND the PR has either: a `chitin-iterating/active` label, an
   `pr_iteration_completed` event with no escalation, or no review at
@@ -104,10 +123,17 @@ those.
 ### Drill-down (US3)
 
 - **FR-008** `--reason KIND` filters the output to PRs matching only
-  the named reason. Valid kinds: `iteration_cap_hit`,
-  `human_reviewer_present`, `sibling_rebase_failed`,
-  `dialectic_request_changes`, `stale_no_automation`,
-  `conflicting_persistent`, `lease_lost`.
+  the named reason. The vocabulary is the SAME closed set as FR-003's
+  rule names + spec 113 FR-011's `reason` strings — each kind below
+  corresponds 1-to-1 to either a FR-003 rule or a chain event payload:
+  - `iteration_cap_hit`
+  - `iteration_completed_with_skips`
+  - `human_reviewer_present`
+  - `sibling_rebase_failed`
+  - `lease_lost`
+  - `dialectic_request_changes`
+  - `stale_no_automation`
+  - `conflicting_persistent`
 
 ### Daily digest (US2)
 

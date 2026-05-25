@@ -110,7 +110,12 @@ immediately emits `pr_iteration_escalated` with
 - **FR-006** Driver output is split: code changes become a fixup
   commit (`git add -A && git commit -m "review fix: ..."`) pushed
   with `--force-with-lease`; reply bodies become PR review thread
-  replies via `gh api .../pulls/N/comments/M/replies`.
+  replies via the GitHub review-comment reply API — keyed by the
+  comment id and NOT the PR number, so the exact `gh api` invocation
+  is `gh api -X POST repos/<owner>/<repo>/pulls/comments/<comment_id>/replies -f body=...`.
+  Implementers MUST use `repos/<owner>/<repo>/...` for every gh-api
+  call in this spec; bare `/pulls/...` paths are rejected by gh as
+  invalid.
 - **FR-007** Iteration round count is carried in the workflow state.
   Cap default is **3 rounds**; spec frontmatter `iteration_cap`
   overrides.
@@ -128,11 +133,25 @@ immediately emits `pr_iteration_escalated` with
 
 ### Telemetry
 
-- **FR-010** Chain events:
+- **FR-010** Chain events (closed taxonomy — implementers MUST NOT invent
+  additional event types; each terminal state in the Edge cases below
+  maps to exactly one of these):
   - `pr_iteration_round_started { pr_number, round, reviewer, comment_count }`
   - `pr_iteration_completed { pr_number, round, fixup_sha, replies_posted, action_counts: {fix, reply, skip} }`
   - `pr_iteration_failed { pr_number, round, failure_kind, detail }` (driver fault / push fault)
   - `pr_iteration_escalated { pr_number, rounds_attempted, last_review_id, reason }`
+  - `pr_iteration_skipped { pr_number, reason }` (PR terminal mid-iteration,
+    duplicate-webhook no-op, or other early-exit no-ops — see edge cases)
+- **FR-011** Canonical `reason` strings used in `pr_iteration_escalated`
+  events. The set is closed; spec 114's queue-filter taxonomy (FR-008)
+  MUST be the same vocabulary string-for-string:
+  - `iteration_cap_hit` — FR-008 cap reached with ≥1 unaddressed comment
+  - `human_reviewer_present` — FR-009 non-allowlisted reviewer detected
+  - `lease_lost` — force-push lost its lease (driver-side fault that
+    promotes to escalation immediately, NOT a separate event type)
+  - `iteration_completed_with_skips` — round completed cleanly but
+    `action_counts.skip > 0` (driver ducked one or more comments);
+    surfaces in spec 114's queue under this reason kind
 
 ## Success criteria
 
@@ -169,20 +188,31 @@ immediately emits `pr_iteration_escalated` with
 ## Edge cases
 
 - **Duplicate webhook delivery for the same review:** Temporal
-  `REJECT_DUPLICATE` policy on `iteration-pr-<N>-review-<M>`. Treated
-  as no-op success per spec 112 US2's pattern.
+  `REJECT_DUPLICATE` policy on `iteration-pr-<N>-review-<M>` rejects
+  the second `ExecuteWorkflow` call; dispatcher catches the
+  `WorkflowExecutionAlreadyStarted` (same pattern as spec 112 US2)
+  and emits `pr_iteration_skipped { reason: "duplicate_delivery" }`.
 - **Driver produces no output / "I see nothing to fix":** record as
   `pr_iteration_completed { action_counts: {fix: 0, reply: 0, skip:
-  N} }` — the operator surface (spec 114) treats N>0 skips as needs-
-  eyeballs.
+  N} }` (where N is the number of comments the driver skipped). Once
+  the round completes, if `action_counts.skip > 0` AND the round was
+  the FIRST round (so this isn't a normal cap-hit), additionally emit
+  `pr_iteration_escalated { reason: "iteration_completed_with_skips" }`
+  so spec 114's queue surfaces the PR for operator eyeballs under that
+  reason kind (114 FR-008 must include this kind).
 - **Force-push fails (lease lost to a concurrent operator push):**
-  emit `pr_iteration_failed { failure_kind: "lease_lost" }` and
-  escalate immediately — operator now has divergent state to resolve.
+  emit `pr_iteration_failed { failure_kind: "lease_lost" }` AND
+  `pr_iteration_escalated { reason: "lease_lost" }` (the
+  failure-event is the diagnostic record; the escalation event is
+  what spec 114 keys off). Operator now has divergent state to
+  resolve.
 - **PR is closed / merged mid-iteration:** workflow no-ops on next
   activity, emits `pr_iteration_skipped { reason: "pr_terminal" }`.
 - **Comment thread has already-replied entries:** activity skips
   threads with an existing chitin reply (identified by author
-  `chitin-orchestrator`).
+  `chitin-orchestrator`); these skips do NOT count toward
+  `action_counts.skip` since they are by-design no-ops, not driver
+  ducks.
 
 ## Composability with spec 114
 

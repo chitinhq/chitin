@@ -3,7 +3,7 @@ description: "Task list — 114 operator escalation surface"
 ---
 
 - [ ] T001 [P] [US1] Implement `cmd/chitin-orchestrator/queue.go` with flag parsing — `--repo`, `--since`, `--format`, `--reason`. Default repo from `$CHITIN_REPO`; default since `168h`; default format `table`
-- [ ] T002 [P] [US1] Implement `internal/queue/scan.go` — read chain events via the existing `chitin-kernel events` JSONL stream (extend if needed) filtered to the escalation event types; build an index `prNumber -> []EscalationEvent`
+- [ ] T002 [P] [US1] Implement `internal/queue/scan.go` — read chain events by walking `$CHITIN_DIR/events-*.jsonl` (default `~/.chitin/`) directly with the existing JSONL append-only contract written by `chitin-kernel emit`. Filter rows by `event_type` ∈ the escalation taxonomy from spec 114 FR-008, parse `payload.pr_number`, build an index `prNumber -> []EscalationEvent`. Do NOT introduce a new `chitin-kernel` subcommand — the queue is a pure reader of the canonical store
 - [ ] T003 [P] [US1] Implement `internal/queue/live.go` — `gh pr list --json number,title,headRefName,labels,mergeable,updatedAt,reviews --search "is:open" --limit 100`. Decorate each PR with its label-derived spec_ref + most-recent-automated-commit age
 - [ ] T004 [US1] Implement `internal/queue/filter.go` — compose live PRs + escalation events into the "needs operator" set per FR-003. Each rule returns a `(matched bool, reason string)` so the table column can show WHY
 - [ ] T005 [US1] Implement `internal/queue/format_table.go` — text/tabwriter output with PR#, title (≤60 chars), reason, age, last-auto-action, spec_ref
