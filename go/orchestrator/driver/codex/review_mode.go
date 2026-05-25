@@ -28,10 +28,14 @@ func reviewArgvFor(wu driver.WorkUnit, model string) []string {
 const structuredVerdictContractURL = "https://github.com/chitinhq/chitin/blob/main/.specify/specs/094-pr-review-mechanism/contracts/structured-verdict-schema.md"
 
 // structuredVerdictSchema is the JSON Schema (draft 2020-12) that every
-// reviewer driver's output MUST validate against. Kept verbatim in sync
-// with .specify/specs/094-pr-review-mechanism/contracts/structured-verdict-schema.md.
-// Embedded in the prompt so the model sees the exact closed shape it must
-// produce — not a paraphrase.
+// reviewer driver's output MUST validate against. Carries the SAME closed
+// shape as the canonical contract at
+// .specify/specs/094-pr-review-mechanism/contracts/structured-verdict-schema.md
+// (same required fields, same property types, same enum values); the
+// per-property `description` strings are intentionally trimmed here to
+// keep the embedded prompt budget tight — the model only needs the shape
+// constraint, not the prose. The contract URL above remains the canonical
+// source for human-readable descriptions; this schema is the validator.
 const structuredVerdictSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://chitinhq.github.io/chitin/schemas/structured-verdict-v1.json",
@@ -128,13 +132,14 @@ var errNoJSONFound = errors.New("no JSON-shaped substring in driver output")
 //
 // On (a)+(b) success the returned string is the extracted JSON document and
 // err is nil. On (c) the returned string is the original raw input and err
-// wraps errNoJSONFound.
+// wraps errNoJSONFound — callers can use errors.Is(err, errNoJSONFound) to
+// detect the no-JSON fallback while still adding their own context.
 func extractVerdictJSON(raw string) (string, error) {
 	body := stripMarkdownFence(raw)
 	if block, ok := largestBalancedBraces(body); ok {
 		return block, nil
 	}
-	return raw, errNoJSONFound
+	return raw, fmt.Errorf("extractVerdictJSON: %w", errNoJSONFound)
 }
 
 // stripMarkdownFence removes a single outer ``` ... ``` (optionally
