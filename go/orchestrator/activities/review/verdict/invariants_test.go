@@ -186,6 +186,67 @@ func TestEnumIsApproveShaped(t *testing.T) {
 	}
 }
 
+// TestConfidenceValid covers the spec 116 Confidence enum's Valid() —
+// the closed set is {high, medium, low, ""} (empty is the default-medium
+// placeholder), and any other value is rejected by the validator.
+func TestConfidenceValid(t *testing.T) {
+	for _, c := range []Confidence{ConfidenceHigh, ConfidenceMedium, ConfidenceLow, Confidence("")} {
+		if !c.Valid() {
+			t.Errorf("Confidence(%q).Valid() = false, want true", string(c))
+		}
+	}
+	for _, c := range []Confidence{"very-high", "maybe", "HIGH", "0.95"} {
+		if c.Valid() {
+			t.Errorf("Confidence(%q).Valid() = true, want false", string(c))
+		}
+	}
+}
+
+// TestConfidenceNormalize covers the default-medium contract. Per spec
+// 116 FR-009 an omitted Confidence means "medium" so spec 094 verdicts
+// emitted before spec 116 deployed parse with a sensible default rather
+// than landing as the empty string everywhere downstream.
+func TestConfidenceNormalize(t *testing.T) {
+	cases := []struct {
+		in   Confidence
+		want Confidence
+	}{
+		{"", ConfidenceMedium},
+		{ConfidenceHigh, ConfidenceHigh},
+		{ConfidenceMedium, ConfidenceMedium},
+		{ConfidenceLow, ConfidenceLow},
+	}
+	for _, tc := range cases {
+		if got := tc.in.Normalize(); got != tc.want {
+			t.Errorf("Confidence(%q).Normalize() = %q, want %q",
+				string(tc.in), string(got), string(tc.want))
+		}
+	}
+}
+
+// TestValidateConfidenceField covers the spec 116 invariant: a verdict
+// with an unrecognised Confidence value is rejected. Empty is allowed
+// (treated as default-medium); high/medium/low are allowed; anything
+// else is a validation failure with the confidence_invalid invariant.
+func TestValidateConfidenceField(t *testing.T) {
+	for _, c := range []Confidence{"", ConfidenceHigh, ConfidenceMedium, ConfidenceLow} {
+		if err := Validate(StructuredVerdict{Verdict: Approve, Confidence: c}); err != nil {
+			t.Errorf("Validate(approve + confidence=%q) = %v, want nil", string(c), err)
+		}
+	}
+	err := Validate(StructuredVerdict{Verdict: Approve, Confidence: "very-high"})
+	if err == nil {
+		t.Fatalf("Validate(approve + confidence=very-high) = nil, want failure")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Validate(...) = %v, want *ValidationError", err)
+	}
+	if !strings.Contains(verr.Invariant, "confidence_invalid") {
+		t.Errorf("Validate(...).Invariant = %q, want substring confidence_invalid", verr.Invariant)
+	}
+}
+
 // TestEnumValid is a tiny sanity check; ensures Valid() and IsApproveShaped()
 // don't drift on the closed enum set.
 func TestEnumValid(t *testing.T) {
