@@ -102,6 +102,8 @@ func TestClassifyDesignJudgement_HandLabeledCorpus(t *testing.T) {
 		case c.want == DesignJudgement && got == Mechanical:
 			judgeAsMech++
 			misclassified = append(misclassified, "judgement→mechanical: "+c.body)
+		default:
+			t.Fatalf("unhandled classification outcome: want=%v got=%v body=%q — corpus loop must account for every Class value", c.want, got, c.body)
 		}
 	}
 
