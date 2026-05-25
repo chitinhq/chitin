@@ -54,8 +54,16 @@ var (
 
 // CheckL05 runs the CLI surface check against `spec.md` content. `file` is
 // the path to surface in violations (typically "spec.md"); `allowlist` is the
-// parsed contents of `.specify/known-cli-surfaces.txt` — pass nil if the file
-// is missing or empty (the FR-introduction heuristic still applies).
+// parsed contents of `.specify/known-cli-surfaces.txt`.
+//
+// Allowlist behavior:
+//   - Populated allowlist: subcommands not in the list AND not FR-introduced
+//     are errors. FR-introduced subcommands that aren't in the list yet emit
+//     a warning to nudge the operator to extend `.specify/known-cli-surfaces.txt`
+//     (per spec 115 FR-006's allowlist-patch flow).
+//   - Nil/empty allowlist: only FR-introduced subcommands pass; everything
+//     else is an error. Callers running against a real spec PR should pass
+//     a populated allowlist to avoid noisy false positives.
 func CheckL05(file, content string, allowlist []string) []Violation {
 	allow := make(map[string]struct{}, len(allowlist))
 	for _, e := range allowlist {
@@ -158,7 +166,23 @@ func checkCliRef(ref cliRef, file string, allow map[string]struct{}, introduced 
 		return Violation{}, false
 	}
 	if introduced[key] {
-		return Violation{}, false
+		// Spec introduces this surface, so the reference is allowed — but if
+		// the operator is maintaining an allowlist, nudge them to keep it
+		// current (spec 115 FR-006's allowlist-patch flow). With no allowlist
+		// at all, stay silent so the heuristic still works on a fresh repo.
+		if len(allow) == 0 {
+			return Violation{}, false
+		}
+		return Violation{
+			Rule:     "L05",
+			File:     file,
+			Line:     ref.line,
+			Severity: SeverityWarning,
+			Message: fmt.Sprintf(
+				"`%s %s`: introduced by an FR-NNN but missing from `.specify/known-cli-surfaces.txt` — add it to the allowlist",
+				ref.binary, ref.subcommand,
+			),
+		}, true
 	}
 	return Violation{
 		Rule:     "L05",

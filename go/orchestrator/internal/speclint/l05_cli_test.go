@@ -169,6 +169,23 @@ func TestCheckL05_EmptyAllowlistAllowsFRIntroduced(t *testing.T) {
 	}
 }
 
+func TestCheckL05_IntroducedButNotInPopulatedAllowlist_WarnsToPatch(t *testing.T) {
+	// Operator maintains an allowlist; spec introduces a new subcommand
+	// via FR. Spec author should patch the allowlist (spec 115 FR-006),
+	// so we surface a warning rather than silently allowing the divergence.
+	spec := "- **FR-001** `chitin-kernel emit` subcommand emits an event.\n"
+	vs := CheckL05("spec.md", spec, []string{"chitin-kernel events"})
+	if len(vs) != 1 {
+		t.Fatalf("expected 1 violation, got %d: %+v", len(vs), vs)
+	}
+	if vs[0].Severity != SeverityWarning {
+		t.Errorf("expected warning severity, got %q", vs[0].Severity)
+	}
+	if !strings.Contains(vs[0].Message, "allowlist") {
+		t.Errorf("expected message to reference allowlist, got %q", vs[0].Message)
+	}
+}
+
 func TestParseAllowlist_CommentsAndBlanksIgnored(t *testing.T) {
 	raw := "# comment line\n" +
 		"\n" +
