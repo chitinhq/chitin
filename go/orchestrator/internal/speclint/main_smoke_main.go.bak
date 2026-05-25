@@ -1,0 +1,19 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/chitinhq/chitin/go/orchestrator/internal/speclint"
+)
+
+func main() {
+	v, err := speclint.L06(os.Args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	out, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(out))
+}
