@@ -28,6 +28,12 @@ func Register(w worker.Worker) {
 	// landed in a follow-up PR) and as a child of PRMergeWorkflow (spec
 	// 093). Its activities are registered separately by review.Register.
 	w.RegisterWorkflow(PRReviewWorkflow)
+	// SiblingRebaseWorkflow is the spec 112 US2 auto-rebase workflow. The
+	// factory-listen merge handler fires one per open sibling PR when a
+	// chitin-authored PR merges to main; the workflow invokes the
+	// RebaseSiblingPR activity (registered by RegisterSchedulerActivities)
+	// and returns its result.
+	w.RegisterWorkflow(SiblingRebaseWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

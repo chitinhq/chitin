@@ -268,12 +268,13 @@ func deliverWorkProduct(
 
 	var d activities.DeliverWorkProductResult
 	err := workflow.ExecuteActivity(actx, "DeliverWorkProduct", activities.DeliverWorkProductInput{
-		WorkUnitID:   node.ID,
-		SpecRef:      node.SpecRef,
-		TaskRef:      node.TaskRef,
-		Description:  node.Description,
-		WorktreePath: worktreePath,
-		BaseRef:      node.BaseRef,
+		WorkUnitID:     node.ID,
+		SpecRef:        node.SpecRef,
+		TaskRef:        node.TaskRef,
+		Description:    node.Description,
+		WorktreePath:   worktreePath,
+		BaseRef:        node.BaseRef,
+		SchedulerRunID: runID,
 	}).Get(ctx, &d)
 	if err != nil {
 		logger.Error("work unit: work-product delivery faulted", "node", node.ID, "err", err)
