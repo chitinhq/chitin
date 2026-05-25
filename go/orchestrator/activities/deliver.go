@@ -194,13 +194,26 @@ func siblingLabelFor(runID string) string {
 // PR by label when one merges to main.
 const SchedRunLabelPrefix = "sched/run/"
 
-// applyPRLabel adds one label to an open pull request via `gh pr edit
-// --add-label`. The gh CLI auto-creates the label in the target repo if it
-// does not yet exist (with a default color), so the operator does not need
-// to pre-create per-run labels. Returns gh's trimmed stdout on success.
+// applyPRLabel adds one label to an open pull request. CONTRARY TO an earlier
+// comment in this file's history, `gh pr edit --add-label <name>` does NOT
+// auto-create the label — it returns `'name' not found` if the label is
+// absent. Per-(scheduler-run-id) labels like `sched/run/<uuid>` are by
+// definition new on every dispatch, so this helper FIRST runs
+// `gh label create <name> --force` (idempotent — `--force` updates color +
+// description if the label already exists) and ONLY THEN runs
+// `gh pr edit --add-label`. Failing to do the create step silently leaves
+// the PR unlabeled and breaks the spec 112 US2 auto-rebase lister — observed
+// in production after PR #1038, fixed here.
+//
+// A label-create failure is treated as fatal to this helper so the caller
+// (DeliverWorkProduct.Execute) can record the shortfall. A successful create
+// followed by a failed add still surfaces as failure for the same reason.
 func applyPRLabel(ctx context.Context, worktreePath, prURL, label string) (string, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf("gh CLI not available: %w", err)
+	}
+	if err := ensureLabelExists(ctx, worktreePath, label); err != nil {
+		return "", fmt.Errorf("ensure label %q exists: %w", label, err)
 	}
 	cmd := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--add-label", label)
 	cmd.Dir = worktreePath
@@ -211,6 +224,42 @@ func applyPRLabel(ctx context.Context, worktreePath, prURL, label string) (strin
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// ensureLabelExists runs `gh label create <name> --force --color <hex>
+// --description <text>`. `--force` makes the call idempotent: if the label
+// already exists it updates color + description; if not it creates fresh.
+// Color and description are best-effort stable conventions so operators
+// recognise chitin-authored labels in the GitHub label list. The repo is
+// inferred from the worktree's `origin` remote.
+func ensureLabelExists(ctx context.Context, worktreePath, label string) error {
+	cmd := exec.CommandContext(ctx, "gh", "label", "create", label,
+		"--force",
+		"--color", chitinLabelColor,
+		"--description", chitinLabelDescription(label),
+	)
+	cmd.Dir = worktreePath
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh label create: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// chitinLabelColor is the standard fill color (hex, no #) used for every
+// chitin-authored PR label. Picked to be visually distinct from the GitHub
+// default palette without resembling an existing "type:" or "status:" badge.
+const chitinLabelColor = "8b5cf6"
+
+// chitinLabelDescription returns a human-readable description for the named
+// chitin label. Stable text per prefix so updates remain idempotent.
+func chitinLabelDescription(label string) string {
+	if strings.HasPrefix(label, SchedRunLabelPrefix) {
+		runID := strings.TrimPrefix(label, SchedRunLabelPrefix)
+		return "Chitin scheduler run " + runID + " (spec 112 US2 sibling tracking)"
+	}
+	return "Applied by the Chitin orchestrator"
 }
 
 // openPR runs `gh pr create` from the worktree and returns the new PR's URL.
