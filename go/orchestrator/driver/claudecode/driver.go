@@ -88,7 +88,13 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	ctx, cancel := invocationContext(ctx, wu.Deadline)
 	defer cancel()
 
-	prompt := promptFor(wu)
+	reviewMode := isReviewMode(wu)
+	var prompt string
+	if reviewMode {
+		prompt = reviewPromptFor(wu)
+	} else {
+		prompt = promptFor(wu)
+	}
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
 	// invocations: the chitin worker spawns claude headlessly inside a
 	// fresh worktree, and without this flag claude's sandbox refuses
@@ -104,7 +110,12 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return resultFromCommand(ctx, wu, d.ID(), strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err), nil
+	out := strings.TrimSpace(stdout.String())
+	errOut := strings.TrimSpace(stderr.String())
+	if reviewMode {
+		return reviewResult(ctx, wu, d.ID(), out, errOut, err), nil
+	}
+	return resultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
 }
 
 func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
