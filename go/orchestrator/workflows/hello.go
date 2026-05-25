@@ -40,6 +40,12 @@ func Register(w worker.Worker) {
 	// IteratePRReview activity (registered by RegisterSchedulerActivities)
 	// and returns its result.
 	w.RegisterWorkflow(PRIterationWorkflow)
+	// SpecIterationWorkflow is the spec 115 US1 spec-PR iteration loop. The
+	// spec-PR dispatcher (T015) starts one per Copilot review on a
+	// chitin-authored spec PR; the workflow selects a `spec.author` driver
+	// itself (rather than re-invoking the authoring driver) and dispatches
+	// the IterateSpecReview activity (registered in a later task).
+	w.RegisterWorkflow(SpecIterationWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the

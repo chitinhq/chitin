@@ -45,12 +45,12 @@ type SpecIterationInput struct {
 // Mirrors the shape PRIterationResult exposes plus the spec-specific
 // `action_counts` field (FR-009 / T021).
 type SpecIterationResult struct {
-	PushedFixup  bool                       `json:"pushed_fixup"`
-	FixupSHA     string                     `json:"fixup_sha"`
-	CommentCount int                        `json:"comment_count"`
-	ActionCounts SpecIterationActionCounts  `json:"action_counts"`
-	DriverID     string                     `json:"driver_id"`
-	Explanation  string                     `json:"explanation"`
+	PushedFixup  bool                      `json:"pushed_fixup"`
+	FixupSHA     string                    `json:"fixup_sha"`
+	CommentCount int                       `json:"comment_count"`
+	ActionCounts SpecIterationActionCounts `json:"action_counts"`
+	DriverID     string                    `json:"driver_id"`
+	Explanation  string                    `json:"explanation"`
 }
 
 // SpecIterationActionCounts is the closed-set tally of how the driver
@@ -110,15 +110,15 @@ type iterateSpecReviewResult struct {
 // validation, one activity dispatch, typed result — and differs in two
 // ways:
 //
-//   1. The workflow selects a driver itself via the SelectDriver activity
-//      with capability `spec.author` (FR-005) rather than re-invoking the
-//      authoring driver. The selected driver id is carried into the
-//      activity input and echoed on the result for telemetry.
-//   2. The iteration activity (IterateSpecReview, future task) builds a
-//      spec-tuned prompt that includes the full current spec.md +
-//      tasks.md and the linter's violations (FR-006). Worktree minting
-//      reuses spec 112 US2's worktree.Manager.Checkout exactly the same
-//      way IteratePRReview does.
+//  1. The workflow selects a driver itself via the SelectDriver activity
+//     with capability `spec.author` (FR-005) rather than re-invoking the
+//     authoring driver. The selected driver id is carried into the
+//     activity input and echoed on the result for telemetry.
+//  2. The iteration activity (IterateSpecReview, future task) builds a
+//     spec-tuned prompt that includes the full current spec.md +
+//     tasks.md and the linter's violations (FR-006). Worktree minting
+//     reuses spec 112 US2's worktree.Manager.Checkout exactly the same
+//     way IteratePRReview does.
 //
 // v1 cap: ONE round per review. Subsequent Copilot reviews on the same
 // spec PR produce fresh workflows with fresh ReviewIDs. Multi-round
@@ -164,8 +164,11 @@ func SpecIterationWorkflow(ctx workflow.Context, in SpecIterationInput) (SpecIte
 	if sel.Unroutable {
 		// No `spec.author`-capable driver is ready. Surface as a non-error
 		// settled outcome — the dispatcher (T015) can emit
-		// `spec_iteration_escalated { reason: "lint_violation_unresolvable" }`
-		// or similar based on the empty DriverID.
+		// `spec_iteration_escalated` with a "no ready driver" reason
+		// (FR-010's closed set in spec 115 does not yet name this
+		// condition; T017 extends the reason taxonomy and is the natural
+		// place to add it). The empty DriverID on the result is the
+		// machine-readable signal.
 		return SpecIterationResult{
 			Explanation: fmt.Sprintf(
 				"no ready driver for capability %q: %s",

@@ -149,7 +149,7 @@ a heuristic — see FR-007), emits `spec_iteration_escalated { reason:
 
 - **FR-005** `SpecIterationWorkflow` is structurally identical to
   spec 113's `PRIterationWorkflow` but invokes a driver from the
-  `spec-author` capability set (claudecode or codex with a spec-tuned
+  `spec.author` capability set (claudecode or codex with a spec-tuned
   prompt template). Reuses spec 112 US2's `worktree.Manager.Checkout`
   for the spec-PR branch.
 - **FR-006** Spec-iteration prompt template differs from the code
