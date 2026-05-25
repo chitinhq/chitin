@@ -144,9 +144,11 @@ func TestExecute_DedupAgainstExistingMarker(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	// Stub returns one existing chitin comment matching (L01, spec.md, 1).
+	// Stub returns one existing chitin comment matching (L01, spec.md, 1)
+	// authored by the gh-authenticated login the stub also reports.
 	existing := []map[string]any{{
 		"id":   int64(1),
+		"user": map[string]any{"login": "chitin-bot"},
 		"body": "<!-- chitin-spec-lint:rule=L01 file=spec.md line=1 -->\n**spec-lint L01 (error)** — already posted",
 	}}
 	existingJSON, _ := json.Marshal(existing)
@@ -196,6 +198,7 @@ func TestExecute_AllDuplicates_NoPost(t *testing.T) {
 	dir := t.TempDir()
 	existing := []map[string]any{{
 		"id":   int64(1),
+		"user": map[string]any{"login": "chitin-bot"},
 		"body": "<!-- chitin-spec-lint:rule=L01 file=spec.md line=1 -->\nbody",
 	}}
 	existingJSON, _ := json.Marshal(existing)
@@ -225,27 +228,35 @@ func TestExecute_AllDuplicates_NoPost(t *testing.T) {
 	}
 }
 
-// writeGhStub drops a POSIX-shell stub that mimics two `gh api` calls:
+// writeGhStub drops a POSIX-shell stub that mimics three `gh api` calls:
 //
+//   - WHOAMI (`gh api user`): write a fixed `{"login":"chitin-bot"}` so
+//     fetchExistingLintMarkers can scope dedup to the authenticated user.
+//     The fixture comments must carry the same login or they're ignored.
 //   - LIST  (`gh api --paginate repos/.../pulls/N/comments?...`): write
 //     listJSON to stdout.
 //   - POST  (`gh api --method POST ... --input <file> repos/.../reviews`):
 //     write postJSON to stdout.
 //
-// The stub discriminates on the presence of `--method` or `--paginate` in
-// its argv. Returns the absolute stub path.
+// The stub discriminates on `--method` / `--paginate` and on a trailing
+// `user` positional. Returns the absolute stub path.
 func writeGhStub(t *testing.T, dir, listJSON, postJSON string) string {
 	t.Helper()
 	stub := filepath.Join(dir, "gh")
 	// printf '%s' (not echo) — dash's echo interprets \n inside JSON
 	// string literals as a real newline, corrupting the payload.
 	body := `#!/bin/sh
+last=""
 for a in "$@"; do
+  last="$a"
   case "$a" in
     --method) printf '%s' '` + postJSON + `'; exit 0;;
     --paginate) printf '%s' '` + listJSON + `'; exit 0;;
   esac
 done
+case "$last" in
+  user) printf '%s' '{"login":"chitin-bot"}'; exit 0;;
+esac
 printf '%s' '[]'
 exit 0
 `

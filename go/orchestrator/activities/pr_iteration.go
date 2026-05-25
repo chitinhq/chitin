@@ -364,10 +364,21 @@ func ghApi(ctx context.Context, path string) ([]byte, error) {
 // endpoints like `/pulls/N/comments` where a large review would otherwise
 // silently drop comments past the first page.
 func ghApiPaginated(ctx context.Context, path string) ([]byte, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	return ghApiPaginatedWithBin(ctx, "gh", path)
+}
+
+// ghApiPaginatedWithBin is the ghApiPaginated variant that honors a
+// caller-supplied gh binary path (e.g. CHITIN_GH_BIN). Callers that mix
+// list + write calls share one resolved binary so dedup checks and the
+// eventual POST run against the same credentials (PR #1113 review).
+func ghApiPaginatedWithBin(ctx context.Context, ghBin, path string) ([]byte, error) {
+	if ghBin == "" {
+		ghBin = "gh"
+	}
+	if _, err := exec.LookPath(ghBin); err != nil {
 		return nil, fmt.Errorf("gh CLI not available: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "gh", "api", "--paginate", path)
+	cmd := exec.CommandContext(ctx, ghBin, "api", "--paginate", path)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -120,12 +120,18 @@ func (a *PostLintViolations) Execute(ctx context.Context, in PostLintViolationsI
 		return res, nil
 	}
 
+	// Resolve the gh binary once so list + post both run the same
+	// executable (PR #1113 review — otherwise CHITIN_GH_BIN, set for
+	// pinned/wrapped gh, applies only to the POST and the list silently
+	// shells out to a different binary/credentials).
+	ghBin := resolveGHBin()
+
 	// Fetch existing review comments on the PR. A failure here is treated
 	// as "no existing comments known" — the dedup set is empty and we
 	// proceed. This errs on the side of double-posting once rather than
 	// silently dropping violations the operator needs to see; the
 	// explanation records the fetch fault for audit.
-	existing, fetchErr := fetchExistingLintMarkers(ctx, in.Repo, in.PRNumber)
+	existing, fetchErr := fetchExistingLintMarkers(ctx, ghBin, in.Repo, in.PRNumber)
 	fetchNote := ""
 	if fetchErr != nil {
 		fetchNote = fmt.Sprintf(" (existing-comment fetch faulted: %v — dedup disabled)", fetchErr)
@@ -155,7 +161,7 @@ func (a *PostLintViolations) Execute(ctx context.Context, in PostLintViolationsI
 		return res, nil
 	}
 
-	reviewID, postErr := postLintReview(ctx, in.Repo, in.PRNumber, fresh)
+	reviewID, postErr := postLintReview(ctx, ghBin, in.Repo, in.PRNumber, fresh)
 	if postErr != nil {
 		res.Explanation = fmt.Sprintf("gh api review POST failed: %v%s", postErr, fetchNote)
 		return res, nil
@@ -212,25 +218,40 @@ func buildLintCommentBody(v LintViolation) string {
 
 // fetchExistingLintMarkers walks every existing PR review comment via
 // `gh api --paginate` and returns the set of (rule, file, line) keys
-// that already carry a chitin lint marker. Used to suppress duplicate
-// posts on re-runs (FR-004).
+// that already carry a chitin lint marker AUTHORED BY THE GH-AUTHENTICATED
+// USER. Used to suppress duplicate posts on re-runs (FR-004).
 //
-// Uses the package-level ghApiPaginated helper (declared in pr_iteration.go)
-// so list pagination is transparent.
-func fetchExistingLintMarkers(ctx context.Context, repo string, prNumber int) (map[string]struct{}, error) {
+// Author scoping is load-bearing for safety: the marker is a public
+// HTML comment that any third party can paste into a PR review reply.
+// Without the `user.login == authenticated-login` gate, a hostile (or
+// careless) commenter could suppress every future lint finding by
+// quoting the marker (PR #1113 review). On identity-fetch failure we
+// fall through and return an empty set — the caller already treats a
+// fetch fault as "dedup disabled, accept one round of double-posting".
+func fetchExistingLintMarkers(ctx context.Context, ghBin, repo string, prNumber int) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
+	login, err := getAuthenticatedGHLogin(ctx, ghBin)
+	if err != nil {
+		return out, fmt.Errorf("identify authenticated gh user: %w", err)
+	}
 	path := fmt.Sprintf("repos/%s/pulls/%d/comments?per_page=100", repo, prNumber)
-	raw, err := ghApiPaginated(ctx, path)
+	raw, err := ghApiPaginatedWithBin(ctx, ghBin, path)
 	if err != nil {
 		return out, err
 	}
 	var comments []struct {
 		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(raw, &comments); err != nil {
 		return out, fmt.Errorf("decode existing pr comments: %w", err)
 	}
 	for _, c := range comments {
+		if c.User.Login != login {
+			continue
+		}
 		if !strings.Contains(c.Body, lintMarkerPrefix) {
 			continue
 		}
@@ -247,6 +268,44 @@ func fetchExistingLintMarkers(ctx context.Context, repo string, prNumber int) (m
 	return out, nil
 }
 
+// resolveGHBin returns the gh executable to invoke — CHITIN_GH_BIN
+// when set (custom path, wrapper, pinned version), else "gh".
+func resolveGHBin() string {
+	if b := os.Getenv("CHITIN_GH_BIN"); b != "" {
+		return b
+	}
+	return "gh"
+}
+
+// getAuthenticatedGHLogin returns the login of the gh-authenticated
+// account via `gh api user`. Used to scope marker-based dedup so only
+// chitin-authored comments suppress future posts.
+func getAuthenticatedGHLogin(ctx context.Context, ghBin string) (string, error) {
+	if ghBin == "" {
+		ghBin = "gh"
+	}
+	if _, err := exec.LookPath(ghBin); err != nil {
+		return "", fmt.Errorf("gh CLI not available: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, ghBin, "api", "user")
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh api user: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &u); err != nil {
+		return "", fmt.Errorf("decode gh api user: %w", err)
+	}
+	if u.Login == "" {
+		return "", fmt.Errorf("gh api user returned empty login")
+	}
+	return u.Login, nil
+}
+
 // postLintReview POSTs a single review with `event=COMMENT` and the
 // supplied inline comments. Returns the new review's id (for telemetry).
 //
@@ -254,7 +313,7 @@ func fetchExistingLintMarkers(ctx context.Context, repo string, prNumber int) (m
 // `comments=[{...}]` array cleanly, so the request body is written to a
 // temp JSON file and passed via `--input`. Mirrors the temp-file emit
 // pattern from spec 112's chain-emit helper.
-func postLintReview(ctx context.Context, repo string, prNumber int, comments []reviewComment) (int64, error) {
+func postLintReview(ctx context.Context, ghBin, repo string, prNumber int, comments []reviewComment) (int64, error) {
 	payload := map[string]any{
 		"event":    "COMMENT",
 		"body":     "Spec linter (chitin-orchestrator spec-lint) flagged the following:",
@@ -278,7 +337,6 @@ func postLintReview(ctx context.Context, repo string, prNumber int, comments []r
 		return 0, fmt.Errorf("temp close: %w", err)
 	}
 
-	ghBin := os.Getenv("CHITIN_GH_BIN")
 	if ghBin == "" {
 		ghBin = "gh"
 	}
