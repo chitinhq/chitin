@@ -72,6 +72,10 @@ type Violation struct {
 //     entries: each unparseable entry is silently skipped; entry-shape
 //     validation is L01's job.
 func CheckCrossRefs(specDir, specsRoot string) ([]Violation, error) {
+	// Normalize specDir so a caller-supplied trailing slash does not shift
+	// the derived specsRoot up one extra level (filepath.Dir(".../115-foo/")
+	// would yield ".../115-foo", not ".../specs").
+	specDir = filepath.Clean(specDir)
 	if specsRoot == "" {
 		specsRoot = filepath.Dir(specDir)
 	}
@@ -83,6 +87,9 @@ func CheckCrossRefs(specDir, specsRoot string) ([]Violation, error) {
 
 	body, bodyStart, err := extractFrontmatter(string(raw))
 	if err != nil {
+		// Malformed frontmatter is L01's territory (frontmatter complete);
+		// L02 deliberately stays silent so the operator sees one finding,
+		// not a cascade.
 		return nil, nil
 	}
 	if body == "" {
@@ -110,6 +117,14 @@ func CheckCrossRefs(specDir, specsRoot string) ([]Violation, error) {
 			}
 			id := strings.TrimSpace(item.Value)
 			if id == "" {
+				continue
+			}
+			// Spec ids are numeric (e.g. "115"). Reject anything else
+			// before it reaches filepath.Glob: an id containing path
+			// separators ("../") or glob metacharacters ("*", "[", "?")
+			// could escape specsRoot or enumerate unrelated paths.
+			// Shape validation is L01's job, so we skip silently.
+			if !isNumericID(id) {
 				continue
 			}
 			// yaml.v3 reports 1-based lines within the body we parsed. The
@@ -203,6 +218,22 @@ func extractFrontmatter(content string) (string, int, error) {
 		}
 	}
 	return "", 0, errors.New("frontmatter block has no closing `---`")
+}
+
+// isNumericID reports whether s is a non-empty string of ASCII digits — the
+// shape L02 will trust enough to feed into filepath.Glob. Anything else
+// (path separators, glob metacharacters, alphabetic prefixes) is rejected
+// here so L01 owns the "frontmatter complete and well-shaped" verdict.
+func isNumericID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // findSequence returns the yaml.Node for the top-level mapping entry with
