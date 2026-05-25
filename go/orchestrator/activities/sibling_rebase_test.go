@@ -148,6 +148,51 @@ func TestRebaseSiblingPR_ConflictAborts(t *testing.T) {
 	_ = bare // bare exists only to host the remote — referenced via origin.
 }
 
+// TestRebaseSiblingPR_NonConflictFailureCarriesGitError asserts the
+// distinguished-failure path: a non-zero rebase exit with NO conflict files
+// (e.g. a missing base ref) surfaces as Rebased=false with the underlying
+// git error in Explanation, NOT as a "0 conflict files" mislabeling.
+func TestRebaseSiblingPR_NonConflictFailureCarriesGitError(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
+
+	_, local, cleanup := newSiblingRebaseFixture(t)
+	defer cleanup()
+
+	addBranchCommit(t, local, "pr-needs-rebase", "file_c.txt", "content\n")
+	gitMust(t, local, "push", "origin", "pr-needs-rebase")
+	// Switch back to main so the local checkout of pr-needs-rebase below
+	// (in the Manager's worktree) doesn't collide with the local repo's
+	// own current branch — `git worktree add -B` refuses to check out a
+	// branch already checked out elsewhere.
+	gitMust(t, local, "checkout", "main")
+
+	mgr := newTestManager(t)
+	act := NewRebaseSiblingPR(mgr)
+	// BaseBranch points at a ref that does not exist on origin. The rebase
+	// fails immediately — NOT because of a merge conflict.
+	res, err := act.Execute(context.Background(), RebaseSiblingPRInput{
+		PRNumber:       55,
+		PRBranch:       "pr-needs-rebase",
+		TargetRepo:     local,
+		BaseBranch:     "nonexistent-branch",
+		SchedulerRunID: "run-fault",
+		SourcePRNumber: 54,
+		WorkUnitID:     "rebase-pr-55",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v (must be fail-soft)", err)
+	}
+	if res.Rebased {
+		t.Fatal("expected Rebased=false on git fault")
+	}
+	if len(res.ConflictFiles) != 0 {
+		t.Fatalf("expected zero conflict files on non-conflict fault, got %v", res.ConflictFiles)
+	}
+	if !strings.Contains(res.Explanation, "git fault") {
+		t.Fatalf("expected explanation to mention git fault, got %q", res.Explanation)
+	}
+}
+
 // TestRebaseSiblingPR_NoManager asserts the guard: an activity with a nil
 // Manager returns a populated result rather than panicking.
 func TestRebaseSiblingPR_NoManager(t *testing.T) {

@@ -21,13 +21,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
@@ -110,7 +112,7 @@ func dispatchSiblingRebase(
 	label := activities.SchedRunLabelPrefix + in.SchedulerRunID
 	siblings, err := lister(ctx, in.Repo, label, in.SourcePRNumber)
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: sibling-rebase: list siblings failed: %v\n", err)
+		warnDispatch(stderr, "list siblings failed: %v", err)
 		return siblingRebaseDispatchResult{
 			FailureKind: "sibling_list_failed",
 			Detail:      err.Error(),
@@ -129,7 +131,7 @@ func dispatchSiblingRebase(
 	}
 	c, host, err := dialer(ctx, in.TemporalHost)
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: sibling-rebase: temporal dial %s failed: %v\n", host, err)
+		warnDispatch(stderr, "temporal dial %s failed: %v", host, err)
 		return siblingRebaseDispatchResult{
 			Siblings:    len(siblings),
 			FailureKind: "temporal_unreachable",
@@ -144,12 +146,20 @@ func dispatchSiblingRebase(
 	}
 
 	for _, s := range siblings {
+		// Deterministic WorkflowID per (sibling PR, source PR) so a duplicate
+		// webhook delivery (GitHub's at-least-once contract) does not start
+		// a second rebase — Temporal's WorkflowID uniqueness rejects the
+		// repeat with an AlreadyStarted error which we treat as no-op.
 		workflowID := fmt.Sprintf(
-			"sibling-rebase-pr-%d-from-%d-%s",
-			s.Number, in.SourcePRNumber, uuid.NewString()[:8])
+			"sibling-rebase-pr-%d-from-%d",
+			s.Number, in.SourcePRNumber)
 		startOpts := client.StartWorkflowOptions{
 			ID:        workflowID,
 			TaskQueue: TaskQueue,
+			// REJECT_DUPLICATE makes the dedup explicit on the server side:
+			// a redelivered webhook attempting the same WorkflowID gets the
+			// AlreadyStarted error rather than racing with the prior run.
+			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		}
 		wfIn := workflows.SiblingRebaseInput{
 			PRNumber:       s.Number,
@@ -160,9 +170,16 @@ func dispatchSiblingRebase(
 			SourcePRNumber: in.SourcePRNumber,
 		}
 		if _, err := c.ExecuteWorkflow(ctx, startOpts, workflows.SiblingRebaseWorkflow, wfIn); err != nil {
-			fmt.Fprintf(stderr,
-				"warning: sibling-rebase: dispatch for PR #%d failed: %v\n",
-				s.Number, err)
+			// AlreadyStarted is the dedup-success path: the workflow exists
+			// from a prior webhook delivery for the same merge. Count it as
+			// dispatched (the work is in flight or completed) rather than as
+			// a failure, so GitHub redeliveries don't surface as faults.
+			if isAlreadyStartedErr(err) {
+				out.Dispatched++
+				out.PRNumbers = append(out.PRNumbers, s.Number)
+				continue
+			}
+			warnDispatch(stderr, "dispatch for PR #%d failed: %v", s.Number, err)
 			if out.FailureKind == "" {
 				out.FailureKind = "dispatch_error"
 				out.Detail = err.Error()
@@ -174,6 +191,34 @@ func dispatchSiblingRebase(
 	}
 	sortIntsAsc(out.PRNumbers)
 	return out
+}
+
+// isAlreadyStartedErr reports whether err is Temporal's "workflow already
+// started" error — surfaced by ExecuteWorkflow when a deterministic
+// WorkflowID conflicts with a prior, still-known run. Treated as a dedup
+// success by the dispatcher.
+func isAlreadyStartedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var aErr *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &aErr) {
+		return true
+	}
+	// Some Temporal SDK versions wrap or stringify the error; substring match
+	// is the safety net so a future SDK rename does not silently break dedup.
+	return strings.Contains(err.Error(), "WorkflowExecutionAlreadyStarted") ||
+		strings.Contains(err.Error(), "already started")
+}
+
+// warnDispatch logs a sibling-rebase dispatch warning, tolerating a nil
+// writer (the factory-listen handler always sets stderr to os.Stderr; tests
+// or direct callers may pass nil).
+func warnDispatch(stderr io.Writer, format string, args ...any) {
+	if stderr == nil {
+		return
+	}
+	fmt.Fprintf(stderr, "warning: sibling-rebase: "+format+"\n", args...)
 }
 
 // listOpenSiblingsViaGH shells out to `gh pr list --repo <repo> --label

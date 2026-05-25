@@ -160,6 +160,13 @@ type factoryHandler struct {
 	logFile      string
 	stderr       io.Writer
 
+	// Spec 112 US2 injectables — production paths default to nil and the
+	// dispatcher uses listOpenSiblingsViaGH + dialTemporalAsStarter. Tests
+	// inject stubs so the merged-PR sibling-rebase trigger can be exercised
+	// without shelling out to `gh` or dialing a Temporal dev server.
+	siblingLister  siblingLister
+	temporalDialer temporalDialer
+
 	logMu sync.Mutex
 }
 
@@ -290,7 +297,7 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 				BaseBranch:     p.PullRequest.Base.Ref,
 				TargetRepo:     localRepo,
 				TemporalHost:   h.temporalHost,
-			}, nil, nil, h.stderr)
+			}, h.siblingLister, h.temporalDialer, h.stderr)
 			resp.SiblingRebaseDispatched = rebOut.Dispatched
 			resp.SiblingRebaseSiblings = rebOut.Siblings
 			resp.SiblingRebasePRs = rebOut.PRNumbers

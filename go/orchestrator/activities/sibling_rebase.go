@@ -147,18 +147,30 @@ func (a *RebaseSiblingPR) Execute(ctx context.Context, in RebaseSiblingPRInput) 
 	}
 
 	// Attempt the rebase. `git rebase origin/<base>` rewrites the current
-	// branch onto the freshly fetched remote base. A non-zero exit signals a
-	// conflict — the activity aborts it cleanly so the worktree never holds
-	// in-flight rebase state.
-	if _, err := gitOutput(ctx, wt, "rebase", "origin/"+base); err != nil {
+	// branch onto the freshly fetched remote base. A non-zero exit can mean
+	// EITHER a merge conflict (the case auto-rebase exists to detect) OR an
+	// underlying git fault (missing origin/<base>, detached HEAD, repo
+	// corruption). The two paths surface differently: a real conflict has
+	// non-empty conflict files in `git status --porcelain`; a non-conflict
+	// fault has none. Both still emit `sibling_rebase_failed` so the operator
+	// sees something, but the Explanation carries the underlying git stderr
+	// so a non-conflict fault is not silently mislabeled as "0 conflicts".
+	if _, rebaseErr := gitOutput(ctx, wt, "rebase", "origin/"+base); rebaseErr != nil {
 		conflicts := readConflictFiles(ctx, wt)
 		// `git rebase --abort` returns the worktree to pre-rebase state. A
 		// failed abort is non-fatal — the worktree is going away on teardown.
 		_, _ = gitOutput(ctx, wt, "rebase", "--abort")
 		res.ConflictFiles = conflicts
-		res.Explanation = fmt.Sprintf(
-			"rebase onto origin/%s produced %d conflicting file(s); branch left untouched for manual resolution",
-			base, len(conflicts))
+		switch len(conflicts) {
+		case 0:
+			res.Explanation = fmt.Sprintf(
+				"rebase onto origin/%s failed without conflict files (likely git fault): %v; branch left untouched",
+				base, rebaseErr)
+		default:
+			res.Explanation = fmt.Sprintf(
+				"rebase onto origin/%s produced %d conflicting file(s); branch left untouched for manual resolution",
+				base, len(conflicts))
+		}
 		emitSiblingRebaseEvent(ctx, "sibling_rebase_failed", in, res)
 		return res, nil
 	}

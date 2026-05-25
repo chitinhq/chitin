@@ -82,8 +82,17 @@ type record struct {
 	// branch is empty litter Teardown deletes; a tip past BaseSHA is a work
 	// product (an agent node's commits, perhaps an open PR) the branch keeps.
 	// Empty for a record written before this field existed, or when the base
-	// ref could not be resolved — Teardown then conservatively keeps the branch.
+	// ref could not be resolved — Teardown then conservatively keeps the branch
+	// UNLESS EphemeralLocalBranch is true.
 	BaseSHA string `json:"base_sha"`
+	// EphemeralLocalBranch marks the record's local branch as a working
+	// artifact that Teardown should always delete locally — independent of
+	// the tip-vs-BaseSHA test that governs Create-minted branches. Set by
+	// Checkout (spec 112 US2): the local branch is just a tracking handle
+	// for a remote PR branch, and `git branch -D` of a local-only ref does
+	// NOT touch the remote, so the PR is never harmed. False for Create-
+	// minted branches, which keep their commits as the work product.
+	EphemeralLocalBranch bool `json:"ephemeral_local_branch,omitempty"`
 	// WorkUnitID is the work unit the worktree was created for.
 	WorkUnitID string `json:"work_unit_id"`
 	// CreatedAt is when Create produced the worktree.
@@ -246,9 +255,11 @@ func (m *Manager) Create(targetRepo, baseRef, workUnitID string) (string, error)
 // lifecycle guarantees apply.
 //
 // BaseSHA is left empty in the registry record because the branch already
-// carries work; Teardown's empty-branch cleanup (which deletes a branch whose
-// tip equals its base) MUST NOT run here — we never want to delete the PR's
-// branch out from under an open pull request.
+// carries work, so Teardown's tip-vs-base empty-branch cleanup MUST NOT run
+// here. The record's EphemeralLocalBranch flag is set instead, so Teardown
+// unconditionally deletes the LOCAL branch ref (a working artifact for this
+// rebase) while never touching origin/<branch> — `git branch -D` is local-
+// only, so the open pull request is unaffected.
 //
 // Returns the absolute worktree path. The caller is responsible for calling
 // Teardown(path); on any failure the partially-created worktree is cleaned up
@@ -308,11 +319,12 @@ func (m *Manager) Checkout(targetRepo, branch, workUnitID string) (string, error
 	}
 
 	rec := record{
-		Path:       worktreePath,
-		Branch:     branch,
-		BaseSHA:    "", // see doc: empty so Teardown never deletes the PR's branch.
-		WorkUnitID: workUnitID,
-		CreatedAt:  m.now().UTC(),
+		Path:                 worktreePath,
+		Branch:               branch,
+		BaseSHA:              "", // see doc: empty so Teardown never deletes via tip==base.
+		EphemeralLocalBranch: true,
+		WorkUnitID:           workUnitID,
+		CreatedAt:            m.now().UTC(),
 	}
 	if err := m.addActive(rec); err != nil {
 		repoMu.Lock()
@@ -372,22 +384,33 @@ func (m *Manager) Teardown(path string) error {
 	// Prune stale administrative entries so git's registry matches disk.
 	_, _ = runGit(owner, "worktree", "prune")
 
-	// Delete the worktree's dedicated branch IFF it carries no work product —
-	// its tip is still the base commit, so the work unit produced no commits
-	// and the branch is empty litter. A branch advanced past its base holds a
-	// work product (an agent node's commits, perhaps an open PR) and is kept.
-	// An untracked teardown — GC reclaiming an orphan with no record — has no
-	// base SHA to compare and so conservatively keeps the branch. `git branch
-	// -D` refuses to delete a branch still checked out in any worktree, so a
-	// failed `worktree remove` above cannot cause a live branch to be dropped.
-	if tracked && rec.Branch != "" && rec.BaseSHA != "" {
-		tip, tipErr := runGit(owner, "rev-parse", "--verify", "--quiet", rec.Branch+"^{commit}")
-		if tipErr == nil && tip == rec.BaseSHA {
-			// A failed delete is non-fatal: the worktree itself is already
-			// gone, and a leftover empty branch is cosmetic — a GC-class sweep
-			// can reclaim it later. Swallowed to match the best-effort handling
-			// of `worktree remove` above; the package keeps no logger.
+	// Delete the worktree's dedicated branch. Two paths:
+	//
+	//   - EphemeralLocalBranch records (spec 112 US2 Checkout): the LOCAL
+	//     branch is a working artifact only, so Teardown always deletes it.
+	//     `git branch -D` is local-only and does NOT touch origin/<branch>,
+	//     so an in-flight pull request is unaffected.
+	//
+	//   - Create-minted records: delete IFF the branch tip is still the base
+	//     commit (the work unit produced no commits, so the branch is empty
+	//     litter). A branch advanced past its base holds a work product (an
+	//     agent node's commits, perhaps an open PR) and is kept. An untracked
+	//     teardown — GC reclaiming an orphan with no record — has no base SHA
+	//     to compare and so conservatively keeps the branch.
+	//
+	// `git branch -D` refuses to delete a branch still checked out in any
+	// worktree, so a failed `worktree remove` above cannot cause a live
+	// branch to be dropped. A failed delete is non-fatal — a leftover branch
+	// ref is cosmetic; a future GC sweep can still reclaim it.
+	if tracked && rec.Branch != "" {
+		switch {
+		case rec.EphemeralLocalBranch:
 			_, _ = runGit(owner, "branch", "-D", rec.Branch)
+		case rec.BaseSHA != "":
+			tip, tipErr := runGit(owner, "rev-parse", "--verify", "--quiet", rec.Branch+"^{commit}")
+			if tipErr == nil && tip == rec.BaseSHA {
+				_, _ = runGit(owner, "branch", "-D", rec.Branch)
+			}
 		}
 	}
 	return nil
