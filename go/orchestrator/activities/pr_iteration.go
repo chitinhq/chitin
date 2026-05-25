@@ -93,16 +93,27 @@ func NewIteratePRReview(mgr *worktree.Manager, reg *driver.Registry) *IteratePRR
 func (a *IteratePRReview) ActivityName() string { return "IteratePRReview" }
 
 // Execute is the activity entrypoint. Always returns a nil error.
+//
+// Every outcome — guard failure, fetch failure, driver no-op, push fault —
+// is audited via a single deferred `pr_iteration_completed` chain event
+// (see the defer at the top of the function body). This makes the chain
+// the source-of-truth for "this iteration round happened" regardless of
+// which path the activity took.
 func (a *IteratePRReview) Execute(ctx context.Context, in IteratePRReviewInput) (IteratePRReviewResult, error) {
+	var res IteratePRReviewResult
+	// Single defer guarantees the chain event fires on every return path
+	// — guard failure, fetch failure, push failure, success. Addresses
+	// Copilot review feedback that earlier returns silently dropped the
+	// audit event.
+	defer func() { emitPRIterationEvent(ctx, "pr_iteration_completed", in, res) }()
+
 	if a.manager == nil || a.registry == nil {
-		return IteratePRReviewResult{
-			Explanation: "no Manager or Registry bound — iteration not attempted",
-		}, nil
+		res.Explanation = "no Manager or Registry bound — iteration not attempted"
+		return res, nil
 	}
 	if in.PRBranch == "" || in.TargetRepo == "" || in.Repo == "" {
-		return IteratePRReviewResult{
-			Explanation: "missing PRBranch, TargetRepo, or Repo — iteration not attempted",
-		}, nil
+		res.Explanation = "missing PRBranch, TargetRepo, or Repo — iteration not attempted"
+		return res, nil
 	}
 
 	workUnitID := in.WorkUnitID
@@ -114,21 +125,19 @@ func (a *IteratePRReview) Execute(ctx context.Context, in IteratePRReviewInput) 
 	// origin first so the rebase base is fresh.
 	wt, err := a.manager.Checkout(in.TargetRepo, in.PRBranch, workUnitID)
 	if err != nil {
-		return IteratePRReviewResult{
-			Explanation: fmt.Sprintf("worktree checkout failed: %v", err),
-		}, nil
+		res.Explanation = fmt.Sprintf("worktree checkout failed: %v", err)
+		return res, nil
 	}
 	defer func() { _ = a.manager.Teardown(wt) }()
 
 	// Fetch the review context (body + line comments) via gh api.
 	reviewCtx, err := fetchReviewContext(ctx, in.Repo, in.PRNumber, in.ReviewID)
 	if err != nil {
-		return IteratePRReviewResult{
-			Explanation: fmt.Sprintf("review context fetch failed: %v", err),
-		}, nil
+		res.Explanation = fmt.Sprintf("review context fetch failed: %v", err)
+		return res, nil
 	}
 
-	res := IteratePRReviewResult{CommentCount: len(reviewCtx.LineComments)}
+	res.CommentCount = len(reviewCtx.LineComments)
 
 	if len(reviewCtx.LineComments) == 0 && strings.TrimSpace(reviewCtx.Body) == "" {
 		res.Explanation = "review carried no body and no line comments — nothing to address"
@@ -170,7 +179,6 @@ func (a *IteratePRReview) Execute(ctx context.Context, in IteratePRReviewInput) 
 	}
 	if strings.TrimSpace(status) == "" {
 		res.Explanation = "driver returned success but produced no changes"
-		emitPRIterationEvent(ctx, "pr_iteration_completed", in, res)
 		return res, nil
 	}
 
@@ -204,7 +212,6 @@ func (a *IteratePRReview) Execute(ctx context.Context, in IteratePRReviewInput) 
 	res.Explanation = fmt.Sprintf(
 		"iterated PR #%d review #%d (round %d): pushed fixup %s addressing %d line comment(s)",
 		in.PRNumber, in.ReviewID, in.Round, shortHex(res.FixupSHA), res.CommentCount)
-	emitPRIterationEvent(ctx, "pr_iteration_completed", in, res)
 	return res, nil
 }
 
@@ -224,11 +231,17 @@ type reviewLineComment struct {
 
 // fetchReviewContext fetches the review body + every line comment for the
 // review via gh api. Uses the canonical repos/<owner>/<repo>/... form (per
-// spec 113 FR-006 and the #1050 Copilot fix).
+// spec 113 FR-006 and the #1050 Copilot fix). Uses `--paginate` on the
+// comments endpoint so large reviews (>30 inline comments — the default
+// page size) are fetched in full; without it, the iteration prompt could
+// silently miss comments past page one.
 func fetchReviewContext(ctx context.Context, repo string, prNumber int, reviewID int64) (reviewContext, error) {
 	var rc reviewContext
 
-	// Body of the review itself.
+	// Body of the review itself. The endpoint returns a single object, no
+	// pagination needed. Decode errors are surfaced rather than swallowed
+	// so an unexpected response shape doesn't silently drop the body and
+	// proceed with incomplete context.
 	reviewPath := fmt.Sprintf("repos/%s/pulls/%d/reviews/%d", repo, prNumber, reviewID)
 	body, err := ghApi(ctx, reviewPath)
 	if err != nil {
@@ -237,14 +250,18 @@ func fetchReviewContext(ctx context.Context, repo string, prNumber int, reviewID
 	var reviewMeta struct {
 		Body string `json:"body"`
 	}
-	_ = json.Unmarshal(body, &reviewMeta)
+	if err := json.Unmarshal(body, &reviewMeta); err != nil {
+		return rc, fmt.Errorf("decode review body: %w", err)
+	}
 	rc.Body = reviewMeta.Body
 
 	// Inline line comments — scoped to the PR, then filter to this review
-	// via pull_request_review_id (the API doesn't expose a per-review-comments
-	// endpoint directly).
-	commentsPath := fmt.Sprintf("repos/%s/pulls/%d/comments", repo, prNumber)
-	commentsRaw, err := ghApi(ctx, commentsPath)
+	// via pull_request_review_id (the API doesn't expose a per-review-
+	// comments endpoint directly). `--paginate` walks every page so the
+	// activity sees ALL inline comments before filtering — without it,
+	// large reviews would silently drop comments past the first 30.
+	commentsPath := fmt.Sprintf("repos/%s/pulls/%d/comments?per_page=100", repo, prNumber)
+	commentsRaw, err := ghApiPaginated(ctx, commentsPath)
 	if err != nil {
 		return rc, fmt.Errorf("fetch pr comments: %w", err)
 	}
@@ -275,14 +292,22 @@ func fetchReviewContext(ctx context.Context, repo string, prNumber int, reviewID
 // BuildIterationPrompt assembles the re-prompt passed to the driver. Pure
 // function — exported so tests (and future spec-author iteration prompts)
 // can assert on the shape.
+//
+// The orchestrator authors the commit message itself (see Execute below),
+// so this prompt does NOT ask the driver to write one — only to make
+// file changes. Comment-thread reply API integration is deferred to a
+// follow-up; for now an intentional no-fix decision shows up as the
+// driver simply not modifying the relevant file (the orchestrator's
+// "driver returned success but produced no changes" branch then records
+// the round as a no-op completion).
 func BuildIterationPrompt(in IteratePRReviewInput, rc reviewContext) string {
 	var b strings.Builder
 	fmt.Fprintf(&b,
 		"You are addressing review feedback on PR #%d (round %d).\n\n",
 		in.PRNumber, in.Round)
 	b.WriteString("You have a fresh worktree on the PR's branch. ")
-	b.WriteString("Apply the smallest reasonable fix for each comment, OR write a one-line ")
-	b.WriteString("explanation in the commit message if you intentionally decline a comment. ")
+	b.WriteString("For each comment below, EITHER apply the smallest reasonable fix ")
+	b.WriteString("OR leave the file unchanged (which is recorded as an intentional decline). ")
 	b.WriteString("Do not refactor unrelated code. Do not change task scope.\n\n")
 	if strings.TrimSpace(rc.Body) != "" {
 		fmt.Fprintf(&b, "REVIEW BODY:\n%s\n\n", strings.TrimSpace(rc.Body))
@@ -295,8 +320,8 @@ func BuildIterationPrompt(in IteratePRReviewInput, rc reviewContext) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("After making changes, exit. Do not run tests. ")
-	b.WriteString("The orchestrator will commit + push your work as a fixup commit.\n")
+	b.WriteString("After making changes, exit. Do not run tests, do not write commit messages. ")
+	b.WriteString("The orchestrator will commit + push your changes as a single fixup commit.\n")
 	return b.String()
 }
 
@@ -328,6 +353,26 @@ func ghApi(ctx context.Context, path string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("gh api %s: %w: %s", path, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// ghApiPaginated runs `gh api --paginate <path>` and returns the merged
+// JSON array body. gh's --paginate flag walks every Link-header page and
+// emits a single concatenated JSON array on stdout, so callers can
+// Unmarshal the result into a `[]T` directly. Necessary for list
+// endpoints like `/pulls/N/comments` where a large review would otherwise
+// silently drop comments past the first page.
+func ghApiPaginated(ctx context.Context, path string) ([]byte, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, fmt.Errorf("gh CLI not available: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "gh", "api", "--paginate", path)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api --paginate %s: %w: %s", path, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

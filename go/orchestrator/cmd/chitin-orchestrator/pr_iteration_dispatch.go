@@ -5,10 +5,10 @@
 //   1. handlePR receives a `pull_request_review` event with action=submitted.
 //   2. If the PR's head branch matches chitin/wu/* AND the reviewer is in the
 //      copilot allowlist, the review is eligible for iteration.
-//   3. dispatchPRIteration resolves the authoring driver (parsed from the
-//      branch slug — spec 113 work-unit branches encode the spec ref) and
-//      fires PRIterationWorkflow with deterministic WorkflowID
-//      `iteration-pr-<N>-review-<M>`.
+//   3. dispatchPRIteration picks the iteration driver (v1: always
+//      "claudecode" — see driverIDFromBranch for the deferred chain-event
+//      lookup) and fires PRIterationWorkflow with deterministic
+//      WorkflowID `iteration-pr-<N>-review-<M>`.
 //   4. The activity itself fetches the review context, re-invokes the driver,
 //      commits + force-pushes any fixup, and emits chain events.
 
@@ -89,10 +89,34 @@ func dispatchPRIteration(
 	dialer temporalDialer,
 	stderr io.Writer,
 ) prIterationDispatchResult {
-	if in.PRNumber <= 0 || in.PRBranch == "" || in.ReviewID <= 0 {
+	// Validate every required field BEFORE dialing Temporal — saves an
+	// unnecessary round-trip and avoids InvalidPRIterationInput surfacing
+	// as a workflow-runtime error when the dispatcher could catch it
+	// synchronously. (Spec 113 follow-up: harmonise this validation with
+	// the workflow's own guard so the rules don't drift.)
+	var missing []string
+	if in.PRNumber <= 0 {
+		missing = append(missing, "PRNumber")
+	}
+	if in.PRBranch == "" {
+		missing = append(missing, "PRBranch")
+	}
+	if in.ReviewID <= 0 {
+		missing = append(missing, "ReviewID")
+	}
+	if in.Repo == "" {
+		missing = append(missing, "Repo")
+	}
+	if in.TargetRepo == "" {
+		missing = append(missing, "TargetRepo")
+	}
+	if in.DriverID == "" {
+		missing = append(missing, "DriverID")
+	}
+	if len(missing) > 0 {
 		return prIterationDispatchResult{
 			FailureKind: "invalid_input",
-			Detail:      "PRNumber, PRBranch, and ReviewID are required",
+			Detail:      "missing required field(s): " + strings.Join(missing, ", "),
 		}
 	}
 	if !chitinWUBranchPattern.MatchString(in.PRBranch) {
@@ -178,30 +202,43 @@ func warnIterationDispatch(stderr io.Writer, format string, args ...any) {
 }
 
 // isCopilotReviewer reports whether the given GitHub login is in the
-// configured Copilot allowlist (spec 113 FR-002). Case-insensitive match
-// because GitHub sometimes lowercases bot logins on the wire.
+// strict Copilot allowlist (spec 113 FR-002). Case-insensitive match
+// because GitHub sometimes lowercases bot logins on the wire; optional
+// `[bot]` suffix because some webhook payloads carry it.
+//
+// SECURITY: this is the gate that authorises automatic force-pushes onto
+// chitin-authored PR branches. The match MUST be strictly allowlist-based
+// — a substring match (e.g. `strings.Contains(l, "copilot")`) would let
+// any login containing "copilot" (e.g. an attacker registering a username
+// like `copilot-evil` as a repo collaborator) trigger the iteration loop.
+// Add new bot identities to `copilotReviewerLogins` explicitly.
 func isCopilotReviewer(login string) bool {
+	if login == "" {
+		return false
+	}
 	l := strings.ToLower(login)
 	if copilotReviewerLogins[l] {
 		return true
 	}
-	// Common variant: the "[bot]" suffix shows up on some webhook payloads.
-	if strings.HasSuffix(l, "[bot]") && copilotReviewerLogins[strings.TrimSuffix(l, "[bot]")] {
-		return true
+	if strings.HasSuffix(l, "[bot]") {
+		return copilotReviewerLogins[strings.TrimSuffix(l, "[bot]")]
 	}
-	// Substring match as a final safety net for copilot variants.
-	return strings.Contains(l, "copilot")
+	return false
 }
 
-// driverIDFromBranch parses the authoring driver id from a work-unit
-// branch slug. v1 heuristic: every chitin/wu/* branch was authored by
-// claudecode (the default driver). A follow-up will look up the actual
-// driver via a chain-event scan keyed by the branch slug.
+// driverIDFromBranch returns the driver id to use for iterating against
+// the given chitin/wu/* branch. v1: ALWAYS returns "claudecode" — the
+// branch slug carries no driver attribution today, so there's nothing to
+// parse. The constant is the operator-host's primary fixup driver
+// (claudecode is the better choice for short-form code edits; codex is
+// more typically a one-shot author).
+//
+// Spec 113 follow-up: do an actual chain-event lookup keyed by the
+// branch slug to recover the AUTHORING driver, so the iteration matches
+// the original style. Until then, mismatched-driver iteration still
+// works — claudecode can address Copilot comments on a codex-authored
+// PR — but the prompt style is the wrong shape.
 func driverIDFromBranch(branch string) string {
-	// Always return claudecode for now — the operator-host has both
-	// claudecode + codex registered, and claudecode is the primary fixup
-	// driver. Codex is more typically a one-shot author. The wrong driver
-	// here only matters for prompt style, not correctness.
-	_ = branch
+	_ = branch // intentionally unused — see doc above
 	return "claudecode"
 }

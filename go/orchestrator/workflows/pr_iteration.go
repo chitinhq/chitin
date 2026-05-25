@@ -83,7 +83,12 @@ func PRIterationWorkflow(ctx workflow.Context, in PRIterationInput) (PRIteration
 
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: prIterationActivityTimeout,
-		HeartbeatTimeout:    2 * time.Minute,
+		// Intentionally NO HeartbeatTimeout. The activity does not call
+		// activity.RecordHeartbeat; setting one would reliably time out a
+		// real driver invocation at ~2 minutes (claudecode / codex runs
+		// regularly take 5-10 minutes). StartToCloseTimeout (2h) bounds
+		// the long leg; the worker host's process supervision catches a
+		// truly hung subprocess.
 		RetryPolicy: &temporal.RetryPolicy{
 			// The activity already encodes every outcome as a non-error
 			// result. A retry would re-run the driver against the same

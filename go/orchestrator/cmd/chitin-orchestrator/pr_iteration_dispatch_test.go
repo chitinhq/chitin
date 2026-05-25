@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go.temporal.io/api/serviceerror"
@@ -82,7 +83,9 @@ func TestDispatchPRIteration_AlreadyStartedCountsAsDispatched(t *testing.T) {
 
 // TestDispatchPRIteration_NonFactoryBranchRejected asserts the eligibility
 // guard: a branch that doesn't match chitin/wu/* is rejected even if the
-// caller misroutes a non-factory PR here.
+// caller misroutes a non-factory PR here. All other required fields are
+// populated so the non_factory_branch check is what trips, not the
+// invalid_input check.
 func TestDispatchPRIteration_NonFactoryBranchRejected(t *testing.T) {
 	called := false
 	dialer := func(_ context.Context, host string) (workflowStarter, string, error) {
@@ -91,11 +94,12 @@ func TestDispatchPRIteration_NonFactoryBranchRejected(t *testing.T) {
 	}
 
 	res := dispatchPRIteration(context.Background(), prIterationDispatchInput{
-		Repo:     "chitinhq/chitin",
-		PRNumber: 3000,
-		PRBranch: "feat/some-human-authored-branch",
-		ReviewID: 1,
-		DriverID: "claudecode",
+		Repo:       "chitinhq/chitin",
+		PRNumber:   3000,
+		PRBranch:   "feat/some-human-authored-branch",
+		ReviewID:   1,
+		DriverID:   "claudecode",
+		TargetRepo: "/tmp/repo",
 	}, dialer, nil)
 
 	if called {
@@ -109,16 +113,59 @@ func TestDispatchPRIteration_NonFactoryBranchRejected(t *testing.T) {
 	}
 }
 
-// TestDispatchPRIteration_InvalidInputRejected asserts the input guard.
+// TestDispatchPRIteration_InvalidInputRejected asserts the input guard
+// rejects every missing required field BEFORE dialing Temporal. The
+// guard's expanded scope (per #1066 Copilot review) covers Repo,
+// TargetRepo, and DriverID in addition to PRNumber/PRBranch/ReviewID.
 func TestDispatchPRIteration_InvalidInputRejected(t *testing.T) {
-	res := dispatchPRIteration(context.Background(), prIterationDispatchInput{
-		Repo:     "chitinhq/chitin",
-		PRNumber: 0, // invalid
-		PRBranch: "chitin/wu/x",
-		ReviewID: 1,
-	}, nil, nil)
-	if res.Dispatched || res.FailureKind != "invalid_input" {
-		t.Errorf("expected invalid_input failure, got %+v", res)
+	cases := []struct {
+		name        string
+		in          prIterationDispatchInput
+		wantMissing string // substring expected in Detail
+	}{
+		{
+			name: "missing PRNumber",
+			in: prIterationDispatchInput{
+				Repo: "chitinhq/chitin", PRBranch: "chitin/wu/x", ReviewID: 1,
+				DriverID: "claudecode", TargetRepo: "/tmp/x",
+			},
+			wantMissing: "PRNumber",
+		},
+		{
+			name: "missing Repo",
+			in: prIterationDispatchInput{
+				PRNumber: 1, PRBranch: "chitin/wu/x", ReviewID: 1,
+				DriverID: "claudecode", TargetRepo: "/tmp/x",
+			},
+			wantMissing: "Repo",
+		},
+		{
+			name: "missing TargetRepo",
+			in: prIterationDispatchInput{
+				Repo: "chitinhq/chitin", PRNumber: 1, PRBranch: "chitin/wu/x", ReviewID: 1,
+				DriverID: "claudecode",
+			},
+			wantMissing: "TargetRepo",
+		},
+		{
+			name: "missing DriverID",
+			in: prIterationDispatchInput{
+				Repo: "chitinhq/chitin", PRNumber: 1, PRBranch: "chitin/wu/x", ReviewID: 1,
+				TargetRepo: "/tmp/x",
+			},
+			wantMissing: "DriverID",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := dispatchPRIteration(context.Background(), c.in, nil, nil)
+			if res.Dispatched || res.FailureKind != "invalid_input" {
+				t.Errorf("expected invalid_input failure, got %+v", res)
+			}
+			if !strings.Contains(res.Detail, c.wantMissing) {
+				t.Errorf("expected Detail to mention %q, got %q", c.wantMissing, res.Detail)
+			}
+		})
 	}
 }
 
@@ -135,29 +182,46 @@ func TestDispatchPRIteration_NilStderrDoesNotPanic(t *testing.T) {
 		return nil, host, errors.New("simulated dial failure")
 	}
 	res := dispatchPRIteration(context.Background(), prIterationDispatchInput{
-		Repo:     "chitinhq/chitin",
-		PRNumber: 1,
-		PRBranch: "chitin/wu/x-t001-y",
-		ReviewID: 1,
-		DriverID: "claudecode",
+		Repo:       "chitinhq/chitin",
+		PRNumber:   1,
+		PRBranch:   "chitin/wu/x-t001-y",
+		ReviewID:   1,
+		DriverID:   "claudecode",
+		TargetRepo: "/tmp/repo",
 	}, failingDialer, nil)
 	if res.FailureKind != "temporal_unreachable" {
 		t.Errorf("expected temporal_unreachable failure, got %q", res.FailureKind)
 	}
 }
 
-// TestIsCopilotReviewer asserts the allowlist's case-insensitive match +
-// [bot] suffix handling.
+// TestIsCopilotReviewer asserts STRICT allowlist matching — case-
+// insensitive on the listed identities + optional [bot] suffix only.
+// Critical: a login that merely CONTAINS "copilot" (e.g.
+// "copilot-evil") MUST NOT pass. This is the gate that authorises
+// automatic force-pushes onto chitin-authored PR branches; a substring
+// match would be a security footgun (any collaborator could register
+// such a username and trigger fixups).
 func TestIsCopilotReviewer(t *testing.T) {
 	cases := map[string]bool{
+		// Allowlisted identities (case-insensitive)
 		"copilot-pull-request-reviewer": true,
 		"Copilot-Pull-Request-Reviewer": true,
 		"copilot":                       true,
 		"Copilot":                       true,
 		"github-copilot[bot]":           true,
-		"some-other-bot":                false,
-		"jared":                         false,
-		"":                              false,
+		"COPILOT[BOT]":                  true,
+
+		// NOT allowlisted — even though they contain "copilot"
+		"copilot-evil":      false, // attacker login matching old substring check
+		"my-copilot-fork":   false,
+		"not-copilot":       false,
+		"copilotuser":       false,
+		"copilot-pull-request-reviewer-fake": false,
+
+		// Other rejections
+		"some-other-bot": false,
+		"jared":          false,
+		"":               false,
 	}
 	for login, want := range cases {
 		if got := isCopilotReviewer(login); got != want {
@@ -180,6 +244,7 @@ func TestHandlePR_CopilotReviewTriggersIteration(t *testing.T) {
 	h := &factoryHandler{
 		secret:         secret,
 		logFile:        t.TempDir() + "/log.jsonl",
+		repoRootFlag:   t.TempDir(),
 		temporalDialer: dialer,
 	}
 
@@ -221,6 +286,7 @@ func TestHandlePR_HumanReviewSkipsIteration(t *testing.T) {
 	h := &factoryHandler{
 		secret:         secret,
 		logFile:        t.TempDir() + "/log.jsonl",
+		repoRootFlag:   t.TempDir(),
 		temporalDialer: dialer,
 	}
 
@@ -249,6 +315,7 @@ func TestHandlePR_NonFactoryBranchSkipsIteration(t *testing.T) {
 	h := &factoryHandler{
 		secret:         secret,
 		logFile:        t.TempDir() + "/log.jsonl",
+		repoRootFlag:   t.TempDir(),
 		temporalDialer: dialer,
 	}
 
