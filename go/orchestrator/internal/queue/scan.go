@@ -25,12 +25,12 @@ package queue
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -149,8 +149,13 @@ func Scan(chainDir string, since time.Time) (map[int][]EscalationEvent, error) {
 	return out, nil
 }
 
-// ResolveChainDir mirrors the kernel's chain-dir resolution priority:
-// $CHITIN_DIR → $HOME/.chitin → ./.chitin (last-resort).
+// ResolveChainDir mirrors the orchestrator's emit-side chain-dir
+// resolution (cmd/chitin-orchestrator/emit.go): $CHITIN_DIR →
+// $HOME/.chitin → ./.chitin (last-resort). It deliberately does NOT
+// use the kernel's walk-up-from-cwd resolver
+// (go/execution-kernel/internal/chitindir/resolve.go), because the
+// orchestrator may be invoked from any cwd (operator's worktree, a
+// different repo) and must read the same chain the emit side wrote.
 // Exported so sibling queue helpers can share the lookup.
 func ResolveChainDir() string {
 	if d := os.Getenv("CHITIN_DIR"); d != "" {
@@ -207,17 +212,18 @@ func scanFile(path string, since time.Time, out map[int][]EscalationEvent) error
 }
 
 // looksLikeEscalation is a byte-level pre-filter returning true if the
-// line plausibly contains an escalation event_type. False positives are
-// caught by the structural parse in parseEscalation.
+// line plausibly contains an escalation event_type. Operates on the
+// raw []byte to avoid allocating a per-line string copy on the ~99%
+// of chain rows that don't match. False positives are caught by the
+// structural parse in parseEscalation.
 func looksLikeEscalation(line []byte) bool {
-	s := string(line)
-	if strings.Contains(s, "pr_iteration_escalated") {
+	if bytes.Contains(line, []byte("pr_iteration_escalated")) {
 		return true
 	}
-	if strings.Contains(s, "sibling_rebase_failed") {
+	if bytes.Contains(line, []byte("sibling_rebase_failed")) {
 		return true
 	}
-	if strings.Contains(s, "spec_iteration_escalated") {
+	if bytes.Contains(line, []byte("spec_iteration_escalated")) {
 		return true
 	}
 	return false

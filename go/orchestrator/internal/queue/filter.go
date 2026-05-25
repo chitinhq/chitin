@@ -94,14 +94,16 @@ type ruleFn func(pr LivePR, events []EscalationEvent, now time.Time) (matched bo
 // rule. Keeping it as a package-level slice makes the priority order
 // reviewable in one place and lets tests assert the order is stable.
 //
-// Spec 115 T017 appends two spec-PR-specific rules at the tail. They
-// match `spec_iteration_escalated` events (scan.go FR-009) and
-// surface spec-PR escalations in the same queue as code-PR ones. The
-// tail position preserves spec 114's FR-008 ordering invariant: a PR
-// that matches BOTH a code-PR rule AND a spec-PR rule (which only
-// happens on mixed-class PRs, an edge case the spec 115 discriminator
-// routes to the code path anyway) keeps the original code-PR reason
-// as its primary, which is what spec 114's operator expects.
+// Spec 115 T017 adds two spec-PR-specific rules that match
+// `spec_iteration_escalated` events (scan.go FR-009) and surface
+// spec-PR escalations in the same queue as code-PR ones. They sit in
+// the chain-event block (before the live-state rules) so the
+// invariant above holds for them too: a chain signal from spec 115
+// outranks any live-state heuristic that happens to also match. They
+// sit at the END of the chain-event block so that the code-PR
+// `pr_iteration_escalated` reasons take precedence on the (vanishing)
+// mixed-class PR — the spec 115 discriminator routes those to the
+// code path anyway, so the ordering matters only as a tie-breaker.
 var rules = []struct {
 	reason string
 	fn     ruleFn
@@ -111,11 +113,11 @@ var rules = []struct {
 	{"human_reviewer_present", ruleHumanReviewerPresent},
 	{"sibling_rebase_failed", ruleSiblingRebaseFailed},
 	{"lease_lost", ruleLeaseLost},
+	{"design_judgement_required", ruleDesignJudgementRequired},
+	{"lint_violation_unresolvable", ruleLintViolationUnresolvable},
 	{"dialectic_request_changes", ruleDialecticRequestChanges},
 	{"stale_no_automation", ruleStaleNoAutomation},
 	{"conflicting_persistent", ruleConflictingPersistent},
-	{"design_judgement_required", ruleDesignJudgementRequired},
-	{"lint_violation_unresolvable", ruleLintViolationUnresolvable},
 }
 
 // Filter composes prs and events into the FR-003 "needs operator" set.
