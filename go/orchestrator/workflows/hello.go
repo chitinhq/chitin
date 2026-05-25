@@ -40,6 +40,12 @@ func Register(w worker.Worker) {
 	// IteratePRReview activity (registered by RegisterSchedulerActivities)
 	// and returns its result.
 	w.RegisterWorkflow(PRIterationWorkflow)
+	// SpecIterationWorkflow is the spec 115 US1 sibling of
+	// PRIterationWorkflow for spec PRs (changesets wholly under
+	// .specify/specs/NNN-*/). The factory-listen handler routes spec-class
+	// PRs here; the workflow selects a spec.author-capable driver and
+	// invokes the IterateSpecReview activity.
+	w.RegisterWorkflow(SpecIterationWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the
