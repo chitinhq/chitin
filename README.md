@@ -7,15 +7,18 @@ It sits between agent CLIs and your workstation, normalizes every tool call into
 Apache-2.0. Local-first. Operator-owned data.
 
 ```
-Specs / backlog / schedules
-          │
-          ▼
-┌─────────────────────────────┐
-│ Chitin Orchestrator         │  Temporal workflows, work units,
-│ go/orchestrator/            │  scheduler, review/merge flows
-└─────────────┬───────────────┘
-              │ attributed driver invocations
-              ▼
+Specs / backlog / schedules                  GitHub webhooks (push, pull_request,
+          │                                   pull_request_review)
+          ▼                                                  │
+┌─────────────────────────────┐                              ▼
+│ Chitin Orchestrator         │  Temporal     ┌─────────────────────────────┐
+│ go/orchestrator/            │◀──────────────│ factory-listen :8765        │
+│ scheduler / work units      │  dispatch     │ /webhook/push  /webhook/pr  │
+│ PRIterationWorkflow         │               └──────────────┬──────────────┘
+│ SiblingRebaseWorkflow       │                              │ Discord escalation
+└─────────────┬───────────────┘                              ▼
+              │ attributed driver invocations            ┌──────────┐
+              ▼                                          │ operator │
 Claude Code   Codex CLI   Gemini CLI   Copilot CLI   Hermes   OpenClaw
      │            │            │             │           │         │
      └────────────┴────────────┴──────┬──────┴───────────┴─────────┘
@@ -31,6 +34,11 @@ Claude Code   Codex CLI   Gemini CLI   Copilot CLI   Hermes   OpenClaw
                  ~/.chitin/{gov-decisions-*.jsonl, events-*.jsonl,
                             gov.db, chain_index.sqlite}
 ```
+
+Two control flows close the loop:
+
+1. **Forward path** (specs → PRs): a spec dispatch produces work units → drivers author code → PRs open.
+2. **Feedback path** (review → fixups): factory-listen receives PR webhooks → on a Copilot review for a chitin-authored PR, `PRIterationWorkflow` re-invokes the authoring driver with the comment context and pushes a fixup commit. On a sibling-PR merge, `SiblingRebaseWorkflow` auto-rebases the other in-flight siblings. Escalations (cap hit, conflict the rebase can't resolve, low-confidence verdict) ping the operator's Discord with a clickable PR link.
 
 ## What Chitin owns
 
@@ -83,6 +91,19 @@ There are two connected paths:
 8. Downstream tools can read the chain, replay sessions, emit OTEL, or mine policy improvements.
 
 The orchestrator decides **what work runs and why**. The kernel decides **whether each local side effect is allowed**.
+
+### Autonomous review-iteration loop
+
+As of spec 113 (US1 MVP, 2026-05-25) the orchestrator closes the loop on Copilot review comments without operator intervention. The chain runs end-to-end on every chitin-authored PR:
+
+1. **Initial review**: GitHub fires `pull_request_review.submitted` when Copilot reviews a `chitin/wu/*` branch. `factory-listen` (`/webhook/pr`) routes it through eligibility checks (Copilot allowlist + factory-authored branch).
+2. **Iteration dispatch**: `dispatchPRIteration` starts `PRIterationWorkflow` with deterministic ID `iteration-pr-<N>-review-<M>` (Temporal `REJECT_DUPLICATE` dedups webhook redeliveries).
+3. **Driver re-invocation**: `IteratePRReview` activity checks out the PR branch via `worktree.Manager.Checkout`, fetches the review body + line comments via `gh api`, builds an iteration prompt, and invokes the authoring driver in the worktree.
+4. **Fixup push**: if the driver produces changes, the activity commits with conventional message (`review fix (round <N>): address review #<M>`) and `git push --force-with-lease`. Emits `pr_iteration_completed` chain event.
+5. **Sibling cascade**: when a chitin PR merges to main, `SiblingRebaseWorkflow` (spec 112 US2) auto-rebases every other open PR carrying the same `sched/run/<id>` label. Clean rebases force-push; "both-added" conflicts fail-soft with `sibling_rebase_failed`.
+6. **Escalation**: failed sibling rebases ping the operator's Discord webhook (`~/.chitin/discord-webhook.secret`) with a 🚨 marker, reason, and clickable PR link. Multi-driver re-review (spec 116) extends this with 🟢 ready-to-merge pings on autopilot-clean PRs.
+
+The loop validated end-to-end in production on 2026-05-25 14:09 EDT — Copilot's review on PR #1057 produced a fixup commit (4 line comments addressed, including a real refactoring of the eligibility-field contract) with zero operator action between webhook delivery and `git push`.
 
 ### Supported driver surfaces
 
@@ -247,6 +268,7 @@ Current direction:
 - **No driver bypass.** Spec 092 tracks the invariant that implementation-producing driver invocations carry orchestrator work-unit attribution.
 - **Merge and review become workflows.** Specs 093 and 094 move PR merge and review policy into orchestrated, audited flows.
 - **Continue Checks is a narrow pilot.** Spec 095 evaluates PR-governance checks. It is not a Hermes replacement and not an inbound webhook surface.
+- **Factory loop closes on PR feedback.** Spec 098 ships the `factory-listen` webhook receiver; spec 099 handles GitHub-native (Copilot) dispatch. Spec 112 serializes parallel-merge work (US1 file-overlap edges + US2 sibling auto-rebase). Spec 113 is the PR-comment-respond loop that re-invokes the authoring driver on review and pushes fixup commits. Specs 114, 115, 116 are drafted (operator escalation queue, spec-PR review gate, multi-driver re-review) and queued for implementation.
 
 Read [docs/strategy/chitin-orchestrator-options-2026-05-20.md](./docs/strategy/chitin-orchestrator-options-2026-05-20.md) for the engine decision and [docs/strategy/chitin-spec-driven-platform.md](./docs/strategy/chitin-spec-driven-platform.md) for the broader spec-driven platform thesis.
 
@@ -263,6 +285,7 @@ Start here:
 - [docs/driver-conformance.md](./docs/driver-conformance.md) — driver hook matrix and normalizer expectations
 - [docs/roadmap.md](./docs/roadmap.md) — historical roadmap and shipped/in-flight context
 - [docs/runbooks/](./docs/runbooks/) — operational runbooks
+- [docs/runbooks/spec-113-pr-comment-respond-loop.md](./docs/runbooks/spec-113-pr-comment-respond-loop.md) — how the autonomous review-iteration loop runs, how to trigger one manually, how to verify outcomes
 
 Key decision records:
 

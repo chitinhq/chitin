@@ -129,3 +129,60 @@ Classify the vendor first; let the classification pick the integration shape, no
 ## On-disk layout
 
 The kernel writes to a `.chitin/` state dir. Resolution order: `--chitin-dir` → repo-local `.chitin/` (walk up from cwd) → fallback `$HOME/.chitin/`. See [README — Where chitin writes data](../README.md#where-chitin-writes-data) for the file conventions and the [health runbook](./runbooks/health.md) for diagnostics.
+
+## Orchestrator + factory loop
+
+The kernel side above is the enforcement substrate — every tool call passes through `gov.Gate`. The orchestrator side is the control substrate — it decides what work runs, dispatches drivers, ingests review feedback, and closes the loop without operator action for common cases.
+
+```
+                  GitHub                                        Operator
+                    │                                              ▲
+   push / pull_request / pull_request_review                       │ Discord
+                    │                                              │ escalation
+                    ▼                                              │ webhook
+        ┌───────────────────────────┐                              │
+        │ factory-listen :8765      │                              │
+        │ /webhook/push             │                              │
+        │ /webhook/pr               │                              │
+        └─────────────┬─────────────┘                              │
+                      │                                            │
+        ┌─────────────┴─────────────────────────────────┐          │
+        │ Temporal workflows (go/orchestrator/)         │          │
+        │                                               │          │
+        │  SchedulerWorkflow  ── spec dispatch          │          │
+        │  WorkUnitWorkflow   ── single-task driver run │          │
+        │  PRReviewWorkflow   ── dialectic review (094) │          │
+        │  PRIterationWorkflow ── comment-respond (113) │──────────┤
+        │  SiblingRebaseWorkflow ── auto-rebase (112)   │──────────┤
+        └─────────────┬─────────────────────────────────┘   on    │
+                      │ activities                          fail   │
+                      ▼                                            │
+                ┌─────────────────┐                                │
+                │ driver registry │── claudecode, codex, etc.      │
+                │ (capability-routed)                              │
+                └─────────────────┘                                │
+                      │                                            │
+                      ▼                                            │
+                  tool calls ──► chitin-kernel gate (above) ───────┘
+                                  every side effect audited
+```
+
+**Key control flows:**
+
+1. **Spec dispatch** (forward path): `push` webhook for a tasks.md change → `runSchedule` → `SchedulerWorkflow` + per-task `WorkUnitWorkflow` → driver authors code in a fresh worktree → `DeliverWorkProduct` opens a PR with `sched/run/<id>` label.
+2. **PR comment-respond** (spec 113 US1, MVP shipped 2026-05-25): `pull_request_review.submitted` from Copilot on `chitin/wu/*` branch → `dispatchPRIteration` → `PRIterationWorkflow` → `IteratePRReview` activity → `worktree.Manager.Checkout` → driver re-invocation with comment context → fixup commit + `git push --force-with-lease`.
+3. **Sibling rebase** (spec 112 US2): `pull_request.closed merged=true` on a `sched/run/*` PR → `dispatchSiblingRebase` lists every other open PR with the same label → fires `SiblingRebaseWorkflow` per sibling → clean rebases force-push; "both-added" conflicts emit `sibling_rebase_failed` and ping Discord with a 🚨 PR link.
+
+**Operator escalation:** failures and judgement calls route to the operator via Discord webhook (`~/.chitin/discord-webhook.secret`). Currently wired for `sibling_rebase_failed`; spec 116 extends with `pr_iteration_escalated` (cap hit) and `ready-to-merge` (positive ping for autopilot-clean PRs).
+
+**Chain events emitted:**
+
+| Event | When | Carries |
+|---|---|---|
+| `pr_iteration_completed` | spec 113 round done | `pr_number`, `pushed_fixup`, `fixup_sha`, `comment_count`, `explanation` |
+| `sibling_rebase_dispatched` | spec 112 US2 clean rebase | `pr_number`, `new_head_sha`, `new_base_sha` |
+| `sibling_rebase_failed` | spec 112 US2 conflict | `pr_number`, `conflict_files`, `explanation` |
+| `factory_triggered` | spec 098 push dispatch | `spec_ref`, `run_id`, `source`, `commit_sha` |
+| `copilot_pr_detected` | spec 099 PR detection | `repo`, `pr_number`, `spec_ref` |
+
+The chain (`~/.chitin/events-*.jsonl`) is the source-of-truth; OTEL and Discord are one-way projections. Spec 114 (queue) and spec 116 (multi-driver re-review) build on top of these events without requiring schema changes.
