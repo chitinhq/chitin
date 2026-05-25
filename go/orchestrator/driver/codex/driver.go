@@ -242,6 +242,21 @@ func reviewResultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, 
 		res.Explanation = fmt.Sprintf("malformed_verdict: %v; raw: %s", err, truncateForExplanation(stdout))
 		return res
 	}
+	// Normalize nil list fields to empty slices so the canonical JSON has
+	// stable `[]` for omitted fields instead of `null`. Same fix landed in
+	// claudecode/review_mode.go (PR #1041): the model often omits empty
+	// fields (e.g. Approve with no concerns), and a bare `"concerns":null`
+	// breaks downstream consumers that expect arrays per the
+	// StructuredVerdict schema.
+	if v.Concerns == nil {
+		v.Concerns = []string{}
+	}
+	if v.Recommendations == nil {
+		v.Recommendations = []string{}
+	}
+	if v.Blockers == nil {
+		v.Blockers = []string{}
+	}
 	canonical, err := json.Marshal(v)
 	if err != nil {
 		res.Status = driver.StatusFailed
