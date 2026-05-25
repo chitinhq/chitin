@@ -201,6 +201,18 @@ func TestRunQueue_UnknownReason_RejectsWithHelpfulError(t *testing.T) {
 	if !strings.Contains(stderr, "not-a-real-reason") {
 		t.Errorf("stderr should name the bad reason kind; got: %q", stderr)
 	}
+	// FR-008 closed taxonomy: the error must also surface at least one
+	// valid reason so an operator can self-correct without consulting docs.
+	sawValid := false
+	for _, r := range allFR008Reasons {
+		if strings.Contains(stderr, r) {
+			sawValid = true
+			break
+		}
+	}
+	if !sawValid {
+		t.Errorf("stderr should list at least one valid FR-008 reason kind to guide the operator; got: %q", stderr)
+	}
 }
 
 // runQueueCapture invokes the queue subcommand with stdout/stderr buffered
@@ -258,8 +270,29 @@ func assertQueueSetEqual(t *testing.T, want []queueExpect, got []queueJSONEntry)
 		wantSet[pair{w.PR, w.Reason}] = true
 	}
 	gotSet := map[pair]bool{}
+	gotCounts := map[pair]int{}
 	for _, g := range got {
-		gotSet[pair{g.PRNumber, g.Reason}] = true
+		p := pair{g.PRNumber, g.Reason}
+		gotSet[p] = true
+		gotCounts[p]++
+	}
+
+	// FR-008 contract: exactly one row per (PR, reason). Surface duplicates
+	// before the set-membership diff so they don't get masked by it.
+	var dupes []pair
+	for p, n := range gotCounts {
+		if n > 1 {
+			dupes = append(dupes, p)
+		}
+	}
+	if len(dupes) > 0 {
+		sort.Slice(dupes, func(i, j int) bool {
+			if dupes[i].PR != dupes[j].PR {
+				return dupes[i].PR < dupes[j].PR
+			}
+			return dupes[i].Reason < dupes[j].Reason
+		})
+		t.Errorf("queue emitted duplicate (PR, reason) rows: %+v (counts=%+v)", dupes, gotCounts)
 	}
 
 	var missing, extra []pair
@@ -361,7 +394,7 @@ func writeFakeGHForQueue(t *testing.T, now time.Time) (binPath string) {
 	dir := t.TempDir()
 	binPath = filepath.Join(dir, "gh")
 
-	listJSON := buildFakeGHListJSON(now)
+	listJSON := buildFakeGHListJSON(t, now)
 	listPath := filepath.Join(dir, "pr-list.json")
 	if err := os.WriteFile(listPath, []byte(listJSON), 0o644); err != nil {
 		t.Fatalf("write pr-list fixture: %v", err)
@@ -387,20 +420,22 @@ func writeFakeGHForQueue(t *testing.T, now time.Time) (binPath string) {
 		t.Fatalf("write default pr-view: %v", err)
 	}
 
+	// Paths are shellQuote'd so a TMPDIR containing spaces or shell
+	// metacharacters can't break the fake gh dispatcher.
 	script := "#!/usr/bin/env bash\n" +
 		"set -e\n" +
 		"sub=\"$1\"; act=\"$2\"; shift 2 || true\n" +
 		"if [[ \"$sub\" == \"pr\" && \"$act\" == \"list\" ]]; then\n" +
-		"  cat " + listPath + "\n" +
+		"  cat " + shellQuote(listPath) + "\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"if [[ \"$sub\" == \"pr\" && \"$act\" == \"view\" ]]; then\n" +
 		"  prnum=\"$1\"\n" +
-		"  payload=\"" + viewDir + "/${prnum}.json\"\n" +
+		"  payload=" + shellQuote(viewDir) + "/\"${prnum}.json\"\n" +
 		"  if [[ -f \"$payload\" ]]; then\n" +
 		"    cat \"$payload\"\n" +
 		"  else\n" +
-		"    cat " + defaultViewPath + "\n" +
+		"    cat " + shellQuote(defaultViewPath) + "\n" +
 		"  fi\n" +
 		"  exit 0\n" +
 		"fi\n" +
@@ -430,7 +465,8 @@ func writeFakeGHForQueue(t *testing.T, now time.Time) (binPath string) {
 //     filtered out per the spec).
 //   - #9999 is the clean in-flight PR: chitin-iterating/active label,
 //     fresh updatedAt, no escalation chain event. FR-004 hides it.
-func buildFakeGHListJSON(now time.Time) string {
+func buildFakeGHListJSON(t *testing.T, now time.Time) string {
+	t.Helper()
 	mk := func(num int, title, head string, labels []string, mergeable string, updatedAgo time.Duration, reviewState, reviewer string) map[string]any {
 		labelObjs := make([]map[string]any, 0, len(labels))
 		for _, l := range labels {
@@ -470,7 +506,7 @@ func buildFakeGHListJSON(now time.Time) string {
 
 	b, err := json.MarshalIndent(prs, "", "  ")
 	if err != nil {
-		panic(err)
+		t.Fatalf("marshal fake gh pr list: %v", err)
 	}
 	return string(b)
 }
