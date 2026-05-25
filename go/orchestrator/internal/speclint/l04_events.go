@@ -51,17 +51,25 @@ type Violation struct {
 // eventDefRegex matches an event definition INSIDE the canonical block:
 // `<name> { ... }` in backticks. Group 1 is the event name.
 //
+// eventBacktickNameRegex matches a plain backticked snake_case identifier
+// with no following `{` — the shape spec 099 FR-010 uses to declare and
+// reference chain events (e.g. `copilot_pr_detected`,
+// `copilot_review_posted`). Without this, extractCanonicalEvents would
+// miss specs that declare events as bare backticked names and L04 could
+// not enforce closure for them.
+//
 // eventVerbRegex matches a bare prose reference to an event_type by its
 // verb-suffix shape. The closed verb set (started/completed/failed/...) is
 // the conventional shape across spec 113/114/115 chain events; this is
 // what catches the spec 113 `pr_iteration_skipped` drift case named in
 // spec 115's WHY section.
 var (
-	frBulletRegex      = regexp.MustCompile(`^- \*\*FR-\d{3,}\*\*`)
-	sectionHeaderRegex = regexp.MustCompile(`^#{1,3} `)
-	chainEventsRegex   = regexp.MustCompile(`(?i)\bchain events\b`)
-	eventDefRegex      = regexp.MustCompile("`([a-z][a-z_]+)\\s*\\{")
-	eventVerbRegex     = regexp.MustCompile(`\b([a-z][a-z_]+_(?:started|completed|failed|escalated|skipped|emitted|fired|dispatched))\b`)
+	frBulletRegex          = regexp.MustCompile(`^- \*\*FR-\d{3,}\*\*`)
+	sectionHeaderRegex     = regexp.MustCompile(`^#{1,3} `)
+	chainEventsRegex       = regexp.MustCompile(`(?i)\bchain events\b`)
+	eventDefRegex          = regexp.MustCompile("`([a-z][a-z_]+)\\s*\\{")
+	eventBacktickNameRegex = regexp.MustCompile("`([a-z][a-z_]+)`")
+	eventVerbRegex         = regexp.MustCompile(`\b([a-z][a-z_]+_(?:started|completed|failed|escalated|skipped|emitted|fired|dispatched|detected|posted|received|created|updated|deleted|opened|closed|merged|landed))\b`)
 )
 
 // L04EventTaxonomy asserts that every event_type referenced in spec.md or
@@ -114,7 +122,7 @@ func L04EventTaxonomy(specMD, tasksMD string) []Violation {
 				File:     "spec.md",
 				Line:     1,
 				Severity: SeverityWarning,
-				Message:  "L04: spec references event_types but no canonical telemetry block found (expected an FR-NNN whose body contains `Chain events`)",
+				Message:  "L04: event_types referenced in spec.md or tasks.md but no canonical telemetry block found (expected an FR-NNN in spec.md whose body contains `Chain events`)",
 			})
 		}
 	}
@@ -158,6 +166,13 @@ func extractCanonicalEvents(specMD string) (map[string]struct{}, int, int) {
 		}
 		names := map[string]struct{}{}
 		for _, m := range eventDefRegex.FindAllStringSubmatch(body, -1) {
+			names[m[1]] = struct{}{}
+		}
+		// Spec 099-style: events declared as plain backticked names with
+		// no `{` (e.g. `copilot_pr_detected`). Inside the canonical FR
+		// body the over-collection risk is bounded — the FR is small
+		// and its job is to enumerate events.
+		for _, m := range eventBacktickNameRegex.FindAllStringSubmatch(body, -1) {
 			names[m[1]] = struct{}{}
 		}
 		if len(names) == 0 {
@@ -214,10 +229,12 @@ type eventRef struct {
 	line int
 }
 
-// findEventRefs locates every event_type reference in src. Two shapes:
+// findEventRefs locates every event_type reference in src. Three shapes:
 //   1. Backtick-enclosed `<name> {` — the canonical declaration shape;
 //      catches in-prose declarations of events the author thinks exist.
-//   2. Bare `<name>_<verb>` where verb is a closed event-suffix set —
+//   2. Plain backticked `<name>` (no `{`) — spec 099-style references
+//      such as `copilot_pr_detected` mentioned in prose.
+//   3. Bare `<name>_<verb>` where verb is in the event-suffix set —
 //      catches the prose-mention drift case (spec 115 WHY cites
 //      `pr_iteration_skipped` exactly this way).
 func findEventRefs(src string) []eventRef {
@@ -225,6 +242,9 @@ func findEventRefs(src string) []eventRef {
 	for i, line := range strings.Split(src, "\n") {
 		lineNum := i + 1
 		for _, m := range eventDefRegex.FindAllStringSubmatch(line, -1) {
+			refs = append(refs, eventRef{name: m[1], line: lineNum})
+		}
+		for _, m := range eventBacktickNameRegex.FindAllStringSubmatch(line, -1) {
 			refs = append(refs, eventRef{name: m[1], line: lineNum})
 		}
 		for _, m := range eventVerbRegex.FindAllStringSubmatch(line, -1) {
