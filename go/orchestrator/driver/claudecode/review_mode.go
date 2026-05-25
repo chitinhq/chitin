@@ -1,10 +1,13 @@
 package claudecode
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 )
 
@@ -162,6 +165,79 @@ func isLangTag(s string) bool {
 		}
 	}
 	return true
+}
+
+// isReviewMode reports whether wu is a review-mode dispatch. Spec 109
+// FR-001 leaves the discriminator open; activities/review/dispatch_machine_reviewer
+// sets SpecID="094" / TaskID="review" on the WorkUnit, so the driver
+// recognizes that pair as the review-mode signal.
+func isReviewMode(wu driver.WorkUnit) bool {
+	return wu.SpecID == "094" && wu.TaskID == "review"
+}
+
+// rawTruncateBytes caps the raw model output included in a malformed
+// verdict explanation (spec 109 FR-004 / US2 — 1 KiB).
+const rawTruncateBytes = 1024
+
+// reviewResult builds the Result for a review-mode invocation. It mirrors
+// resultFromCommand for the timeout / transport-error paths so review-mode
+// shares the same failure envelope as the implementation path, then runs
+// the spec 109 FR-003 / FR-004 / FR-005 pipeline: extract → unmarshal →
+// validate → canonically re-serialize on success, malformed_verdict on
+// any failure with the raw output truncated to 1 KiB.
+func reviewResult(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res.Status = driver.StatusTimeout
+		res.Explanation = fmt.Sprintf("driver %q timed out running work unit %q", driverID, wu.ID)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+	if runErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("driver %q failed running work unit %q: %v", driverID, wu.ID, runErr)
+		if stderr != "" {
+			res.Explanation += ": " + stderr
+		}
+		return res
+	}
+
+	body, extractErr := extractVerdictJSON(stdout)
+	if extractErr != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = malformedVerdictExplanation(extractErr, stdout)
+		return res
+	}
+	var v verdict.StructuredVerdict
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = malformedVerdictExplanation(err, stdout)
+		return res
+	}
+	if err := verdict.Validate(v); err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = malformedVerdictExplanation(err, stdout)
+		return res
+	}
+	canonical, err := json.Marshal(v)
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = malformedVerdictExplanation(err, stdout)
+		return res
+	}
+	res.Status = driver.StatusSucceeded
+	res.Explanation = string(canonical)
+	return res
+}
+
+func malformedVerdictExplanation(cause error, raw string) string {
+	truncated := raw
+	if len(truncated) > rawTruncateBytes {
+		truncated = truncated[:rawTruncateBytes]
+	}
+	return fmt.Sprintf("malformed_verdict: %v; raw: %s", cause, truncated)
 }
 
 // largestBalancedBraces scans s for top-level balanced {...} blocks,
