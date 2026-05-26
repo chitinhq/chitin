@@ -81,6 +81,26 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	iterate := NewIteratePRReview(deps.Worktrees, deps.Registry)
 	w.RegisterActivityWithOptions(iterate.Execute, registerAs(iterate.ActivityName()))
 
+	// Spec 116 US1 — internal re-review chain. DispatchInternalReview picks
+	// a DIFFERENT driver from the pool (R-AUTHORID-excluded against the
+	// fixup author), invokes it on the fixup commit, and returns a
+	// StructuredVerdict. PostStructuredReview posts the verdict as a PR
+	// review; ApplyReadyToMergeLabel labels the PR on approve-shaped
+	// verdicts; EscalateInternalRereview fires the Discord ping on the
+	// operator-must-look cases. All four are fail-soft per the activity
+	// contract and use the same impl driver registry that spec 113 does.
+	// A follow-up will route through a dedicated review registry per the
+	// spec 094 pool separation; the MVP reuses the impl registry because
+	// the drivers in it (claudecode + codex) are the intended pool.
+	rereview := NewDispatchInternalReview(deps.Worktrees, deps.Registry)
+	w.RegisterActivityWithOptions(rereview.Execute, registerAs(rereview.ActivityName()))
+	post := NewPostStructuredReview()
+	w.RegisterActivityWithOptions(post.Execute, registerAs(post.ActivityName()))
+	label := NewApplyReadyToMergeLabel()
+	w.RegisterActivityWithOptions(label.Execute, registerAs(label.ActivityName()))
+	escalate := NewEscalateInternalRereview()
+	w.RegisterActivityWithOptions(escalate.Execute, registerAs(escalate.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)

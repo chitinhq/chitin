@@ -51,6 +51,11 @@ func Validate(v StructuredVerdict) error {
 	if !v.Verdict.Valid() {
 		return fmt.Errorf("%w: %q", ErrUnknownEnum, string(v.Verdict))
 	}
+	if !v.Confidence.Valid() {
+		return newError("confidence_invalid",
+			"confidence must be one of high|medium|low (or empty for default-medium); got %q",
+			string(v.Confidence))
+	}
 	if err := requireNonEmptyEntries("concerns", v.Concerns); err != nil {
 		return err
 	}

@@ -72,4 +72,52 @@ type StructuredVerdict struct {
 	// verdict=abstain (per the FR-014 invariant for abstain). Other enum
 	// values ignore this field.
 	Reason string `json:"reason,omitempty"`
+	// Confidence (spec 116 FR-009, extension to spec 094's contract) is
+	// the reviewer's stated confidence in the verdict — one of "high",
+	// "medium", "low". An Approve verdict with confidence=low still applies
+	// the ready-to-merge label but ALSO escalates to the operator queue
+	// so the gap between "approve" and "rubber-stamped" is observable.
+	// Backward-compatible: existing reviewers that omit the field default
+	// to "medium" (the conservative middle ground) so spec 094 verdicts
+	// emitted before spec 116 deployed parse unchanged.
+	Confidence Confidence `json:"confidence,omitempty"`
+}
+
+// Confidence is the spec 116 closed enum for reviewer self-assessment of
+// verdict certainty. Defaults to ConfidenceMedium when the field is omitted
+// (backward-compat for spec 094 verdicts that don't populate it).
+type Confidence string
+
+const (
+	// ConfidenceHigh — reviewer is confident in the verdict; an Approve
+	// with high confidence is fully autopilot (ready-to-merge label
+	// applied, no operator escalation).
+	ConfidenceHigh Confidence = "high"
+	// ConfidenceMedium — the default. Standard treatment.
+	ConfidenceMedium Confidence = "medium"
+	// ConfidenceLow — reviewer is uncertain. An Approve verdict still
+	// applies the label but the PR ALSO escalates to operator review
+	// per spec 116 FR-010.
+	ConfidenceLow Confidence = "low"
+)
+
+// Valid reports whether c is one of the three declared confidence values
+// OR the empty default (which Normalize promotes to ConfidenceMedium).
+func (c Confidence) Valid() bool {
+	switch c {
+	case ConfidenceHigh, ConfidenceMedium, ConfidenceLow, "":
+		return true
+	default:
+		return false
+	}
+}
+
+// Normalize returns ConfidenceMedium for the empty default, otherwise c
+// unchanged. Use this before reading Confidence so the default-medium
+// contract is enforced in one place.
+func (c Confidence) Normalize() Confidence {
+	if c == "" {
+		return ConfidenceMedium
+	}
+	return c
 }
