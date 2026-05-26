@@ -85,7 +85,7 @@ func TestDiscordNotifier_TruncatesOversizedContent(t *testing.T) {
 // TestDiscordNotify_ExecuteAlwaysSucceeds proves the activity wrapper never
 // returns an error, even with the logging fallback notifier.
 func TestDiscordNotify_ExecuteAlwaysSucceeds(t *testing.T) {
-	if err := NewDiscordNotify(nil).Execute(context.Background(),
+	if err := NewDiscordNotify(nil, nil).Execute(context.Background(),
 		NotificationEvent{Kind: NotifyRunTerminal, RunID: "r"}); err != nil {
 		t.Fatalf("Execute returned %v, want nil", err)
 	}

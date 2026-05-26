@@ -3,14 +3,14 @@ package blob
 import (
 	"context"
 	"errors"
-
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // S3Store locks the future S3-compatible blob-store shape without wiring live
-// AWS calls in this spec.
+// AWS calls in this spec. Client is intentionally opaque (any) so the AWS SDK
+// is not pulled into the orchestrator module until the implementation lands;
+// the real type lands alongside the Put/Get bodies.
 type S3Store struct {
-	Client *s3.Client
+	Client any
 	Bucket string
 	Prefix string
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,9 +122,9 @@ func (s *FSStore) Put(ctx context.Context, body []byte) (Ref, error) {
 		return "", err
 	}
 	tmpPath := tmp.Name()
-	cleanup := true
+	removeTmp := true
 	defer func() {
-		if cleanup {
+		if removeTmp {
 			_ = os.Remove(tmpPath)
 		}
 	}()
@@ -144,14 +145,23 @@ func (s *FSStore) Put(ctx context.Context, body []byte) (Ref, error) {
 		}
 		return "", err
 	}
-	cleanup = true
+	// Unlink the temp name before the dir fsync so the unlink is part of
+	// the durable directory state — a crash after Put returns can't leave a
+	// stale .tmp behind.
+	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	removeTmp = false
 	if err := fsyncDir(filepath.Dir(path)); err != nil {
 		return "", err
 	}
 	if s != nil && s.emitter != nil {
 		payload := BlobWrittenPayload{Ref: ref.String(), SizeBytes: len(body), SHA256: hash}
 		if err := s.emitter.EmitBlobWritten(ctx, payload); err != nil {
-			return "", err
+			// Chain emit is best-effort — a kernel-emit fault must not
+			// fail the blob write itself, matching every other
+			// orchestrator chain-emit path.
+			log.Printf("blob: emitting blob_written for %s: %v", ref, err)
 		}
 	}
 	return ref, nil

@@ -160,16 +160,20 @@ func (d *DiscordNotifier) Notify(ctx context.Context, ev NotificationEvent) erro
 // Discord is network I/O — a SIDE EFFECT — so it MUST run in an activity, never
 // in workflow code.
 type DiscordNotify struct {
-	notifier Notifier
+	notifier  Notifier
+	blobStore blob.Store
 }
 
 // NewDiscordNotify returns a DiscordNotify activity bound to notifier. A nil
 // notifier falls back to the logging notifier so the activity is always usable.
-func NewDiscordNotify(notifier Notifier) *DiscordNotify {
+// blobStore is the spec-121 store used to resolve blob://-backed summaries
+// before rendering; nil disables resolution (summaries pass through as-is) so
+// the activity stays usable without a wired store.
+func NewDiscordNotify(notifier Notifier, blobStore blob.Store) *DiscordNotify {
 	if notifier == nil {
 		notifier = NewLogNotifier()
 	}
-	return &DiscordNotify{notifier: notifier}
+	return &DiscordNotify{notifier: notifier, blobStore: blobStore}
 }
 
 // ActivityName is the stable Temporal activity name DiscordNotify registers
@@ -183,10 +187,12 @@ func (a *DiscordNotify) Execute(ctx context.Context, ev NotificationEvent) error
 		log.Printf("notify: DiscordNotify has no notifier bound; dropping %s", ev.Kind)
 		return nil
 	}
-	if body, err := blob.Resolve(ctx, blob.NewFSStore(blob.WithEmitter(nil)), ev.Summary); err == nil {
-		ev.Summary = string(body)
-	} else {
-		log.Printf("notify: resolving summary for %s: %v", ev.Kind, err)
+	if a.blobStore != nil {
+		if body, err := blob.Resolve(ctx, a.blobStore, ev.Summary); err == nil {
+			ev.Summary = string(body)
+		} else {
+			log.Printf("notify: resolving summary for %s: %v", ev.Kind, err)
+		}
 	}
 	_ = a.notifier.Notify(ctx, ev)
 	return nil

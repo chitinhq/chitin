@@ -160,6 +160,7 @@ func runWorkerHost(ctx context.Context) int {
 		Worktrees: worktrees,
 		Telemetry: telemetrySink,
 		Notifier:  notifier,
+		BlobStore: blobStore,
 	})
 
 	// Register the spec-094 dialectic review activities — SelectReviewers,

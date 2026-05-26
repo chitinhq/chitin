@@ -5,6 +5,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 	"github.com/chitinhq/chitin/go/orchestrator/worktree"
 )
 
@@ -25,6 +26,9 @@ type SchedulerActivityDeps struct {
 	// Notifier is the write-only human-notification sink for DiscordNotify
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	Notifier Notifier
+	// BlobStore is the spec-121 store DiscordNotify resolves blob://-backed
+	// summaries against before rendering. A nil BlobStore disables resolution.
+	BlobStore blob.Store
 }
 
 // RegisterSchedulerActivities wires the Spec-DAG Scheduler's activities into
@@ -103,7 +107,7 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
-	notify := NewDiscordNotify(deps.Notifier)
+	notify := NewDiscordNotify(deps.Notifier, deps.BlobStore)
 	w.RegisterActivityWithOptions(notify.Execute, registerAs(notify.ActivityName()))
 
 	tel := NewTickTelemetry(deps.Telemetry)
