@@ -3,7 +3,6 @@ package claudecode
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -98,12 +97,6 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	defer cancel()
 
 	reviewMode := isReviewMode(wu)
-	var prompt string
-	if reviewMode {
-		prompt = reviewPromptFor(wu)
-	} else {
-		prompt = claudecodeshared.PromptFor(wu)
-	}
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
 	// invocations: the chitin worker spawns claude headlessly inside a
 	// fresh worktree, and without this flag claude's sandbox refuses
@@ -112,7 +105,13 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	// the explanation but produce no commits → no PR). claude's own
 	// help text recommends the flag "for sandboxes with no internet
 	// access" — chitin's worker context matches that intent.
-	cmd := exec.CommandContext(ctx, d.command, "--dangerously-skip-permissions", "-p", prompt)
+	var argv []string
+	if reviewMode {
+		argv = []string{"--dangerously-skip-permissions", "-p", reviewPromptFor(wu)}
+	} else {
+		argv = claudecodeshared.PrintArgsFor(wu)
+	}
+	cmd := exec.CommandContext(ctx, d.command, argv...)
 	cmd.Dir = wu.WorktreePath
 
 	var stdout, stderr bytes.Buffer
@@ -125,32 +124,6 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 		return reviewResult(ctx, wu, d.ID(), out, errOut, err), nil
 	}
 	return claudecodeshared.ResultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
-}
-
-func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
-	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		res.Status = driver.StatusTimeout
-		res.Explanation = fmt.Sprintf("driver %q timed out running work unit %q", driverID, wu.ID)
-		if stderr != "" {
-			res.Explanation += ": " + stderr
-		}
-		return res
-	}
-	if runErr != nil {
-		res.Status = driver.StatusFailed
-		res.Explanation = fmt.Sprintf("driver %q failed running work unit %q: %v", driverID, wu.ID, runErr)
-		if stderr != "" {
-			res.Explanation += ": " + stderr
-		}
-		return res
-	}
-	res.Status = driver.StatusSucceeded
-	res.Explanation = fmt.Sprintf("driver %q completed work unit %q", driverID, wu.ID)
-	if stderr != "" {
-		res.Explanation += "; stderr: " + stderr
-	}
-	return res
 }
 
 var _ driver.AgentDriver = (*Driver)(nil)
