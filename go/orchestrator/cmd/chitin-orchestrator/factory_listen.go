@@ -33,6 +33,8 @@ import (
 // across any leading directory prefix. Capture 1 is the full `NNN-name`.
 var specPathPattern = regexp.MustCompile(`(?:^|/)\.specify/specs/(\d+-[a-z0-9._-]+)/tasks\.md$`)
 
+const factoryDispatchFilteredReasonModifyOnly = "modify_only"
+
 // pushPayload is the subset of GitHub's push webhook payload this listener
 // consumes. Full schema:
 // https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
@@ -54,6 +56,13 @@ type factoryResponse struct {
 	RunIDs         []string `json:"run_ids"`
 	SkippedReasons []string `json:"skipped_reasons,omitempty"`
 	Error          string   `json:"error,omitempty"`
+}
+
+type factoryDispatchFilteredPayload struct {
+	SpecRef   string `json:"spec_ref"`
+	CommitSHA string `json:"commit_sha"`
+	Path      string `json:"path"`
+	Reason    string `json:"reason"`
 }
 
 func cmdFactoryListen(args []string) int {
@@ -431,6 +440,7 @@ func (h *factoryHandler) process(ctx context.Context, p *pushPayload) factoryRes
 	}
 
 	specRefs := extractSpecRefs(p)
+	h.emitFilteredDispatchEvents(ctx, p)
 	if len(specRefs) == 0 {
 		h.logRequest(map[string]any{
 			"signature_verified": true,
@@ -506,12 +516,11 @@ func (h *factoryHandler) dispatch(ctx context.Context, specRef string) (string, 
 }
 
 // extractSpecRefs walks the payload's commits and returns the unique
-// set of spec refs whose tasks.md was added or modified. Sorted for
-// deterministic output.
+// set of spec refs whose tasks.md was added. Sorted for deterministic output.
 func extractSpecRefs(p *pushPayload) []string {
 	seen := map[string]struct{}{}
 	for _, c := range p.Commits {
-		for _, path := range append(append([]string{}, c.Added...), c.Modified...) {
+		for _, path := range c.Added {
 			if m := specPathPattern.FindStringSubmatch(path); m != nil {
 				seen[m[1]] = struct{}{}
 			}
@@ -524,6 +533,35 @@ func extractSpecRefs(p *pushPayload) []string {
 	// Deterministic order — matters for the response JSON and the test assertions.
 	sortStrings(out)
 	return out
+}
+
+// emitFilteredDispatchEvents records tasks.md Modified-only matches that no
+// longer dispatch. Added wins within the same commit: if GitHub reports the
+// same path in both arrays, the Added path is the dispatch signal and the
+// Modified duplicate is silent.
+func (h *factoryHandler) emitFilteredDispatchEvents(ctx context.Context, p *pushPayload) {
+	for _, c := range p.Commits {
+		added := map[string]struct{}{}
+		for _, path := range c.Added {
+			added[path] = struct{}{}
+		}
+		for _, path := range c.Modified {
+			if _, ok := added[path]; ok {
+				continue
+			}
+			m := specPathPattern.FindStringSubmatch(path)
+			if m == nil {
+				continue
+			}
+			payload := factoryDispatchFilteredPayload{
+				SpecRef:   m[1],
+				CommitSHA: p.After,
+				Path:      path,
+				Reason:    factoryDispatchFilteredReasonModifyOnly,
+			}
+			emitChainEvent(ctx, "factory_dispatch_filtered", "factory-"+m[1], payload, h.stderr)
+		}
+	}
 }
 
 // verifyHMAC validates GitHub's X-Hub-Signature-256 header against the
