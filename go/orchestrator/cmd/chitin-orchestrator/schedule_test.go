@@ -127,10 +127,13 @@ func TestRunSchedule_DAGValidationFailure_Unroutable(t *testing.T) {
 	// Use a task description that doesn't match any capability keyword set —
 	// the adapter then marks the node NeedsClarification, which the
 	// validator surfaces as a needs_clarification failure.
+	// Spec 119 made --whole-spec the default; the per-task DAG
+	// validation only runs when --per-task is explicit, so this test
+	// pins the legacy flag to exercise the original validation path.
 	tasksMd := "- [ ] T001 [P] [US1] foo bar baz xyzzy"
 	repo := fixtureRepo(t, "091-needs-clarif", tasksMd)
 	var out, errBuf bytes.Buffer
-	code := runSchedule(context.Background(), []string{"--repo-root", repo, "091"}, &out, &errBuf)
+	code := runSchedule(context.Background(), []string{"--repo-root", repo, "--per-task", "091"}, &out, &errBuf)
 	if code != exitUserError {
 		t.Errorf("exit code = %d, want %d", code, exitUserError)
 	}

@@ -51,9 +51,11 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	baseRef := fs.String("base-ref", "main", "git ref each work unit's worktree is created from (default: main)")
 	driver := fs.String("driver", "", "explicit driver routing (spec 099). Empty = local SchedulerWorkflow path. \"copilot\" = create GitHub issue + assign @copilot (requires --repo).")
 	gitHubRepo := fs.String("repo", "", "GitHub repo slug owner/name (required for --driver copilot)")
+	wholeSpec := fs.Bool("whole-spec", false, "spec 119: dispatch the whole spec as ONE work unit to a T4 driver (default when neither --whole-spec nor --per-task is given)")
+	perTask := fs.Bool("per-task", false, "spec 119: dispatch one work unit per task (legacy fragmented dispatch; preserved verbatim for cross-cutting refactors)")
 
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--temporal-host host:port] [--repo-root path] [--target-repo path] [--base-ref ref] [--driver copilot --repo owner/name]")
+		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedule <spec-ref> [--whole-spec | --per-task] [--temporal-host host:port] [--repo-root path] [--target-repo path] [--base-ref ref] [--driver copilot --repo owner/name]")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -82,6 +84,22 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return exitUserError
 	}
 
+	// Spec 119 mode resolution (FR-001). Mutually exclusive flags;
+	// default when neither is given is `whole-spec`. The legacy
+	// fragmented-dispatch path is preserved verbatim behind --per-task
+	// for cross-cutting refactors that genuinely benefit from parallel
+	// drivers — but is no longer the default for spec implementation.
+	if *wholeSpec && *perTask {
+		fmt.Fprintln(stderr, "error: --whole-spec and --per-task are mutually exclusive")
+		return exitUserError
+	}
+	mode := "whole-spec"
+	if *perTask {
+		mode = "per-task"
+		// FR-009 deprecation note (one-line nudge, not an error).
+		fmt.Fprintln(stderr, "note: --per-task is the legacy fragmented-dispatch mode; --whole-spec (the new default) produces one PR per spec via a T4 driver. See spec 119 for the rationale.")
+	}
+
 	repo, err := resolveRepoRoot(*repoRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
@@ -107,6 +125,25 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	if cs == nil || cs.DAG == nil {
 		fmt.Fprintf(stderr, "error: spec %s compiled to nil DAG\n", resolution.SpecRef)
 		return exitUserError
+	}
+
+	// Spec 119 FR-002 — in whole-spec mode, replace the per-task DAG
+	// with a single-node DAG whose one work unit carries the entire
+	// spec as its instruction payload. The scheduler workflow then
+	// dispatches that node to a CapSpecImplement driver.
+	wholeSpecTaskCount := 0
+	if mode == "whole-spec" {
+		wholeDAG, taskCount, werr := buildWholeSpecDAG(
+			resolution.SpecRef, resolution.SpecDir,
+			deriveDispatchTargetRepo(*targetRepo, repo),
+			*baseRef,
+		)
+		if werr != nil {
+			fmt.Fprintf(stderr, "error: whole-spec DAG build failed: %v\n", werr)
+			return exitUserError
+		}
+		cs.DAG = wholeDAG
+		wholeSpecTaskCount = taskCount
 	}
 
 	registry, err := buildRegistry("impl")
@@ -146,10 +183,7 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	// against any target repo; the orchestrator's CreateWorktree activity
 	// then refuses an empty target_repo. The schedule subcommand is the
 	// scheduler-side seam that fills both fields before ExecuteWorkflow.
-	dispatchTargetRepo := *targetRepo
-	if dispatchTargetRepo == "" {
-		dispatchTargetRepo = repo
-	}
+	dispatchTargetRepo := deriveDispatchTargetRepo(*targetRepo, repo)
 	nodes := prepareNodesForDispatch(cs.DAG.Nodes(), dispatchTargetRepo, *baseRef)
 
 	runID := uuid.NewString()
@@ -174,6 +208,8 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		RunID:                runID,
 		NodeCount:            cs.DAG.Len(),
 		CapabilitiesRequired: capsRequired,
+		Mode:                 mode,
+		WholeSpecTaskCount:   wholeSpecTaskCount,
 	}, stderr)
 
 	fmt.Fprintf(stdout, "scheduled spec %s (%d nodes, %d capabilities required); run_id=%s\n",
@@ -239,6 +275,19 @@ func renderValidationErrors(stderr io.Writer, errs []ValidationError) {
 // targetRepo is the absolute path to the operator's chitin repo; baseRef
 // is the git ref each work unit's worktree is checked out from
 // (default "main" via the --base-ref flag).
+
+// deriveDispatchTargetRepo returns the repo path the work units will
+// operate on: the explicit --target-repo flag value when set, else
+// fall back to the resolved --repo-root. Both spec 119's whole-spec
+// builder and the per-task prepareNodesForDispatch call need the same
+// derivation, so it is named here.
+func deriveDispatchTargetRepo(targetRepoFlag, repoRoot string) string {
+	if targetRepoFlag != "" {
+		return targetRepoFlag
+	}
+	return repoRoot
+}
+
 func prepareNodesForDispatch(nodes []dag.Node, targetRepo, baseRef string) []dag.Node {
 	out := make([]dag.Node, len(nodes))
 	for i, n := range nodes {

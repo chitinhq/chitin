@@ -60,6 +60,11 @@ func (d *Driver) Card() driver.CapabilityCard {
 			driver.CapSpecAuthor,
 			driver.CapDocsWrite,
 			driver.CapTestAuthor,
+			// Spec 119 — claude-code's 200k context + Frontier tier is
+			// large enough for whole-spec dispatch (full spec.md +
+			// tasks.md + plan.md + relevant code). Declared so the
+			// --whole-spec mode routes here as a T4 candidate.
+			driver.CapSpecImplement,
 		},
 		Tier:      driver.TierFrontier,
 		CostClass: driver.CostHigh,

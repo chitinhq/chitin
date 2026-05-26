@@ -33,6 +33,14 @@ const (
 	CapTestAuthor Capability = "test.author"
 	// CapBrowserAutomate — drive a browser to test or operate a web UI.
 	CapBrowserAutomate Capability = "browser.automate"
+	// CapSpecImplement — implement an entire spec (every task in
+	// tasks.md) in a single driver invocation. Spec 119's whole-spec
+	// dispatch mode routes against this capability; only T4-tier drivers
+	// (opus-4.7-class, gpt-5.5-codex-class) should declare it, because
+	// the per-invocation workload is much larger than a single-task
+	// CapCodeImplement invocation. Distinct from CapCodeImplement so
+	// existing per-task dispatch routing stays unchanged.
+	CapSpecImplement Capability = "code.spec-implement"
 )
 
 // knownCapabilities is the closed set of taxonomy tags. It is the single
@@ -49,6 +57,7 @@ var knownCapabilities = map[Capability]struct{}{
 	CapBulkCodegen:     {},
 	CapTestAuthor:      {},
 	CapBrowserAutomate: {},
+	CapSpecImplement:   {},
 }
 
 // IsKnownCapability reports whether tag is a member of the closed capability

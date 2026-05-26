@@ -70,6 +70,13 @@ func (d *Driver) Card() driver.CapabilityCard {
 			driver.CapCodeReview,
 			driver.CapCodeRefactor,
 			driver.CapTestAuthor,
+			// Spec 119 — codex's 400k context + Frontier tier handles
+			// whole-spec dispatch (full spec.md + tasks.md + plan.md
+			// + relevant code). Declared so --whole-spec mode routes
+			// here as a T4 candidate. The default gpt-5.x-codex model
+			// is in the right capability bucket; tighter tier gating
+			// is a follow-up.
+			driver.CapSpecImplement,
 		},
 		Tier:      driver.TierFrontier,
 		CostClass: driver.CostHigh,
