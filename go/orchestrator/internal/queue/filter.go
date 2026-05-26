@@ -58,6 +58,13 @@ func Build(chain map[int][]EscalationEvent, live []LivePR, now time.Time) []Entr
 		if len(events) == 0 {
 			continue
 		}
+		if pr == 0 {
+			for i := range events {
+				ev := events[i]
+				out = append(out, makeEntry(0, ev.Reason, nil, &ev))
+			}
+			continue
+		}
 		first := events[0]
 		out = append(out, makeEntry(pr, first.Reason, liveByPR[pr], &first))
 	}
@@ -173,6 +180,17 @@ func makeEntry(prNumber int, reason string, live *LivePR, trig *EscalationEvent)
 	}
 	if trig != nil {
 		e.TriggeringEvent = trig
+		if trig.Reason == "silent_drop" {
+			if trig.PRNumber == 0 {
+				e.PRNumber = 0
+			}
+			if trig.TaskID != "" {
+				e.TaskID = trig.TaskID
+			}
+			if trig.SpecRef != "" {
+				e.SpecRef = trig.SpecRef
+			}
+		}
 	}
 	return e
 }

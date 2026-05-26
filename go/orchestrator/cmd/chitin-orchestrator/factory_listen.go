@@ -37,8 +37,8 @@ var specPathPattern = regexp.MustCompile(`(?:^|/)\.specify/specs/(\d+-[a-z0-9._-
 // consumes. Full schema:
 // https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
 type pushPayload struct {
-	Ref     string `json:"ref"`     // e.g. "refs/heads/main"
-	After   string `json:"after"`   // new commit sha
+	Ref     string `json:"ref"`   // e.g. "refs/heads/main"
+	After   string `json:"after"` // new commit sha
 	Commits []struct {
 		Added    []string `json:"added"`
 		Modified []string `json:"modified"`
@@ -166,6 +166,7 @@ type factoryHandler struct {
 	// without shelling out to `gh` or dialing a Temporal dev server.
 	siblingLister  siblingLister
 	temporalDialer temporalDialer
+	dispatchFunc   func(context.Context, string) (string, error)
 
 	logMu sync.Mutex
 }
@@ -445,7 +446,7 @@ func (h *factoryHandler) process(ctx context.Context, p *pushPayload) factoryRes
 	for _, ref := range specRefs {
 		runID, err := h.dispatch(ctx, ref)
 		if err != nil {
-			h.emitFailureEvent(ctx, ref, err.Error())
+			h.emitFailureEvent(ctx, ref, classifyDispatchError(err), err.Error())
 			resp.SkippedReasons = append(resp.SkippedReasons, fmt.Sprintf("schedule failed for %s: %v", ref, err))
 			continue
 		}
@@ -471,6 +472,9 @@ func (h *factoryHandler) process(ctx context.Context, p *pushPayload) factoryRes
 // resolution, DAG compile, validation, Temporal client dial, chain
 // event emission via emit.go.
 func (h *factoryHandler) dispatch(ctx context.Context, specRef string) (string, error) {
+	if h.dispatchFunc != nil {
+		return h.dispatchFunc(ctx, specRef)
+	}
 	args := []string{}
 	if h.repoRootFlag != "" {
 		args = append(args, "--repo-root", h.repoRootFlag)
@@ -619,10 +623,14 @@ func (h *factoryHandler) emitTriggeredEvent(ctx context.Context, specRef, runID,
 // schedule invocation that errored. The chain uses the spec_ref as the
 // run_id (we have no scheduler run_id to key by — dispatch never reached
 // ExecuteWorkflow). That keeps the failure event findable by spec.
-func (h *factoryHandler) emitFailureEvent(ctx context.Context, specRef, errMsg string) {
+func (h *factoryHandler) emitFailureEvent(ctx context.Context, specRef string, failureKind FactoryDispatchFailureKind, errMsg string) {
+	if !failureKind.Valid() {
+		failureKind = FactoryDispatchFailureKindInternal
+	}
 	payload := map[string]any{
-		"spec_ref": specRef,
-		"error":    errMsg,
+		"spec_ref":     specRef,
+		"failure_kind": string(failureKind),
+		"error":        errMsg,
 	}
 	emitChainEvent(ctx, "factory_dispatch_failed", "factory-"+specRef, payload, h.stderr)
 }

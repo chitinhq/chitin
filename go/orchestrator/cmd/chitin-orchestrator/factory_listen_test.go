@@ -19,11 +19,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/orchestrator/adapter"
 )
 
 // TestVerifyHMAC walks every important branch of the signature verifier:
@@ -261,6 +266,84 @@ func TestHandlePush_HTTP(t *testing.T) {
 	})
 }
 
+func TestClassifyDispatchError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want FactoryDispatchFailureKind
+	}{
+		{"spec ref not found typed", &SpecRefError{Kind: "not-found", Ref: "999"}, FactoryDispatchFailureKindSpecRefNotFound},
+		{"spec ref ambiguous typed", &SpecRefError{Kind: "ambiguous", Ref: "09"}, FactoryDispatchFailureKindSpecRefAmbiguous},
+		{"tasks missing typed", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "required artifact is missing"}, FactoryDispatchFailureKindTasksMDMissing},
+		{"tasks parse typed", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "duplicate task id"}, FactoryDispatchFailureKindTasksMDParseError},
+		{"temporal dial legacy string", errors.New("runSchedule exit=2: error: Temporal unreachable at 127.0.0.1:7233 — is the temporal-dev service running?"), FactoryDispatchFailureKindTemporalDialFailed},
+		{"temporal start workflow legacy string", errors.New("runSchedule exit=2: error: ExecuteWorkflow failed: namespace not found"), FactoryDispatchFailureKindTemporalStartWorkflowFailed},
+		{"capability mismatch legacy string", errors.New("runSchedule exit=1: error: DAG validation failed — 1 node(s) require capability not declared by any registered driver"), FactoryDispatchFailureKindCapabilityMismatch},
+		{"unrecognised", errors.New("filesystem temperature is suspicious"), FactoryDispatchFailureKindInternal},
+		{"novel string does not invent kind", errors.New("brand_new_dispatch_reason: external API quota exhausted"), FactoryDispatchFailureKindInternal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyDispatchError(tc.err)
+			if got != tc.want {
+				t.Fatalf("classifyDispatchError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+			if !got.Valid() {
+				t.Fatalf("classified invalid taxonomy value %q", got)
+			}
+		})
+	}
+	if FactoryDispatchFailureKind("surprise").Valid() {
+		t.Fatal("Valid accepted undeclared failure kind")
+	}
+}
+
+func TestHandlePushFailureEventCarriesFailureKind(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want FactoryDispatchFailureKind
+	}{
+		{"spec_ref_not_found", &SpecRefError{Kind: "not-found", Ref: "118"}, FactoryDispatchFailureKindSpecRefNotFound},
+		{"spec_ref_ambiguous", &SpecRefError{Kind: "ambiguous", Ref: "11"}, FactoryDispatchFailureKindSpecRefAmbiguous},
+		{"tasks_md_missing", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "required artifact is missing"}, FactoryDispatchFailureKindTasksMDMissing},
+		{"tasks_md_parse_error", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "duplicate task id"}, FactoryDispatchFailureKindTasksMDParseError},
+		{"temporal_dial_failed", errors.New("Temporal unreachable at 127.0.0.1:7233: connection refused"), FactoryDispatchFailureKindTemporalDialFailed},
+		{"temporal_start_workflow_failed", errors.New("ExecuteWorkflow failed: task queue missing"), FactoryDispatchFailureKindTemporalStartWorkflowFailed},
+		{"capability_mismatch", errors.New("DAG validation failed: no registered driver declares this capability"), FactoryDispatchFailureKindCapabilityMismatch},
+		{"internal", errors.New("opaque dispatch fault"), FactoryDispatchFailureKindInternal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := installFakeKernel(t)
+			secret := []byte("test-secret-for-handler-route!!")
+			h := &factoryHandler{
+				secret:     secret,
+				mainBranch: "main",
+				logFile:    filepath.Join(t.TempDir(), "log.jsonl"),
+				dispatchFunc: func(context.Context, string) (string, error) {
+					return "", tc.err
+				},
+			}
+			body := []byte(`{"ref":"refs/heads/main","commits":[{"modified":[".specify/specs/118-factory-dispatch-failed-reason-taxonomy/tasks.md"]}]}`)
+			req := httptest.NewRequest(http.MethodPost, "/webhook/push", bytes.NewReader(body))
+			req.Header.Set("X-Hub-Signature-256", signPayload(secret, body))
+			w := httptest.NewRecorder()
+			h.handlePush(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d want 200", w.Code)
+			}
+			payload := readCapturedEventPayload(t, capture)
+			if payload["failure_kind"] != string(tc.want) {
+				t.Fatalf("failure_kind=%v want %s payload=%v", payload["failure_kind"], tc.want, payload)
+			}
+			if payload["error"] != tc.err.Error() {
+				t.Fatalf("error=%v want %q", payload["error"], tc.err.Error())
+			}
+		})
+	}
+}
+
 // TestConstructSyntheticPushPayload — what simulate-webhook emits must
 // be parseable by the listener and yield exactly one spec ref. Keeps the
 // two sides in sync; if the listener's pushPayload schema drifts, this
@@ -280,3 +363,47 @@ func TestConstructSyntheticPushPayload(t *testing.T) {
 	}
 }
 
+func installFakeKernel(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "events.jsonl")
+	bin := filepath.Join(dir, "chitin-kernel")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-event-file" ]; then
+    shift
+    cat "$1" >> "$CHITIN_FAKE_CAPTURE"
+    printf '\n' >> "$CHITIN_FAKE_CAPTURE"
+    exit 0
+  fi
+  shift
+done
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake kernel: %v", err)
+	}
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_FAKE_CAPTURE", capture)
+	t.Setenv("CHITIN_DIR", dir)
+	return capture
+}
+
+func readCapturedEventPayload(t *testing.T, capture string) map[string]any {
+	t.Helper()
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var env struct {
+		EventType string         `json:"event_type"`
+		Payload   map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &env); err != nil {
+		t.Fatalf("unmarshal captured event: %v\n%s", err, string(body))
+	}
+	if env.EventType != "factory_dispatch_failed" {
+		t.Fatalf("event_type=%q want factory_dispatch_failed", env.EventType)
+	}
+	return env.Payload
+}

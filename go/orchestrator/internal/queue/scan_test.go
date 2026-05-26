@@ -368,6 +368,7 @@ func TestClassifyReason_ClosedTaxonomy(t *testing.T) {
 		wantOK                               bool
 	}{
 		{"sibling_rebase_failed", "", "sibling_rebase_failed", true},
+		{"work_unit_completed_without_deliverable", "ignored", "silent_drop", true},
 		// Spec 112 US2 event carries no payload.reason — the event type IS
 		// the reason. A stray reason on the payload must NOT change the
 		// classified reason.
@@ -386,5 +387,37 @@ func TestClassifyReason_ClosedTaxonomy(t *testing.T) {
 			t.Errorf("classifyReason(%q,%q) = (%q,%v), want (%q,%v)",
 				c.eventType, c.payloadReason, gotReason, gotOK, c.wantReason, c.wantOK)
 		}
+	}
+}
+
+func TestScan_SilentDropWithoutPRUsesSpecTaskIdentity(t *testing.T) {
+	dir := t.TempDir()
+	ts := "2026-05-25T10:00:00Z"
+	writeJSONL(t, filepath.Join(dir, "events-silent-drop.jsonl"), []any{
+		map[string]any{
+			"event_type": "work_unit_completed_without_deliverable",
+			"run_id":     "wu-118",
+			"ts":         ts,
+			"payload": map[string]any{
+				"work_unit_id":     "wu-118",
+				"task_id":          "T008",
+				"spec_ref":         "118-factory-dispatch-failed-reason-taxonomy",
+				"deliverable_kind": "pr",
+				"reason":           "no_changes_to_commit",
+			},
+		},
+	})
+
+	got, err := Scan(dir, time.Time{})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	evs := got[0]
+	if len(evs) != 1 {
+		t.Fatalf("got %d silent-drop events under no-PR key, want 1", len(evs))
+	}
+	if evs[0].Reason != "silent_drop" || evs[0].TaskID != "T008" ||
+		evs[0].SpecRef != "118-factory-dispatch-failed-reason-taxonomy" {
+		t.Fatalf("unexpected silent-drop event: %+v", evs[0])
 	}
 }

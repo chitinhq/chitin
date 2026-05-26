@@ -13,8 +13,11 @@ import "time"
 // event via TriggeringEvent so downstream tooling (FR-007) can inspect
 // the source payload without rescanning the chain.
 type Entry struct {
-	// PRNumber is the GitHub PR number.
-	PRNumber int `json:"pr_number"`
+	// PRNumber is the GitHub PR number. It is empty for no-PR silent-drop rows.
+	PRNumber int `json:"pr_number,omitempty"`
+	// TaskID identifies a no-PR work unit row, taking precedence over PRNumber
+	// when the expected PR deliverable was never created.
+	TaskID string `json:"task_id,omitempty"`
 	// Title is the PR title as reported by `gh pr list`. Not truncated
 	// here — the table renderer truncates to 60 runes per FR-005.
 	Title string `json:"title"`
@@ -26,9 +29,8 @@ type Entry struct {
 	// identical to the rule name from FR-003 and the chain event
 	// payload's reason string from spec 113 FR-011.
 	Reason string `json:"reason"`
-	// SpecRef is the spec id parsed from the PR's "sched/run/<id>" or
-	// "spec-<NNN>" label, when present. Empty when the PR carries no
-	// spec-ref label (e.g. operator-authored or pre-spec-id work).
+	// SpecRef is the spec id parsed from the PR's branch or copied from a
+	// no-PR silent-drop chain event.
 	SpecRef string `json:"spec_ref,omitempty"`
 	// UpdatedAt is the PR's last update timestamp from GitHub. The
 	// table renderer turns now-UpdatedAt into the "age" column.

@@ -45,6 +45,12 @@ func FormatMarkdown(entries []Entry, now time.Time) string {
 // markdown link `[#1234](url)`; otherwise just `#1234` so chain-only
 // entries (built without a live PR snapshot) still render legibly.
 func mdPRCell(e Entry) string {
+	if e.PRNumber <= 0 {
+		if e.SpecRef != "" && e.TaskID != "" {
+			return mdEscape(e.SpecRef + "/" + e.TaskID)
+		}
+		return "-"
+	}
 	if e.URL == "" {
 		return fmt.Sprintf("#%d", e.PRNumber)
 	}
@@ -75,6 +81,8 @@ func reasonEmoji(reason string) string {
 		return "👤"
 	case "sibling_rebase_failed":
 		return "🔀"
+	case "silent_drop":
+		return "📭"
 	case "lease_lost":
 		return "🔓"
 	case "dialectic_request_changes":

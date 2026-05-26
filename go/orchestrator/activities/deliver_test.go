@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,4 +133,139 @@ func TestDeliverWorkProduct_PushesToRemote(t *testing.T) {
 	// origin received the dedicated branch — gitT fails the test if the ref
 	// does not resolve in the bare repo.
 	gitT(t, bare, "rev-parse", "--verify", branch)
+}
+
+func TestDeliverWorkProduct_EmitsSilentDropEvent(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		setup  func(t *testing.T, repo, worktree string)
+	}{
+		{
+			name:   "no changes",
+			reason: WorkUnitNoChangesToCommitReason,
+			setup:  func(t *testing.T, repo, worktree string) {},
+		},
+		{
+			name:   "no origin remote",
+			reason: WorkUnitActivityDeclinedWithoutFailureReason,
+			setup: func(t *testing.T, repo, worktree string) {
+				if err := os.WriteFile(filepath.Join(worktree, "greeting.go"), []byte("package greeting\n"), 0o644); err != nil {
+					t.Fatalf("write work product: %v", err)
+				}
+			},
+		},
+		{
+			name:   "push failed",
+			reason: WorkUnitGitPushFailedReason,
+			setup: func(t *testing.T, repo, worktree string) {
+				gitT(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+				if err := os.WriteFile(filepath.Join(worktree, "greeting.go"), []byte("package greeting\n"), 0o644); err != nil {
+					t.Fatalf("write work product: %v", err)
+				}
+			},
+		},
+		{
+			name:   "gh pr create failed",
+			reason: WorkUnitGHPRCreateFailedReason,
+			setup: func(t *testing.T, repo, worktree string) {
+				bare := t.TempDir()
+				gitT(t, bare, "init", "--bare", "-b", "main")
+				gitT(t, repo, "remote", "add", "origin", bare)
+				installFakeGH(t, 1)
+				if err := os.WriteFile(filepath.Join(worktree, "greeting.go"), []byte("package greeting\n"), 0o644); err != nil {
+					t.Fatalf("write work product: %v", err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := installFakeKernel(t)
+			repo, worktree, _ := newDeliveryWorktree(t)
+			tc.setup(t, repo, worktree)
+			res, err := NewDeliverWorkProduct().Execute(context.Background(), DeliverWorkProductInput{
+				WorkUnitID:   "wu-118",
+				SpecRef:      "118-factory-dispatch-failed-reason-taxonomy",
+				TaskRef:      "T008",
+				Description:  "deliver silent-drop fixture",
+				WorktreePath: worktree,
+				BaseRef:      "main",
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.PRURL != "" {
+				t.Fatalf("PRURL=%q want empty", res.PRURL)
+			}
+			if !strings.Contains(res.Explanation, "missing deliverable pr") {
+				t.Fatalf("Explanation=%q does not name missing deliverable", res.Explanation)
+			}
+			payload := readCapturedSilentDropPayload(t, capture)
+			if payload.Reason != tc.reason {
+				t.Fatalf("reason=%q want %q", payload.Reason, tc.reason)
+			}
+			if payload.WorkUnitID != "wu-118" || payload.TaskID != "T008" ||
+				payload.SpecRef != "118-factory-dispatch-failed-reason-taxonomy" ||
+				payload.DeliverableKind != DeliverableKindPR {
+				t.Fatalf("unexpected payload: %+v", payload)
+			}
+		})
+	}
+}
+
+func installFakeKernel(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "events.jsonl")
+	bin := filepath.Join(dir, "chitin-kernel")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-event-file" ]; then
+    shift
+    cat "$1" >> "$CHITIN_FAKE_CAPTURE"
+    printf '\n' >> "$CHITIN_FAKE_CAPTURE"
+    exit 0
+  fi
+  shift
+done
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake kernel: %v", err)
+	}
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_FAKE_CAPTURE", capture)
+	t.Setenv("CHITIN_DIR", dir)
+	return capture
+}
+
+func installFakeGH(t *testing.T, exitCode int) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "gh")
+	script := "#!/bin/sh\necho fake gh failure >&2\nexit " + string(rune('0'+exitCode)) + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func readCapturedSilentDropPayload(t *testing.T, capture string) WorkUnitCompletedWithoutDeliverablePayload {
+	t.Helper()
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var env struct {
+		EventType string                                     `json:"event_type"`
+		Payload   WorkUnitCompletedWithoutDeliverablePayload `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(body))), &env); err != nil {
+		t.Fatalf("unmarshal captured event: %v\n%s", err, string(body))
+	}
+	if env.EventType != WorkUnitCompletedWithoutDeliverableEventType {
+		t.Fatalf("event_type=%q want %s", env.EventType, WorkUnitCompletedWithoutDeliverableEventType)
+	}
+	return env.Payload
 }

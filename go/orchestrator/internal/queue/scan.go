@@ -15,6 +15,7 @@
 //   - lease_lost                       ← pr_iteration_escalated
 //   - iteration_completed_with_skips   ← pr_iteration_escalated
 //   - sibling_rebase_failed            ← sibling_rebase_failed (event_type IS reason)
+//   - silent_drop                      ← work_unit_completed_without_deliverable
 //
 // The remaining reasons in FR-008 (`dialectic_request_changes`,
 // `stale_no_automation`, `conflicting_persistent`) derive from live PR
@@ -47,6 +48,8 @@ type EscalationEvent struct {
 	EventType string          `json:"event_type"`
 	Reason    string          `json:"reason"`
 	PRNumber  int             `json:"pr_number"`
+	TaskID    string          `json:"task_id,omitempty"`
+	SpecRef   string          `json:"spec_ref,omitempty"`
 	Ts        time.Time       `json:"ts"`
 	RunID     string          `json:"run_id"`
 	Payload   json.RawMessage `json:"payload"`
@@ -55,8 +58,9 @@ type EscalationEvent struct {
 // escalationEventTypes is the closed set of chain event_types the scanner
 // matches. Other event types are skipped without parsing payload.
 var escalationEventTypes = map[string]struct{}{
-	"pr_iteration_escalated": {},
-	"sibling_rebase_failed":  {},
+	"pr_iteration_escalated":                  {},
+	"sibling_rebase_failed":                   {},
+	"work_unit_completed_without_deliverable": {},
 }
 
 // piEscalatedReasons is the closed set of pr_iteration_escalated payload
@@ -185,6 +189,9 @@ func looksLikeEscalation(line []byte) bool {
 	if strings.Contains(s, "sibling_rebase_failed") {
 		return true
 	}
+	if strings.Contains(s, "work_unit_completed_without_deliverable") {
+		return true
+	}
 	return false
 }
 
@@ -207,16 +214,21 @@ func parseEscalation(line []byte) (EscalationEvent, bool) {
 	var p struct {
 		PRNumber int    `json:"pr_number"`
 		Reason   string `json:"reason"`
+		TaskID   string `json:"task_id"`
+		SpecRef  string `json:"spec_ref"`
 	}
 	if err := json.Unmarshal(row.Payload, &p); err != nil {
-		return EscalationEvent{}, false
-	}
-	if p.PRNumber <= 0 {
 		return EscalationEvent{}, false
 	}
 
 	reason, ok := classifyReason(row.EventType, p.Reason)
 	if !ok {
+		return EscalationEvent{}, false
+	}
+	if p.PRNumber <= 0 && reason != "silent_drop" {
+		return EscalationEvent{}, false
+	}
+	if p.PRNumber <= 0 && (p.SpecRef == "" || p.TaskID == "") {
 		return EscalationEvent{}, false
 	}
 
@@ -229,6 +241,8 @@ func parseEscalation(line []byte) (EscalationEvent, bool) {
 		EventType: row.EventType,
 		Reason:    reason,
 		PRNumber:  p.PRNumber,
+		TaskID:    p.TaskID,
+		SpecRef:   p.SpecRef,
 		Ts:        ts,
 		RunID:     row.RunID,
 		Payload:   row.Payload,
@@ -244,6 +258,8 @@ func classifyReason(eventType, payloadReason string) (string, bool) {
 		// Event type IS the reason for this kind (spec 112 US2);
 		// payload.reason is not part of that event's contract.
 		return "sibling_rebase_failed", true
+	case "work_unit_completed_without_deliverable":
+		return "silent_drop", true
 	case "pr_iteration_escalated":
 		if _, ok := piEscalatedReasons[payloadReason]; !ok {
 			return "", false
