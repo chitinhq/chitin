@@ -100,7 +100,7 @@ func TestRunQueue_HermeticAcrossAllReasonKinds(t *testing.T) {
 		"--format", "json",
 		"--repo", "chitinhq/chitin",
 		"--since", "168h",
-	})
+	}, queueTestNow)
 	if code != exitSuccess {
 		t.Fatalf("runQueue exit = %d (want %d); stderr=%q", code, exitSuccess, stderr)
 	}
@@ -161,7 +161,7 @@ func TestRunQueue_ReasonFilter_NarrowsToSingleKind(t *testing.T) {
 				"--repo", "chitinhq/chitin",
 				"--since", "168h",
 				"--reason", reason,
-			})
+			}, queueTestNow)
 			if code != exitSuccess {
 				t.Fatalf("runQueue exit = %d (want %d); stderr=%q", code, exitSuccess, stderr)
 			}
@@ -215,12 +215,37 @@ func TestRunQueue_UnknownReason_RejectsWithHelpfulError(t *testing.T) {
 	}
 }
 
+func TestRunQueue_PublicEntryPointEmptyQueue(t *testing.T) {
+	chainDir := t.TempDir()
+	ghBin := writeFakeGHForEmptyQueue(t)
+	t.Setenv("PATH", filepath.Dir(ghBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CHITIN_DIR", chainDir)
+	t.Setenv("CHITIN_REPO", "chitinhq/chitin")
+
+	stdout, stderr, code := runQueueCapture(t, []string{
+		"--repo", "chitinhq/chitin",
+	})
+	if code != exitSuccess {
+		t.Fatalf("runQueue exit = %d (want %d); stderr=%q", code, exitSuccess, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q; want empty", stderr)
+	}
+	if stdout != "✅ no PRs need attention\n" {
+		t.Fatalf("stdout = %q; want empty queue message", stdout)
+	}
+}
+
 // runQueueCapture invokes the queue subcommand with stdout/stderr buffered
 // so the test can assert on both surfaces without spawning a process.
-func runQueueCapture(t *testing.T, args []string) (stdout, stderr string, code int) {
+func runQueueCapture(t *testing.T, args []string, now ...time.Time) (stdout, stderr string, code int) {
 	t.Helper()
 	var so, se strings.Builder
-	code = runQueue(context.Background(), args, &so, &se)
+	if len(now) > 0 {
+		code = runQueueWithNow(context.Background(), args, now[0], &so, &se)
+	} else {
+		code = runQueue(context.Background(), args, &so, &se)
+	}
 	return so.String(), se.String(), code
 }
 
@@ -437,6 +462,29 @@ func writeFakeGHForQueue(t *testing.T, now time.Time) (binPath string) {
 		"  else\n" +
 		"    cat " + shellQuote(defaultViewPath) + "\n" +
 		"  fi\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"fake gh: unsupported invocation: $sub $act $*\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	return binPath
+}
+
+func writeFakeGHForEmptyQueue(t *testing.T) (binPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	binPath = filepath.Join(dir, "gh")
+	script := "#!/usr/bin/env bash\n" +
+		"set -e\n" +
+		"sub=\"$1\"; act=\"$2\"; shift 2 || true\n" +
+		"if [[ \"$sub\" == \"pr\" && \"$act\" == \"list\" ]]; then\n" +
+		"  printf '[]\\n'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [[ \"$sub\" == \"pr\" && \"$act\" == \"view\" ]]; then\n" +
+		"  printf '{\"commits\":[]}\\n'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"echo \"fake gh: unsupported invocation: $sub $act $*\" >&2\n" +

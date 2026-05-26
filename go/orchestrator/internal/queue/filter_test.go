@@ -77,3 +77,40 @@ func TestBuildSilentDropWithoutPRUsesSpecTaskIdentity(t *testing.T) {
 		t.Fatalf("unexpected no-PR entry: %+v", e)
 	}
 }
+
+func TestMatchLiveRulesConflictingPersistentContract(t *testing.T) {
+	now := time.Date(2026, 5, 25, 17, 0, 0, 0, time.UTC)
+	lastAutomatedCommitAt := now.Add(-1 * time.Hour)
+
+	tests := []struct {
+		name string
+		pr   LivePR
+		want string
+	}{
+		{
+			name: "pr 9008 persistent conflict with fresh automation",
+			pr: LivePR{
+				Number:                9008,
+				Title:                 "persistent conflict PR",
+				HeadRefName:           "chitin/wu/099-conflict-t008-h",
+				Mergeable:             "CONFLICTING",
+				UpdatedAt:             now.Add(-3 * time.Hour),
+				LastAutomatedCommitAt: &lastAutomatedCommitAt,
+			},
+			want: "conflicting_persistent",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := matchLiveRules(tt.pr, now)
+			if !ok {
+				t.Fatalf("matchLiveRules returned no match; want %q", tt.want)
+			}
+			if got != tt.want {
+				t.Fatalf("matchLiveRules = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
