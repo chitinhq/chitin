@@ -12,6 +12,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/activities"
 )
 
 // signedPRRequest constructs a signed POST to /webhook/pr with the
@@ -274,5 +277,51 @@ func TestHandlePR_IssueComment_RoutesViaIssueLabels(t *testing.T) {
 	}
 	if resp.PRNumber != 400 {
 		t.Errorf("PRNumber=%d want 400", resp.PRNumber)
+	}
+}
+
+func TestHandlePR_SpecPRMergeKicksOffEnsureSpecIssueAsync(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	started := make(chan activities.EnsureSpecIssueInput, 1)
+	release := make(chan struct{})
+	h := &factoryHandler{
+		secret:     secret,
+		logFile:    t.TempDir() + "/log.jsonl",
+		mainBranch: "main",
+		specFilesLister: fakeSpecFilesLister{files: []string{
+			".specify/specs/126-spec-issue-for-visibility/spec.md",
+			".specify/specs/126-spec-issue-for-visibility/tasks.md",
+		}},
+		asyncFunc: func(fn func()) { go fn() },
+		ensureSpecIssueFunc: func(_ context.Context, in activities.EnsureSpecIssueInput) {
+			started <- in
+			<-release
+		},
+	}
+	body := []byte(`{
+		"action": "closed",
+		"number": 1140,
+		"pull_request": {
+			"html_url": "https://github.com/o/r/pull/1140",
+			"title": "Spec 126 visibility issue",
+			"merged": true,
+			"head": {"ref": "spec/126-spec-issue-for-visibility"}
+		},
+		"repository": {"full_name": "o/r"}
+	}`)
+	req := signedPRRequest(t, secret, "pull_request", "d1140", body)
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case in := <-started:
+		if in.Repo != "o/r" || in.SpecRef != "126-spec-issue-for-visibility" || in.SpecPRURL != "https://github.com/o/r/pull/1140" {
+			t.Fatalf("EnsureSpecIssue input=%+v", in)
+		}
+		close(release)
+	case <-time.After(time.Second):
+		t.Fatal("EnsureSpecIssue was not started asynchronously")
 	}
 }

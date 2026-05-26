@@ -68,6 +68,15 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	deliver := NewDeliverWorkProduct()
 	w.RegisterActivityWithOptions(deliver.Execute, registerAs(deliver.ActivityName()))
 
+	ensureSpecIssue := NewEnsureSpecIssue()
+	w.RegisterActivityWithOptions(ensureSpecIssue.Execute, registerAs(ensureSpecIssue.ActivityName()))
+	commentSpecIssue := NewCommentSpecIssue()
+	w.RegisterActivityWithOptions(commentSpecIssue.Execute, registerAs(commentSpecIssue.ActivityName()))
+	updateSpecIssueBody := NewUpdateSpecIssueBody()
+	w.RegisterActivityWithOptions(updateSpecIssueBody.Execute, registerAs(updateSpecIssueBody.ActivityName()))
+	closeSpecIssue := NewCloseSpecIssue()
+	w.RegisterActivityWithOptions(closeSpecIssue.Execute, registerAs(closeSpecIssue.ActivityName()))
+
 	// RebaseSiblingPR is the spec 112 US2 auto-rebase activity. It needs
 	// the same worktree Manager as Create/Teardown so a sibling-rebase
 	// checkout participates in the same teardown + GC lifecycle.

@@ -27,6 +27,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/activities"
 )
 
 // specPathPattern matches a tasks.md file path inside `.specify/specs/NNN-name/`
@@ -43,6 +45,9 @@ type pushPayload struct {
 		Added    []string `json:"added"`
 		Modified []string `json:"modified"`
 	} `json:"commits"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
 }
 
 // factoryResponse is the JSON returned to the webhook caller. Designed
@@ -164,9 +169,16 @@ type factoryHandler struct {
 	// dispatcher uses listOpenSiblingsViaGH + dialTemporalAsStarter. Tests
 	// inject stubs so the merged-PR sibling-rebase trigger can be exercised
 	// without shelling out to `gh` or dialing a Temporal dev server.
-	siblingLister  siblingLister
-	temporalDialer temporalDialer
-	dispatchFunc   func(context.Context, string) (string, error)
+	siblingLister   siblingLister
+	temporalDialer  temporalDialer
+	dispatchFunc    func(context.Context, string) (string, error)
+	specFilesLister specFilesLister
+
+	ensureSpecIssueFunc     func(context.Context, activities.EnsureSpecIssueInput)
+	commentSpecIssueFunc    func(context.Context, activities.CommentSpecIssueInput)
+	updateSpecIssueBodyFunc func(context.Context, activities.UpdateSpecIssueBodyInput)
+	closeSpecIssueFunc      func(context.Context, activities.CloseSpecIssueInput)
+	asyncFunc               func(func())
 
 	logMu sync.Mutex
 }
@@ -294,6 +306,8 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 	// a sched/run/<id> label — every other open PR with the same label is
 	// a sibling whose branch may now be stale against the new base.
 	if eventType == "pull_request" && p.Action == "closed" && p.PullRequest.Merged {
+		h.dispatchSpecIssueForSpecPR(r.Context(), prNumber, &p)
+		h.dispatchSpecIssueForImplPRMerged(r.Context(), &p)
 		if runID := labelSchedRunID(p.PullRequest.Labels); runID != "" {
 			localRepo := h.targetRepo
 			if localRepo == "" {
@@ -314,6 +328,10 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 				resp.SkippedReason = "sibling_rebase:" + rebOut.FailureKind
 			}
 		}
+	}
+
+	if eventType == "pull_request" && p.Action == "opened" {
+		h.dispatchSpecIssueForImplPROpened(r.Context(), &p)
 	}
 
 	// Spec 113 US1: PR comment-respond loop. The trigger is a
@@ -446,11 +464,12 @@ func (h *factoryHandler) process(ctx context.Context, p *pushPayload) factoryRes
 	for _, ref := range specRefs {
 		runID, err := h.dispatch(ctx, ref)
 		if err != nil {
-			h.emitFailureEvent(ctx, ref, classifyDispatchError(err), err.Error())
+			h.emitFailureEvent(ctx, p.Repository.FullName, ref, classifyDispatchError(err), err.Error())
 			resp.SkippedReasons = append(resp.SkippedReasons, fmt.Sprintf("schedule failed for %s: %v", ref, err))
 			continue
 		}
 		h.emitTriggeredEvent(ctx, ref, runID, "github_webhook", p.Ref, p.After)
+		h.dispatchSpecIssueDispatchTriggered(ctx, p.Repository.FullName, ref, runID)
 		resp.SpecRefs = append(resp.SpecRefs, ref)
 		resp.RunIDs = append(resp.RunIDs, runID)
 	}
@@ -623,7 +642,7 @@ func (h *factoryHandler) emitTriggeredEvent(ctx context.Context, specRef, runID,
 // schedule invocation that errored. The chain uses the spec_ref as the
 // run_id (we have no scheduler run_id to key by — dispatch never reached
 // ExecuteWorkflow). That keeps the failure event findable by spec.
-func (h *factoryHandler) emitFailureEvent(ctx context.Context, specRef string, failureKind FactoryDispatchFailureKind, errMsg string) {
+func (h *factoryHandler) emitFailureEvent(ctx context.Context, repo, specRef string, failureKind FactoryDispatchFailureKind, errMsg string) {
 	if !failureKind.Valid() {
 		failureKind = FactoryDispatchFailureKindInternal
 	}
@@ -633,6 +652,175 @@ func (h *factoryHandler) emitFailureEvent(ctx context.Context, specRef string, f
 		"error":        errMsg,
 	}
 	emitChainEvent(ctx, "factory_dispatch_failed", "factory-"+specRef, payload, h.stderr)
+	h.dispatchSpecIssueDispatchFailed(ctx, repo, specRef, failureKind)
+}
+
+func (h *factoryHandler) dispatchSpecIssueForSpecPR(ctx context.Context, prNumber int, p *prPayload) {
+	if !isSpecPRWith(ctx, p.Repository.FullName, prNumber, h.specPRLister()) {
+		return
+	}
+	specRef := h.specRefForPR(ctx, p.Repository.FullName, prNumber)
+	if specRef == "" {
+		return
+	}
+	in := activities.EnsureSpecIssueInput{
+		Repo:       p.Repository.FullName,
+		SpecRef:    specRef,
+		SpecTitle:  p.PullRequest.Title,
+		SpecPRURL:  p.PullRequest.URL,
+		SpecMDURL:  githubBlobURL(p.Repository.FullName, "main", ".specify/specs/"+specRef+"/spec.md"),
+		TasksMDURL: githubBlobURL(p.Repository.FullName, "main", ".specify/specs/"+specRef+"/tasks.md"),
+	}
+	h.async(func() { h.ensureSpecIssue(context.Background(), in) })
+}
+
+func (h *factoryHandler) dispatchSpecIssueDispatchTriggered(_ context.Context, repo, specRef, runID string) {
+	h.async(func() {
+		h.commentSpecIssue(context.Background(), activities.CommentSpecIssueInput{
+			Repo:       h.githubRepo(repo),
+			SpecRef:    specRef,
+			TemplateID: activities.SpecIssueTemplateDispatchTriggered,
+			Params: map[string]string{
+				"run_id": runID, "driver": "scheduler", "capability": "code.implement", "at": time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+	})
+}
+
+func (h *factoryHandler) dispatchSpecIssueForImplPROpened(ctx context.Context, p *prPayload) {
+	specRef := extractSpecRefFromWUBranch(p.PullRequest.Head.Ref)
+	if specRef == "" {
+		return
+	}
+	params := map[string]string{
+		"pr_url": p.PullRequest.URL, "branch": p.PullRequest.Head.Ref, "opened_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	h.async(func() {
+		bg := context.Background()
+		h.commentSpecIssue(bg, activities.CommentSpecIssueInput{
+			Repo: p.Repository.FullName, SpecRef: specRef, TemplateID: activities.SpecIssueTemplateImplPROpened, Params: params,
+		})
+		h.updateSpecIssueBody(bg, activities.UpdateSpecIssueBodyInput{
+			Repo: p.Repository.FullName, SpecRef: specRef, Patches: map[string]string{"impl_pr": p.PullRequest.URL},
+		})
+	})
+}
+
+func (h *factoryHandler) dispatchSpecIssueForImplPRMerged(ctx context.Context, p *prPayload) {
+	specRef := extractSpecRefFromWUBranch(p.PullRequest.Head.Ref)
+	if specRef == "" {
+		return
+	}
+	h.async(func() {
+		h.closeSpecIssue(context.Background(), activities.CloseSpecIssueInput{
+			Repo: p.Repository.FullName, SpecRef: specRef,
+			FinalCommentParams: map[string]string{
+				"pr_url": p.PullRequest.URL, "merge_sha": p.PullRequest.Head.SHA, "elapsed": "unknown",
+			},
+		})
+	})
+}
+
+func (h *factoryHandler) dispatchSpecIssueDispatchFailed(_ context.Context, repo, specRef string, failureKind FactoryDispatchFailureKind) {
+	h.async(func() {
+		h.commentSpecIssue(context.Background(), activities.CommentSpecIssueInput{
+			Repo: h.githubRepo(repo), SpecRef: specRef, TemplateID: activities.SpecIssueTemplateDispatchFailed,
+			Params: map[string]string{
+				"reason": string(failureKind), "at": time.Now().UTC().Format(time.RFC3339), "run_id": "factory-" + specRef,
+			},
+		})
+	})
+}
+
+func (h *factoryHandler) ensureSpecIssue(ctx context.Context, in activities.EnsureSpecIssueInput) {
+	if h.ensureSpecIssueFunc != nil {
+		h.ensureSpecIssueFunc(ctx, in)
+		return
+	}
+	_, _ = activities.NewEnsureSpecIssue().Execute(ctx, in)
+}
+
+func (h *factoryHandler) commentSpecIssue(ctx context.Context, in activities.CommentSpecIssueInput) {
+	if h.commentSpecIssueFunc != nil {
+		h.commentSpecIssueFunc(ctx, in)
+		return
+	}
+	_, _ = activities.NewCommentSpecIssue().Execute(ctx, in)
+}
+
+func (h *factoryHandler) updateSpecIssueBody(ctx context.Context, in activities.UpdateSpecIssueBodyInput) {
+	if h.updateSpecIssueBodyFunc != nil {
+		h.updateSpecIssueBodyFunc(ctx, in)
+		return
+	}
+	_, _ = activities.NewUpdateSpecIssueBody().Execute(ctx, in)
+}
+
+func (h *factoryHandler) closeSpecIssue(ctx context.Context, in activities.CloseSpecIssueInput) {
+	if h.closeSpecIssueFunc != nil {
+		h.closeSpecIssueFunc(ctx, in)
+		return
+	}
+	_, _ = activities.NewCloseSpecIssue().Execute(ctx, in)
+}
+
+func (h *factoryHandler) async(fn func()) {
+	if h.asyncFunc != nil {
+		h.asyncFunc(fn)
+		return
+	}
+	go fn()
+}
+
+func (h *factoryHandler) specPRLister() specFilesLister {
+	if h.specFilesLister != nil {
+		return h.specFilesLister
+	}
+	return defaultSpecFilesLister{}
+}
+
+func (h *factoryHandler) specRefForPR(ctx context.Context, repo string, prNumber int) string {
+	files, err := h.specPRLister().listPRFiles(ctx, repo, prNumber)
+	if err != nil {
+		return ""
+	}
+	for _, f := range files {
+		if m := regexp.MustCompile(`^\.specify/specs/(\d+-.+?)/`).FindStringSubmatch(f); len(m) == 2 {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+func (h *factoryHandler) githubRepo(payloadRepo string) string {
+	if payloadRepo != "" {
+		return payloadRepo
+	}
+	if env := os.Getenv("CHITIN_GITHUB_REPO"); env != "" {
+		return env
+	}
+	return "chitinhq/chitin"
+}
+
+func githubBlobURL(repo, branch, path string) string {
+	if repo == "" {
+		repo = "chitinhq/chitin"
+	}
+	return fmt.Sprintf("https://github.com/%s/blob/%s/%s", repo, branch, path)
+}
+
+func extractSpecRefFromWUBranch(branch string) string {
+	const prefix = "chitin/wu/wu-"
+	if !strings.HasPrefix(branch, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(branch, prefix)
+	for _, marker := range []string{"-whole-", "-T"} {
+		if i := strings.Index(rest, marker); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
 }
 
 // sortStrings is a tiny inline replacement for sort.Strings to avoid
