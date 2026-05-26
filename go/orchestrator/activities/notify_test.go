@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // TestDiscordNotifier_PostsWhenConfigured proves a configured webhook receives
@@ -88,5 +90,40 @@ func TestDiscordNotify_ExecuteAlwaysSucceeds(t *testing.T) {
 	if err := NewDiscordNotify(nil).Execute(context.Background(),
 		NotificationEvent{Kind: NotifyRunTerminal, RunID: "r"}); err != nil {
 		t.Fatalf("Execute returned %v, want nil", err)
+	}
+}
+
+type captureNotifier struct {
+	ev NotificationEvent
+}
+
+func (n *captureNotifier) Notify(_ context.Context, ev NotificationEvent) error {
+	n.ev = ev
+	return nil
+}
+
+func TestDiscordNotifyResolvesBlobRefsInOperatorSummary(t *testing.T) {
+	store, err := blob.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put(context.Background(), []byte("full output body"))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	notifier := &captureNotifier{}
+	err = NewDiscordNotifyWithBlobStore(notifier, store).Execute(context.Background(), NotificationEvent{
+		Kind:    NotifyWorkUnitSettled,
+		RunID:   "r",
+		Summary: "failed: " + ref.String(),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(notifier.ev.Summary, "full output body") {
+		t.Fatalf("summary = %q, want resolved blob body", notifier.ev.Summary)
+	}
+	if strings.Contains(notifier.ev.Summary, ref.String()) {
+		t.Fatalf("summary still contains blob ref: %q", notifier.ev.Summary)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // NotificationKind classifies a NotificationEvent — the closed set of
@@ -159,6 +161,7 @@ func (d *DiscordNotifier) Notify(ctx context.Context, ev NotificationEvent) erro
 // in workflow code.
 type DiscordNotify struct {
 	notifier Notifier
+	blobs    blob.Store
 }
 
 // NewDiscordNotify returns a DiscordNotify activity bound to notifier. A nil
@@ -167,7 +170,20 @@ func NewDiscordNotify(notifier Notifier) *DiscordNotify {
 	if notifier == nil {
 		notifier = NewLogNotifier()
 	}
-	return &DiscordNotify{notifier: notifier}
+	store, err := blob.NewFSStoreFromEnv(blob.WithEventSink(nil))
+	if err != nil {
+		log.Printf("notify: blob store unavailable for resolving refs: %v", err)
+	}
+	return &DiscordNotify{notifier: notifier, blobs: store}
+}
+
+// NewDiscordNotifyWithBlobStore returns a DiscordNotify with an explicit
+// blob store. Tests use it to keep resolution hermetic.
+func NewDiscordNotifyWithBlobStore(notifier Notifier, store blob.Store) *DiscordNotify {
+	if notifier == nil {
+		notifier = NewLogNotifier()
+	}
+	return &DiscordNotify{notifier: notifier, blobs: store}
 }
 
 // ActivityName is the stable Temporal activity name DiscordNotify registers
@@ -180,6 +196,16 @@ func (a *DiscordNotify) Execute(ctx context.Context, ev NotificationEvent) error
 	if a.notifier == nil {
 		log.Printf("notify: DiscordNotify has no notifier bound; dropping %s", ev.Kind)
 		return nil
+	}
+	if a.blobs != nil {
+		// Cap each resolved blob body to Discord's message limit. The notifier
+		// will truncate the final message to discordContentLimit runes anyway,
+		// so loading multi-MiB transcripts only to drop them is pure waste.
+		if summary, err := blob.ResolveTextWithCap(ctx, a.blobs, ev.Summary, discordContentLimit); err == nil {
+			ev.Summary = summary
+		} else {
+			log.Printf("notify: resolving blob refs in %s summary: %v", ev.Kind, err)
+		}
 	}
 	_ = a.notifier.Notify(ctx, ev)
 	return nil

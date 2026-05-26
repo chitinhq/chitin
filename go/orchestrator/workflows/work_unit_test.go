@@ -1,14 +1,17 @@
 package workflows
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
 	"github.com/chitinhq/chitin/go/orchestrator/dag"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // Spec 076 US3 tests for WorkUnitWorkflow: the same work-unit workflow runs
@@ -467,5 +470,78 @@ func TestWorkUnit_TeardownOnDriverFailure(t *testing.T) {
 	}
 	if !tornDown {
 		t.Error("work unit must tear its worktree down even when the driver fails")
+	}
+}
+
+func TestWorkUnitBlobOutputRefPayloadStaysSmall(t *testing.T) {
+	store, err := blob.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.Repeat([]byte("z"), 3*1024*1024)
+	ref, err := store.Put(context.Background(), body)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	const driverID = "driver-impl"
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.CreateWorktreeInput) (activities.CreateWorktreeResult, error) {
+			return activities.CreateWorktreeResult{Path: "/worktrees/blob"}, nil
+		},
+		activityOpts("CreateWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, _ activities.TeardownWorktreeInput) error { return nil },
+		activityOpts("TeardownWorktree"),
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, wu driver.WorkUnit) (driver.Result, error) {
+			return driver.Result{
+				WorkUnitID: wu.ID,
+				DriverID:   driverID,
+				Status:     driver.StatusFailed,
+				OutputRef:  ref.String(),
+			}, nil
+		},
+		activityOpts("InvokeDriver:"+driverID),
+	)
+
+	env.ExecuteWorkflow(WorkUnitWorkflow, WorkUnitInput{
+		Node: dag.Node{
+			ID: "n-blob", SpecRef: "121", Capability: "code.implement",
+			TargetRepo: "/repos/chitin", BaseRef: "main", WorktreeRequired: true,
+		},
+		DriverID:       driverID,
+		SchedulerRunID: "blob-run",
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("work-unit workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("work-unit workflow errored: %v", err)
+	}
+	var res WorkUnitResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("decoding result: %v", err)
+	}
+	if res.OutputRef != ref.String() {
+		t.Fatalf("OutputRef = %q, want %q", res.OutputRef, ref.String())
+	}
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(res)
+	if err != nil {
+		t.Fatalf("serialize result: %v", err)
+	}
+	var size int
+	for _, p := range payloads.Payloads {
+		size += len(p.Data)
+		for k, v := range p.Metadata {
+			size += len(k) + len(v)
+		}
+	}
+	if size >= 4*1024 {
+		t.Fatalf("serialized WorkUnitResult payload = %d bytes, want < 4096", size)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeshared"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 const (
@@ -35,6 +36,7 @@ type Driver struct {
 	baseURL       string
 	maxContext    int
 	client        *http.Client
+	blobs         blob.Store
 }
 
 // Option configures a Driver. Tests use these hooks to keep Ready and Invoke
@@ -78,6 +80,12 @@ func WithHTTPClient(c *http.Client) Option {
 		if c != nil {
 			d.client = c
 		}
+	}
+}
+
+func WithBlobStore(store blob.Store) Option {
+	return func(d *Driver) {
+		d.blobs = store
 	}
 }
 
@@ -178,7 +186,10 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	err := cmd.Run()
 	out := strings.TrimSpace(stdout.String())
 	errOut := strings.TrimSpace(stderr.String())
-	res := claudecodeshared.ResultFromCommand(ctx, wu, d.ID(), out, errOut, err)
+	res, resErr := claudecodeshared.ResultFromCommand(ctx, d.blobs, wu, d.ID(), out, errOut, err)
+	if resErr != nil {
+		return driver.Result{}, resErr
+	}
 	if res.Status == driver.StatusFailed && strings.Contains(errOut, "launch") && strings.Contains(errOut, "unknown") {
 		res.Explanation += "; ollama v0.21+ required for launch subcommand"
 	}

@@ -37,6 +37,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
 	"github.com/chitinhq/chitin/go/orchestrator/ingest"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 	"github.com/chitinhq/chitin/go/orchestrator/loop"
 	"github.com/chitinhq/chitin/go/orchestrator/schedules"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
@@ -144,6 +145,11 @@ func runWorkerHost(ctx context.Context) int {
 	// per-tick scheduler telemetry. It is a no-op when no collector is
 	// configured (OTEL_EXPORTER_OTLP_* unset); Emit then logs and drops.
 	telemetrySink := activities.NewOTLPTickTelemetrySinkFromEnv()
+	blobStore, err := blob.NewFSStoreFromEnv()
+	if err != nil {
+		log.Printf("chitin-orchestrator: building blob store: %v", err)
+		return exitRuntimeError
+	}
 
 	// Build the spec-080 human notification surface — the Discord webhook
 	// notifier. It is write-only and no-ops when CHITIN_DISCORD_WEBHOOK_URL is
@@ -207,8 +213,8 @@ func runWorkerHost(ctx context.Context) int {
 
 	log.Printf("chitin-orchestrator: drivers registered — impl=%s review=%s",
 		strings.Join(driverIDs(implRegistry), ","), strings.Join(driverIDs(reviewRegistry), ","))
-	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s",
-		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot)
+	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s — blob_inline_threshold=%d blob_dir=%s",
+		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot, blob.InlineThreshold, blobStore.Dir())
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Printf("chitin-orchestrator: worker stopped: %v", err)
 		return exitRuntimeError
@@ -241,10 +247,17 @@ func buildRegistry(role string) (*driver.Registry, error) {
 	if m := os.Getenv("CHITIN_CODEX_MODEL"); m != "" {
 		codexOpts = append(codexOpts, codex.WithModel(m))
 	}
+	blobStore, err := blob.NewFSStoreFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	claudeOpts := []claudecode.Option{claudecode.WithBlobStore(blobStore)}
+	claudeGLMOpts := []claudecodeglm.Option{claudecodeglm.WithBlobStore(blobStore)}
+	codexOpts = append(codexOpts, codex.WithBlobStore(blobStore))
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
-		claudecode.New(),
-		claudecodeglm.New(),
+		claudecode.New(claudeOpts...),
+		claudecodeglm.New(claudeGLMOpts...),
 		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),

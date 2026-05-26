@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // PrintArgs returns the Claude Code headless invocation argv shared by the
@@ -45,15 +46,19 @@ func PromptFor(wu driver.WorkUnit) string {
 
 // ResultFromCommand maps a completed CLI subprocess into the spec-075 Result
 // shape used by implementation-mode drivers.
-func ResultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
-	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
+func ResultFromCommand(ctx context.Context, store blob.Store, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) (driver.Result, error) {
+	outputRef, err := blob.Externalize(ctx, store, []byte(stdout))
+	if err != nil {
+		return driver.Result{}, err
+	}
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: outputRef}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		res.Status = driver.StatusTimeout
 		res.Explanation = fmt.Sprintf("driver %q timed out running work unit %q", driverID, wu.ID)
 		if stderr != "" {
 			res.Explanation += ": " + stderr
 		}
-		return res
+		return externalizeExplanation(ctx, store, res)
 	}
 	if runErr != nil {
 		res.Status = driver.StatusFailed
@@ -61,12 +66,21 @@ func ResultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout
 		if stderr != "" {
 			res.Explanation += ": " + stderr
 		}
-		return res
+		return externalizeExplanation(ctx, store, res)
 	}
 	res.Status = driver.StatusSucceeded
 	res.Explanation = fmt.Sprintf("driver %q completed work unit %q", driverID, wu.ID)
 	if stderr != "" {
 		res.Explanation += "; stderr: " + stderr
 	}
-	return res
+	return externalizeExplanation(ctx, store, res)
+}
+
+func externalizeExplanation(ctx context.Context, store blob.Store, res driver.Result) (driver.Result, error) {
+	explanation, err := blob.Externalize(ctx, store, []byte(res.Explanation))
+	if err != nil {
+		return driver.Result{}, err
+	}
+	res.Explanation = explanation
+	return res, nil
 }
