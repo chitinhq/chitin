@@ -69,7 +69,8 @@ var (
 	frRefRe = regexp.MustCompile(`\bFR-\d{3}\b`)
 	// filePathRe matches a backtick-quoted path that ends in a code or doc
 	// file extension — the convention chitin's tasks.md uses to name files.
-	filePathRe = regexp.MustCompile("`([A-Za-z0-9][A-Za-z0-9_./-]*\\.(?:go|md|ts|tsx|js|json|yaml|yml|sh|py|rs))`")
+	// Paths may start with ./; edge inference normalizes that prefix.
+	filePathRe = regexp.MustCompile("`((?:\\./)?[A-Za-z0-9][A-Za-z0-9_./-]*\\.(?:go|md|ts|tsx|js|json|yaml|yml|sh|py|rs))`")
 )
 
 // ExtractFRRefs returns the sorted, de-duplicated FR ids cited in text.
