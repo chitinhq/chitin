@@ -17,9 +17,13 @@ func runSchedules(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: chitin-orchestrator schedules list")
 		return exitUserError
 	}
-	fmt.Fprintf(stdout, "%-32s %-16s %s\n", "NAME", "CRON", "DESCRIPTION")
+	fmt.Fprintf(stdout, "%-32s %-16s %s\n", "NAME", "CADENCE", "DESCRIPTION")
 	for _, job := range schedules.Registry() {
-		fmt.Fprintf(stdout, "%-32s %-16s %s\n", job.Name, job.Cron, job.Description)
+		cadence := job.Cron
+		if job.Interval > 0 {
+			cadence = "every " + job.Interval.String()
+		}
+		fmt.Fprintf(stdout, "%-32s %-16s %s\n", job.Name, cadence, job.Description)
 	}
 	return exitSuccess
 }

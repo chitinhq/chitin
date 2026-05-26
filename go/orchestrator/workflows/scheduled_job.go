@@ -62,8 +62,7 @@ func ScheduledJobWorkflow(ctx workflow.Context, spec schedules.JobSpec) (JobResu
 	})
 
 	if spec.ActivityName != "" {
-		var raw map[string]any
-		if err := workflow.ExecuteActivity(ctx, spec.ActivityName, spec.ActivityInput).Get(ctx, &raw); err != nil {
+		if err := workflow.ExecuteActivity(ctx, spec.ActivityName, spec.ActivityInput).Get(ctx, nil); err != nil {
 			return JobResult{JobName: spec.Name, ExitCode: -1}, err
 		}
 		return JobResult{

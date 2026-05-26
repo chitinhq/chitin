@@ -70,8 +70,26 @@ escalation_cooldown_hours: 24
 To add a path, append a `paths` entry with an absolute path and positive
 `sla_hours`.
 
-To tune cadence, set `cadence_minutes`. The default is `360` minutes. Restart
-the orchestrator so `schedules.EnsureSchedules` can register the new cadence.
+To tune cadence, set `cadence_minutes`. The default is `360` minutes.
+`schedules.EnsureSchedules` only *creates* a Schedule the first time — it
+treats `already exists` as a no-op and does NOT rewrite an existing
+Schedule's cadence. To pick up a new `cadence_minutes`, either:
+
+1. Update the live Schedule directly:
+
+   ```bash
+   temporal schedule describe --schedule-id chitin-job-report-freshness-canary
+   temporal schedule update --schedule-id chitin-job-report-freshness-canary \
+     --workflow-type ScheduledJobWorkflow ...
+   ```
+
+2. Or delete the Schedule and restart the orchestrator so EnsureSchedules
+   recreates it from the new config:
+
+   ```bash
+   temporal schedule delete --schedule-id chitin-job-report-freshness-canary
+   systemctl --user restart chitin-orchestrator
+   ```
 
 To tune escalation spam control, set `escalation_cooldown_hours`. The default
 is `24` hours per path.

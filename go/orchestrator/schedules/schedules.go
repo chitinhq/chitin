@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -60,10 +61,18 @@ type JobSpec struct {
 	// scripts take none.
 	Args []string `json:"args"`
 	// Cron is the standard cron expression for the job's cadence — the same
-	// cadence as the retired systemd timer (spec 081 FR-005).
+	// cadence as the retired systemd timer (spec 081 FR-005). Leave empty when
+	// Interval is set: a JobSpec MUST set exactly one of Cron or Interval.
 	Cron string `json:"cron"`
+	// Interval is an alternative to Cron for jobs whose cadence is a plain
+	// duration (e.g. "every 6 hours") that doesn't fit a standard 5-field cron
+	// expression. When Interval > 0, EnsureSchedules registers the Schedule
+	// using Temporal's ScheduleIntervalSpec instead of CronExpressions; Cron
+	// is ignored in that case.
+	Interval time.Duration `json:"interval,omitempty"`
 	// TimeZone is the IANA time zone name the Cron expression is evaluated in
-	// (e.g. "America/Detroit"). An empty value means UTC.
+	// (e.g. "America/Detroit"). An empty value means UTC. Ignored for Interval
+	// schedules.
 	TimeZone string `json:"time_zone"`
 	// Description is a one-line human-readable account of the job, surfaced as
 	// the Schedule's note.
@@ -143,12 +152,15 @@ func EnsureSchedules(ctx context.Context, c client.Client) error {
 // ensureOne creates the Temporal Schedule for a single JobSpec, treating an
 // already-exists outcome as success.
 func ensureOne(ctx context.Context, c client.Client, spec JobSpec) error {
+	scheduleSpec := client.ScheduleSpec{TimeZoneName: spec.TimeZone}
+	if spec.Interval > 0 {
+		scheduleSpec.Intervals = []client.ScheduleIntervalSpec{{Every: spec.Interval}}
+	} else {
+		scheduleSpec.CronExpressions = []string{spec.Cron}
+	}
 	_, err := c.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID: spec.ScheduleID(),
-		Spec: client.ScheduleSpec{
-			CronExpressions: []string{spec.Cron},
-			TimeZoneName:    spec.TimeZone,
-		},
+		ID:   spec.ScheduleID(),
+		Spec: scheduleSpec,
 		Action: &client.ScheduleWorkflowAction{
 			ID: spec.ScheduleID(),
 			// Reference the workflow by its registered type name — not the
@@ -172,9 +184,18 @@ func ensureOne(ctx context.Context, c client.Client, spec JobSpec) error {
 		}
 		return err
 	}
-	log.Printf("schedules: created schedule %q (cron %q %s) for job %q",
-		spec.ScheduleID(), spec.Cron, tzOrUTC(spec.TimeZone), spec.Name)
+	log.Printf("schedules: created schedule %q (cadence %s %s) for job %q",
+		spec.ScheduleID(), cadenceLabel(spec), tzOrUTC(spec.TimeZone), spec.Name)
 	return nil
+}
+
+// cadenceLabel renders the cadence for a log line: the cron expression for
+// cron-driven jobs, or the interval duration for interval-driven ones.
+func cadenceLabel(spec JobSpec) string {
+	if spec.Interval > 0 {
+		return fmt.Sprintf("every %s", spec.Interval)
+	}
+	return fmt.Sprintf("cron %q", spec.Cron)
 }
 
 // isAlreadyExists reports whether err means the Schedule already exists — the

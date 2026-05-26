@@ -84,7 +84,11 @@ type ReportChainEvent struct {
 }
 
 type ReportChainSink interface {
-	Emit(ctx context.Context, eventType string, payload any, ts time.Time) error
+	// Emit appends one chain event. runID groups every event from a single
+	// activity execution under the same chain run, so a downstream chain
+	// query can stitch the cycle's detection → escalation/suppression chain
+	// back together. eventType, payload, and ts are the event itself.
+	Emit(ctx context.Context, runID, eventType string, payload any, ts time.Time) error
 	LastEscalation(ctx context.Context, path string, since time.Time) (time.Time, bool, error)
 	SuppressionCount(ctx context.Context, path string, since time.Time) (int, error)
 }
@@ -122,6 +126,10 @@ func (a *CheckReportFreshness) Execute(ctx context.Context, in CheckReportFreshn
 	if cadence == "" {
 		cadence = "scheduled"
 	}
+	// runID groups this cycle's events under one chain run. Using the
+	// activity start time keeps it deterministic for a given Now and stable
+	// across all emits in the cycle.
+	runID := fmt.Sprintf("report-freshness-%d", now.UnixNano())
 	cfg, err := reportfreshness.LoadConfigOrDefault(in.PathsConfigPath)
 	if err != nil {
 		return CheckReportFreshnessOutput{}, err
@@ -132,7 +140,7 @@ func (a *CheckReportFreshness) Execute(ctx context.Context, in CheckReportFreshn
 	}
 	for _, row := range res.Rows {
 		if row.Status == reportfreshness.StatusMissing {
-			_ = a.emit(ctx, EventReportMissing, ReportMissingPayload{
+			_ = a.emit(ctx, runID, EventReportMissing, ReportMissingPayload{
 				Path:     row.Path,
 				SLAHours: row.SLAHours,
 			}, now)
@@ -146,12 +154,12 @@ func (a *CheckReportFreshness) Execute(ctx context.Context, in CheckReportFreshn
 			SLAHours:    stale.SLAHours,
 			AgeSource:   stale.AgeSource,
 		}
-		_ = a.emit(ctx, EventStaleReportDetected, detected, now)
-		if err := a.routeStaleReport(ctx, stale, cfg.EscalationCooldownHours, now); err != nil {
+		_ = a.emit(ctx, runID, EventStaleReportDetected, detected, now)
+		if err := a.routeStaleReport(ctx, runID, stale, cfg.EscalationCooldownHours, now); err != nil {
 			log.Printf("report freshness: route stale report %s: %v", stale.Path, err)
 		}
 	}
-	_ = a.emit(ctx, EventReportFresh, ReportFreshPayload{
+	_ = a.emit(ctx, runID, EventReportFresh, ReportFreshPayload{
 		CheckedCount: res.Checked,
 		FreshCount:   len(res.Fresh),
 		StaleCount:   len(res.Stale),
@@ -162,14 +170,14 @@ func (a *CheckReportFreshness) Execute(ctx context.Context, in CheckReportFreshn
 	return CheckReportFreshnessOutput{Checked: res.Checked, Stale: res.Stale, Missing: res.Missing}, nil
 }
 
-func (a *CheckReportFreshness) emit(ctx context.Context, eventType string, payload any, ts time.Time) error {
+func (a *CheckReportFreshness) emit(ctx context.Context, runID, eventType string, payload any, ts time.Time) error {
 	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" {
 		return nil
 	}
-	return a.sink.Emit(ctx, eventType, payload, ts)
+	return a.sink.Emit(ctx, runID, eventType, payload, ts)
 }
 
-func (a *CheckReportFreshness) routeStaleReport(ctx context.Context, stale reportfreshness.StaleReport, cooldownHours int, now time.Time) error {
+func (a *CheckReportFreshness) routeStaleReport(ctx context.Context, runID string, stale reportfreshness.StaleReport, cooldownHours int, now time.Time) error {
 	if cooldownHours <= 0 {
 		cooldownHours = reportfreshness.DefaultEscalationCooldownHours
 	}
@@ -189,7 +197,7 @@ func (a *CheckReportFreshness) routeStaleReport(ctx context.Context, stale repor
 			PriorEscalationAt:      prior.UTC().Format(time.RFC3339),
 			SuppressedCount:        suppressedCount + 1,
 		}
-		return a.emit(ctx, EventStaleReportSuppressed, payload, now)
+		return a.emit(ctx, runID, EventStaleReportSuppressed, payload, now)
 	}
 	msg := fmt.Sprintf("stale report: %s age=%.1fh sla=%dh source=%s url=file://%s",
 		stale.Path, stale.AgeHours, stale.SLAHours, stale.AgeSource, stale.Path)
@@ -198,7 +206,7 @@ func (a *CheckReportFreshness) routeStaleReport(ctx context.Context, stale repor
 		Summary: msg,
 		URL:     "file://" + stale.Path,
 	})
-	return a.emit(ctx, EventStaleReportEscalated, StaleReportEscalatedPayload{
+	return a.emit(ctx, runID, EventStaleReportEscalated, StaleReportEscalatedPayload{
 		Path:            stale.Path,
 		AgeHours:        stale.AgeHours,
 		SLAHours:        stale.SLAHours,
@@ -208,17 +216,19 @@ func (a *CheckReportFreshness) routeStaleReport(ctx context.Context, stale repor
 
 type KernelReportChainSink struct{}
 
-func (KernelReportChainSink) Emit(ctx context.Context, eventType string, payload any, ts time.Time) error {
+func (KernelReportChainSink) Emit(ctx context.Context, runID, eventType string, payload any, ts time.Time) error {
 	envelope := map[string]any{
 		"schema_version":    "2",
 		"event_type":        eventType,
-		"run_id":            "report-freshness",
-		"session_id":        fmt.Sprintf("chitin-orchestrator-report-freshness-%d", os.Getpid()),
+		"run_id":            runID,
+		"session_id":        "chitin-orchestrator-" + runID,
 		"surface":           "chitin-orchestrator",
 		"agent_instance_id": "chitin-orchestrator",
-		"chain_type":        "operator-cli",
-		"ts":                ts.UTC().Format(time.RFC3339Nano),
-		"payload":           payload,
+		// Matches deliver.go / sibling_rebase.go — the report-freshness activity
+		// is scheduler-driven, not operator-CLI driven.
+		"chain_type": "scheduler",
+		"ts":         ts.UTC().Format(time.RFC3339Nano),
+		"payload":    payload,
 	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
@@ -352,7 +362,7 @@ type MemoryReportChainSink struct {
 	Events []ReportChainEvent
 }
 
-func (m *MemoryReportChainSink) Emit(_ context.Context, eventType string, payload any, ts time.Time) error {
+func (m *MemoryReportChainSink) Emit(_ context.Context, _ string, eventType string, payload any, ts time.Time) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
