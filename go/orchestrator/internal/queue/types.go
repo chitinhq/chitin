@@ -14,7 +14,7 @@ import "time"
 // the source payload without rescanning the chain.
 type Entry struct {
 	// PRNumber is the GitHub PR number.
-	PRNumber int `json:"pr_number"`
+	PRNumber int `json:"pr_number,omitempty"`
 	// Title is the PR title as reported by `gh pr list`. Not truncated
 	// here — the table renderer truncates to 60 runes per FR-005.
 	Title string `json:"title"`
@@ -30,6 +30,10 @@ type Entry struct {
 	// "spec-<NNN>" label, when present. Empty when the PR carries no
 	// spec-ref label (e.g. operator-authored or pre-spec-id work).
 	SpecRef string `json:"spec_ref,omitempty"`
+	// TaskID is present for queue entries whose identity is a work-unit task
+	// rather than an opened PR, such as silent drops where the PR deliverable
+	// never existed.
+	TaskID string `json:"task_id,omitempty"`
 	// UpdatedAt is the PR's last update timestamp from GitHub. The
 	// table renderer turns now-UpdatedAt into the "age" column.
 	UpdatedAt time.Time `json:"updated_at"`

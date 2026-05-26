@@ -64,6 +64,22 @@ func siblingRebaseFailed(pr int, ts, runID string) map[string]any {
 	}
 }
 
+func silentDrop(pr int, specRef, taskID, ts, runID string) map[string]any {
+	return map[string]any{
+		"event_type": "work_unit_completed_without_deliverable",
+		"run_id":     runID,
+		"ts":         ts,
+		"payload": map[string]any{
+			"pr_number":        pr,
+			"spec_ref":         specRef,
+			"task_id":          taskID,
+			"work_unit_id":     "wu-" + taskID,
+			"deliverable_kind": "pr",
+			"reason":           "gh_pr_create_failed",
+		},
+	}
+}
+
 func TestScan_EmptyDir_ReturnsEmptyMap(t *testing.T) {
 	dir := t.TempDir()
 	got, err := Scan(dir, time.Time{})
@@ -95,6 +111,7 @@ func TestScan_IndexesEachReasonKind(t *testing.T) {
 		piEscalated(103, "lease_lost", ts, "run-c"),
 		piEscalated(104, "iteration_completed_with_skips", ts, "run-d"),
 		siblingRebaseFailed(105, ts, "run-e"),
+		silentDrop(106, "118-test", "T009", ts, "run-f"),
 	}
 	writeJSONL(t, filepath.Join(dir, "events-run-mix.jsonl"), recs)
 
@@ -108,6 +125,7 @@ func TestScan_IndexesEachReasonKind(t *testing.T) {
 		103: "lease_lost",
 		104: "iteration_completed_with_skips",
 		105: "sibling_rebase_failed",
+		106: "silent_drop",
 	}
 	for pr, reason := range wantReason {
 		evs, ok := got[pr]
@@ -123,6 +141,30 @@ func TestScan_IndexesEachReasonKind(t *testing.T) {
 		}
 		if len(evs[0].Payload) == 0 {
 			t.Errorf("PR %d: payload not preserved", pr)
+		}
+	}
+}
+
+func TestScan_IndexesSilentDropWithoutPR(t *testing.T) {
+	dir := t.TempDir()
+	ts := "2026-05-25T10:00:00Z"
+	writeJSONL(t, filepath.Join(dir, "events-silent-drop.jsonl"), []any{
+		silentDrop(0, "118-factory-dispatch-failed-reason-taxonomy", "T008", ts, "wu-118-T008"),
+	})
+	got, err := Scan(dir, time.Time{})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want one silent-drop bucket, got %+v", got)
+	}
+	for _, evs := range got {
+		if len(evs) != 1 {
+			t.Fatalf("want one event, got %d", len(evs))
+		}
+		ev := evs[0]
+		if ev.Reason != "silent_drop" || ev.PRNumber != 0 || ev.SpecRef != "118-factory-dispatch-failed-reason-taxonomy" || ev.TaskID != "T008" {
+			t.Fatalf("unexpected event: %+v", ev)
 		}
 	}
 }
@@ -372,6 +414,7 @@ func TestClassifyReason_ClosedTaxonomy(t *testing.T) {
 		// the reason. A stray reason on the payload must NOT change the
 		// classified reason.
 		{"sibling_rebase_failed", "ignored", "sibling_rebase_failed", true},
+		{"work_unit_completed_without_deliverable", "ignored", "silent_drop", true},
 		{"pr_iteration_escalated", "iteration_cap_hit", "iteration_cap_hit", true},
 		{"pr_iteration_escalated", "human_reviewer_present", "human_reviewer_present", true},
 		{"pr_iteration_escalated", "lease_lost", "lease_lost", true},

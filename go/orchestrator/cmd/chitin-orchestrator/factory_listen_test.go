@@ -19,11 +19,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/orchestrator/adapter"
 )
 
 // TestVerifyHMAC walks every important branch of the signature verifier:
@@ -280,3 +284,116 @@ func TestConstructSyntheticPushPayload(t *testing.T) {
 	}
 }
 
+func TestFactoryDispatchFailureKindValid(t *testing.T) {
+	valid := []FactoryDispatchFailureKind{
+		FactoryDispatchFailureKindSpecRefNotFound,
+		FactoryDispatchFailureKindSpecRefAmbiguous,
+		FactoryDispatchFailureKindTasksMDMissing,
+		FactoryDispatchFailureKindTasksMDParseError,
+		FactoryDispatchFailureKindTemporalDialFailed,
+		FactoryDispatchFailureKindTemporalStartWorkflowFailed,
+		FactoryDispatchFailureKindCapabilityMismatch,
+		FactoryDispatchFailureKindInternal,
+	}
+	for _, kind := range valid {
+		if !kind.Valid() {
+			t.Fatalf("%q should be valid", kind)
+		}
+	}
+	if FactoryDispatchFailureKind("novel_runtime_kind").Valid() {
+		t.Fatal("fabricated failure kind must not validate")
+	}
+}
+
+func TestClassifyDispatchError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want FactoryDispatchFailureKind
+	}{
+		{"spec ref not found typed", &SpecRefError{Kind: "not-found", Ref: "999"}, FactoryDispatchFailureKindSpecRefNotFound},
+		{"spec ref ambiguous typed", &SpecRefError{Kind: "ambiguous", Ref: "09"}, FactoryDispatchFailureKindSpecRefAmbiguous},
+		{"tasks missing typed", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "required artifact is missing"}, FactoryDispatchFailureKindTasksMDMissing},
+		{"tasks parse typed", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Line: 3, Reason: "task line is malformed"}, FactoryDispatchFailureKindTasksMDParseError},
+		{"temporal dial string", errors.New("runSchedule exit=2: error: Temporal unreachable at 127.0.0.1:7233 — is the temporal-dev service running?"), FactoryDispatchFailureKindTemporalDialFailed},
+		{"temporal start string", errors.New("runSchedule exit=2: error: ExecuteWorkflow failed: unavailable"), FactoryDispatchFailureKindTemporalStartWorkflowFailed},
+		{"capability mismatch string", errors.New("runSchedule exit=1: error: DAG validation failed — 1 node(s) require capability not declared by any registered driver"), FactoryDispatchFailureKindCapabilityMismatch},
+		{"internal fallback", errors.New("unexpected scheduler smoke escaped"), FactoryDispatchFailureKindInternal},
+		{"novel error stays internal", errors.New("factory dispatch failed because the moon is in a novel phase"), FactoryDispatchFailureKindInternal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyDispatchError(tc.err); got != tc.want {
+				t.Fatalf("classifyDispatchError(%q)=%q want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcessDispatchFailureEmitsFailureKind(t *testing.T) {
+	bin, sentinel := fakeKernelBin(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_DIR", t.TempDir())
+
+	tests := []struct {
+		name string
+		err  error
+		want FactoryDispatchFailureKind
+	}{
+		{"spec ref not found", &SpecRefError{Kind: "not-found", Ref: "118"}, FactoryDispatchFailureKindSpecRefNotFound},
+		{"spec ref ambiguous", &SpecRefError{Kind: "ambiguous", Ref: "11"}, FactoryDispatchFailureKindSpecRefAmbiguous},
+		{"tasks missing", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Reason: "required artifact is missing"}, FactoryDispatchFailureKindTasksMDMissing},
+		{"tasks parse", &adapter.MalformedArtifactError{File: ".specify/specs/118/tasks.md", Line: 7, Reason: "bad checkbox"}, FactoryDispatchFailureKindTasksMDParseError},
+		{"temporal dial", errors.New("Temporal unreachable at 127.0.0.1:7233: connection refused"), FactoryDispatchFailureKindTemporalDialFailed},
+		{"temporal start", errors.New("ExecuteWorkflow failed: rejected by service"), FactoryDispatchFailureKindTemporalStartWorkflowFailed},
+		{"capability mismatch", errors.New("DAG validation failed: no registered driver declares this capability"), FactoryDispatchFailureKindCapabilityMismatch},
+		{"internal", errors.New("operator typo outside known taxonomy"), FactoryDispatchFailureKindInternal},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(sentinel)
+			h := &factoryHandler{
+				secret:     []byte("dispatch-failure-secret"),
+				mainBranch: "main",
+				logFile:    t.TempDir() + "/log.jsonl",
+				dispatchFunc: func(context.Context, string) (string, error) {
+					return "", tc.err
+				},
+			}
+			body := []byte(`{"ref":"refs/heads/main","commits":[{"modified":[".specify/specs/118-factory-dispatch-failed-reason-taxonomy/tasks.md"]}]}`)
+			req := httptest.NewRequest(http.MethodPost, "/webhook/push", bytes.NewReader(body))
+			req.Header.Set("X-Hub-Signature-256", signPayload(h.secret, body))
+			w := httptest.NewRecorder()
+			h.handlePush(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var resp factoryResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("response JSON: %v", err)
+			}
+			if resp.Dispatched {
+				t.Fatal("expected failed dispatch response")
+			}
+			body, err := os.ReadFile(sentinel)
+			if err != nil {
+				t.Fatalf("read emitted event: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("unmarshal emitted event: %v", err)
+			}
+			if got["event_type"] != "factory_dispatch_failed" {
+				t.Fatalf("event_type=%v", got["event_type"])
+			}
+			payload := got["payload"].(map[string]any)
+			if payload["failure_kind"] != string(tc.want) {
+				t.Fatalf("failure_kind=%v want %s", payload["failure_kind"], tc.want)
+			}
+			if payload["error"] != tc.err.Error() {
+				t.Fatalf("error=%v want %q", payload["error"], tc.err.Error())
+			}
+		})
+	}
+}

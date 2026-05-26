@@ -3,10 +3,33 @@ package activities
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const WorkUnitCompletedWithoutDeliverableEventType = "work_unit_completed_without_deliverable"
+
+const (
+	DeliverableKindPR                                = "pr"
+	MissingDeliverableNoChangesToCommit              = "no_changes_to_commit"
+	MissingDeliverableGitPushFailed                  = "git_push_failed"
+	MissingDeliverableGHPRCreateFailed               = "gh_pr_create_failed"
+	MissingDeliverableActivityDeclinedWithoutFailure = "activity_declined_without_failure"
+)
+
+// WorkUnitCompletedWithoutDeliverablePayload is emitted when a work-unit
+// activity succeeds but its promised deliverable is absent.
+type WorkUnitCompletedWithoutDeliverablePayload struct {
+	WorkUnitID      string `json:"work_unit_id"`
+	TaskID          string `json:"task_id"`
+	SpecRef         string `json:"spec_ref"`
+	DeliverableKind string `json:"deliverable_kind"`
+	Reason          string `json:"reason"`
+}
 
 // DeliverWorkProductInput is the typed input to the DeliverWorkProduct
 // activity: a completed agent work unit's worktree plus the metadata needed to
@@ -110,6 +133,8 @@ func (a *DeliverWorkProduct) Execute(ctx context.Context, in DeliverWorkProductI
 	}
 	if strings.TrimSpace(status) == "" {
 		res.Explanation = "agent produced no changes — nothing to deliver"
+		emitWorkUnitCompletedWithoutDeliverable(ctx, in, MissingDeliverableNoChangesToCommit)
+		res.Explanation += "; missing deliverable: pr (no_changes_to_commit)"
 		return res, nil
 	}
 
@@ -136,10 +161,14 @@ func (a *DeliverWorkProduct) Execute(ctx context.Context, in DeliverWorkProductI
 	// Push — only if the target repo has an `origin` remote.
 	if _, err := git(ctx, wt, "remote", "get-url", "origin"); err != nil {
 		res.Explanation = "committed locally; the target repo has no 'origin' remote — branch not pushed"
+		emitWorkUnitCompletedWithoutDeliverable(ctx, in, MissingDeliverableActivityDeclinedWithoutFailure)
+		res.Explanation += "; missing deliverable: pr (activity_declined_without_failure)"
 		return res, nil
 	}
 	if _, err := git(ctx, wt, "push", "-u", "origin", branch); err != nil {
 		res.Explanation = fmt.Sprintf("committed; pushing branch %s to origin failed: %v", branch, err)
+		emitWorkUnitCompletedWithoutDeliverable(ctx, in, MissingDeliverableGitPushFailed)
+		res.Explanation += "; missing deliverable: pr (git_push_failed)"
 		return res, nil
 	}
 	res.Pushed = true
@@ -148,12 +177,16 @@ func (a *DeliverWorkProduct) Execute(ctx context.Context, in DeliverWorkProductI
 	if _, err := exec.LookPath("gh"); err != nil {
 		res.Explanation = fmt.Sprintf(
 			"committed and pushed branch %s; gh CLI not available — no PR opened", branch)
+		emitWorkUnitCompletedWithoutDeliverable(ctx, in, MissingDeliverableGHPRCreateFailed)
+		res.Explanation += "; missing deliverable: pr (gh_pr_create_failed)"
 		return res, nil
 	}
 	prURL, err := openPR(ctx, wt, in, branch, subject)
 	if err != nil {
 		res.Explanation = fmt.Sprintf(
 			"committed and pushed branch %s; opening the PR failed: %v", branch, err)
+		emitWorkUnitCompletedWithoutDeliverable(ctx, in, MissingDeliverableGHPRCreateFailed)
+		res.Explanation += "; missing deliverable: pr (gh_pr_create_failed)"
 		return res, nil
 	}
 	res.PRURL = prURL
@@ -175,6 +208,83 @@ func (a *DeliverWorkProduct) Execute(ctx context.Context, in DeliverWorkProductI
 	}
 	res.Explanation = fmt.Sprintf("delivered: committed, pushed branch %s, opened PR %s", branch, prURL)
 	return res, nil
+}
+
+func emitWorkUnitCompletedWithoutDeliverable(ctx context.Context, in DeliverWorkProductInput, reason string) {
+	payload := WorkUnitCompletedWithoutDeliverablePayload{
+		WorkUnitID:      in.WorkUnitID,
+		TaskID:          in.TaskRef,
+		SpecRef:         in.SpecRef,
+		DeliverableKind: DeliverableKindPR,
+		Reason:          reason,
+	}
+	emitDeliverChainEvent(ctx, WorkUnitCompletedWithoutDeliverableEventType, stringOrDefault(in.SchedulerRunID, in.WorkUnitID), payload)
+}
+
+func emitDeliverChainEvent(ctx context.Context, eventType, runID string, payload any) {
+	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" {
+		return
+	}
+	binPath := os.Getenv("CHITIN_KERNEL_BIN")
+	if binPath == "" {
+		binPath = "chitin-kernel"
+	}
+	envelope := map[string]any{
+		"schema_version":    "2",
+		"event_type":        eventType,
+		"run_id":            runID,
+		"session_id":        "chitin-orchestrator-deliver-" + runID,
+		"surface":           "chitin-orchestrator",
+		"agent_instance_id": "chitin-orchestrator",
+		"chain_type":        "scheduler",
+		"ts":                time.Now().UTC().Format(time.RFC3339Nano),
+		"payload":           payload,
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		warnDeliverEmit("marshal: %v — %s recorded only in activity result", err, eventType)
+		return
+	}
+	tmp, err := os.CreateTemp("", "chitin-deliver-emit-*.json")
+	if err != nil {
+		warnDeliverEmit("temp file: %v — %s recorded only in activity result", err, eventType)
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		warnDeliverEmit("temp write: %v — %s recorded only in activity result", err, eventType)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		warnDeliverEmit("temp close: %v — %s recorded only in activity result", err, eventType)
+		return
+	}
+	chitinDir := os.Getenv("CHITIN_DIR")
+	if chitinDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			chitinDir = home + "/.chitin"
+		} else {
+			chitinDir = ".chitin"
+		}
+	}
+	emitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(emitCtx, binPath, "emit", "-dir", chitinDir, "-event-file", tmpPath)
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err != nil {
+		tail := strings.TrimSpace(stderrBuf.String())
+		if len(tail) > 200 {
+			tail = tail[len(tail)-200:]
+		}
+		warnDeliverEmit("kernel emit failed: %v (stderr: %s) — %s recorded only in activity result", err, tail, eventType)
+	}
+}
+
+func warnDeliverEmit(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "warning: deliver chain emit: "+format+"\n", args...)
 }
 
 // siblingLabelFor returns the sched/run/<id> label string for one scheduler
