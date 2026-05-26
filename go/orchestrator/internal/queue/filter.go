@@ -28,11 +28,12 @@ const chitinAuthoredBranchPrefix = "chitin/wu/"
 // liveRuleOrder is the deterministic priority of the live-state rules.
 // Matters when a single PR matches more than one live rule: the FIRST
 // match wins so the chain reason rendered to the operator is stable
-// across invocations. Mirrors FR-003's listed-in-spec order.
+// across invocations. Persistent conflicts beat stale automation because
+// mergeability is the more specific operator action.
 var liveRuleOrder = []string{
 	"dialectic_request_changes",
-	"stale_no_automation",
 	"conflicting_persistent",
+	"stale_no_automation",
 }
 
 // Build composes []Entry from the chain scan results and the live PR

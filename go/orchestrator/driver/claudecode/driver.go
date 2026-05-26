@@ -9,6 +9,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeshared"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 // Driver wraps the Claude Code CLI behind the spec-075 AgentDriver contract.
 type Driver struct {
 	command string
+	blobs   blob.Store
 }
 
 // Option configures a Driver. It exists primarily so tests and operators can
@@ -31,6 +33,13 @@ func WithCommand(command string) Option {
 		if command != "" {
 			d.command = command
 		}
+	}
+}
+
+// WithBlobStore externalizes oversized implementation-mode outputs.
+func WithBlobStore(store blob.Store) Option {
+	return func(d *Driver) {
+		d.blobs = store
 	}
 }
 
@@ -123,7 +132,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		return reviewResult(ctx, wu, d.ID(), out, errOut, err), nil
 	}
-	return claudecodeshared.ResultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
+	return claudecodeshared.ResultFromCommandWithStore(ctx, d.blobs, wu, d.ID(), out, errOut, err), nil
 }
 
 var _ driver.AgentDriver = (*Driver)(nil)

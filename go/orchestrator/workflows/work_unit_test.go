@@ -1,14 +1,18 @@
 package workflows
 
 import (
+	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities"
 	"github.com/chitinhq/chitin/go/orchestrator/dag"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // Spec 076 US3 tests for WorkUnitWorkflow: the same work-unit workflow runs
@@ -467,5 +471,38 @@ func TestWorkUnit_TeardownOnDriverFailure(t *testing.T) {
 	}
 	if !tornDown {
 		t.Error("work unit must tear its worktree down even when the driver fails")
+	}
+}
+
+func TestWorkUnitResultBlobRefPayloadStaysSmall(t *testing.T) {
+	ctx := context.Background()
+	store := blob.NewFSStore(blob.WithDir(filepath.Join(t.TempDir(), "blobs")), blob.WithEmitter(nil))
+	body := bytes.Repeat([]byte("x"), 3*1024*1024)
+	ref, err := store.Put(ctx, body)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	res := WorkUnitResult{
+		NodeID:      "whole-spec",
+		DriverID:    "codex",
+		Succeeded:   true,
+		Status:      driver.StatusSucceeded.String(),
+		OutputRef:   ref.String(),
+		Explanation: "driver completed whole-spec work unit",
+	}
+	payload, err := converter.GetDefaultDataConverter().ToPayload(res)
+	if err != nil {
+		t.Fatalf("ToPayload: %v", err)
+	}
+	if len(payload.Data) >= 4*1024 {
+		t.Fatalf("payload bytes = %d, want under 4 KiB", len(payload.Data))
+	}
+	resolved, err := blob.Resolve(ctx, store, res.OutputRef)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !bytes.Equal(resolved, body) {
+		t.Fatal("resolved body did not match original 3 MiB transcript")
 	}
 }

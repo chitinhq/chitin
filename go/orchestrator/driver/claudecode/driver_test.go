@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 func TestCardDeclaresClaudeCodeContract(t *testing.T) {
@@ -80,5 +81,65 @@ func TestInvoke_PassesSkipPermissions(t *testing.T) {
 	}
 	if !strings.Contains(string(argv), "--dangerously-skip-permissions") {
 		t.Errorf("argv missing --dangerously-skip-permissions\nargv=%q", string(argv))
+	}
+}
+
+func TestInvokeExternalizesLargeOutput(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	script := "#!/usr/bin/env bash\n" +
+		"python3 - <<'PY'\n" +
+		"import sys\n" +
+		"sys.stdout.write('x' * 2621440)\n" +
+		"PY\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	store := blob.NewFSStore(blob.WithDir(filepath.Join(dir, "blobs")), blob.WithEmitter(nil))
+	d := New(WithCommand(binPath), WithBlobStore(store))
+	res, err := d.Invoke(context.Background(), driver.WorkUnit{ID: "large", WorktreePath: dir})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if !blob.IsRef(res.OutputRef) {
+		t.Fatalf("OutputRef = %q, want blob ref", res.OutputRef)
+	}
+	body, err := blob.Resolve(context.Background(), store, res.OutputRef)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(body) != 2621440 || string(body[:1]) != "x" || string(body[len(body)-1:]) != "x" {
+		t.Fatalf("resolved body length/content mismatch: len=%d", len(body))
+	}
+}
+
+func TestInvokeKeepsSmallOutputInline(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "claude")
+	script := "#!/usr/bin/env bash\n" +
+		"python3 - <<'PY'\n" +
+		"import sys\n" +
+		"sys.stdout.write('s' * 4096)\n" +
+		"PY\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	blobDir := filepath.Join(dir, "blobs")
+	store := blob.NewFSStore(blob.WithDir(blobDir), blob.WithEmitter(nil))
+	d := New(WithCommand(binPath), WithBlobStore(store))
+	res, err := d.Invoke(context.Background(), driver.WorkUnit{ID: "small", WorktreePath: dir})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if blob.IsRef(res.OutputRef) {
+		t.Fatalf("OutputRef = %q, want inline", res.OutputRef)
+	}
+	if len(res.OutputRef) != 4096 {
+		t.Fatalf("OutputRef length = %d, want 4096", len(res.OutputRef))
+	}
+	if _, err := os.Stat(blobDir); !os.IsNotExist(err) {
+		t.Fatalf("blob dir stat err = %v, want not exists", err)
 	}
 }

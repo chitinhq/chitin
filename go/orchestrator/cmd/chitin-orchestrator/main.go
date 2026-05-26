@@ -37,6 +37,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/driver/local"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/openclaw"
 	"github.com/chitinhq/chitin/go/orchestrator/ingest"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 	"github.com/chitinhq/chitin/go/orchestrator/loop"
 	"github.com/chitinhq/chitin/go/orchestrator/schedules"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
@@ -117,12 +118,13 @@ func runWorkerHost(ctx context.Context) int {
 	// Build the spec-075 driver registry and register the concrete agent
 	// drivers. Registration is a startup-time act; the registry is
 	// read-only once the worker host is up.
-	implRegistry, err := buildRegistry("impl")
+	blobStore := blob.NewFSStore()
+	implRegistry, err := buildRegistry("impl", blobStore)
 	if err != nil {
 		log.Printf("chitin-orchestrator: building impl driver registry: %v", err)
 		return exitRuntimeError
 	}
-	reviewRegistry, err := buildRegistry("review")
+	reviewRegistry, err := buildRegistry("review", blobStore)
 	if err != nil {
 		log.Printf("chitin-orchestrator: building review driver registry: %v", err)
 		return exitRuntimeError
@@ -207,8 +209,8 @@ func runWorkerHost(ctx context.Context) int {
 
 	log.Printf("chitin-orchestrator: drivers registered — impl=%s review=%s",
 		strings.Join(driverIDs(implRegistry), ","), strings.Join(driverIDs(reviewRegistry), ","))
-	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s",
-		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot)
+	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s — blob_inline_threshold=%d blob_dir=%s",
+		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot, blob.InlineThreshold, blobStore.Dir())
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Printf("chitin-orchestrator: worker stopped: %v", err)
 		return exitRuntimeError
@@ -226,7 +228,11 @@ func runWorkerHost(ctx context.Context) int {
 // env wins first (`CHITIN_DRIVER_ALLOW_IMPL` or `CHITIN_DRIVER_ALLOW_REVIEW`);
 // if that role env is unset, `CHITIN_DRIVER_ALLOW` is the backward-compatible
 // fallback. Empty / unset resolved input = all drivers register.
-func buildRegistry(role string) (*driver.Registry, error) {
+func buildRegistry(role string, stores ...blob.Store) (*driver.Registry, error) {
+	var blobStore blob.Store
+	if len(stores) > 0 {
+		blobStore = stores[0]
+	}
 	allowEnv, err := driverAllowEnvForRole(role)
 	if err != nil {
 		return nil, err
@@ -241,10 +247,19 @@ func buildRegistry(role string) (*driver.Registry, error) {
 	if m := os.Getenv("CHITIN_CODEX_MODEL"); m != "" {
 		codexOpts = append(codexOpts, codex.WithModel(m))
 	}
+	if blobStore != nil {
+		codexOpts = append(codexOpts, codex.WithBlobStore(blobStore))
+	}
+	claudeOpts := []claudecode.Option{}
+	claudeGLMOpts := []claudecodeglm.Option{}
+	if blobStore != nil {
+		claudeOpts = append(claudeOpts, claudecode.WithBlobStore(blobStore))
+		claudeGLMOpts = append(claudeGLMOpts, claudecodeglm.WithBlobStore(blobStore))
+	}
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
-		claudecode.New(),
-		claudecodeglm.New(),
+		claudecode.New(claudeOpts...),
+		claudecodeglm.New(claudeGLMOpts...),
 		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),

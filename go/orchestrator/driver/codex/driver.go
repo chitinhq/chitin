@@ -12,6 +12,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review/verdict"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 type Driver struct {
 	command string
 	model   string
+	blobs   blob.Store
 }
 
 // Option configures a Driver.
@@ -43,6 +45,13 @@ func WithModel(model string) Option {
 		if model != "" {
 			d.model = model
 		}
+	}
+}
+
+// WithBlobStore externalizes oversized implementation-mode outputs.
+func WithBlobStore(store blob.Store) Option {
+	return func(d *Driver) {
+		d.blobs = store
 	}
 }
 
@@ -132,7 +141,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		return reviewResultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
 	}
-	return resultFromCommand(ctx, wu, d.ID(), stdoutStr, stderrStr, err), nil
+	return resultFromCommand(ctx, d.blobs, wu, d.ID(), stdoutStr, stderrStr, err), nil
 }
 
 // isReviewModeWorkUnit reports whether wu should be routed through the
@@ -169,15 +178,23 @@ func promptFor(wu driver.WorkUnit) string {
 	return b.String()
 }
 
-func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
-	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
+func resultFromCommand(ctx context.Context, store blob.Store, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
+	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID}
+	outputRef, err := blob.Externalize(ctx, store, []byte(stdout))
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.OutputRef = stdout
+		res.Explanation = fmt.Sprintf("driver %q could not externalize output for work unit %q: %v", driverID, wu.ID, err)
+		return res
+	}
+	res.OutputRef = outputRef
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		res.Status = driver.StatusTimeout
 		res.Explanation = fmt.Sprintf("driver %q timed out running work unit %q", driverID, wu.ID)
 		if stderr != "" {
 			res.Explanation += ": " + stderr
 		}
-		return res
+		return externalizeExplanation(ctx, store, res)
 	}
 	if runErr != nil {
 		res.Status = driver.StatusFailed
@@ -185,13 +202,24 @@ func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout
 		if stderr != "" {
 			res.Explanation += ": " + stderr
 		}
-		return res
+		return externalizeExplanation(ctx, store, res)
 	}
 	res.Status = driver.StatusSucceeded
 	res.Explanation = fmt.Sprintf("driver %q completed work unit %q", driverID, wu.ID)
 	if stderr != "" {
 		res.Explanation += "; stderr: " + stderr
 	}
+	return externalizeExplanation(ctx, store, res)
+}
+
+func externalizeExplanation(ctx context.Context, store blob.Store, res driver.Result) driver.Result {
+	explanation, err := blob.Externalize(ctx, store, []byte(res.Explanation))
+	if err != nil {
+		res.Status = driver.StatusFailed
+		res.Explanation = fmt.Sprintf("driver %q could not externalize explanation for work unit %q: %v", res.DriverID, res.WorkUnitID, err)
+		return res
+	}
+	res.Explanation = explanation
 	return res
 }
 

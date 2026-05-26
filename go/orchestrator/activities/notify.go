@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 // NotificationKind classifies a NotificationEvent — the closed set of
@@ -180,6 +182,11 @@ func (a *DiscordNotify) Execute(ctx context.Context, ev NotificationEvent) error
 	if a.notifier == nil {
 		log.Printf("notify: DiscordNotify has no notifier bound; dropping %s", ev.Kind)
 		return nil
+	}
+	if body, err := blob.Resolve(ctx, blob.NewFSStore(blob.WithEmitter(nil)), ev.Summary); err == nil {
+		ev.Summary = string(body)
+	} else {
+		log.Printf("notify: resolving summary for %s: %v", ev.Kind, err)
 	}
 	_ = a.notifier.Notify(ctx, ev)
 	return nil
