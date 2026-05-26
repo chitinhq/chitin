@@ -32,6 +32,16 @@ type SchedulerStartedPayload struct {
 	RunID                string   `json:"run_id"`
 	NodeCount            int      `json:"node_count"`
 	CapabilitiesRequired []string `json:"capabilities_required"`
+	// Mode is the spec 119 FR-010 closed-taxonomy dispatch mode:
+	// "whole-spec" or "per-task". Chain consumers (spec 114 queue,
+	// spec 118 silent-drop detector) tolerate the new field via
+	// omitempty — older payloads decoded against the new struct still
+	// reconstruct.
+	Mode string `json:"mode,omitempty"`
+	// WholeSpecTaskCount is the count of unchecked tasks the whole-spec
+	// driver is being asked to deliver. Zero in per-task mode (where the
+	// dispatch is granular and the per-task count lives in NodeCount).
+	WholeSpecTaskCount int `json:"whole_spec_task_count,omitempty"`
 }
 
 // SchedulerCanceledPayload is the spec 097 "scheduler_canceled" event payload
