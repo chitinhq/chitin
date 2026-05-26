@@ -267,6 +267,7 @@ func TestHandlePush_HTTP(t *testing.T) {
 }
 
 func TestHandlePush_ModifyOnlyDoesNotDispatch(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
 	secret := []byte("test-secret-for-modify-only!!")
 	var calls []string
 	h := &factoryHandler{
@@ -293,6 +294,7 @@ func TestHandlePush_ModifyOnlyDoesNotDispatch(t *testing.T) {
 }
 
 func TestHandlePush_AddedTriggersDispatch(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
 	secret := []byte("test-secret-for-added-only!!")
 	var calls []string
 	h := &factoryHandler{
