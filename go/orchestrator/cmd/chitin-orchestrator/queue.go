@@ -42,6 +42,10 @@ func cmdQueue(args []string) int {
 }
 
 func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runQueueWithNow(ctx, args, time.Now().UTC(), stdout, stderr)
+}
+
+func runQueueWithNow(ctx context.Context, args []string, now time.Time, stdout, stderr io.Writer) int {
 	opts, code := parseQueueArgs(args, stderr)
 	if code != exitSuccess {
 		return code
@@ -63,7 +67,7 @@ func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return exitUserError
 	}
 
-	now := time.Now().UTC()
+	now = now.UTC()
 	since := now.Add(-opts.Since)
 
 	// 1. Chain scan — pure reader of $CHITIN_DIR/events-*.jsonl.
