@@ -78,10 +78,11 @@ func CheckCrossRefs(specDir, specsRoot string) ([]Violation, error) {
 			if id == "" {
 				continue
 			}
-			// yaml.v3 reports 1-based lines within the body we parsed. The
-			// body starts at spec.md line bodyStart, so the spec.md line of
-			// this item is bodyStart + (item.Line - 1).
-			line := bodyStart + item.Line - 1
+			// yaml.v3 reports 1-based lines within the body we parsed.
+			// bodyStart is the source line of the opening `---` fence
+			// (extractFrontmatter returns 1), so body line N lives on
+			// source line bodyStart + N. Matches L01's `node.Line + baseLine`.
+			line := bodyStart + item.Line
 
 			dirs, err := matchingSpecDirs(specsRoot, id)
 			if err != nil {
