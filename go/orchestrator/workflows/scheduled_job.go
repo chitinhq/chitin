@@ -61,8 +61,19 @@ func ScheduledJobWorkflow(ctx workflow.Context, spec schedules.JobSpec) (JobResu
 		},
 	})
 
-	job := activities.NewScheduledJob()
+	if spec.ActivityName != "" {
+		if err := workflow.ExecuteActivity(ctx, spec.ActivityName, spec.ActivityInput).Get(ctx, nil); err != nil {
+			return JobResult{JobName: spec.Name, ExitCode: -1}, err
+		}
+		return JobResult{
+			JobName:     spec.Name,
+			Succeeded:   true,
+			ExitCode:    0,
+			Explanation: "orchestrator-native activity completed",
+		}, nil
+	}
 
+	job := activities.NewScheduledJob()
 	var res activities.ScheduledJobResult
 	err := workflow.ExecuteActivity(ctx, job.ActivityName(), spec).Get(ctx, &res)
 	if err != nil {

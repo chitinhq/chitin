@@ -63,7 +63,7 @@ func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return exitUserError
 	}
 
-	now := time.Now().UTC()
+	now := queueNow()
 	since := now.Add(-opts.Since)
 
 	// 1. Chain scan — pure reader of $CHITIN_DIR/events-*.jsonl.
@@ -117,6 +117,18 @@ func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout)
 	}
 	return exitSuccess
+}
+
+func queueNow() time.Time {
+	if raw := os.Getenv("CHITIN_QUEUE_NOW"); raw != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return ts.UTC()
+		}
+		if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+			return ts.UTC()
+		}
+	}
+	return time.Now().UTC()
 }
 
 // parseQueueArgs parses the queue subcommand argv. It is the entire T001

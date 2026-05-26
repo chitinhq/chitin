@@ -89,6 +89,7 @@ func TestRunQueue_HermeticAcrossAllReasonKinds(t *testing.T) {
 
 	ghBin := writeFakeGHForQueue(t, queueTestNow)
 	t.Setenv("PATH", filepath.Dir(ghBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CHITIN_QUEUE_NOW", queueTestNow.Format(time.RFC3339Nano))
 
 	// Point the queue at the fixture chain dir. The scanner (T002) reads
 	// $CHITIN_DIR via queue.ResolveChainDir; the same env var has been the
@@ -150,6 +151,7 @@ func TestRunQueue_ReasonFilter_NarrowsToSingleKind(t *testing.T) {
 	writeQueueFixtureChain(t, chainDir, queueTestNow)
 	ghBin := writeFakeGHForQueue(t, queueTestNow)
 	t.Setenv("PATH", filepath.Dir(ghBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CHITIN_QUEUE_NOW", queueTestNow.Format(time.RFC3339Nano))
 	t.Setenv("CHITIN_DIR", chainDir)
 	t.Setenv("CHITIN_REPO", "chitinhq/chitin")
 
@@ -188,6 +190,7 @@ func TestRunQueue_UnknownReason_RejectsWithHelpfulError(t *testing.T) {
 	writeQueueFixtureChain(t, chainDir, queueTestNow)
 	ghBin := writeFakeGHForQueue(t, queueTestNow)
 	t.Setenv("PATH", filepath.Dir(ghBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CHITIN_QUEUE_NOW", queueTestNow.Format(time.RFC3339Nano))
 	t.Setenv("CHITIN_DIR", chainDir)
 	t.Setenv("CHITIN_REPO", "chitinhq/chitin")
 

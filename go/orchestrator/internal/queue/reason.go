@@ -17,6 +17,7 @@ var fr008ReasonTaxonomy = []string{
 	"lease_lost",
 	"sibling_rebase_failed",
 	"silent_drop",
+	"stale_report",
 	// Live-state-derived (filter.go):
 	"dialectic_request_changes",
 	"stale_no_automation",
