@@ -1,0 +1,26 @@
+# Spec 115 T018: known CLI surfaces allowlist for L05 (chitin-orchestrator
+# / chitin-kernel subcommands referenced in specs). Adding a subcommand
+# to chitin-orchestrator or chitin-kernel REQUIRES a corresponding line
+# here so spec 115's L05 rule lets the new spec text reference it.
+#
+# Format: <binary> <subcommand>, whitespace-separated. Blank lines and
+# `#` comments are ignored.
+
+# chitin-orchestrator subcommands (extracted from `chitin-orchestrator help` on 2026-05-25)
+chitin-orchestrator schedule
+chitin-orchestrator status
+chitin-orchestrator cancel
+chitin-orchestrator factory-listen
+chitin-orchestrator simulate-webhook
+chitin-orchestrator pr-review
+chitin-orchestrator tasks-lint
+chitin-orchestrator queue
+chitin-orchestrator spec-lint
+chitin-orchestrator validate-driver-coverage
+
+# chitin-kernel subcommands
+chitin-kernel emit
+chitin-kernel chain
+chitin-kernel envelope
+chitin-kernel egress
+chitin-kernel policy
