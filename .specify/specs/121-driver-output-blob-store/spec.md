@@ -112,7 +112,7 @@ records no `payloadSizeError`.
 ### US3 (P1) — Downstream consumers resolve pointers transparently
 
 > As a downstream consumer (chain emit, sentinel ingest, dialectic
-> re-review, the operator's `chitin-orchestrator describe-run`),
+> re-review, any operator-facing surface that renders `OutputRef`),
 > when I read a `WorkUnitResult` whose `OutputRef` is a blob
 > reference, I call `blob.Resolve(ctx, ref)` to get the full body.
 > Consumers that don't need the body (e.g. workflow routing on
@@ -219,11 +219,11 @@ field.
   carries a `blob://` URI or a literal string; nothing else
   changes.
 
-- **FR-009** A `chitin-orchestrator describe-run` (or analog)
-  output that today renders `OutputRef` MUST call `blob.Resolve`
-  before rendering, so operator-facing output is always the body
-  (transparent to humans). Same for chain-event consumers that
-  surface `output_ref` to operators.
+- **FR-009** Any operator-facing surface that today renders
+  `OutputRef` MUST call `blob.Resolve` before rendering, so
+  operator-facing output is always the body (transparent to
+  humans). Same for chain-event consumers that surface
+  `output_ref` to operators.
 
 - **FR-010** The blob store MUST emit one chain event per Put
   (`blob_written`) with payload `{ref, size_bytes, sha256}`. The
@@ -364,9 +364,9 @@ Out:
   - **Chain consumer running an older orchestrator build.** The
     `output_ref` field continues to carry a string; if the older
     consumer doesn't know about `blob://` URIs, it surfaces them
-    as opaque strings to the operator. The operator can paste
-    the URI into a newer `chitin-orchestrator resolve` command.
-    No schema break.
+    as opaque strings to the operator. The operator can manually
+    resolve via the on-disk blob path (`~/.chitin/blobs/<first2>/
+    <rest>.blob`). No schema break.
 
 ## Composability
 
