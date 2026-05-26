@@ -29,6 +29,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeglm"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/copilot"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/gemini"
@@ -204,6 +205,8 @@ func runWorkerHost(ctx context.Context) int {
 		log.Printf("chitin-orchestrator: ensuring Temporal Schedules: %v", err)
 	}
 
+	log.Printf("chitin-orchestrator: drivers registered — impl=%s review=%s",
+		strings.Join(driverIDs(implRegistry), ","), strings.Join(driverIDs(reviewRegistry), ","))
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s",
 		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot)
 	if err := w.Run(worker.InterruptCh()); err != nil {
@@ -241,6 +244,7 @@ func buildRegistry(role string) (*driver.Registry, error) {
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
+		claudecodeglm.New(),
 		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),
@@ -256,6 +260,17 @@ func buildRegistry(role string) (*driver.Registry, error) {
 		}
 	}
 	return registry, nil
+}
+
+func driverIDs(registry *driver.Registry) []string {
+	if registry == nil {
+		return nil
+	}
+	out := make([]string, 0, registry.Len())
+	for _, d := range registry.Drivers() {
+		out = append(out, d.ID())
+	}
+	return out
 }
 
 func driverAllowEnvForRole(role string) (string, error) {

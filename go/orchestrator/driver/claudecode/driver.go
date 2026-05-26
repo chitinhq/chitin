@@ -3,13 +3,12 @@ package claudecode
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeshared"
 )
 
 const (
@@ -94,7 +93,7 @@ func (d *Driver) Ready(ctx context.Context) (bool, string) {
 
 // Invoke shells out to Claude Code in the work unit's dedicated worktree.
 func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result, error) {
-	ctx, cancel := invocationContext(ctx, wu.Deadline)
+	ctx, cancel := claudecodeshared.InvocationContext(ctx, wu.Deadline)
 	defer cancel()
 
 	reviewMode := isReviewMode(wu)
@@ -102,7 +101,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		prompt = reviewPromptFor(wu)
 	} else {
-		prompt = promptFor(wu)
+		prompt = claudecodeshared.PromptFor(wu)
 	}
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
 	// invocations: the chitin worker spawns claude headlessly inside a
@@ -112,7 +111,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	// the explanation but produce no commits → no PR). claude's own
 	// help text recommends the flag "for sandboxes with no internet
 	// access" — chitin's worker context matches that intent.
-	cmd := exec.CommandContext(ctx, d.command, "--dangerously-skip-permissions", "-p", prompt)
+	cmd := exec.CommandContext(ctx, d.command, claudecodeshared.PrintArgs(prompt)...)
 	cmd.Dir = wu.WorktreePath
 
 	var stdout, stderr bytes.Buffer
@@ -124,57 +123,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		return reviewResult(ctx, wu, d.ID(), out, errOut, err), nil
 	}
-	return resultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
-}
-
-func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
-	if deadline.IsZero() {
-		return context.WithCancel(parent)
-	}
-	return context.WithDeadline(parent, deadline)
-}
-
-func promptFor(wu driver.WorkUnit) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Chitin work unit: %s\n", wu.ID)
-	if wu.SpecID != "" {
-		fmt.Fprintf(&b, "Spec: %s\n", wu.SpecID)
-	}
-	if wu.TaskID != "" {
-		fmt.Fprintf(&b, "Task: %s\n", wu.TaskID)
-	}
-	if wu.WorktreePath != "" {
-		fmt.Fprintf(&b, "Worktree: %s\n", wu.WorktreePath)
-	}
-	b.WriteString("\nInstructions:\n")
-	b.WriteString(wu.Context)
-	return b.String()
-}
-
-func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {
-	res := driver.Result{WorkUnitID: wu.ID, DriverID: driverID, OutputRef: stdout}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		res.Status = driver.StatusTimeout
-		res.Explanation = fmt.Sprintf("driver %q timed out running work unit %q", driverID, wu.ID)
-		if stderr != "" {
-			res.Explanation += ": " + stderr
-		}
-		return res
-	}
-	if runErr != nil {
-		res.Status = driver.StatusFailed
-		res.Explanation = fmt.Sprintf("driver %q failed running work unit %q: %v", driverID, wu.ID, runErr)
-		if stderr != "" {
-			res.Explanation += ": " + stderr
-		}
-		return res
-	}
-	res.Status = driver.StatusSucceeded
-	res.Explanation = fmt.Sprintf("driver %q completed work unit %q", driverID, wu.ID)
-	if stderr != "" {
-		res.Explanation += "; stderr: " + stderr
-	}
-	return res
+	return claudecodeshared.ResultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
 }
 
 var _ driver.AgentDriver = (*Driver)(nil)

@@ -56,6 +56,10 @@ const (
 	CostHigh
 )
 
+// CostZero is an alias for CostFree, named for specs that describe zero-cost
+// local inference explicitly.
+const CostZero CostClass = CostFree
+
 // costClassNames is indexed by CostClass; kept in sync with the constants.
 var costClassNames = [...]string{
 	CostFree:   "free",

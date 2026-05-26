@@ -32,6 +32,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/orchestrator/adapter/speckit"
 	"github.com/chitinhq/chitin/go/orchestrator/dag"
+	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 )
 
@@ -210,6 +211,7 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		CapabilitiesRequired: capsRequired,
 		Mode:                 mode,
 		WholeSpecTaskCount:   wholeSpecTaskCount,
+		DriverID:             schedulerStartedDriverID(ctx, mode, cs.DAG, registry),
 	}, stderr)
 
 	fmt.Fprintf(stdout, "scheduled spec %s (%d nodes, %d capabilities required); run_id=%s\n",
@@ -318,4 +320,25 @@ func collectCapabilities(d *dag.DAG) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// schedulerStartedDriverID returns the selected driver id for dispatch modes
+// where the CLI can compute a single chosen driver before emitting
+// scheduler_started telemetry. If readiness changes between CLI scheduling
+// and workflow activity execution, the workflow remains authoritative; the
+// event field is best-effort and therefore omitted when selection cannot be
+// computed.
+func schedulerStartedDriverID(ctx context.Context, mode string, d *dag.DAG, registry *driver.Registry) string {
+	if mode != "whole-spec" || d == nil || registry == nil {
+		return ""
+	}
+	caps := collectCapabilities(d)
+	if len(caps) != 1 {
+		return ""
+	}
+	selected, _, err := registry.Select(ctx, driver.Capability(caps[0]))
+	if err != nil || selected == nil {
+		return ""
+	}
+	return selected.ID()
 }
