@@ -29,6 +29,7 @@ type prPayload struct {
 	Number      int    `json:"number"`
 	PullRequest struct {
 		URL       string `json:"html_url"`
+		Title     string `json:"title"`
 		Number    int    `json:"number"`
 		Draft     bool   `json:"draft"`
 		Merged    bool   `json:"merged"`
@@ -51,7 +52,7 @@ type prPayload struct {
 	// For issue_comment events the PR object is at .issue and labels
 	// arrive on the issue, not the PR.
 	Issue struct {
-		Number int `json:"number"`
+		Number int    `json:"number"`
 		Body   string `json:"body"`
 		Labels []struct {
 			Name string `json:"name"`
