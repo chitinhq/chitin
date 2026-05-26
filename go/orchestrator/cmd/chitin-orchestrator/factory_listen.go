@@ -35,6 +35,12 @@ import (
 // across any leading directory prefix. Capture 1 is the full `NNN-name`.
 var specPathPattern = regexp.MustCompile(`(?:^|/)\.specify/specs/(\d+-[a-z0-9._-]+)/tasks\.md$`)
 
+// specRefFromPRFilePattern matches a file path under `.specify/specs/<NNN-slug>/`
+// and captures the spec ref. Compiled once at package load — `specRefForPR`
+// scans every file in a PR changeset, so reusing the compiled regex avoids
+// recompiling per-iteration on webhook events.
+var specRefFromPRFilePattern = regexp.MustCompile(`^\.specify/specs/(\d+-.+?)/`)
+
 // pushPayload is the subset of GitHub's push webhook payload this listener
 // consumes. Full schema:
 // https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
@@ -656,20 +662,30 @@ func (h *factoryHandler) emitFailureEvent(ctx context.Context, repo, specRef str
 }
 
 func (h *factoryHandler) dispatchSpecIssueForSpecPR(ctx context.Context, prNumber int, p *prPayload) {
-	if !isSpecPRWith(ctx, p.Repository.FullName, prNumber, h.specPRLister()) {
+	// Single gh-api fetch: classify and extract specRef from the same
+	// changeset, so a spec-PR merge costs one /pulls/<N>/files call.
+	files, err := h.specPRLister().listPRFiles(ctx, p.Repository.FullName, prNumber)
+	if err != nil || len(files) == 0 {
 		return
 	}
-	specRef := h.specRefForPR(ctx, p.Repository.FullName, prNumber)
+	if !isSpecPRFromFiles(files) {
+		return
+	}
+	specRef := specRefFromFiles(files)
 	if specRef == "" {
 		return
+	}
+	branch := h.mainBranch
+	if branch == "" {
+		branch = "main"
 	}
 	in := activities.EnsureSpecIssueInput{
 		Repo:       p.Repository.FullName,
 		SpecRef:    specRef,
 		SpecTitle:  p.PullRequest.Title,
 		SpecPRURL:  p.PullRequest.URL,
-		SpecMDURL:  githubBlobURL(p.Repository.FullName, "main", ".specify/specs/"+specRef+"/spec.md"),
-		TasksMDURL: githubBlobURL(p.Repository.FullName, "main", ".specify/specs/"+specRef+"/tasks.md"),
+		SpecMDURL:  githubBlobURL(p.Repository.FullName, branch, ".specify/specs/"+specRef+"/spec.md"),
+		TasksMDURL: githubBlobURL(p.Repository.FullName, branch, ".specify/specs/"+specRef+"/tasks.md"),
 	}
 	h.async(func() { h.ensureSpecIssue(context.Background(), in) })
 }
@@ -784,12 +800,34 @@ func (h *factoryHandler) specRefForPR(ctx context.Context, repo string, prNumber
 	if err != nil {
 		return ""
 	}
+	return specRefFromFiles(files)
+}
+
+// specRefFromFiles returns the first spec ref captured from a PR's
+// changed-file list. Pure (no shell-out) so callers can reuse a single
+// listPRFiles result for both classification and ref extraction.
+func specRefFromFiles(files []string) string {
 	for _, f := range files {
-		if m := regexp.MustCompile(`^\.specify/specs/(\d+-.+?)/`).FindStringSubmatch(f); len(m) == 2 {
+		if m := specRefFromPRFilePattern.FindStringSubmatch(f); len(m) == 2 {
 			return m[1]
 		}
 	}
 	return ""
+}
+
+// isSpecPRFromFiles is the pure analogue of isSpecPRWith — every file
+// must live under `.specify/specs/<NNN>-*/`. Empty changesets are
+// classified as non-spec (matches isSpecPRWith's fail-safe).
+func isSpecPRFromFiles(files []string) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if !specFilePathPattern.MatchString(f) {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *factoryHandler) githubRepo(payloadRepo string) string {

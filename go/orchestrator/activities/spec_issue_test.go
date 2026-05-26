@@ -10,22 +10,23 @@ import (
 
 type specIssueEvent struct {
 	eventType string
+	repo      string
 	specRef   string
 	payload   map[string]any
 }
 
-func withSpecIssueHooks(t *testing.T, gh func(context.Context, ...string) (string, error), prior func(string, string) (string, bool)) *[]specIssueEvent {
+func withSpecIssueHooks(t *testing.T, gh func(context.Context, ...string) (string, error), prior func(string, string, string) (string, bool)) *[]specIssueEvent {
 	t.Helper()
 	oldGH, oldEmit, oldPrior := specIssueGHFn, specIssueEmitFn, specIssuePriorCommentFn
 	events := []specIssueEvent{}
 	specIssueGHFn = gh
-	specIssueEmitFn = func(_ context.Context, eventType, specRef string, payload map[string]any) {
-		events = append(events, specIssueEvent{eventType: eventType, specRef: specRef, payload: payload})
+	specIssueEmitFn = func(_ context.Context, eventType, repo, specRef string, payload map[string]any) {
+		events = append(events, specIssueEvent{eventType: eventType, repo: repo, specRef: specRef, payload: payload})
 	}
 	if prior != nil {
 		specIssuePriorCommentFn = prior
 	} else {
-		specIssuePriorCommentFn = func(string, string) (string, bool) { return "", false }
+		specIssuePriorCommentFn = func(string, string, string) (string, bool) { return "", false }
 	}
 	t.Cleanup(func() {
 		specIssueGHFn, specIssueEmitFn, specIssuePriorCommentFn = oldGH, oldEmit, oldPrior
@@ -111,7 +112,7 @@ func TestCommentSpecIssue_IdempotentOnRetry(t *testing.T) {
 			t.Fatalf("unexpected gh args: %v", args)
 		}
 		return "", nil
-	}, func(_, _ string) (string, bool) {
+	}, func(_, _, _ string) (string, bool) {
 		if prior {
 			return "2026-05-26T00:00:00Z", true
 		}

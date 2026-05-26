@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -98,7 +99,7 @@ func (a *CloseSpecIssue) ActivityName() string      { return "CloseSpecIssue" }
 
 func (a *EnsureSpecIssue) Execute(ctx context.Context, in EnsureSpecIssueInput) (EnsureSpecIssueResult, error) {
 	var res EnsureSpecIssueResult
-	if specIssueDisabled(ctx, in.SpecRef, 0) {
+	if specIssueDisabled(ctx, in.Repo, in.SpecRef, 0) {
 		res.Explanation = "disabled by CHITIN_SPEC_ISSUE_DISABLED"
 		return res, nil
 	}
@@ -109,7 +110,7 @@ func (a *EnsureSpecIssue) Execute(ctx context.Context, in EnsureSpecIssueInput) 
 	if found {
 		res.IssueNumber = issue.Number
 		res.WasNew = false
-		specIssueEmitFn(ctx, SpecIssueOpenedEvent, in.SpecRef, map[string]any{
+		specIssueEmitFn(ctx, SpecIssueOpenedEvent, in.Repo, in.SpecRef, map[string]any{
 			"spec_ref": in.SpecRef, "issue_number": issue.Number, "repo": in.Repo, "was_new": false,
 		})
 		return res, nil
@@ -122,13 +123,13 @@ func (a *EnsureSpecIssue) Execute(ctx context.Context, in EnsureSpecIssueInput) 
 	body := renderSpecIssueBody(in, "")
 	out, err := specIssueGH(ctx, "issue", "create", "--repo", in.Repo, "--label", SpecIssueLabel, "--title", title, "--body", body)
 	if err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, 0, "issue_create", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, 0, "issue_create", err)
 		return res, nil
 	}
 	n := parseIssueNumber(strings.TrimSpace(out))
 	res.IssueNumber = n
 	res.WasNew = true
-	specIssueEmitFn(ctx, SpecIssueOpenedEvent, in.SpecRef, map[string]any{
+	specIssueEmitFn(ctx, SpecIssueOpenedEvent, in.Repo, in.SpecRef, map[string]any{
 		"spec_ref": in.SpecRef, "issue_number": n, "repo": in.Repo, "was_new": true,
 	})
 	return res, nil
@@ -136,7 +137,7 @@ func (a *EnsureSpecIssue) Execute(ctx context.Context, in EnsureSpecIssueInput) 
 
 func (a *CommentSpecIssue) Execute(ctx context.Context, in CommentSpecIssueInput) (CommentSpecIssueResult, error) {
 	var res CommentSpecIssueResult
-	if specIssueDisabled(ctx, in.SpecRef, 0) {
+	if specIssueDisabled(ctx, in.Repo, in.SpecRef, 0) {
 		res.Explanation = "disabled by CHITIN_SPEC_ISSUE_DISABLED"
 		return res, nil
 	}
@@ -145,36 +146,44 @@ func (a *CommentSpecIssue) Execute(ctx context.Context, in CommentSpecIssueInput
 		return res, nil
 	}
 	if !found {
-		specIssueEmitFailure(ctx, in.SpecRef, 0, "issue_resolve", fmt.Errorf("spec issue not found"))
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, 0, "issue_resolve", fmt.Errorf("spec issue not found"))
 		return res, nil
 	}
 	res.IssueNumber = issue.Number
-	if priorAt, found := specIssuePriorCommentFn(in.SpecRef, in.TemplateID); found {
+	if priorAt, found := specIssuePriorCommentFn(in.Repo, in.SpecRef, in.TemplateID); found {
 		res.Skipped = true
-		specIssueEmitFn(ctx, SpecIssueCommentSkippedEvent, in.SpecRef, map[string]any{
-			"spec_ref": in.SpecRef, "issue_number": issue.Number, "template_id": in.TemplateID, "prior_at": priorAt,
+		specIssueEmitFn(ctx, SpecIssueCommentSkippedEvent, in.Repo, in.SpecRef, map[string]any{
+			"spec_ref": in.SpecRef, "issue_number": issue.Number, "repo": in.Repo, "template_id": in.TemplateID, "prior_at": priorAt,
 		})
 		return res, nil
 	}
 	body, err := renderSpecIssueComment(in.TemplateID, in.Params)
 	if err != nil {
+		// Template render is a non-GitHub failure mode (unknown template_id,
+		// missing params). Emit a failure event so the silent skip is
+		// recoverable from the chain — otherwise operators only see an
+		// unaccounted-for gap in the spec-issue comment trail.
 		res.Explanation = err.Error()
+		specIssueEmitFn(ctx, SpecIssueUpdateFailedEvent, in.Repo, in.SpecRef, map[string]any{
+			"spec_ref": in.SpecRef, "issue_number": issue.Number, "repo": in.Repo,
+			"op": "template_render", "template_id": in.TemplateID, "stderr_tail": err.Error(),
+		})
 		return res, nil
 	}
 	if _, err := specIssueGH(ctx, "issue", "comment", strconv.Itoa(issue.Number), "--repo", in.Repo, "--body", body); err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, issue.Number, "issue_comment", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, issue.Number, "issue_comment", err)
 		return res, nil
 	}
 	res.Commented = true
-	specIssueEmitFn(ctx, SpecIssueCommentedEvent, in.SpecRef, map[string]any{
-		"spec_ref": in.SpecRef, "issue_number": issue.Number, "template_id": in.TemplateID, "params": in.Params,
+	specIssueEmitFn(ctx, SpecIssueCommentedEvent, in.Repo, in.SpecRef, map[string]any{
+		"spec_ref": in.SpecRef, "issue_number": issue.Number, "repo": in.Repo, "template_id": in.TemplateID, "params": in.Params,
 	})
 	return res, nil
 }
 
 func (a *UpdateSpecIssueBody) Execute(ctx context.Context, in UpdateSpecIssueBodyInput) (UpdateSpecIssueBodyResult, error) {
 	var res UpdateSpecIssueBodyResult
-	if specIssueDisabled(ctx, in.SpecRef, 0) {
+	if specIssueDisabled(ctx, in.Repo, in.SpecRef, 0) {
 		res.Explanation = "disabled by CHITIN_SPEC_ISSUE_DISABLED"
 		return res, nil
 	}
@@ -183,20 +192,20 @@ func (a *UpdateSpecIssueBody) Execute(ctx context.Context, in UpdateSpecIssueBod
 		return res, nil
 	}
 	if !found {
-		specIssueEmitFailure(ctx, in.SpecRef, 0, "issue_resolve", fmt.Errorf("spec issue not found"))
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, 0, "issue_resolve", fmt.Errorf("spec issue not found"))
 		return res, nil
 	}
 	res.IssueNumber = issue.Number
 	out, err := specIssueGH(ctx, "issue", "view", strconv.Itoa(issue.Number), "--repo", in.Repo, "--json", "body")
 	if err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, issue.Number, "issue_view", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, issue.Number, "issue_view", err)
 		return res, nil
 	}
 	var v struct {
 		Body string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(out), &v); err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, issue.Number, "issue_view_decode", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, issue.Number, "issue_view_decode", err)
 		return res, nil
 	}
 	patched := patchSpecIssueBody(v.Body, in.Patches)
@@ -204,7 +213,7 @@ func (a *UpdateSpecIssueBody) Execute(ctx context.Context, in UpdateSpecIssueBod
 		return res, nil
 	}
 	if _, err := specIssueGH(ctx, "issue", "edit", strconv.Itoa(issue.Number), "--repo", in.Repo, "--body", patched); err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, issue.Number, "issue_edit", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, issue.Number, "issue_edit", err)
 		return res, nil
 	}
 	res.Updated = true
@@ -213,7 +222,7 @@ func (a *UpdateSpecIssueBody) Execute(ctx context.Context, in UpdateSpecIssueBod
 
 func (a *CloseSpecIssue) Execute(ctx context.Context, in CloseSpecIssueInput) (CloseSpecIssueResult, error) {
 	var res CloseSpecIssueResult
-	if specIssueDisabled(ctx, in.SpecRef, 0) {
+	if specIssueDisabled(ctx, in.Repo, in.SpecRef, 0) {
 		res.Explanation = "disabled by CHITIN_SPEC_ISSUE_DISABLED"
 		return res, nil
 	}
@@ -229,12 +238,12 @@ func (a *CloseSpecIssue) Execute(ctx context.Context, in CloseSpecIssueInput) (C
 		res.IssueNumber = issue.Number
 	}
 	if _, err := specIssueGH(ctx, "issue", "close", strconv.Itoa(res.IssueNumber), "--repo", in.Repo); err != nil {
-		specIssueEmitFailure(ctx, in.SpecRef, res.IssueNumber, "issue_close", err)
+		specIssueEmitFailure(ctx, in.Repo, in.SpecRef, res.IssueNumber, "issue_close", err)
 		return res, nil
 	}
 	res.Closed = true
-	specIssueEmitFn(ctx, SpecIssueClosedEvent, in.SpecRef, map[string]any{
-		"spec_ref": in.SpecRef, "issue_number": res.IssueNumber,
+	specIssueEmitFn(ctx, SpecIssueClosedEvent, in.Repo, in.SpecRef, map[string]any{
+		"spec_ref": in.SpecRef, "issue_number": res.IssueNumber, "repo": in.Repo,
 	})
 	return res, nil
 }
@@ -248,12 +257,12 @@ type specIssueSummary struct {
 func resolveSpecIssue(ctx context.Context, repo, specRef string) (specIssueSummary, bool, bool) {
 	out, err := specIssueGH(ctx, "issue", "list", "--repo", repo, "--label", SpecIssueLabel, "--search", specRef, "--state", "all", "--json", "number,title,state")
 	if err != nil {
-		specIssueEmitFailure(ctx, specRef, 0, "issue_list", err)
+		specIssueEmitFailure(ctx, repo, specRef, 0, "issue_list", err)
 		return specIssueSummary{}, false, false
 	}
 	var issues []specIssueSummary
 	if err := json.Unmarshal([]byte(out), &issues); err != nil {
-		specIssueEmitFailure(ctx, specRef, 0, "issue_list_decode", err)
+		specIssueEmitFailure(ctx, repo, specRef, 0, "issue_list_decode", err)
 		return specIssueSummary{}, false, false
 	}
 	for _, issue := range issues {
@@ -309,6 +318,17 @@ var specIssueGHFn = defaultSpecIssueGH
 var specIssueEmitFn = emitSpecIssueChainEvent
 var specIssuePriorCommentFn = priorSpecIssueCommentFromChain
 
+// specIssueScope returns a per-(repo, specRef) key used in chain run_id /
+// session_id so events from different repos sharing the same $CHITIN_DIR
+// don't collide. Empty repo (older callers / break-glass paths) falls back
+// to bare specRef so existing chain history remains discoverable.
+func specIssueScope(repo, specRef string) string {
+	if repo == "" {
+		return specRef
+	}
+	return repo + "/" + specRef
+}
+
 func specIssueGH(ctx context.Context, args ...string) (string, error) {
 	return specIssueGHFn(ctx, args...)
 }
@@ -354,17 +374,17 @@ func parseIssueNumber(out string) int {
 	return 0
 }
 
-func specIssueDisabled(ctx context.Context, specRef string, issueNumber int) bool {
+func specIssueDisabled(ctx context.Context, repo, specRef string, issueNumber int) bool {
 	if os.Getenv("CHITIN_SPEC_ISSUE_DISABLED") != "1" {
 		return false
 	}
-	specIssueEmitFn(ctx, SpecIssueUpdateFailedEvent, specRef, map[string]any{
-		"spec_ref": specRef, "issue_number": issueNumber, "op": "disabled_by_env", "stderr_tail": "",
+	specIssueEmitFn(ctx, SpecIssueUpdateFailedEvent, repo, specRef, map[string]any{
+		"spec_ref": specRef, "issue_number": issueNumber, "repo": repo, "op": "disabled_by_env", "stderr_tail": "",
 	})
 	return true
 }
 
-func specIssueEmitFailure(ctx context.Context, specRef string, issueNumber int, op string, err error) {
+func specIssueEmitFailure(ctx context.Context, repo, specRef string, issueNumber int, op string, err error) {
 	tail := ""
 	if err != nil {
 		tail = err.Error()
@@ -372,12 +392,12 @@ func specIssueEmitFailure(ctx context.Context, specRef string, issueNumber int, 
 	if len(tail) > 500 {
 		tail = tail[len(tail)-500:]
 	}
-	specIssueEmitFn(ctx, SpecIssueUpdateFailedEvent, specRef, map[string]any{
-		"spec_ref": specRef, "issue_number": issueNumber, "op": op, "stderr_tail": tail,
+	specIssueEmitFn(ctx, SpecIssueUpdateFailedEvent, repo, specRef, map[string]any{
+		"spec_ref": specRef, "issue_number": issueNumber, "repo": repo, "op": op, "stderr_tail": tail,
 	})
 }
 
-func emitSpecIssueChainEvent(ctx context.Context, eventType, specRef string, payload map[string]any) {
+func emitSpecIssueChainEvent(ctx context.Context, eventType, repo, specRef string, payload map[string]any) {
 	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" || os.Getenv("CHITIN_SPEC_ISSUE_DISABLED") == "1" && eventType != SpecIssueUpdateFailedEvent {
 		return
 	}
@@ -385,11 +405,21 @@ func emitSpecIssueChainEvent(ctx context.Context, eventType, specRef string, pay
 	if binPath == "" {
 		binPath = "chitin-kernel"
 	}
+	// Ensure repo is always queryable on the event itself — the chain
+	// stores raw payloads, so a missing repo here would not be
+	// recoverable downstream.
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if _, ok := payload["repo"]; !ok && repo != "" {
+		payload["repo"] = repo
+	}
+	scope := specIssueScope(repo, specRef)
 	envelope := map[string]any{
 		"schema_version":    "2",
 		"event_type":        eventType,
-		"run_id":            "spec-issue-" + specRef,
-		"session_id":        "chitin-orchestrator-spec-issue-" + specRef,
+		"run_id":            "spec-issue-" + scope,
+		"session_id":        "chitin-orchestrator-spec-issue-" + scope,
 		"surface":           "chitin-orchestrator",
 		"agent_instance_id": "chitin-orchestrator",
 		"chain_type":        "spec-issue",
@@ -426,7 +456,7 @@ func emitSpecIssueChainEvent(ctx context.Context, eventType, specRef string, pay
 	_ = exec.CommandContext(cctx, binPath, "emit", "-dir", chitinDir, "-event-file", tmpPath).Run()
 }
 
-func priorSpecIssueCommentFromChain(specRef, templateID string) (string, bool) {
+func priorSpecIssueCommentFromChain(repo, specRef, templateID string) (string, bool) {
 	chitinDir := os.Getenv("CHITIN_DIR")
 	if chitinDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -436,24 +466,52 @@ func priorSpecIssueCommentFromChain(specRef, templateID string) (string, bool) {
 		}
 	}
 	paths, _ := filepath.Glob(filepath.Join(chitinDir, "events-*.jsonl"))
+	// Stream each file line-by-line and return on first match — chain
+	// files grow without bound, so reading whole files for every dedup
+	// check would scale linearly with chain age on every webhook event.
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
+		if ts, ok := scanPriorSpecIssueComment(path, repo, specRef, templateID); ok {
+			return ts, true
+		}
+	}
+	return "", false
+}
+
+func scanPriorSpecIssueComment(path, repo, specRef, templateID string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	// Allow long event lines (default 64 KiB ceiling can truncate large
+	// payloads — chain envelopes routinely exceed that).
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var ev struct {
+			EventType string         `json:"event_type"`
+			TS        string         `json:"ts"`
+			Payload   map[string]any `json:"payload"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			var ev struct {
-				EventType string         `json:"event_type"`
-				TS        string         `json:"ts"`
-				Payload   map[string]any `json:"payload"`
-			}
-			if json.Unmarshal([]byte(line), &ev) == nil &&
-				ev.EventType == SpecIssueCommentedEvent &&
-				ev.Payload["spec_ref"] == specRef &&
-				ev.Payload["template_id"] == templateID {
-				return ev.TS, true
+		if ev.EventType != SpecIssueCommentedEvent {
+			continue
+		}
+		if ev.Payload["spec_ref"] != specRef || ev.Payload["template_id"] != templateID {
+			continue
+		}
+		// Match repo when supplied so multi-repo orchestrators sharing
+		// $CHITIN_DIR do not cross-skip comments. Older events without
+		// a repo field are matched only when the caller leaves repo
+		// empty (preserves the original single-repo behavior).
+		if repo != "" {
+			if got, _ := ev.Payload["repo"].(string); got != repo {
+				continue
 			}
 		}
+		return ev.TS, true
 	}
 	return "", false
 }
