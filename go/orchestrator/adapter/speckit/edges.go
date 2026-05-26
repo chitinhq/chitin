@@ -1,7 +1,14 @@
+// Package speckit derives dependency edges for spec-kit tasks.
+//
+// File-overlap inference has two conservative rules for parallel siblings:
+// same-basename collisions produce file_overlap edges, and different files
+// in the same directory produce same_directory_overlap edges. When both
+// rules could apply to a pair, file_overlap wins because it is the more
+// specific collision.
 package speckit
 
 import (
-	"path"
+	"path/filepath"
 	"regexp"
 
 	"github.com/chitinhq/chitin/go/orchestrator/adapter"
@@ -32,6 +39,13 @@ var ambiguousDepRe = regexp.MustCompile(`(?i)\b(?:depends on|depend on|blocked b
 // to a concrete task. Stable text so tests and operators can match on it.
 const dependencyClarification = "task description signals a dependency that names no resolvable task id"
 
+type EdgeReason string
+
+const (
+	EdgeReasonFileOverlap          EdgeReason = "file_overlap"
+	EdgeReasonSameDirectoryOverlap EdgeReason = "same_directory_overlap"
+)
+
 // HasAmbiguousDependency reports whether a task description signals a
 // dependency in prose but cites no resolvable task id (FR-009). It returns
 // true only when a dependency phrase is present AND explicitDeps found no
@@ -51,6 +65,7 @@ type derivedEdge struct {
 	from   string // dependent task id
 	to     string // dependency task id
 	lineNo int    // line of the `from` task, for error locations
+	Reason EdgeReason
 }
 
 // DeriveEdges computes the depends_on edges for a parsed spec-kit task list
@@ -78,6 +93,12 @@ type derivedEdge struct {
 // DeriveEdges never adds an edge to a non-existent task on the ordering rule
 // — ordering only ever points at a task already seen in the same list — so
 // the only dangling references it can surface come from explicit citations.
+//
+// Parallel sibling file-overlap inference has two derived reasons:
+// file_overlap for tasks that name the same basename, and
+// same_directory_overlap for tasks that name different files in the same
+// directory. If both could apply to the same pair, file_overlap wins because
+// the exact basename collision is the more specific reason.
 func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.DanglingReferenceError) {
 	exists := make(map[string]struct{}, len(tasks))
 	for _, t := range tasks {
@@ -90,6 +111,7 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 	// promises. A task absent from scopes is sequential or named no backticked
 	// path.
 	scopes := fileScopes(tasks)
+	dirs := fileDirectories(tasks)
 
 	// barrierByPhase tracks, per phase ordinal, the id of the most recent
 	// sequential (non-[P]) task — the task a following task implicitly
@@ -132,7 +154,7 @@ func DeriveEdges(tasks []Task) (edges []derivedEdge, dangling []adapter.Dangling
 		// task whose file scope overlaps t's. Emitted here, in the main
 		// loop, so they land in dependent-task file order alongside the
 		// ordering/explicit edges.
-		edges = append(edges, fileOverlapEdgesAt(tasks, i, scopes)...)
+		edges = append(edges, fileOverlapEdgesAt(tasks, i, scopes, dirs)...)
 	}
 
 	return edges, dangling
@@ -164,11 +186,34 @@ func fileScopes(tasks []Task) map[string]map[string]struct{} {
 		}
 		s := make(map[string]struct{}, len(paths))
 		for _, p := range paths {
-			s[path.Base(p)] = struct{}{}
+			s[filepath.Base(filepath.Clean(p))] = struct{}{}
 		}
 		scopes[t.ID] = s
 	}
 	return scopes
+}
+
+// fileDirectories returns each parallel task's file scope as the SET OF
+// PARENT DIRECTORIES of the repo paths cited in its description, keyed by
+// task ID. It mirrors fileScopes but preserves the directory side of each
+// cited path so same-package parallel work can be conservatively serialized.
+func fileDirectories(tasks []Task) map[string]map[string]struct{} {
+	dirs := make(map[string]map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		if !t.Parallel {
+			continue
+		}
+		paths := adapter.ExtractFilePaths(t.Description)
+		if len(paths) == 0 {
+			continue
+		}
+		s := make(map[string]struct{}, len(paths))
+		for _, p := range paths {
+			s[filepath.Dir(filepath.Clean(p))] = struct{}{}
+		}
+		dirs[t.ID] = s
+	}
+	return dirs
 }
 
 // fileOverlapEdgesAt returns the depends_on edges from tasks[i] to every
@@ -178,13 +223,20 @@ func fileScopes(tasks []Task) map[string]map[string]struct{} {
 // edges slice. Spec 112 FR-002.
 //
 // tasks[i] not having a file scope (sequential, or `[P]` with no backticked
-// path) produces no edges — there is nothing to overlap with.
-func fileOverlapEdgesAt(tasks []Task, i int, scopes map[string]map[string]struct{}) []derivedEdge {
+// path) produces no edges — there is nothing to overlap with. A basename
+// overlap emits file_overlap and wins over same_directory_overlap.
+func fileOverlapEdgesAt(
+	tasks []Task,
+	i int,
+	scopes map[string]map[string]struct{},
+	dirs map[string]map[string]struct{},
+) []derivedEdge {
 	tb := tasks[i]
 	sb, ok := scopes[tb.ID]
 	if !ok {
 		return nil
 	}
+	db := dirs[tb.ID]
 	var out []derivedEdge
 	for _, ta := range tasks[:i] {
 		sa, ok := scopes[ta.ID]
@@ -192,7 +244,17 @@ func fileOverlapEdgesAt(tasks []Task, i int, scopes map[string]map[string]struct
 			continue
 		}
 		if filesOverlap(sa, sb) {
-			out = append(out, derivedEdge{from: tb.ID, to: ta.ID, lineNo: tb.LineNo})
+			out = append(out, derivedEdge{
+				from: tb.ID, to: ta.ID, lineNo: tb.LineNo,
+				Reason: EdgeReasonFileOverlap,
+			})
+			continue
+		}
+		if dirsOverlap(dirs[ta.ID], db) {
+			out = append(out, derivedEdge{
+				from: tb.ID, to: ta.ID, lineNo: tb.LineNo,
+				Reason: EdgeReasonSameDirectoryOverlap,
+			})
 		}
 	}
 	return out
@@ -219,15 +281,25 @@ func fileOverlapEdgesAt(tasks []Task, i int, scopes map[string]map[string]struct
 // set here.
 func deriveFileOverlapEdges(tasks []Task) []derivedEdge {
 	scopes := fileScopes(tasks)
+	dirs := fileDirectories(tasks)
 	var out []derivedEdge
 	for i := range tasks {
-		out = append(out, fileOverlapEdgesAt(tasks, i, scopes)...)
+		out = append(out, fileOverlapEdgesAt(tasks, i, scopes, dirs)...)
 	}
 	return out
 }
 
 // filesOverlap reports whether two file-path sets share at least one path.
 func filesOverlap(a, b map[string]struct{}) bool {
+	return setsOverlap(a, b)
+}
+
+// dirsOverlap reports whether two directory sets share at least one path.
+func dirsOverlap(a, b map[string]struct{}) bool {
+	return setsOverlap(a, b)
+}
+
+func setsOverlap(a, b map[string]struct{}) bool {
 	if len(a) > len(b) {
 		a, b = b, a
 	}

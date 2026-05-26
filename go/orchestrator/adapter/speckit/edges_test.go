@@ -1,7 +1,12 @@
 package speckit
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/orchestrator/adapter"
 )
 
 // TestFileOverlapEdgesParallel asserts spec 112 FR-002: two parallel siblings
@@ -22,6 +27,9 @@ func TestFileOverlapEdgesParallel(t *testing.T) {
 	if !hasEdge(edges, "T002", "T001") {
 		t.Errorf("expected T002→T001 file-overlap edge, got %+v", edges)
 	}
+	if got := edgeReason(edges, "T002", "T001"); got != EdgeReasonFileOverlap {
+		t.Errorf("T002→T001 reason = %q, want %q", got, EdgeReasonFileOverlap)
+	}
 }
 
 // TestFileOverlapEdgesDisjoint asserts parallel siblings with disjoint file
@@ -29,9 +37,9 @@ func TestFileOverlapEdgesParallel(t *testing.T) {
 func TestFileOverlapEdgesDisjoint(t *testing.T) {
 	tasks := []Task{
 		{ID: "T001", Num: 1, Parallel: true,
-			Description: "Implement the feature in `foo.go`", LineNo: 1},
+			Description: "Implement the feature in `pkg/foo/foo.go`", LineNo: 1},
 		{ID: "T002", Num: 2, Parallel: true,
-			Description: "Implement the other feature in `bar.go`", LineNo: 2},
+			Description: "Implement the other feature in `pkg/bar/bar.go`", LineNo: 2},
 	}
 	edges, _ := DeriveEdges(tasks)
 	if hasEdge(edges, "T002", "T001") || hasEdge(edges, "T001", "T002") {
@@ -114,6 +122,139 @@ func TestFileOverlapEdgesMultiFile(t *testing.T) {
 	}
 }
 
+func TestSameDirectoryOverlapEdges(t *testing.T) {
+	tests := []struct {
+		name      string
+		tasks     []Task
+		wantEdges map[string]EdgeReason
+	}{
+		{
+			name: "different files same dir",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `pkg/foo/b.go`", LineNo: 2},
+			},
+			wantEdges: map[string]EdgeReason{"T002→T001": EdgeReasonSameDirectoryOverlap},
+		},
+		{
+			name: "different dirs",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `pkg/bar/b.go`", LineNo: 2},
+			},
+		},
+		{
+			name: "same basename wins",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 2},
+			},
+			wantEdges: map[string]EdgeReason{"T002→T001": EdgeReasonFileOverlap},
+		},
+		{
+			name: "sequential tasks",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Description: "Edit `pkg/foo/b.go`", LineNo: 2},
+			},
+		},
+		{
+			name: "empty scope",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Implement related behavior", LineNo: 2},
+			},
+		},
+		{
+			name: "leading dot slash",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `./pkg/foo/a.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `pkg/foo/b.go`", LineNo: 2},
+			},
+			wantEdges: map[string]EdgeReason{"T002→T001": EdgeReasonSameDirectoryOverlap},
+		},
+		{
+			name: "multiple directories",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go` and `cmd/app/main.go`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `cmd/app/flags.go`", LineNo: 2},
+			},
+			wantEdges: map[string]EdgeReason{"T002→T001": EdgeReasonSameDirectoryOverlap},
+		},
+		{
+			name: "directory mention only out of scope",
+			tasks: []Task{
+				{ID: "T001", Num: 1, Parallel: true, Description: "Refactor files in `internal/queue/`", LineNo: 1},
+				{ID: "T002", Num: 2, Parallel: true, Description: "Edit `internal/queue/types.go`", LineNo: 2},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveFileOverlapEdges(tc.tasks)
+			if len(tc.wantEdges) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("edges = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != len(tc.wantEdges) {
+				t.Fatalf("edges = %+v, want %d edge(s)", got, len(tc.wantEdges))
+			}
+			for pair, reason := range tc.wantEdges {
+				if gotReason := edgeReasonByPair(got, pair); gotReason != reason {
+					t.Errorf("%s reason = %q, want %q; edges=%+v", pair, gotReason, reason, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSameDirectoryOverlapReasonLiteral(t *testing.T) {
+	if string(EdgeReasonSameDirectoryOverlap) != "same_directory_overlap" {
+		t.Fatalf("EdgeReasonSameDirectoryOverlap = %q, want same_directory_overlap", EdgeReasonSameDirectoryOverlap)
+	}
+
+	tasks := []Task{
+		{ID: "T001", Num: 1, Parallel: true, Description: "Edit `pkg/foo/a.go`", LineNo: 1},
+		{ID: "T002", Num: 2, Parallel: true, Description: "Edit `pkg/foo/b.go`", LineNo: 2},
+	}
+	edges := deriveFileOverlapEdges(tasks)
+	if got := edgeReason(edges, "T002", "T001"); string(got) != "same_directory_overlap" {
+		t.Fatalf("T002→T001 reason = %q, want same_directory_overlap", got)
+	}
+}
+
+func TestSameDirectoryOverlapSpec114QueueScenario(t *testing.T) {
+	tasks := []Task{
+		{ID: "T001", Num: 1, Parallel: true, Description: "Implement `internal/queue/format_table.go`", LineNo: 1},
+		{ID: "T002", Num: 2, Parallel: true, Description: "Implement `internal/queue/format_md.go`", LineNo: 2},
+		{ID: "T003", Num: 3, Parallel: true, Description: "Implement `internal/queue/format_json.go`", LineNo: 3},
+	}
+	edges := deriveFileOverlapEdges(tasks)
+	want := []string{"T002→T001", "T003→T001", "T003→T002"}
+	if got := edgePairs(edges); !sliceEqual(got, want) {
+		t.Fatalf("edge order = %v, want %v", got, want)
+	}
+	for _, pair := range want {
+		if got := edgeReasonByPair(edges, pair); string(got) != "same_directory_overlap" {
+			t.Errorf("%s reason = %q, want same_directory_overlap", pair, got)
+		}
+	}
+}
+
+func TestSameDirectoryOverlapSpec115SpeclintScenario(t *testing.T) {
+	tasks := []Task{
+		{ID: "T001", Num: 1, Parallel: true, Description: "Implement `internal/speclint/l03_task_fr.go`", LineNo: 1},
+		{ID: "T002", Num: 2, Parallel: true, Description: "Implement `internal/speclint/l04_events.go`", LineNo: 2},
+	}
+	edges := deriveFileOverlapEdges(tasks)
+	if got := edgeReason(edges, "T002", "T001"); string(got) != "same_directory_overlap" {
+		t.Fatalf("T002→T001 reason = %q, want same_directory_overlap; edges=%+v", got, edges)
+	}
+}
+
 // TestFileOverlapEdgesSequentialUnaffected asserts the new rule only fires on
 // `[P]` tasks — two sequential tasks already chain via the barrier rule and
 // don't pick up a redundant overlap edge from this pass. (The pre-existing
@@ -160,6 +301,24 @@ func hasEdge(edges []derivedEdge, from, to string) bool {
 	return false
 }
 
+func edgeReason(edges []derivedEdge, from, to string) EdgeReason {
+	for _, e := range edges {
+		if e.from == from && e.to == to {
+			return e.Reason
+		}
+	}
+	return ""
+}
+
+func edgeReasonByPair(edges []derivedEdge, pair string) EdgeReason {
+	for _, e := range edges {
+		if e.from+"→"+e.to == pair {
+			return e.Reason
+		}
+	}
+	return ""
+}
+
 // TestFileOverlapEdgesDeterministic asserts the injected edges come out in
 // the same order on every run — a precondition for compilation determinism
 // the kit's plan.md Constraints require. The expected order is dependent-
@@ -204,4 +363,153 @@ func sliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestDeriveEdgesShippedSpecsSupersetPriorInference(t *testing.T) {
+	root := findRepoRoot(t)
+	specDirs := shippedSpecDirs(t, root)
+	if len(specDirs) == 0 {
+		t.Fatal("no shipped spec task files found")
+	}
+
+	for _, specDir := range specDirs {
+		t.Run(filepath.Base(specDir), func(t *testing.T) {
+			tasksPath := filepath.Join(specDir, "tasks.md")
+			content, err := os.ReadFile(tasksPath)
+			if err != nil {
+				t.Fatalf("read tasks.md: %v", err)
+			}
+			rel, err := filepath.Rel(root, tasksPath)
+			if err != nil {
+				t.Fatalf("rel tasks.md: %v", err)
+			}
+			tasks, err := ParseTasks(rel, string(content))
+			if err != nil {
+				t.Skipf("tasks.md does not parse: %v", err)
+			}
+
+			prior, priorDangling := deriveEdgesPriorFileOverlap(tasks)
+			current, currentDangling := DeriveEdges(tasks)
+			if len(priorDangling) != 0 || len(currentDangling) != 0 {
+				t.Skipf("tasks.md has dangling references: prior=%+v current=%+v", priorDangling, currentDangling)
+			}
+
+			currentSet := edgeSet(current)
+			for _, e := range prior {
+				pair := e.from + "→" + e.to
+				if _, ok := currentSet[pair]; !ok {
+					t.Fatalf("current edges are not a superset: missing %s from prior edges", pair)
+				}
+			}
+		})
+	}
+}
+
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".specify")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root containing .specify")
+		}
+		dir = parent
+	}
+}
+
+func shippedSpecDirs(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	for i := 89; i <= 116; i++ {
+		if i == 99 {
+			continue
+		}
+		pattern := filepath.Join(root, ".specify", "specs", fmt.Sprintf("%03d-*", i))
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %q: %v", pattern, err)
+		}
+		for _, match := range matches {
+			if info, err := os.Stat(filepath.Join(match, "tasks.md")); err == nil && !info.IsDir() {
+				out = append(out, match)
+			}
+		}
+	}
+	return out
+}
+
+func deriveEdgesPriorFileOverlap(tasks []Task) (edges []derivedEdge, dangling []adapter.DanglingReferenceError) {
+	exists := make(map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		exists[t.ID] = struct{}{}
+	}
+
+	scopes := fileScopes(tasks)
+	barrierByPhase := make(map[int]string)
+
+	for i, t := range tasks {
+		explicit := explicitDeps(t.Description)
+		if len(explicit) > 0 {
+			for _, dep := range explicit {
+				if _, ok := exists[dep]; !ok {
+					dangling = append(dangling, adapter.DanglingReferenceError{
+						From: t.ID, MissingTarget: dep,
+					})
+					continue
+				}
+				if dep != t.ID {
+					edges = append(edges, derivedEdge{from: t.ID, to: dep, lineNo: t.LineNo})
+				}
+			}
+			if !t.Parallel {
+				barrierByPhase[t.PhaseSeq] = t.ID
+			}
+		} else {
+			if barrier, ok := barrierByPhase[t.PhaseSeq]; ok && barrier != t.ID {
+				edges = append(edges, derivedEdge{from: t.ID, to: barrier, lineNo: t.LineNo})
+			}
+			if !t.Parallel {
+				barrierByPhase[t.PhaseSeq] = t.ID
+			}
+		}
+
+		edges = append(edges, priorFileOverlapEdgesAt(tasks, i, scopes)...)
+	}
+	return edges, dangling
+}
+
+func priorFileOverlapEdgesAt(tasks []Task, i int, scopes map[string]map[string]struct{}) []derivedEdge {
+	tb := tasks[i]
+	sb, ok := scopes[tb.ID]
+	if !ok {
+		return nil
+	}
+	var out []derivedEdge
+	for _, ta := range tasks[:i] {
+		sa, ok := scopes[ta.ID]
+		if !ok {
+			continue
+		}
+		if filesOverlap(sa, sb) {
+			out = append(out, derivedEdge{
+				from: tb.ID, to: ta.ID, lineNo: tb.LineNo,
+				Reason: EdgeReasonFileOverlap,
+			})
+		}
+	}
+	return out
+}
+
+func edgeSet(edges []derivedEdge) map[string]struct{} {
+	out := make(map[string]struct{}, len(edges))
+	for _, e := range edges {
+		out[e.from+"→"+e.to] = struct{}{}
+	}
+	return out
 }

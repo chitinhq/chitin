@@ -66,11 +66,12 @@ func TestCompileEdges(t *testing.T) {
 	assertDeps(t, "T002", deps("100-sample-feature/T002"), []string{"100-sample-feature/T001"})
 
 	// Phase 2: T003 sequential (no deps — new phase, no barrier yet);
-	// T004 and T005 are [P] siblings, both depend on barrier T003, not each
-	// other.
+	// T004 and T005 are [P] siblings, both depend on barrier T003. They also
+	// serialize with T005→T004 because they name different files in the same
+	// directory.
 	assertDeps(t, "T003", deps("100-sample-feature/T003"), nil)
 	assertDeps(t, "T004", deps("100-sample-feature/T004"), []string{"100-sample-feature/T003"})
-	assertDeps(t, "T005", deps("100-sample-feature/T005"), []string{"100-sample-feature/T003"})
+	assertDeps(t, "T005", deps("100-sample-feature/T005"), []string{"100-sample-feature/T003", "100-sample-feature/T004"})
 
 	// Phase 3: T006 sequential (new phase); T007 sequential depends on T006.
 	assertDeps(t, "T006", deps("100-sample-feature/T006"), nil)
