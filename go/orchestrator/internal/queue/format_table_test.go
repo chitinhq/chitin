@@ -28,7 +28,7 @@ func TestFormatTable_HeaderAndColumns(t *testing.T) {
 	}
 
 	header := lines[0]
-	for _, col := range []string{"PR", "TITLE", "REASON", "AGE", "LAST_AUTO", "SPEC_REF"} {
+	for _, col := range []string{"ID", "TITLE", "REASON", "AGE", "LAST_AUTO", "SPEC_REF"} {
 		if !strings.Contains(header, col) {
 			t.Errorf("header missing column %q:\n%s", col, header)
 		}

@@ -190,6 +190,11 @@ func makeEntry(prNumber int, reason string, live *LivePR, trig *EscalationEvent)
 			if trig.SpecRef != "" {
 				e.SpecRef = trig.SpecRef
 			}
+			// No live PR snapshot to anchor AGE; fall back to the event's
+			// own timestamp so the row renders with a real age + non-zero JSON.
+			if live == nil && !trig.Ts.IsZero() {
+				e.UpdatedAt = trig.Ts
+			}
 		}
 	}
 	return e

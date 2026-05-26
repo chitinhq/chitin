@@ -18,8 +18,9 @@ const titleMaxRunes = 60
 const emptyQueueMessage = "✅ no PRs need attention\n"
 
 // FormatTable renders entries as a fixed-column text table using
-// text/tabwriter (FR-005). Columns: PR, TITLE, REASON, AGE,
-// LAST_AUTO, SPEC_REF.
+// text/tabwriter (FR-005). Columns: ID, TITLE, REASON, AGE,
+// LAST_AUTO, SPEC_REF. The ID column carries either `#<pr-number>` for
+// PR-bearing rows or `<spec_ref>/<task_id>` for no-PR silent-drop rows.
 //
 // Ordering is the caller's responsibility — the filter (T004) sorts
 // entries before handing them off; this function is a pure renderer
@@ -38,7 +39,7 @@ func FormatTable(entries []Entry, now time.Time) string {
 
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PR\tTITLE\tREASON\tAGE\tLAST_AUTO\tSPEC_REF")
+	fmt.Fprintln(tw, "ID\tTITLE\tREASON\tAGE\tLAST_AUTO\tSPEC_REF")
 	for _, e := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			tableIdentity(e),

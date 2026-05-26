@@ -6,6 +6,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -22,11 +23,20 @@ KINDS = (
 )
 
 
+_NS_FRACTION_RE = re.compile(r"\.(\d+)")
+
+
 def parse_ts(value: str) -> datetime | None:
     if not value:
         return None
+    # chitin events are time.RFC3339Nano (up to 9 fractional-second digits);
+    # datetime.fromisoformat only accepts 0/3/6 digits, so truncate to microseconds.
+    def _truncate(match: re.Match[str]) -> str:
+        return "." + match.group(1)[:6]
+
+    normalized = _NS_FRACTION_RE.sub(_truncate, value).replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(normalized)
     except ValueError:
         return None
 

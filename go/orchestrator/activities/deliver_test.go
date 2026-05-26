@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -244,7 +245,7 @@ func installFakeGH(t *testing.T, exitCode int) {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "gh")
-	script := "#!/bin/sh\necho fake gh failure >&2\nexit " + string(rune('0'+exitCode)) + "\n"
+	script := "#!/bin/sh\necho fake gh failure >&2\nexit " + strconv.Itoa(exitCode) + "\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}

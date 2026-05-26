@@ -13,7 +13,9 @@ import "time"
 // event via TriggeringEvent so downstream tooling (FR-007) can inspect
 // the source payload without rescanning the chain.
 type Entry struct {
-	// PRNumber is the GitHub PR number. It is empty for no-PR silent-drop rows.
+	// PRNumber is the GitHub PR number. A zero value is the sentinel for
+	// no-PR silent-drop rows (TaskID + SpecRef carry the identity instead)
+	// and is omitted from JSON via omitempty.
 	PRNumber int `json:"pr_number,omitempty"`
 	// TaskID identifies a no-PR work unit row, taking precedence over PRNumber
 	// when the expected PR deliverable was never created.

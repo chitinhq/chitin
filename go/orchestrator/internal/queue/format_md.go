@@ -41,9 +41,11 @@ func FormatMarkdown(entries []Entry, now time.Time) string {
 	return b.String()
 }
 
-// mdPRCell renders the PR-number cell. When URL is set, the cell is a
-// markdown link `[#1234](url)`; otherwise just `#1234` so chain-only
-// entries (built without a live PR snapshot) still render legibly.
+// mdPRCell renders the identity cell. For PR-bearing rows it emits a
+// markdown link `[#1234](url)` (or bare `#1234` when URL is unset, e.g.
+// chain-only entries without a live PR snapshot). For no-PR silent-drop
+// rows (PRNumber<=0) it emits `<spec_ref>/<task_id>` so the cell still
+// identifies the work unit. Returns "-" if neither identity is present.
 func mdPRCell(e Entry) string {
 	if e.PRNumber <= 0 {
 		if e.SpecRef != "" && e.TaskID != "" {
