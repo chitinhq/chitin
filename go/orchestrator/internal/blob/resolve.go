@@ -25,6 +25,16 @@ func Resolve(ctx context.Context, store Store, s string) ([]byte, error) {
 
 // ResolveText replaces blob ref tokens in s with their bodies.
 func ResolveText(ctx context.Context, store Store, s string) (string, error) {
+	return ResolveTextWithCap(ctx, store, s, 0)
+}
+
+// ResolveTextWithCap is like ResolveText but truncates each resolved blob body
+// to capBytes, replacing the tail with a hint pointing back at the original
+// ref so an operator can open the full body manually. capBytes <= 0 disables
+// truncation. Used for size-bounded sinks (e.g. Discord summaries) so a
+// multi-MiB transcript does not allocate a giant string only to be truncated
+// downstream.
+func ResolveTextWithCap(ctx context.Context, store Store, s string, capBytes int) (string, error) {
 	var firstErr error
 	out := refTokenRE.ReplaceAllStringFunc(s, func(tok string) string {
 		if firstErr != nil {
@@ -34,6 +44,9 @@ func ResolveText(ctx context.Context, store Store, s string) (string, error) {
 		if err != nil {
 			firstErr = err
 			return tok
+		}
+		if capBytes > 0 && len(body) > capBytes {
+			return string(body[:capBytes]) + "… (truncated; full body at " + tok + ")"
 		}
 		return string(body)
 	})

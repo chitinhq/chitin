@@ -198,7 +198,10 @@ func (a *DiscordNotify) Execute(ctx context.Context, ev NotificationEvent) error
 		return nil
 	}
 	if a.blobs != nil {
-		if summary, err := blob.ResolveText(ctx, a.blobs, ev.Summary); err == nil {
+		// Cap each resolved blob body to Discord's message limit. The notifier
+		// will truncate the final message to discordContentLimit runes anyway,
+		// so loading multi-MiB transcripts only to drop them is pure waste.
+		if summary, err := blob.ResolveTextWithCap(ctx, a.blobs, ev.Summary, discordContentLimit); err == nil {
 			ev.Summary = summary
 		} else {
 			log.Printf("notify: resolving blob refs in %s summary: %v", ev.Kind, err)

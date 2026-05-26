@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -159,18 +161,17 @@ func (s *FSStore) Put(ctx context.Context, body []byte) (Ref, error) {
 			return Ref{}, err
 		}
 	}
-	if _, err := os.Stat(dest); err == nil {
-		return ref, nil
-	} else if !os.IsNotExist(err) {
-		return Ref{}, err
-	}
-	if err := os.Rename(tmpPath, dest); err != nil {
-		if _, statErr := os.Stat(dest); statErr == nil {
+	// Atomic publish via hard link: link(2) fails with EEXIST if dest already
+	// exists, so concurrent identical Puts cannot rewrite the destination or
+	// double-emit blob_written. Unlike os.Rename (which silently replaces on
+	// Unix), this enforces the "one writer ever lands a given hash" invariant.
+	// The temp inode is cleaned up by the defer; dest holds its own link.
+	if err := os.Link(tmpPath, dest); err != nil {
+		if errors.Is(err, fs.ErrExist) {
 			return ref, nil
 		}
 		return Ref{}, err
 	}
-	removeTmp = false
 	if !s.disableDirFsync {
 		if err := fsyncDir(shardDir); err != nil {
 			return Ref{}, err
@@ -231,7 +232,12 @@ type KernelEventSink struct {
 }
 
 // BlobWritten emits one blob_written event. Failures are warning-only.
+// Honors CHITIN_DISABLE_CHAIN_EMIT=1 like the deliver/pr-iteration/sibling-rebase
+// emitters so sandboxed tests and dry-run sessions can suppress chain side effects.
 func (s KernelEventSink) BlobWritten(ctx context.Context, payload BlobWrittenPayload) {
+	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" {
+		return
+	}
 	binPath := os.Getenv("CHITIN_KERNEL_BIN")
 	if binPath == "" {
 		binPath = "chitin-kernel"
