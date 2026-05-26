@@ -17,8 +17,9 @@ related:
 
 ## Why
 
-On 2026-05-26 the autonomous loop produced TWO observed instances
-of a phantom-PR bug — and three more were imminent if not fixed:
+On 2026-05-26 the autonomous loop produced three observed
+duplicate impl PRs across two incidents — and three more were
+imminent if not fixed:
 
   - **2026-05-26 01:29Z** — spec 118 + spec 120 had each just
     merged via their whole-spec impl PRs (#1130 + #1131). Within
@@ -170,10 +171,10 @@ ONE `factory_dispatch_filtered` event fires with payload
 ## Functional requirements
 
 - **FR-001** The dispatch loop at
-  `cmd/chitin-orchestrator/factory_listen.go:handlePush`
-  MUST iterate **only** `c.Added` when collecting spec refs
-  to dispatch. The `c.Modified` array MUST NOT contribute
-  to the dispatch set.
+  `cmd/chitin-orchestrator/factory_listen.go:extractSpecRefs`
+  (which `handlePush` delegates to) MUST iterate **only**
+  `c.Added` when collecting spec refs to dispatch. The
+  `c.Modified` array MUST NOT contribute to the dispatch set.
 
 - **FR-002** When `specPathPattern` matches a path in
   `c.Modified` AND the same path is NOT in `c.Added`,
