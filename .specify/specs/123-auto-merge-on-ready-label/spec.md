@@ -259,24 +259,40 @@ one `auto_merge_already_settled` for the duplicate.
   the payload; on `gh` failure, emit `auto_merge_failed`
   with the stderr tail (capped at 1 KiB).
 
-- **FR-009** The `WorkflowID` MUST be deterministic per PR:
-  `auto-merge-pr-<N>`. The `WorkflowIDReusePolicy` MUST be
-  `RejectDuplicate` so a duplicate `labeled` event during
-  an in-flight workflow rejects cleanly (Temporal error;
-  the webhook handler swallows it and emits
-  `auto_merge_already_running`). After a workflow
-  completes (any terminal state), the same PR can be
-  re-labeled and a NEW workflow MUST be acceptable —
-  the reuse policy permits re-runs after completion.
+- **FR-009** The `WorkflowID` MUST be deterministic per
+  `(PR, GitHub delivery_id)`:
+  `auto-merge-pr-<N>-<TriggerEventID>` where `TriggerEventID`
+  is the `X-GitHub-Delivery` header from the `labeled`
+  webhook (already carried on `AutoMergeInput` per FR-001).
+  Rationale: GitHub redelivers the SAME `labeled` event with
+  the SAME `delivery_id` on at-least-once retries — these
+  must collide on WorkflowID. A genuinely new label event
+  (e.g., the operator re-labels after a prior failure)
+  carries a NEW `delivery_id` → distinct WorkflowID →
+  fresh workflow, sidestepping spec 099's R3 concern about
+  bare `auto-merge-pr-<N>` not handling post-completion
+  redelivery cleanly. The `WorkflowIDReusePolicy` MUST be
+  `RejectDuplicate` so a true redelivery during an in-flight
+  workflow rejects cleanly (Temporal error; the webhook
+  handler swallows it and emits `auto_merge_already_running`).
+  Post-completion redeliveries (same `delivery_id`) are
+  additionally guarded by a chain-event dedup lookup for
+  `auto_merge_triggered` with the same `trigger_event_id`,
+  emitting `auto_merge_already_settled` and returning
+  without starting a new workflow.
 
 - **FR-010** All failure paths (`ci_failed`, `conflict`,
-  `timeout`) MUST route through spec 114's `Notify`
-  activity with kind `NotifyOperatorEscalation` and one
-  of three new closed-taxonomy reason values:
+  `timeout`, generic `gh pr merge` failure such as missing
+  required review) MUST route through the existing
+  `DiscordNotify` activity (spec 080, reused by spec 114
+  FR-009 — see `go/orchestrator/activities/notify.go`).
+  The chain reason kind is drawn from a closed set of FOUR
+  new values added by this spec to the FR-008 reason
+  taxonomy in `go/orchestrator/internal/queue/reason.go`:
   `auto_merge_ci_failed`, `auto_merge_conflict`,
-  `auto_merge_ci_timeout`. The reasons are added to
-  spec 114's enum in this spec (T012-style cross-spec
-  change, minimal — see Composability).
+  `auto_merge_ci_timeout`, `auto_merge_failed` (the
+  catch-all for non-CI `gh pr merge` failures per the
+  Edge cases section).
 
 - **FR-011** Closed event taxonomy for this spec
   (FR-014's data model lists payload schemas):
@@ -372,8 +388,10 @@ In:
     the `pull_request` event dispatch per FR-002
   - `cmd/chitin-orchestrator/auto_merge.go` — new
     `auto-merge status <PR>` subcommand per FR-013
-  - Spec 114 reason taxonomy extension — three new
-    closed values per FR-010
+  - Spec 114 reason taxonomy extension — four new
+    closed values per FR-010 (`auto_merge_ci_failed`,
+    `auto_merge_conflict`, `auto_merge_ci_timeout`,
+    `auto_merge_failed`)
   - Chain emit sites — 10 event types per FR-011
   - Comment template constants — three named templates
     per FR-006
@@ -413,7 +431,8 @@ Chain event payloads (closed schema per FR-011):
 auto_merge_triggered: {
   repo: string,           // "chitinhq/chitin"
   pr_number: int,
-  workflow_id: string,    // "auto-merge-pr-<N>"
+  workflow_id: string,    // "auto-merge-pr-<N>-<TriggerEventID>" per FR-009
+  trigger_event_id: string, // GitHub X-GitHub-Delivery header value
   manual_label: bool      // true iff the label was applied by a human,
                           // false if by spec 116's activity (heuristic:
                           // label-event actor's login matches a known
@@ -423,12 +442,17 @@ auto_merge_triggered: {
 auto_merge_waiting: {
   repo, pr_number,
   elapsed_seconds: int,
-  ci_state: "pending" | "absent"
+  ci_state: "pending"     // FR-004 closed CI taxonomy is green|failed|pending;
+                          // an empty rollup IS pending per FR-004, so no
+                          // separate "absent" value is needed
 }
 
 auto_merge_canceled: {
   repo, pr_number,
-  reason: "label_removed_pre_flight" | "label_removed_mid_wait"
+  reason: "label_removed_pre_flight"   // FR-015 canonical set
+        | "label_removed_mid_wait"
+        | "pr_closed_pre_flight"
+        | "pr_is_draft"
 }
 
 auto_merge_succeeded: {
@@ -457,7 +481,8 @@ auto_merge_ci_timeout: {
   repo, pr_number,
   waited_seconds: int,
   timeout_seconds: int,
-  last_ci_state: "pending" | "absent"
+  last_ci_state: "pending"   // same closed CI taxonomy as auto_merge_waiting;
+                             // empty rollup IS pending per FR-004
 }
 
 auto_merge_already_running: {
@@ -483,8 +508,9 @@ auto_merge_already_settled: {
   - **PR closed between label and merge.** FR-003 also
     validates the PR is `OPEN` — closed PRs emit
     `auto_merge_canceled` with reason `pr_closed_pre_flight`
-    (extending the canceled-reason taxonomy by one value;
-    declared in the data model).
+    (part of the FR-015 canonical four-reason set; payload
+    matches the `auto_merge_canceled` schema in the data
+    model).
   - **Label is applied to a draft PR.** FR-003 includes
     a draft check; emit `auto_merge_canceled` with reason
     `pr_is_draft`. Spec 116 shouldn't label drafts, but
