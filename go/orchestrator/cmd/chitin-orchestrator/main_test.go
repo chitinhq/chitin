@@ -55,6 +55,18 @@ func TestBuildRegistry_RoleSpecificAllowlistOverridesLegacyAllowlist(t *testing.
 	assertRegistryIDs(t, registry, []string{"codex"})
 }
 
+func TestBuildRegistry_CanRegisterClaudeCodeGLM(t *testing.T) {
+	clearDriverAllowEnv(t)
+	t.Setenv("CHITIN_DRIVER_ALLOW_IMPL", "claudecode-glm")
+
+	registry, err := buildRegistry("impl")
+	if err != nil {
+		t.Fatalf("buildRegistry(impl): %v", err)
+	}
+
+	assertRegistryIDs(t, registry, []string{"claudecode-glm"})
+}
+
 func TestBuildRegistry_ImplAllowlistDoesNotBleedIntoReviewFallback(t *testing.T) {
 	clearDriverAllowEnv(t)
 	t.Setenv("CHITIN_DRIVER_ALLOW", "codex claudecode")

@@ -2,9 +2,12 @@ package activities
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeglm"
 )
 
 // fakeDriver is a minimal driver.AgentDriver for the SelectDriver activity
@@ -87,6 +90,36 @@ func TestSelectDriver_BlockedUnroutable(t *testing.T) {
 	}
 }
 
+func TestSelectDriver_SkipsNotReadyClaudeCodeGLM(t *testing.T) {
+	dir := t.TempDir()
+	ollama := writeActivityShim(t, dir, "ollama")
+	claude := writeActivityShim(t, dir, "claude")
+
+	reg := driver.NewRegistry()
+	if err := reg.Register(claudecodeglm.New(
+		claudecodeglm.WithOllamaCommand(ollama),
+		claudecodeglm.WithClaudeCommand(claude),
+		claudecodeglm.WithBaseURL("http://127.0.0.1:1"),
+	)); err != nil {
+		t.Fatalf("Register claudecode-glm: %v", err)
+	}
+	act := NewDriverSelector(reg)
+
+	res, err := act.Execute(context.Background(), SelectDriverInput{
+		NodeID:     "wu-120-whole",
+		Capability: string(driver.CapSpecImplement),
+	})
+	if err != nil {
+		t.Fatalf("Execute must return blocked-unroutable as a result, not an error: %v", err)
+	}
+	if !res.Unroutable {
+		t.Fatalf("ready=false claudecode-glm should be skipped; got driver %q", res.DriverID)
+	}
+	if res.MissingCapability != string(driver.CapSpecImplement) {
+		t.Fatalf("MissingCapability = %q, want %q", res.MissingCapability, driver.CapSpecImplement)
+	}
+}
+
 // TestSelectDriver_NoRegistryErrors proves a misconfigured activity (no
 // registry bound) returns an error rather than silently mis-routing.
 func TestSelectDriver_NoRegistryErrors(t *testing.T) {
@@ -96,6 +129,15 @@ func TestSelectDriver_NoRegistryErrors(t *testing.T) {
 	}); err == nil {
 		t.Fatal("Execute with no registry bound must error, got nil")
 	}
+}
+
+func writeActivityShim(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write shim %s: %v", name, err)
+	}
+	return path
 }
 
 // TestSelectDriver_Deterministic proves selection is deterministic — 100

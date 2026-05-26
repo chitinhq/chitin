@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chitinhq/chitin/go/orchestrator/driver"
 )
 
 // TestBuildWholeSpecDAG_HappyPath proves the single-node DAG carries
@@ -204,4 +206,56 @@ func TestRunSchedule_MutuallyExclusiveModeFlags(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "mutually exclusive") {
 		t.Errorf("stderr should explain the mutual-exclusion; got: %q", errBuf.String())
 	}
+}
+
+func TestSchedulerStartedDriverID_WholeSpec(t *testing.T) {
+	reg := driver.NewRegistry()
+	if err := reg.Register(&scheduleFakeDriver{
+		id:   "claudecode-glm",
+		caps: []driver.Capability{driver.CapSpecImplement},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	specRef := "199-driver-id-test"
+	dir := t.TempDir()
+	specDir := filepath.Join(dir, specRef)
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(specDir, "spec.md"), []byte("# Spec\n"), 0o644); err != nil {
+		t.Fatalf("write spec.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(specDir, "tasks.md"), []byte("- [ ] T001 implement\n"), 0o644); err != nil {
+		t.Fatalf("write tasks.md: %v", err)
+	}
+	dag, _, err := buildWholeSpecDAG(specRef, specDir, "/repo", "main")
+	if err != nil {
+		t.Fatalf("buildWholeSpecDAG: %v", err)
+	}
+
+	got := schedulerStartedDriverID(context.Background(), "whole-spec", dag, reg)
+	if got != "claudecode-glm" {
+		t.Fatalf("driver id = %q, want claudecode-glm", got)
+	}
+}
+
+type scheduleFakeDriver struct {
+	id   string
+	caps []driver.Capability
+}
+
+func (f *scheduleFakeDriver) ID() string { return f.id }
+func (f *scheduleFakeDriver) Card() driver.CapabilityCard {
+	return driver.CapabilityCard{
+		DriverID:     f.id,
+		AgentRuntime: "fake",
+		Capabilities: f.caps,
+		Tier:         driver.TierLocal,
+		CostClass:    driver.CostZero,
+	}
+}
+func (f *scheduleFakeDriver) Ready(context.Context) (bool, string) { return true, "" }
+func (f *scheduleFakeDriver) Invoke(context.Context, driver.WorkUnit) (driver.Result, error) {
+	return driver.Result{}, nil
 }
