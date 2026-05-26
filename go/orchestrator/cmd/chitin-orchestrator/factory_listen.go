@@ -221,9 +221,17 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the PR number — pull_request_review and pull_request
-	// carry it at top level; issue_comment puts it inside .issue.
+	// Resolve the PR number. Payload shapes vary by event type:
+	//   - pull_request: top-level `.number`
+	//   - issue_comment: nested `.issue.number`
+	//   - pull_request_review / pull_request_review_comment: nested
+	//     `.pull_request.number` (NOT top-level — the comment in this
+	//     block previously claimed otherwise and produced pr_number=0
+	//     for spec 113's iteration trigger).
 	prNumber := p.Number
+	if prNumber == 0 {
+		prNumber = p.PullRequest.Number
+	}
 	if prNumber == 0 {
 		prNumber = p.Issue.Number
 	}
