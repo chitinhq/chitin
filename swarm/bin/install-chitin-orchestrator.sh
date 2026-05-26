@@ -3,7 +3,9 @@
 # Orchestrator worker host.
 #
 # Builds go/orchestrator/cmd/chitin-orchestrator into ~/.local/bin and
-# installs the tracked user unit under ~/.config/systemd/user/.
+# installs the tracked user unit under ~/.config/systemd/user/. Also installs
+# the report freshness canary default config when the operator has not already
+# customized one.
 #
 # Usage:
 #   ./install-chitin-orchestrator.sh           # build + install/update
@@ -23,6 +25,8 @@ BIN_PATH="$LOCAL_BIN/$BIN_NAME"
 UNIT_NAME="chitin-orchestrator.service"
 UNIT_SRC="$REPO_ROOT/swarm/systemd/$UNIT_NAME"
 UNIT_DEST="$SYSD_USER_DIR/$UNIT_NAME"
+REPORT_FRESHNESS_CONFIG_SRC="$ORCH_DIR/internal/reportfreshness/default-config.yaml"
+REPORT_FRESHNESS_CONFIG_DEST="${CHITIN_REPORT_FRESHNESS_CONFIG:-$HOME/.chitin/report-freshness.yaml}"
 
 require_go() {
     if ! command -v go >/dev/null 2>&1; then
@@ -60,6 +64,13 @@ check_installed() {
         ok=false
     fi
 
+    if [[ -f "$REPORT_FRESHNESS_CONFIG_DEST" ]]; then
+        echo "INSTALLED report freshness config: $REPORT_FRESHNESS_CONFIG_DEST"
+    else
+        echo "MISSING report freshness config: $REPORT_FRESHNESS_CONFIG_DEST"
+        ok=false
+    fi
+
     $ok
 }
 
@@ -77,6 +88,16 @@ install_unit() {
     mkdir -p "$SYSD_USER_DIR"
     install -m 0644 "$UNIT_SRC" "$UNIT_DEST"
     echo "[install] installed $UNIT_DEST"
+}
+
+install_report_freshness_config() {
+    mkdir -p "$(dirname "$REPORT_FRESHNESS_CONFIG_DEST")"
+    if [[ -f "$REPORT_FRESHNESS_CONFIG_DEST" ]]; then
+        echo "[install] kept existing $REPORT_FRESHNESS_CONFIG_DEST"
+        return
+    fi
+    install -m 0644 "$REPORT_FRESHNESS_CONFIG_SRC" "$REPORT_FRESHNESS_CONFIG_DEST"
+    echo "[install] installed $REPORT_FRESHNESS_CONFIG_DEST"
 }
 
 case "${1:-install}" in
@@ -108,6 +129,7 @@ case "${1:-install}" in
 
         build_binary
         install_unit
+        install_report_freshness_config
 
         if command -v systemctl >/dev/null 2>&1; then
             systemctl --user daemon-reload

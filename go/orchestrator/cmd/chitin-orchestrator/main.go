@@ -84,6 +84,10 @@ func runMain(args []string) int {
 			return cmdQueue(args[2:])
 		case "spec-lint":
 			return cmdSpecLint(args[2:])
+		case "reports":
+			return cmdReports(args[2:])
+		case "schedules":
+			return cmdSchedules(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -333,6 +337,8 @@ USAGE
   chitin-orchestrator tasks-lint <spec-ref> [opts] # validate tasks.md capability classification
   chitin-orchestrator queue [opts]                 # show open PRs that need operator attention (spec 114)
   chitin-orchestrator spec-lint <spec-dir> [opts]  # run the spec PR consistency linter L01-L07 (spec 115)
+  chitin-orchestrator reports check|list [opts]    # report freshness canary manual probe (spec 122)
+  chitin-orchestrator schedules list               # list registered Temporal Schedule-backed jobs
 
 ENVIRONMENT
   TEMPORAL_HOSTPORT                Temporal frontend (default 127.0.0.1:7233)

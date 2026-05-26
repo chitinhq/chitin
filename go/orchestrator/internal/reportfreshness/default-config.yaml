@@ -1,0 +1,9 @@
+paths:
+  - path: /home/red/labs/local-ai-lab/wiki/assets/chain-summary-latest.html
+    sla_hours: 24
+  - path: /home/red/labs/local-ai-lab/wiki/assets/board-audit-latest.html
+    sla_hours: 24
+  - path: /home/red/labs/local-ai-lab/wiki/assets/industry-scan-latest.html
+    sla_hours: 24
+cadence_minutes: 360
+escalation_cooldown_hours: 24

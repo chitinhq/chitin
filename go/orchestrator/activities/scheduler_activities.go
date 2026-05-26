@@ -106,6 +106,9 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	notify := NewDiscordNotify(deps.Notifier)
 	w.RegisterActivityWithOptions(notify.Execute, registerAs(notify.ActivityName()))
 
+	reportFreshness := NewCheckReportFreshness(nil, deps.Notifier)
+	w.RegisterActivityWithOptions(reportFreshness.Execute, registerAs(reportFreshness.ActivityName()))
+
 	tel := NewTickTelemetry(deps.Telemetry)
 	w.RegisterActivityWithOptions(tel.Execute, registerAs(tel.ActivityName()))
 

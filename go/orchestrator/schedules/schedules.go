@@ -68,6 +68,12 @@ type JobSpec struct {
 	// Description is a one-line human-readable account of the job, surfaced as
 	// the Schedule's note.
 	Description string `json:"description"`
+	// ActivityName optionally names a registered activity that should run
+	// directly instead of spawning Command. Used for orchestrator-native
+	// scheduled jobs that are not migrated shell scripts.
+	ActivityName string `json:"activity_name,omitempty"`
+	// ActivityInput is the JSON-serializable input passed to ActivityName.
+	ActivityInput any `json:"activity_input,omitempty"`
 }
 
 // ScheduleID is the stable Temporal Schedule ID for this job. It is a pure
@@ -104,6 +110,8 @@ func Registry() []JobSpec {
 		operatorHeartbeatSpec(),
 		// spec 085 US2 — the daily operator telemetry digest.
 		operatorDigestSpec(),
+		// spec 122 — report freshness canary.
+		reportFreshnessSpec(),
 	}
 }
 
