@@ -84,6 +84,8 @@ func runMain(args []string) int {
 			return cmdQueue(args[2:])
 		case "spec-lint":
 			return cmdSpecLint(args[2:])
+		case "auto-merge":
+			return cmdAutoMerge(args[2:])
 		case "-h", "--help", "help":
 			printUsage(os.Stderr)
 			return exitSuccess
@@ -213,6 +215,7 @@ func runWorkerHost(ctx context.Context) int {
 
 	log.Printf("chitin-orchestrator: drivers registered — impl=%s review=%s",
 		strings.Join(driverIDs(implRegistry), ","), strings.Join(driverIDs(reviewRegistry), ","))
+	log.Printf("chitin-orchestrator: auto_merge_workflow=registered")
 	log.Printf("chitin-orchestrator: worker host up — task queue %q at %s — %d impl drivers, %d review drivers, worktrees at %s — blob_inline_threshold=%d blob_dir=%s",
 		TaskQueue, hostPort, implRegistry.Len(), reviewRegistry.Len(), worktreeRoot, blob.InlineThreshold, blobStore.Dir())
 	if err := w.Run(worker.InterruptCh()); err != nil {

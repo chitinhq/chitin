@@ -101,6 +101,17 @@ func RegisterSchedulerActivities(w worker.Worker, deps SchedulerActivityDeps) {
 	escalate := NewEscalateInternalRereview()
 	w.RegisterActivityWithOptions(escalate.Execute, registerAs(escalate.ActivityName()))
 
+	checkMerge := NewCheckPRMergeability()
+	w.RegisterActivityWithOptions(checkMerge.Execute, registerAs(checkMerge.ActivityName()))
+	merge := NewMergePR()
+	w.RegisterActivityWithOptions(merge.Execute, registerAs(merge.ActivityName()))
+	unlabel := NewUnlabelPR()
+	w.RegisterActivityWithOptions(unlabel.Execute, registerAs(unlabel.ActivityName()))
+	comment := NewCommentPR()
+	w.RegisterActivityWithOptions(comment.Execute, registerAs(comment.ActivityName()))
+	autoMergeEmit := NewEmitAutoMergeEvent()
+	w.RegisterActivityWithOptions(autoMergeEmit.Execute, registerAs(autoMergeEmit.ActivityName()))
+
 	// DiscordNotify posts work events to the human notification channel
 	// (spec 080 US2). A nil Notifier falls back to the logging notifier.
 	notify := NewDiscordNotify(deps.Notifier)

@@ -12,7 +12,142 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"go.temporal.io/sdk/client"
+
+	"github.com/chitinhq/chitin/go/orchestrator/activities"
+	"github.com/chitinhq/chitin/go/orchestrator/workflows"
+	enumspb "go.temporal.io/api/enums/v1"
 )
+
+type autoMergeRouteStarter struct {
+	starts  []client.StartWorkflowOptions
+	inputs  []workflows.AutoMergeInput
+	signals []string
+}
+
+func (s *autoMergeRouteStarter) ExecuteWorkflow(_ context.Context, opts client.StartWorkflowOptions, _ any, args ...any) (client.WorkflowRun, error) {
+	s.starts = append(s.starts, opts)
+	if len(args) == 1 {
+		if in, ok := args[0].(workflows.AutoMergeInput); ok {
+			s.inputs = append(s.inputs, in)
+		}
+	}
+	return nil, nil
+}
+
+func (s *autoMergeRouteStarter) SignalWorkflow(_ context.Context, workflowID string, _ string, signalName string, _ any) error {
+	s.signals = append(s.signals, workflowID+":"+signalName)
+	return nil
+}
+
+func (s *autoMergeRouteStarter) Close() {}
+
+func autoMergeDialer(s *autoMergeRouteStarter) temporalDialer {
+	return func(context.Context, string) (workflowStarter, string, error) {
+		return s, "test", nil
+	}
+}
+
+func readyLabelPayload(action, label string) []byte {
+	body, _ := json.Marshal(map[string]any{
+		"action": action,
+		"number": 1135,
+		"label":  map[string]any{"name": label},
+		"pull_request": map[string]any{
+			"html_url": "https://github.com/chitinhq/chitin/pull/1135",
+			"labels":   []map[string]any{{"name": label}},
+		},
+		"repository": map[string]any{"full_name": "chitinhq/chitin"},
+		"sender":     map[string]any{"login": "chitin-orchestrator[bot]"},
+	})
+	return body
+}
+
+func TestHandlePR_ReadyToMergeLabelStartsAutoMerge(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	starter := &autoMergeRouteStarter{}
+	t.Setenv("CHITIN_DIR", t.TempDir())
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl", temporalDialer: autoMergeDialer(starter)}
+
+	req := signedPRRequest(t, secret, "pull_request", "delivery-ready", readyLabelPayload("labeled", activities.ReadyToMergeLabel))
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	if len(starter.starts) != 1 {
+		t.Fatalf("starts=%d want 1", len(starter.starts))
+	}
+	if starter.starts[0].ID != "auto-merge-pr-1135-delivery-ready" {
+		t.Fatalf("workflow id=%q", starter.starts[0].ID)
+	}
+	if starter.starts[0].WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
+		t.Fatalf("reuse policy=%v", starter.starts[0].WorkflowIDReusePolicy)
+	}
+	if starter.inputs[0].Repo != "chitinhq/chitin" || starter.inputs[0].TriggerEventID != "delivery-ready" {
+		t.Fatalf("input=%+v", starter.inputs[0])
+	}
+}
+
+func TestHandlePR_OtherLabelDoesNotStartAutoMerge(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	starter := &autoMergeRouteStarter{}
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl", temporalDialer: autoMergeDialer(starter)}
+	req := signedPRRequest(t, secret, "pull_request", "delivery-other", readyLabelPayload("labeled", "other"))
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	if len(starter.starts) != 0 {
+		t.Fatalf("starts=%d want 0", len(starter.starts))
+	}
+}
+
+func TestHandlePR_AutoMergeBreakGlassSkipsStart(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	starter := &autoMergeRouteStarter{}
+	t.Setenv("CHITIN_AUTO_MERGE_DISABLED", "1")
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl", temporalDialer: autoMergeDialer(starter)}
+	req := signedPRRequest(t, secret, "pull_request", "delivery-disabled", readyLabelPayload("labeled", activities.ReadyToMergeLabel))
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	if len(starter.starts) != 0 {
+		t.Fatalf("starts=%d want 0", len(starter.starts))
+	}
+}
+
+func TestHandlePR_ReadyToMergeUnlabeledSignalsAutoMerge(t *testing.T) {
+	secret := []byte("test-secret-for-pr-route!!!!")
+	starter := &autoMergeRouteStarter{}
+	dir := t.TempDir()
+	t.Setenv("CHITIN_DIR", dir)
+	fixture := map[string]any{
+		"ts": "2026-05-26T00:00:00Z", "event_type": "auto_merge_triggered", "run_id": "auto-merge-pr-1135-delivery-ready",
+		"payload": map[string]any{"repo": "chitinhq/chitin", "pr_number": 1135},
+	}
+	b, _ := json.Marshal(fixture)
+	if err := os.WriteFile(dir+"/events-test.jsonl", append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &factoryHandler{secret: secret, logFile: t.TempDir() + "/log.jsonl", temporalDialer: autoMergeDialer(starter)}
+	req := signedPRRequest(t, secret, "pull_request", "delivery-unlabel", readyLabelPayload("unlabeled", activities.ReadyToMergeLabel))
+	w := httptest.NewRecorder()
+	h.handlePR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	if len(starter.starts) != 0 || len(starter.signals) != 1 {
+		t.Fatalf("starts=%d signals=%v", len(starter.starts), starter.signals)
+	}
+	if starter.signals[0] != "auto-merge-pr-1135-delivery-ready:"+workflows.LabelRemovedSignal {
+		t.Fatalf("signal=%q", starter.signals[0])
+	}
+}
 
 // signedPRRequest constructs a signed POST to /webhook/pr with the
 // given event type / delivery id / body.

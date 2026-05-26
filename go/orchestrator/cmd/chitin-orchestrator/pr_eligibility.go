@@ -25,8 +25,11 @@ import (
 // only pull fields needed for eligibility + telemetry; the full body is
 // captured separately for the FR-013 copilot_pr_activity event.
 type prPayload struct {
-	Action      string `json:"action"`
-	Number      int    `json:"number"`
+	Action string `json:"action"`
+	Number int    `json:"number"`
+	Label  struct {
+		Name string `json:"name"`
+	} `json:"label"`
 	PullRequest struct {
 		URL       string `json:"html_url"`
 		Number    int    `json:"number"`
@@ -51,7 +54,7 @@ type prPayload struct {
 	// For issue_comment events the PR object is at .issue and labels
 	// arrive on the issue, not the PR.
 	Issue struct {
-		Number int `json:"number"`
+		Number int    `json:"number"`
 		Body   string `json:"body"`
 		Labels []struct {
 			Name string `json:"name"`
@@ -60,6 +63,9 @@ type prPayload struct {
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+	Sender struct {
+		Login string `json:"login"`
+	} `json:"sender"`
 	// Review carries the pull_request_review payload's review object —
 	// state, body, id, author login. Populated for pull_request_review
 	// events; zero for pull_request / issue_comment events. (Spec 113 US1.)
@@ -240,4 +246,7 @@ type prResponse struct {
 	// review against a chitin/wu/* branch.
 	PRIterationDispatched bool   `json:"pr_iteration_dispatched,omitempty"`
 	PRIterationWorkflowID string `json:"pr_iteration_workflow_id,omitempty"`
+	AutoMergeDispatched   bool   `json:"auto_merge_dispatched,omitempty"`
+	AutoMergeWorkflowID   string `json:"auto_merge_workflow_id,omitempty"`
+	AutoMergeSignaled     bool   `json:"auto_merge_signaled,omitempty"`
 }

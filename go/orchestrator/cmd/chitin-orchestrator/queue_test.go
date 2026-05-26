@@ -43,7 +43,7 @@ import (
 // queueTestNow is the wall-clock anchor every fixture event/PR is built
 // against. Pinning it makes the test deterministic against the FR-003
 // thresholds (stale_no_automation = > 24h; conflicting_persistent = > 1h).
-var queueTestNow = time.Date(2026, 5, 25, 17, 0, 0, 0, time.UTC)
+var queueTestNow = time.Now().UTC()
 
 // queueExpect bundles the asserted contract for one PR fixture: the PR
 // number we expect in the JSON output and the canonical FR-008 reason
@@ -73,6 +73,10 @@ var allFR008Reasons = []string{
 	"human_reviewer_present",
 	"lease_lost",
 	"sibling_rebase_failed",
+	"auto_merge_ci_failed",
+	"auto_merge_conflict",
+	"auto_merge_ci_timeout",
+	"auto_merge_failed",
 	"dialectic_request_changes",
 	"stale_no_automation",
 	"conflicting_persistent",
@@ -116,6 +120,10 @@ func TestRunQueue_HermeticAcrossAllReasonKinds(t *testing.T) {
 		{PR: 9003, Reason: "human_reviewer_present"},
 		{PR: 9004, Reason: "lease_lost"},
 		{PR: 9005, Reason: "sibling_rebase_failed"},
+		{PR: 9010, Reason: "auto_merge_ci_failed"},
+		{PR: 9011, Reason: "auto_merge_conflict"},
+		{PR: 9012, Reason: "auto_merge_ci_timeout"},
+		{PR: 9013, Reason: "auto_merge_failed"},
 		{PR: 9006, Reason: "dialectic_request_changes"},
 		{PR: 9007, Reason: "stale_no_automation"},
 		{PR: 9008, Reason: "conflicting_persistent"},
@@ -356,6 +364,17 @@ func writeQueueFixtureChain(t *testing.T, chainDir string, now time.Time) {
 			},
 		}
 	}
+	autoMergeFailed := func(pr int, eventType, runID string) map[string]any {
+		return map[string]any{
+			"event_type": eventType,
+			"run_id":     runID,
+			"ts":         ts,
+			"payload": map[string]any{
+				"repo":      "chitinhq/chitin",
+				"pr_number": pr,
+			},
+		}
+	}
 
 	rows := []map[string]any{
 		piEscalated(9001, "iteration_cap_hit", "run-icap"),
@@ -363,6 +382,10 @@ func writeQueueFixtureChain(t *testing.T, chainDir string, now time.Time) {
 		piEscalated(9003, "human_reviewer_present", "run-hum"),
 		piEscalated(9004, "lease_lost", "run-lease"),
 		siblingRebaseFailed(9005, "run-reb"),
+		autoMergeFailed(9010, "auto_merge_ci_failed", "run-am-ci"),
+		autoMergeFailed(9011, "auto_merge_conflict", "run-am-conflict"),
+		autoMergeFailed(9012, "auto_merge_ci_timeout", "run-am-timeout"),
+		autoMergeFailed(9013, "auto_merge_failed", "run-am-failed"),
 	}
 
 	path := filepath.Join(chainDir, "events-t011-fixture.jsonl")
@@ -497,6 +520,10 @@ func buildFakeGHListJSON(t *testing.T, now time.Time) string {
 		mk(9003, "human reviewer PR", "chitin/wu/114-operator-escalation-surface-t003-c", []string{"sched/run/run-hum"}, "MERGEABLE", 2*time.Hour, "COMMENTED", "human-operator"),
 		mk(9004, "lease lost PR", "chitin/wu/114-operator-escalation-surface-t004-d", []string{"sched/run/run-lease"}, "MERGEABLE", 2*time.Hour, "", ""),
 		mk(9005, "sibling rebase failed PR", "chitin/wu/112-sibling-rebase-t005-e", []string{"sched/run/run-reb"}, "MERGEABLE", 2*time.Hour, "", ""),
+		mk(9010, "auto merge ci failed PR", "chitin/wu/123-auto-merge-t010-j", []string{"sched/run/run-am-ci"}, "MERGEABLE", 2*time.Hour, "", ""),
+		mk(9011, "auto merge conflict PR", "chitin/wu/123-auto-merge-t011-k", []string{"sched/run/run-am-conflict"}, "MERGEABLE", 2*time.Hour, "", ""),
+		mk(9012, "auto merge timeout PR", "chitin/wu/123-auto-merge-t012-l", []string{"sched/run/run-am-timeout"}, "MERGEABLE", 2*time.Hour, "", ""),
+		mk(9013, "auto merge failed PR", "chitin/wu/123-auto-merge-t013-m", []string{"sched/run/run-am-failed"}, "MERGEABLE", 2*time.Hour, "", ""),
 		mk(9006, "dialectic request changes PR", "chitin/wu/094-dialectic-t006-f", []string{"sched/run/run-dialectic"}, "MERGEABLE", 2*time.Hour, "CHANGES_REQUESTED", "human-reviewer"),
 		mk(9007, "stale no-automation PR", "chitin/wu/100-stale-t007-g", []string{"sched/run/run-stale"}, "MERGEABLE", 48*time.Hour, "COMMENTED", "human-operator"),
 		mk(9008, "persistent conflict PR", "chitin/wu/099-conflict-t008-h", []string{"sched/run/run-conf"}, "CONFLICTING", 3*time.Hour, "", ""),
@@ -555,6 +582,10 @@ func buildFakeGHViewPayloads(now time.Time) map[int]string {
 		9003: orchestratorCommit(1 * time.Hour),
 		9004: orchestratorCommit(1 * time.Hour),
 		9005: orchestratorCommit(1 * time.Hour),
+		9010: orchestratorCommit(1 * time.Hour),
+		9011: orchestratorCommit(1 * time.Hour),
+		9012: orchestratorCommit(1 * time.Hour),
+		9013: orchestratorCommit(1 * time.Hour),
 		9006: orchestratorCommit(1 * time.Hour),
 		// #9007 has ONLY human commits — no orchestrator activity → stale.
 		9007: humanCommit(30 * time.Hour),

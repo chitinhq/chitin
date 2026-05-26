@@ -16,6 +16,10 @@
 //   - iteration_completed_with_skips   ← pr_iteration_escalated
 //   - sibling_rebase_failed            ← sibling_rebase_failed (event_type IS reason)
 //   - silent_drop                      ← work_unit_completed_without_deliverable
+//   - auto_merge_ci_failed             ← auto_merge_ci_failed
+//   - auto_merge_conflict              ← auto_merge_conflict
+//   - auto_merge_ci_timeout            ← auto_merge_ci_timeout
+//   - auto_merge_failed                ← auto_merge_failed
 //
 // The remaining reasons in FR-008 (`dialectic_request_changes`,
 // `stale_no_automation`, `conflicting_persistent`) derive from live PR
@@ -61,6 +65,10 @@ var escalationEventTypes = map[string]struct{}{
 	"pr_iteration_escalated":                  {},
 	"sibling_rebase_failed":                   {},
 	"work_unit_completed_without_deliverable": {},
+	"auto_merge_ci_failed":                    {},
+	"auto_merge_conflict":                     {},
+	"auto_merge_ci_timeout":                   {},
+	"auto_merge_failed":                       {},
 }
 
 // piEscalatedReasons is the closed set of pr_iteration_escalated payload
@@ -196,6 +204,9 @@ func looksLikeEscalation(line []byte) bool {
 	if strings.Contains(s, "work_unit_completed_without_deliverable") {
 		return true
 	}
+	if strings.Contains(s, "auto_merge_") {
+		return true
+	}
 	return false
 }
 
@@ -261,6 +272,8 @@ func classifyReason(eventType, payloadReason string) (string, bool) {
 		return "sibling_rebase_failed", true
 	case "work_unit_completed_without_deliverable":
 		return "silent_drop", true
+	case "auto_merge_ci_failed", "auto_merge_conflict", "auto_merge_ci_timeout", "auto_merge_failed":
+		return eventType, true
 	case "pr_iteration_escalated":
 		if _, ok := piEscalatedReasons[payloadReason]; !ok {
 			return "", false

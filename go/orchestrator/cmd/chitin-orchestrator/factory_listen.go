@@ -27,6 +27,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/chitinhq/chitin/go/orchestrator/activities"
 )
 
 // specPathPattern matches a tasks.md file path inside `.specify/specs/NNN-name/`
@@ -244,9 +246,43 @@ func (h *factoryHandler) handlePR(w http.ResponseWriter, r *http.Request) {
 		PRNumber:  prNumber,
 	}
 
+	if eventType == "pull_request" && p.Action == "labeled" &&
+		strings.EqualFold(p.Label.Name, activities.ReadyToMergeLabel) {
+		if isAutoMergeDisabled() {
+			h.logRequest(map[string]any{
+				"route":        "/webhook/pr",
+				"event_type":   eventType,
+				"event_action": p.Action,
+				"delivery_id":  deliveryID,
+				"pr_number":    prNumber,
+				"auto_merge":   "disabled",
+			})
+		} else {
+			out := dispatchAutoMerge(r.Context(), autoMergeDispatchInput{
+				Repo: p.Repository.FullName, PRNumber: prNumber, LabelName: p.Label.Name,
+				TriggerEventID: deliveryID, ActorLogin: p.Sender.Login, TemporalHost: h.temporalHost,
+			}, h.temporalDialer, h.stderr)
+			resp.AutoMergeDispatched = out.Dispatched
+			resp.AutoMergeWorkflowID = out.WorkflowID
+			if out.FailureKind != "" && resp.SkippedReason == "" {
+				resp.SkippedReason = "auto_merge:" + out.FailureKind
+			}
+		}
+	}
+
+	if eventType == "pull_request" && p.Action == "unlabeled" &&
+		strings.EqualFold(p.Label.Name, activities.ReadyToMergeLabel) {
+		out := signalAutoMergeLabelRemoved(r.Context(), p.Repository.FullName, prNumber, h.temporalHost, h.temporalDialer, h.stderr)
+		resp.AutoMergeSignaled = out.Signaled
+		resp.AutoMergeWorkflowID = out.WorkflowID
+		if out.FailureKind != "" && resp.SkippedReason == "" {
+			resp.SkippedReason = "auto_merge:" + out.FailureKind
+		}
+	}
+
 	elig := checkPREligibility(eventType, &p)
 	resp.Eligible = elig.Eligible
-	if !elig.Eligible && len(elig.Reasons) > 0 {
+	if !elig.Eligible && len(elig.Reasons) > 0 && resp.SkippedReason == "" {
 		resp.SkippedReason = elig.Reasons[0]
 	}
 

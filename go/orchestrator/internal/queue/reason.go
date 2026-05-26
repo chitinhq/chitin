@@ -17,6 +17,10 @@ var fr008ReasonTaxonomy = []string{
 	"lease_lost",
 	"sibling_rebase_failed",
 	"silent_drop",
+	"auto_merge_ci_failed",
+	"auto_merge_conflict",
+	"auto_merge_ci_timeout",
+	"auto_merge_failed",
 	// Live-state-derived (filter.go):
 	"dialectic_request_changes",
 	"stale_no_automation",

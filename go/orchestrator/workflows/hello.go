@@ -40,6 +40,9 @@ func Register(w worker.Worker) {
 	// IteratePRReview activity (registered by RegisterSchedulerActivities)
 	// and returns its result.
 	w.RegisterWorkflow(PRIterationWorkflow)
+	// AutoMergeWorkflow consumes the spec 116 ready-to-merge label and
+	// performs the mechanical squash merge once CI and mergeability are green.
+	w.RegisterWorkflow(AutoMergeWorkflow)
 }
 
 // HelloWorkflow is the Phase 0 smoke workflow (tasks.md T010). It proves the
