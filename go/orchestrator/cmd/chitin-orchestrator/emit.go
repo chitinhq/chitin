@@ -189,6 +189,9 @@ func emitCopilotReviewFailed(ctx context.Context, payload CopilotReviewFailedPay
 //   - emit subprocess exits non-zero: log warn (with stderr tail), return.
 //   - emit subprocess hangs past 5 seconds: SIGKILL via ctx timeout, log warn, return.
 func emitChainEvent(ctx context.Context, eventType string, workflowRunID string, payload any, stderr io.Writer) {
+	if os.Getenv("CHITIN_DISABLE_CHAIN_EMIT") == "1" {
+		return
+	}
 	binPath := os.Getenv("CHITIN_KERNEL_BIN")
 	if binPath == "" {
 		binPath = "chitin-kernel"

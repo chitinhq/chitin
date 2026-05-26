@@ -84,6 +84,7 @@ var allFR008Reasons = []string{
 // return exactly the set of escalated PRs with the canonical reason kind
 // for each — and must NOT include the clean in-flight PR.
 func TestRunQueue_HermeticAcrossAllReasonKinds(t *testing.T) {
+	pinQueueNow(t)
 	chainDir := t.TempDir()
 	writeQueueFixtureChain(t, chainDir, queueTestNow)
 
@@ -146,6 +147,7 @@ func TestRunQueue_HermeticAcrossAllReasonKinds(t *testing.T) {
 // drill-down contract (T008). With the same fixture set, asking for one
 // reason returns only PRs with that reason.
 func TestRunQueue_ReasonFilter_NarrowsToSingleKind(t *testing.T) {
+	pinQueueNow(t)
 	chainDir := t.TempDir()
 	writeQueueFixtureChain(t, chainDir, queueTestNow)
 	ghBin := writeFakeGHForQueue(t, queueTestNow)
@@ -184,6 +186,7 @@ func TestRunQueue_ReasonFilter_NarrowsToSingleKind(t *testing.T) {
 // TestRunQueue_UnknownReason_RejectsWithHelpfulError pins the FR-008 edge
 // case: unknown reason kinds must error with the closed-taxonomy list.
 func TestRunQueue_UnknownReason_RejectsWithHelpfulError(t *testing.T) {
+	pinQueueNow(t)
 	chainDir := t.TempDir()
 	writeQueueFixtureChain(t, chainDir, queueTestNow)
 	ghBin := writeFakeGHForQueue(t, queueTestNow)
@@ -213,6 +216,13 @@ func TestRunQueue_UnknownReason_RejectsWithHelpfulError(t *testing.T) {
 	if !sawValid {
 		t.Errorf("stderr should list at least one valid FR-008 reason kind to guide the operator; got: %q", stderr)
 	}
+}
+
+func pinQueueNow(t *testing.T) {
+	t.Helper()
+	old := queueNow
+	queueNow = func() time.Time { return queueTestNow }
+	t.Cleanup(func() { queueNow = old })
 }
 
 // runQueueCapture invokes the queue subcommand with stdout/stderr buffered

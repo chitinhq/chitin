@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -265,6 +266,180 @@ func TestHandlePush_HTTP(t *testing.T) {
 	})
 }
 
+func TestHandlePush_ModifyOnlyDoesNotDispatch(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
+	secret := []byte("test-secret-for-modify-only!!")
+	var calls []string
+	h := &factoryHandler{
+		secret:     secret,
+		mainBranch: "main",
+		logFile:    t.TempDir() + "/log.jsonl",
+		dispatchFunc: func(_ context.Context, specRef string) (string, error) {
+			calls = append(calls, specRef)
+			return "run-" + specRef, nil
+		},
+	}
+
+	body := []byte(`{"ref":"refs/heads/main","after":"1138deadbeef","commits":[{"modified":[".specify/specs/121-driver-output-blob-store/tasks.md"]}]}`)
+	resp := postSignedPush(t, h, body)
+	if resp.Dispatched {
+		t.Fatalf("Dispatched=true want false")
+	}
+	if len(resp.SpecRefs) != 0 {
+		t.Fatalf("SpecRefs=%v want empty", resp.SpecRefs)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("dispatch calls=%v want none", calls)
+	}
+}
+
+func TestHandlePush_AddedTriggersDispatch(t *testing.T) {
+	t.Setenv("CHITIN_DISABLE_CHAIN_EMIT", "1")
+	secret := []byte("test-secret-for-added-only!!")
+	var calls []string
+	h := &factoryHandler{
+		secret:     secret,
+		mainBranch: "main",
+		logFile:    t.TempDir() + "/log.jsonl",
+		dispatchFunc: func(_ context.Context, specRef string) (string, error) {
+			calls = append(calls, specRef)
+			return "run-" + specRef, nil
+		},
+	}
+
+	body := []byte(`{"ref":"refs/heads/main","after":"addfeed","commits":[{"added":[".specify/specs/125-factory-listen-added-only-dispatch/tasks.md"]}]}`)
+	resp := postSignedPush(t, h, body)
+	if !resp.Dispatched {
+		t.Fatalf("Dispatched=false want true; resp=%+v", resp)
+	}
+	if !reflect.DeepEqual(resp.SpecRefs, []string{"125-factory-listen-added-only-dispatch"}) {
+		t.Fatalf("SpecRefs=%v", resp.SpecRefs)
+	}
+	if !reflect.DeepEqual(calls, []string{"125-factory-listen-added-only-dispatch"}) {
+		t.Fatalf("dispatch calls=%v", calls)
+	}
+}
+
+func TestHandlePush_AddedPlusModifiedFiresOnce(t *testing.T) {
+	bin, sentinel := fakeKernelBinAppendEvents(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_DIR", t.TempDir())
+
+	secret := []byte("test-secret-for-added-modified!!")
+	var calls []string
+	h := &factoryHandler{
+		secret:     secret,
+		mainBranch: "main",
+		logFile:    t.TempDir() + "/log.jsonl",
+		dispatchFunc: func(_ context.Context, specRef string) (string, error) {
+			calls = append(calls, specRef)
+			return "run-" + specRef, nil
+		},
+	}
+
+	path := ".specify/specs/125-factory-listen-added-only-dispatch/tasks.md"
+	body := []byte(`{"ref":"refs/heads/main","after":"bothfeed","commits":[{"added":["` + path + `"],"modified":["` + path + `"]}]}`)
+	resp := postSignedPush(t, h, body)
+	if !resp.Dispatched {
+		t.Fatalf("Dispatched=false want true; resp=%+v", resp)
+	}
+	if !reflect.DeepEqual(calls, []string{"125-factory-listen-added-only-dispatch"}) {
+		t.Fatalf("dispatch calls=%v want one added dispatch", calls)
+	}
+	for _, emitted := range readCapturedEventsIfExists(t, sentinel) {
+		if emitted["event_type"] == "factory_dispatch_filtered" {
+			t.Fatalf("unexpected filtered event for added+modified duplicate: %v", emitted)
+		}
+	}
+}
+
+func TestHandlePush_ModifyOnlyEmitsFilteredEvent(t *testing.T) {
+	bin, sentinel := fakeKernelBinAppendEvents(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_DIR", t.TempDir())
+
+	h := &factoryHandler{
+		secret:     []byte("test-secret-for-filtered-event!!"),
+		mainBranch: "main",
+		logFile:    t.TempDir() + "/log.jsonl",
+		dispatchFunc: func(context.Context, string) (string, error) {
+			t.Fatal("modify-only tasks.md must not dispatch")
+			return "", nil
+		},
+	}
+	path := ".specify/specs/121-driver-output-blob-store/tasks.md"
+	body := []byte(`{"ref":"refs/heads/main","after":"1138deadbeef","commits":[{"modified":["` + path + `"]}]}`)
+	resp := postSignedPush(t, h, body)
+	if resp.Dispatched {
+		t.Fatalf("Dispatched=true want false")
+	}
+
+	events := readCapturedEvents(t, sentinel)
+	if len(events) != 1 {
+		t.Fatalf("captured events=%d want 1: %v", len(events), events)
+	}
+	got := events[0]
+	if got["event_type"] != "factory_dispatch_filtered" {
+		t.Fatalf("event_type=%v want factory_dispatch_filtered", got["event_type"])
+	}
+	payload := got["payload"].(map[string]any)
+	if payload["spec_ref"] != "121-driver-output-blob-store" {
+		t.Fatalf("spec_ref=%v", payload["spec_ref"])
+	}
+	if payload["commit_sha"] != "1138deadbeef" {
+		t.Fatalf("commit_sha=%v", payload["commit_sha"])
+	}
+	if payload["path"] != path {
+		t.Fatalf("path=%v", payload["path"])
+	}
+	if payload["reason"] != "modify_only" {
+		t.Fatalf("reason=%v want modify_only", payload["reason"])
+	}
+}
+
+func TestHandlePush_Replays1138Trigger(t *testing.T) {
+	bin, sentinel := fakeKernelBinAppendEvents(t, 0)
+	t.Setenv("CHITIN_KERNEL_BIN", bin)
+	t.Setenv("CHITIN_DIR", t.TempDir())
+
+	var calls []string
+	h := &factoryHandler{
+		secret:     []byte("test-secret-for-1138-replay!!"),
+		mainBranch: "main",
+		logFile:    t.TempDir() + "/log.jsonl",
+		dispatchFunc: func(_ context.Context, specRef string) (string, error) {
+			calls = append(calls, specRef)
+			return "run-" + specRef, nil
+		},
+	}
+	body := []byte(`{
+		"ref":"refs/heads/main",
+		"after":"f1cd2f7c1138",
+		"commits":[{
+			"modified":[".specify/specs/121-driver-output-blob-store/tasks.md"]
+		}]
+	}`)
+	resp := postSignedPush(t, h, body)
+	if resp.Dispatched {
+		t.Fatalf("Dispatched=true want false")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("dispatch calls=%v want none", calls)
+	}
+	events := readCapturedEvents(t, sentinel)
+	if len(events) != 1 {
+		t.Fatalf("captured events=%d want 1: %v", len(events), events)
+	}
+	got := events[0]
+	if got["event_type"] != "factory_dispatch_filtered" {
+		t.Fatalf("event_type=%v want factory_dispatch_filtered", got["event_type"])
+	}
+	payload := got["payload"].(map[string]any)
+	if payload["spec_ref"] != "121-driver-output-blob-store" || payload["reason"] != "modify_only" {
+		t.Fatalf("payload=%v", payload)
+	}
+}
+
 // TestConstructSyntheticPushPayload — what simulate-webhook emits must
 // be parseable by the listener and yield exactly one spec ref. Keeps the
 // two sides in sync; if the listener's pushPayload schema drifts, this
@@ -361,7 +536,7 @@ func TestProcessDispatchFailureEmitsFailureKind(t *testing.T) {
 					return "", tc.err
 				},
 			}
-			body := []byte(`{"ref":"refs/heads/main","commits":[{"modified":[".specify/specs/118-factory-dispatch-failed-reason-taxonomy/tasks.md"]}]}`)
+			body := []byte(`{"ref":"refs/heads/main","commits":[{"added":[".specify/specs/118-factory-dispatch-failed-reason-taxonomy/tasks.md"]}]}`)
 			req := httptest.NewRequest(http.MethodPost, "/webhook/push", bytes.NewReader(body))
 			req.Header.Set("X-Hub-Signature-256", signPayload(h.secret, body))
 			w := httptest.NewRecorder()
@@ -396,4 +571,103 @@ func TestProcessDispatchFailureEmitsFailureKind(t *testing.T) {
 			}
 		})
 	}
+}
+
+func postSignedPush(t *testing.T, h *factoryHandler, body []byte) factoryResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/push", bytes.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", signPayload(h.secret, body))
+	w := httptest.NewRecorder()
+	h.handlePush(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp factoryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response JSON: %v", err)
+	}
+	return resp
+}
+
+func readCapturedEvent(t *testing.T, path string) map[string]any {
+	t.Helper()
+	got := readCapturedEventIfExists(t, path)
+	if got == nil {
+		t.Fatalf("expected captured event at %s", path)
+	}
+	return got
+}
+
+func readCapturedEventIfExists(t *testing.T, path string) map[string]any {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read captured event: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal captured event: %v\n%s", err, body)
+	}
+	return got
+}
+
+func fakeKernelBinAppendEvents(t *testing.T, exitCode int) (binPath, sentinelPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	binPath = filepath.Join(dir, "chitin-kernel")
+	sentinelPath = filepath.Join(dir, "captured.jsonl")
+	script := "#!/usr/bin/env bash\n" +
+		"set -e\n" +
+		"event_file=\"\"\n" +
+		"while [[ $# -gt 0 ]]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -event-file) event_file=\"$2\"; shift 2 ;;\n" +
+		"    *) shift ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"if [[ -n \"$event_file\" ]]; then\n" +
+		"  cat \"$event_file\" >> " + sentinelPath + "\n" +
+		"  printf '\\n' >> " + sentinelPath + "\n" +
+		"fi\n" +
+		"exit " + itoa(exitCode) + "\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("setup fake kernel: %v", err)
+	}
+	return binPath, sentinelPath
+}
+
+func readCapturedEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	events := readCapturedEventsIfExists(t, path)
+	if len(events) == 0 {
+		t.Fatalf("expected captured events at %s", path)
+	}
+	return events
+}
+
+func readCapturedEventsIfExists(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read captured events: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(body), []byte("\n"))
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var got map[string]any
+		if err := json.Unmarshal(line, &got); err != nil {
+			t.Fatalf("unmarshal captured event: %v\n%s", err, line)
+		}
+		out = append(out, got)
+	}
+	return out
 }

@@ -37,6 +37,8 @@ const queueDefaultSince = 168 * time.Hour
 // queueDefaultFormat is the spec 114 FR-001 default output format.
 const queueDefaultFormat = "table"
 
+var queueNow = func() time.Time { return time.Now().UTC() }
+
 func cmdQueue(args []string) int {
 	return runQueue(context.Background(), args, os.Stdout, os.Stderr)
 }
@@ -63,7 +65,7 @@ func runQueue(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return exitUserError
 	}
 
-	now := time.Now().UTC()
+	now := queueNow().UTC()
 	since := now.Add(-opts.Since)
 
 	// 1. Chain scan — pure reader of $CHITIN_DIR/events-*.jsonl.
