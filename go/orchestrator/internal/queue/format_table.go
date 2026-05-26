@@ -40,8 +40,8 @@ func FormatTable(entries []Entry, now time.Time) string {
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PR\tTITLE\tREASON\tAGE\tLAST_AUTO\tSPEC_REF")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\t%s\t%s\n",
-			e.PRNumber,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			entryIdentity(e),
 			truncateRunes(e.Title, titleMaxRunes),
 			defaultDash(e.Reason),
 			formatAge(now, e.UpdatedAt),
@@ -51,6 +51,19 @@ func FormatTable(entries []Entry, now time.Time) string {
 	}
 	_ = tw.Flush()
 	return buf.String()
+}
+
+func entryIdentity(e Entry) string {
+	if e.PRNumber > 0 {
+		return fmt.Sprintf("#%d", e.PRNumber)
+	}
+	if e.SpecRef != "" && e.TaskID != "" {
+		return e.SpecRef + "/" + e.TaskID
+	}
+	if e.TaskID != "" {
+		return e.TaskID
+	}
+	return "#0"
 }
 
 // truncateRunes shortens s to at most n runes, replacing the final

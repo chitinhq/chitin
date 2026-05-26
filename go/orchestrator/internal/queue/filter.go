@@ -59,7 +59,11 @@ func Build(chain map[int][]EscalationEvent, live []LivePR, now time.Time) []Entr
 			continue
 		}
 		first := events[0]
-		out = append(out, makeEntry(pr, first.Reason, liveByPR[pr], &first))
+		entryPR := pr
+		if first.PRNumber >= 0 {
+			entryPR = first.PRNumber
+		}
+		out = append(out, makeEntry(entryPR, first.Reason, liveByPR[entryPR], &first))
 	}
 
 	// 2. Live-rule-derived entries: each open PR is evaluated against
@@ -173,6 +177,12 @@ func makeEntry(prNumber int, reason string, live *LivePR, trig *EscalationEvent)
 	}
 	if trig != nil {
 		e.TriggeringEvent = trig
+		if trig.SpecRef != "" {
+			e.SpecRef = trig.SpecRef
+		}
+		if trig.TaskID != "" {
+			e.TaskID = trig.TaskID
+		}
 	}
 	return e
 }
