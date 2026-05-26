@@ -10,13 +10,20 @@ import (
 // fakeDriver is a minimal driver.AgentDriver for the SelectDriver activity
 // tests — a fixed card and a fixed ready state.
 type fakeDriver struct {
-	id   string
-	card driver.CapabilityCard
+	id     string
+	card   driver.CapabilityCard
+	ready  bool
+	reason string
 }
 
-func (f *fakeDriver) ID() string                           { return f.id }
-func (f *fakeDriver) Card() driver.CapabilityCard          { return f.card }
-func (f *fakeDriver) Ready(context.Context) (bool, string) { return true, "" }
+func (f *fakeDriver) ID() string                  { return f.id }
+func (f *fakeDriver) Card() driver.CapabilityCard { return f.card }
+func (f *fakeDriver) Ready(context.Context) (bool, string) {
+	if f.ready {
+		return true, ""
+	}
+	return false, f.reason
+}
 func (f *fakeDriver) Invoke(context.Context, driver.WorkUnit) (driver.Result, error) {
 	return driver.Result{}, nil
 }
@@ -24,7 +31,8 @@ func (f *fakeDriver) Invoke(context.Context, driver.WorkUnit) (driver.Result, er
 // newFakeDriver builds a ready fake driver declaring the given capability.
 func newFakeDriver(id string, cap driver.Capability) *fakeDriver {
 	return &fakeDriver{
-		id: id,
+		id:    id,
+		ready: true,
 		card: driver.CapabilityCard{
 			DriverID:     id,
 			AgentRuntime: "fake",
@@ -33,6 +41,13 @@ func newFakeDriver(id string, cap driver.Capability) *fakeDriver {
 			CostClass:    driver.CostLow,
 		},
 	}
+}
+
+func newUnreadyFakeDriver(id string, cap driver.Capability, reason string) *fakeDriver {
+	f := newFakeDriver(id, cap)
+	f.ready = false
+	f.reason = reason
+	return f
 }
 
 // TestSelectDriver_RoutesByCapability proves FR-007: the activity routes a
@@ -84,6 +99,31 @@ func TestSelectDriver_BlockedUnroutable(t *testing.T) {
 	}
 	if res.MissingCapability != string(driver.CapResearchWeb) {
 		t.Errorf("missing capability = %q, want %q", res.MissingCapability, driver.CapResearchWeb)
+	}
+}
+
+// TestSelectDriver_SkipsUnreadySpecImplementDriver proves the fallback path
+// spec 120 relies on: a driver may declare CapSpecImplement and still be
+// operationally skipped when Ready reports false.
+func TestSelectDriver_SkipsUnreadySpecImplementDriver(t *testing.T) {
+	reg := driver.NewRegistry()
+	if err := reg.Register(newUnreadyFakeDriver("claudecode-glm", driver.CapSpecImplement, "ollama daemon not reachable at http://localhost:11434")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	act := NewDriverSelector(reg)
+
+	res, err := act.Execute(context.Background(), SelectDriverInput{
+		NodeID:     "wu-120-whole",
+		Capability: string(driver.CapSpecImplement),
+	})
+	if err != nil {
+		t.Fatalf("Execute on unready claudecode-glm must NOT error; got %v", err)
+	}
+	if !res.Unroutable {
+		t.Fatalf("unready claudecode-glm-only registry must be unroutable; got driver %q", res.DriverID)
+	}
+	if res.MissingCapability != string(driver.CapSpecImplement) {
+		t.Errorf("missing capability = %q, want %q", res.MissingCapability, driver.CapSpecImplement)
 	}
 }
 

@@ -32,6 +32,7 @@ import (
 
 	"github.com/chitinhq/chitin/go/orchestrator/adapter/speckit"
 	"github.com/chitinhq/chitin/go/orchestrator/dag"
+	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/workflows"
 )
 
@@ -169,6 +170,7 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 			Repo:    *gitHubRepo,
 		}, stdout, stderr)
 	}
+	payloadDriverID := selectedDriverIDForPayload(ctx, cs.DAG, registry)
 
 	c, host, err := dialTemporal(ctx, *temporalHost)
 	if err != nil {
@@ -210,11 +212,37 @@ func runSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		CapabilitiesRequired: capsRequired,
 		Mode:                 mode,
 		WholeSpecTaskCount:   wholeSpecTaskCount,
+		DriverID:             payloadDriverID,
 	}, stderr)
 
 	fmt.Fprintf(stdout, "scheduled spec %s (%d nodes, %d capabilities required); run_id=%s\n",
 		resolution.SpecRef, cs.DAG.Len(), len(capsRequired), runID)
 	return exitSuccess
+}
+
+// selectedDriverIDForPayload returns the driver id to stamp on
+// scheduler_started when the DAG has exactly one agent node and the same
+// registry selection the scheduler will run later succeeds now. It is
+// deliberately fail-soft: schedule-time validation remains declaration-based,
+// while runtime SelectDriver is still the authority for operational readiness.
+func selectedDriverIDForPayload(ctx context.Context, d *dag.DAG, reg *driver.Registry) string {
+	if d == nil || reg == nil {
+		return ""
+	}
+	var agentNodes []dag.Node
+	for _, n := range d.Nodes() {
+		if n.Kind != dag.NodeKindDeterministic {
+			agentNodes = append(agentNodes, n)
+		}
+	}
+	if len(agentNodes) != 1 || agentNodes[0].Capability == "" {
+		return ""
+	}
+	chosen, _, err := reg.Select(ctx, driver.Capability(agentNodes[0].Capability))
+	if err != nil || chosen == nil {
+		return ""
+	}
+	return chosen.ID()
 }
 
 func renderSpecRefError(stderr io.Writer, sre *SpecRefError) {

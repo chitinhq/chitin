@@ -42,6 +42,10 @@ type SchedulerStartedPayload struct {
 	// driver is being asked to deliver. Zero in per-task mode (where the
 	// dispatch is granular and the per-task count lives in NodeCount).
 	WholeSpecTaskCount int `json:"whole_spec_task_count,omitempty"`
+	// DriverID is the selected driver when the schedule command can resolve
+	// a single agent-node route before workflow start. It is omitempty for
+	// backwards compatibility with pre-spec-120 scheduler_started payloads.
+	DriverID string `json:"driver_id,omitempty"`
 }
 
 // SchedulerCanceledPayload is the spec 097 "scheduler_canceled" event payload
@@ -105,12 +109,12 @@ type CopilotPRDetectedPayload struct {
 // unreachable). Workflow-runtime failures are emitted by the workflow
 // itself in a follow-up slice.
 type CopilotReviewFailedPayload struct {
-	Repo         string `json:"repo"`
-	PRNumber     int    `json:"pr_number"`
-	ReviewRunID  string `json:"review_run_id"`
-	FailureKind  string `json:"failure_kind"`
-	Detail       string `json:"detail"`
-	FailedAt     string `json:"failed_at"`
+	Repo        string `json:"repo"`
+	PRNumber    int    `json:"pr_number"`
+	ReviewRunID string `json:"review_run_id"`
+	FailureKind string `json:"failure_kind"`
+	Detail      string `json:"detail"`
+	FailedAt    string `json:"failed_at"`
 }
 
 // emitSchedulerStarted writes a scheduler_started chain event via the

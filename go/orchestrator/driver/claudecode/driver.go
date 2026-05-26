@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeshared"
 )
 
 const (
@@ -94,7 +94,7 @@ func (d *Driver) Ready(ctx context.Context) (bool, string) {
 
 // Invoke shells out to Claude Code in the work unit's dedicated worktree.
 func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result, error) {
-	ctx, cancel := invocationContext(ctx, wu.Deadline)
+	ctx, cancel := claudecodeshared.InvocationContext(ctx, wu.Deadline)
 	defer cancel()
 
 	reviewMode := isReviewMode(wu)
@@ -102,7 +102,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		prompt = reviewPromptFor(wu)
 	} else {
-		prompt = promptFor(wu)
+		prompt = claudecodeshared.PromptFor(wu)
 	}
 	// --dangerously-skip-permissions is mandatory for dispatch-mode
 	// invocations: the chitin worker spawns claude headlessly inside a
@@ -124,31 +124,7 @@ func (d *Driver) Invoke(ctx context.Context, wu driver.WorkUnit) (driver.Result,
 	if reviewMode {
 		return reviewResult(ctx, wu, d.ID(), out, errOut, err), nil
 	}
-	return resultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
-}
-
-func invocationContext(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
-	if deadline.IsZero() {
-		return context.WithCancel(parent)
-	}
-	return context.WithDeadline(parent, deadline)
-}
-
-func promptFor(wu driver.WorkUnit) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Chitin work unit: %s\n", wu.ID)
-	if wu.SpecID != "" {
-		fmt.Fprintf(&b, "Spec: %s\n", wu.SpecID)
-	}
-	if wu.TaskID != "" {
-		fmt.Fprintf(&b, "Task: %s\n", wu.TaskID)
-	}
-	if wu.WorktreePath != "" {
-		fmt.Fprintf(&b, "Worktree: %s\n", wu.WorktreePath)
-	}
-	b.WriteString("\nInstructions:\n")
-	b.WriteString(wu.Context)
-	return b.String()
+	return claudecodeshared.ResultFromCommand(ctx, wu, d.ID(), out, errOut, err), nil
 }
 
 func resultFromCommand(ctx context.Context, wu driver.WorkUnit, driverID, stdout, stderr string, runErr error) driver.Result {

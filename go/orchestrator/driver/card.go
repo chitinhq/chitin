@@ -56,6 +56,10 @@ const (
 	CostHigh
 )
 
+// CostZero is an alias for CostFree kept for specs and routing policy text
+// that name the zero-marginal-cost band explicitly.
+const CostZero CostClass = CostFree
+
 // costClassNames is indexed by CostClass; kept in sync with the constants.
 var costClassNames = [...]string{
 	CostFree:   "free",

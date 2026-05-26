@@ -74,6 +74,7 @@ func TestEmitSchedulerStarted_WritesExpectedJSON(t *testing.T) {
 		RunID:                "abc-123",
 		NodeCount:            3,
 		CapabilitiesRequired: []string{"code.implement"},
+		DriverID:             "claudecode-glm",
 	}, &stderr)
 
 	if stderr.Len() > 0 {
@@ -103,6 +104,9 @@ func TestEmitSchedulerStarted_WritesExpectedJSON(t *testing.T) {
 	}
 	if payload["node_count"] != float64(3) { // JSON numbers decode as float64
 		t.Errorf("payload.node_count = %v (%T)", payload["node_count"], payload["node_count"])
+	}
+	if payload["driver_id"] != "claudecode-glm" {
+		t.Errorf("payload.driver_id = %v, want claudecode-glm", payload["driver_id"])
 	}
 }
 

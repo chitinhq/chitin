@@ -29,6 +29,7 @@ import (
 	"github.com/chitinhq/chitin/go/orchestrator/activities/review"
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecode"
+	"github.com/chitinhq/chitin/go/orchestrator/driver/claudecodeglm"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/codex"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/copilot"
 	"github.com/chitinhq/chitin/go/orchestrator/driver/gemini"
@@ -241,6 +242,7 @@ func buildRegistry(role string) (*driver.Registry, error) {
 	registry := driver.NewRegistry()
 	for _, d := range []driver.AgentDriver{
 		claudecode.New(),
+		claudecodeglm.New(),
 		codex.New(codexOpts...),
 		copilot.New(),
 		gemini.New(),
