@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/chitinhq/chitin/go/orchestrator/driver"
+	"github.com/chitinhq/chitin/go/orchestrator/internal/blob"
 )
 
 func TestCardDeclaresClaudeCodeContract(t *testing.T) {
@@ -80,5 +82,66 @@ func TestInvoke_PassesSkipPermissions(t *testing.T) {
 	}
 	if !strings.Contains(string(argv), "--dangerously-skip-permissions") {
 		t.Errorf("argv missing --dangerously-skip-permissions\nargv=%q", string(argv))
+	}
+}
+
+func TestInvokeExternalizesLargeOutput(t *testing.T) {
+	dir := t.TempDir()
+	store, err := blob.NewFSStore(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(dir, "payload.txt")
+	body := bytes.Repeat([]byte("x"), 2_621_440)
+	if err := os.WriteFile(payloadPath, body, 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	binPath := filepath.Join(dir, "claude")
+	script := "#!/usr/bin/env bash\ncat " + payloadPath + "\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	res, err := New(WithCommand(binPath), WithBlobStore(store)).Invoke(context.Background(), driver.WorkUnit{
+		ID:           "wu-large",
+		WorktreePath: dir,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if !blob.IsRef(res.OutputRef) {
+		t.Fatalf("OutputRef = %q, want blob ref", res.OutputRef)
+	}
+	got, err := blob.Resolve(context.Background(), store, res.OutputRef)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatal("resolved body differed from stdout")
+	}
+}
+
+func TestInvokeLeavesSmallOutputInlineWithNilStore(t *testing.T) {
+	dir := t.TempDir()
+	payloadPath := filepath.Join(dir, "payload.txt")
+	body := bytes.Repeat([]byte("s"), 4096)
+	if err := os.WriteFile(payloadPath, body, 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	binPath := filepath.Join(dir, "claude")
+	script := "#!/usr/bin/env bash\ncat " + payloadPath + "\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	res, err := New(WithCommand(binPath)).Invoke(context.Background(), driver.WorkUnit{
+		ID:           "wu-small",
+		WorktreePath: dir,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.OutputRef != string(body) {
+		t.Fatalf("OutputRef was not inline literal")
 	}
 }

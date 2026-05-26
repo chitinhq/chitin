@@ -9,6 +9,8 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
+	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
