@@ -90,7 +90,10 @@ common case — no producer change required.
 > emits a `stale_report_detected` chain event with a
 > structured payload identifying the path, the observed age,
 > and the SLA it breached. Reports under their SLA produce
-> NO event — silent on green.
+> NO per-path event — the canary is silent on green at the
+> per-path level. (A single per-run `report_fresh` summary
+> event is emitted by FR-004 to prove the canary ran; it is
+> NOT a per-path signal.)
 
 **Independent test:** Run the canary against a fixture
 directory containing two reports — one 1 hour old (SLA 24h),
@@ -129,8 +132,10 @@ metadata block declaring `generated_at` 30 minutes in the
 past but the file's `mtime` is 1 week old. Assert the canary
 treats it as fresh (uses the embedded value, not `mtime`).
 A second fixture embeds an unparseable block; assert the
-canary falls back to `mtime` and emits the fallback reason
-in the event payload.
+canary falls back to `mtime` and the event payload carries
+`age_source: "mtime"` (the fallback signal — there is no
+separate "fallback reason" field, the source enum IS the
+signal per FR-003).
 
 ### US4 (P2) — Escalation hits Discord through spec 114
 
@@ -143,9 +148,11 @@ in the event payload.
 
 **Independent test:** Fire 5 `stale_report_detected` events for
 the same path within 1 hour. Assert exactly ONE Discord
-notification is posted; the other 4 are rate-limited with a
-suppressed-count counter that appears in the chain event
-payload.
+notification is posted; the other 4 produce
+`stale_report_suppressed` events whose `suppressed_count` field
+(see data model) reflects the running per-path suppression
+count within the active cooldown window (1, 2, 3, 4 on the
+four suppressed events).
 
 ### US5 (P2) — Operator can probe manually via CLI
 
@@ -187,11 +194,20 @@ records the contract: `<!-- chitin-report-meta:
 - **FR-002** The watched-paths config lives at
   `~/.chitin/report-freshness.yaml` (override via
   `--config` flag and `$CHITIN_REPORT_FRESHNESS_CONFIG`).
-  Schema: `paths: [{path: string, sla_hours: int}]`. The
-  initial bundled config covers the three paths Ares found
-  stale on 2026-05-26: `chain-summary-latest.html`,
-  `board-audit-latest.html`, `industry-scan-latest.html`,
-  each with a default `sla_hours: 24`.
+  Schema:
+  ```yaml
+  paths:                              # required
+    - path: string                    # absolute file path
+      sla_hours: int                  # per-path freshness budget
+  cadence_minutes: int                # optional; default 360 (6h) per FR-006
+  escalation_cooldown_hours: int      # optional; default 24 per FR-007
+  ```
+  The initial bundled config covers the three paths Ares
+  found stale on 2026-05-26 (each as an absolute path under
+  `/home/red/labs/local-ai-lab/wiki/assets/`):
+  `chain-summary-latest.html`, `board-audit-latest.html`,
+  `industry-scan-latest.html`, each with a default
+  `sla_hours: 24`.
 
 - **FR-003** The canary MUST resolve a report's effective
   `generated_at` in this order:
@@ -232,12 +248,15 @@ records the contract: `<!-- chitin-report-meta:
   (deterministic lookup by path).
 
 - **FR-008** Non-suppressed `stale_report_detected` events
-  MUST route through spec 114's `Notify` activity with kind
-  `NotifyOperatorEscalation` and reason `stale_report` (a new
-  closed-taxonomy reason value added by this spec to spec
-  114's enum). The Discord message body MUST include:
-  report path, age in hours, SLA, age source, and a
-  `file://` URL.
+  MUST route through the existing `DiscordNotify` activity
+  (introduced by spec 080, reused by spec 114 FR-009 for the
+  daily digest — see `go/orchestrator/activities/notify.go`).
+  The chain reason kind for these escalations is `stale_report`,
+  a new closed-taxonomy value added by this spec to spec 114's
+  enum (see FR-008 closed reason taxonomy in
+  `go/orchestrator/internal/queue/reason.go`). The Discord
+  message body MUST include: report path, age in hours, SLA,
+  age source, and a `file://` URL.
 
 - **FR-009** A CLI subcommand `chitin-orchestrator reports check`
   is introduced by this spec (US5). Flags: `--config <path>`
@@ -351,7 +370,10 @@ report_fresh: {
   fresh_count: int,
   stale_count: int,
   missing_count: int,
-  cadence: "scheduled" | "manual"
+  cadence: "scheduled" | "manual",
+  clock_skew: bool          // true iff any per-path embedded
+                            // generated_at was in the future
+                            // during this run; see edge case
 }
 
 report_missing: {
@@ -371,7 +393,10 @@ stale_report_suppressed: {
   age_hours: float,
   sla_hours: int,
   cooldown_remaining_hours: float,
-  prior_escalation_at: string
+  prior_escalation_at: string,
+  suppressed_count: int     // running count of suppressions
+                            // for this path within the active
+                            // cooldown window (1-indexed, per US4)
 }
 ```
 
