@@ -29,6 +29,7 @@ type prPayload struct {
 	Number      int    `json:"number"`
 	PullRequest struct {
 		URL       string `json:"html_url"`
+		Number    int    `json:"number"`
 		Draft     bool   `json:"draft"`
 		Merged    bool   `json:"merged"`
 		Body      string `json:"body"`
