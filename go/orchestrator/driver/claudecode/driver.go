@@ -60,11 +60,15 @@ func (d *Driver) Card() driver.CapabilityCard {
 			driver.CapSpecAuthor,
 			driver.CapDocsWrite,
 			driver.CapTestAuthor,
-			// Spec 119 — claude-code's 200k context + Frontier tier is
-			// large enough for whole-spec dispatch (full spec.md +
-			// tasks.md + plan.md + relevant code). Declared so the
-			// --whole-spec mode routes here as a T4 candidate.
-			driver.CapSpecImplement,
+			// NOTE (2026-05-25): claudecode does NOT declare
+			// CapSpecImplement. The whole-spec dispatch payload is
+			// large (full spec.md + tasks.md + plan.md per spec 119
+			// FR-003) and claudecode = opus-4.7 per-token cost makes
+			// each invocation prohibitively expensive at our scale.
+			// codex (gpt-5.x-codex) is the sole CapSpecImplement
+			// declarer until a local-model alternative (glm-5.1 via
+			// ollama) ships its own driver. Re-adding this capability
+			// to claudecode requires an explicit cost-policy change.
 		},
 		Tier:      driver.TierFrontier,
 		CostClass: driver.CostHigh,
